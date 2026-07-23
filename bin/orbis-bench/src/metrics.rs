@@ -156,7 +156,7 @@ plain_total 9
     }
 
     #[test]
-    fn retains_hybrid_p2p_metrics_for_reports() {
+    fn retains_dkg_p2p_metrics_for_reports() {
         let mut snapshot = BTreeMap::from([
             (
                 "p2p_bytes_sent_total{protocol=\"gossip\"}".to_string(),

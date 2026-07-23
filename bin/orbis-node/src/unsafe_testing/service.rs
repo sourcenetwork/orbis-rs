@@ -7,7 +7,7 @@ use crate::dkg::v0::coordinator::evidence::{
     queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
     queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
 };
-use crate::dkg::v0::coordinator::network::report_abandoned_pss_session;
+use crate::dkg::v0::coordinator::reporting::report_abandoned_pss_session;
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};

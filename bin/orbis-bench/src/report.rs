@@ -207,11 +207,11 @@ fn render_report(
     }
     html.push_str("</tbody></table></div></section>");
 
-    html.push_str("<section><h2>Hybrid transport evidence</h2><div class=\"table-wrap\"><table><thead><tr><th>Plane</th><th>Measurement</th><th>Labels</th><th>Value</th></tr></thead><tbody>");
-    let mut transport_rows = hybrid_transport_evidence(&metric_totals);
+    html.push_str("<section><h2>DKG transport evidence</h2><div class=\"table-wrap\"><table><thead><tr><th>Plane</th><th>Measurement</th><th>Labels</th><th>Value</th></tr></thead><tbody>");
+    let mut transport_rows = dkg_transport_evidence(&metric_totals);
     transport_rows.extend(missing_topology_evidence(trials));
     if transport_rows.is_empty() {
-        html.push_str("<tr><td colspan=\"4\" class=\"empty\">No hybrid transport metrics were recorded.</td></tr>");
+        html.push_str("<tr><td colspan=\"4\" class=\"empty\">No DKG transport metrics were recorded.</td></tr>");
     } else {
         for row in transport_rows {
             write!(
@@ -506,7 +506,7 @@ struct TransportEvidence {
     value: String,
 }
 
-fn hybrid_transport_evidence(metrics: &[(String, f64)]) -> Vec<TransportEvidence> {
+fn dkg_transport_evidence(metrics: &[(String, f64)]) -> Vec<TransportEvidence> {
     let lookup: BTreeMap<&str, f64> = metrics
         .iter()
         .map(|(metric, value)| (metric.as_str(), *value))
@@ -524,8 +524,8 @@ fn hybrid_transport_evidence(metrics: &[(String, f64)]) -> Vec<TransportEvidence
             "public".to_string()
         } else if name.starts_with("dkg_private_") {
             "private".to_string()
-        } else if name.starts_with("dkg_hybrid_") {
-            metric_label(metric, "plane").unwrap_or_else(|| "hybrid".into())
+        } else if name.starts_with("dkg_transport_") {
+            metric_label(metric, "plane").unwrap_or_else(|| "transport".into())
         } else if name.starts_with("p2p_") {
             "network".to_string()
         } else {
@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_transport_evidence_reports_latency_events_and_network_deltas() {
+    fn dkg_transport_evidence_reports_latency_events_and_network_deltas() {
         let metrics = vec![
             (
                 "dkg_control_readiness_duration_seconds_count{kind=\"fresh\"}".into(),
@@ -799,16 +799,15 @@ mod tests {
                 1.0,
             ),
             (
-                "dkg_hybrid_transport_events_total{plane=\"public\",event=\"repair\"}".into(),
+                "dkg_transport_events_total{plane=\"public\",event=\"repair\"}".into(),
                 3.0,
             ),
             (
-                "dkg_hybrid_transport_events_total{plane=\"control\",event=\"probe_ack\"}".into(),
+                "dkg_transport_events_total{plane=\"control\",event=\"probe_ack\"}".into(),
                 8.0,
             ),
             (
-                "dkg_hybrid_transport_events_total{plane=\"public\",event=\"rejoin_isolation\"}"
-                    .into(),
+                "dkg_transport_events_total{plane=\"public\",event=\"rejoin_isolation\"}".into(),
                 1.0,
             ),
             (
@@ -817,7 +816,7 @@ mod tests {
             ),
             ("p2p_gossip_neighbors{protocol=\"gossip\"}".into(), -1.0),
         ];
-        let rows = hybrid_transport_evidence(&metrics);
+        let rows = dkg_transport_evidence(&metrics);
         assert!(rows.iter().any(|row| {
             row.plane == "control"
                 && row.measurement == "dkg_control_readiness_duration_seconds average"
@@ -825,7 +824,7 @@ mod tests {
         }));
         assert!(rows.iter().any(|row| {
             row.plane == "public"
-                && row.measurement == "dkg_hybrid_transport_events_total"
+                && row.measurement == "dkg_transport_events_total"
                 && row.value == "3"
         }));
         assert!(rows.iter().any(|row| {
@@ -953,13 +952,13 @@ mod tests {
             error: None,
             ring_id: Some("ring".into()),
             ring_pk: Some("pk".into()),
-            metric_deltas: BTreeMap::from([("dkg_messages_total".into(), 12.0)]),
+            metric_deltas: BTreeMap::from([("dkg_transport_messages_total".into(), 12.0)]),
         };
         let rows = summarize(std::slice::from_ref(&trial));
         let html = render_report(&manifest, &[trial], &rows, &ResourceSummary::default());
         assert_eq!(
             hex::encode(Sha256::digest(html)),
-            "9aacd59268705de6adddb197e173741cbff47282a977877021857387fc12ade7"
+            "32b9cd69d990f490471bf2cfe2c2cde7d5db031e90e1d7c02b36c6f1af7557e3"
         );
     }
 }

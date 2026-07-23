@@ -1,8 +1,15 @@
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
-    coordinator::DkgCoordinator,
+    coordinator::{
+        message_handlers::{
+            handle_commitment_hash_message, handle_commitment_message, handle_session_init,
+            handle_share_message,
+        },
+        DkgCoordinator,
+    },
     helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
-    messages::{DkgMessage, SessionKind},
+    messages::SessionKind,
+    session_state::DkgPhase,
 };
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
@@ -25,6 +32,44 @@ use tracing_subscriber;
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
 use crypto::DkgImpl;
+
+struct TestSessionInit {
+    session_id: u128,
+    threshold: u32,
+    total_participants: u32,
+    peer_ids: Vec<String>,
+    peer_node_keys: Vec<String>,
+    node_id_assignments: std::collections::HashMap<String, u32>,
+    token_string: String,
+    kind: SessionKind,
+    pss_interval: u64,
+    policy_id: Option<String>,
+    ring_id: String,
+}
+
+async fn invoke_session_init(
+    coordinator: &DkgCoordinator<DkgImpl>,
+    init: TestSessionInit,
+    sender: &PeerId,
+) -> crate::dkg::v0::error::Result<()> {
+    handle_session_init(
+        coordinator,
+        init.session_id,
+        init.threshold,
+        init.total_participants,
+        &init.peer_ids,
+        &init.peer_node_keys,
+        &init.node_id_assignments,
+        &init.token_string,
+        &init.kind,
+        init.pss_interval,
+        init.policy_id,
+        init.ring_id,
+        sender,
+        false,
+    )
+    .await
+}
 
 // ============================================================================
 // PSS Refresh Integration Test
@@ -55,10 +100,10 @@ async fn test_dkg_followed_by_pss_refresh() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pss_refresh_repairs_gossip_loss_and_private_disconnects() {
-    run_dkg_followed_by_pss_refresh("test_pss_refresh_hybrid_repair", true).await;
+    run_dkg_followed_by_pss_refresh("test_pss_refresh_transport_repair", true).await;
 }
 
-async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bool) {
+async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults: bool) {
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -70,10 +115,10 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bo
         .with_test_writer()
         .try_init();
 
-    let mut network = setup_three_node_network(!inject_hybrid_faults, db_name).await;
+    let mut network = setup_three_node_network(!inject_transport_faults, db_name).await;
 
     #[cfg(feature = "fault-injection")]
-    let fault_controllers = if inject_hybrid_faults {
+    let fault_controllers = if inject_transport_faults {
         let mut controllers = Vec::with_capacity(3);
         for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
             let (fault_network, controller) =
@@ -98,8 +143,8 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bo
 
     #[cfg(not(feature = "fault-injection"))]
     assert!(
-        !inject_hybrid_faults,
-        "hybrid fault injection requires the fault-injection feature"
+        !inject_transport_faults,
+        "transport fault injection requires the fault-injection feature"
     );
 
     let peer_node_keys = vec![
@@ -213,22 +258,22 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_hybrid_faults: bo
             .await;
     }
 
-    let refresh_outcome = crate::dkg::v0::hybrid::start_refresh(
+    let refresh_outcome = crate::dkg::v0::network::start_refresh(
         Arc::new(initiator_state),
         &::network::V0,
         TEST_FRESH_DKG_RING_ID.to_string(),
         key_string.clone(),
     )
     .await
-    .expect("canonical leader should start hybrid refresh");
-    let crate::dkg::v0::hybrid::RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) =
+    .expect("canonical leader should start transport refresh");
+    let crate::dkg::v0::network::RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) =
         refresh_outcome
     else {
         panic!("backdated refresh should start, got {refresh_outcome:?}");
     };
 
     println!(
-        "Hybrid PSS refresh initiated (session_id={}, attempt_id={})",
+        "DKG transport PSS refresh initiated (session_id={}, attempt_id={})",
         refresh_ceremony.0,
         hex::encode(refresh_attempt.0)
     );
@@ -360,7 +405,10 @@ async fn test_share_before_commitment_waits_for_commitment() {
         sender_hex.to_string(),
         third_hex.to_string(),
     ];
-    coordinator.set_peer_ids(&session_id, all_peer_ids).await;
+    app_state
+        .dkg_session_state
+        .set_peer_ids(&session_id, all_peer_ids)
+        .await;
     let mut node_peer_map = std::collections::HashMap::new();
     node_peer_map.insert(1u32, "aabbccdd".to_string());
     node_peer_map.insert(2u32, sender_hex.to_string());
@@ -370,10 +418,20 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .set_node_peer_mappings(&session_id, node_peer_map)
         .await;
 
-    coordinator
-        .initiate_phase0_commitment_hashes(session_id, &[])
+    app_state
+        .dkg_session_state
+        .with_state_mut(&session_id, |state| state.generate_polynomial())
         .await
-        .expect("phase 0 with no peers");
+        .expect("session exists")
+        .expect("generate local polynomial");
+    app_state
+        .dkg_session_state
+        .update_phase(&session_id, DkgPhase::Phase0CommitmentHashes)
+        .await;
+    app_state
+        .dkg_session_state
+        .mark_commitment_hash_broadcast_complete(&session_id)
+        .await;
 
     let mut sender_node =
         *DkgImpl::new(2, 2, 3, session_id, DkgRole::Standard).expect("create sender node");
@@ -392,44 +450,26 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .expect("share for node 1");
     let share_value = CryptoSerialize::to_bytes(&share.value).expect("serialize share");
 
-    let share_msg = DkgMessage::Share {
-        session_id,
-        from_node_id: 2,
-        to_node_id: 1,
-        share_value,
-        nonce: share.nonce,
-        report_evidence: None,
-    };
-    let hash_msg = DkgMessage::CommitmentHash {
-        session_id,
-        from_node_id: 2,
-        commitment_hash,
-    };
-    let commitment_msg = DkgMessage::Commitment {
-        session_id,
-        from_node_id: 2,
-        commitment,
-        report_evidence: None,
-    };
-    let sender_bytes = hex::decode(sender_hex).unwrap();
-    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
-
-    coordinator
-        .handle_message(hash_msg, &sender_peer_id)
+    handle_commitment_hash_message(&coordinator, session_id, 2, commitment_hash)
         .await
         .expect("commitment hash should be accepted");
 
     let share_coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
-    let share_sender = sender_peer_id.clone();
     let share_task = tokio::spawn(async move {
-        share_coordinator
-            .handle_message(share_msg, &share_sender)
-            .await
+        handle_share_message(
+            &share_coordinator,
+            session_id,
+            2,
+            1,
+            share_value,
+            share.nonce,
+            None,
+        )
+        .await
     });
 
     sleep(Duration::from_millis(50)).await;
-    coordinator
-        .handle_message(commitment_msg, &sender_peer_id)
+    handle_commitment_message(&coordinator, session_id, 2, commitment, None)
         .await
         .expect("commitment should be accepted");
 
@@ -576,12 +616,12 @@ fn write_last_refresh(
 }
 
 /// Build a minimal refresh `SessionInit` targeted at `ring_pk`.
-fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> DkgMessage {
+fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> TestSessionInit {
     let peer_node_keys = vec![peer_node_key.to_string()];
     let peer_ids = vec![peer_id.to_string()];
     let mut node_id_assignments = std::collections::HashMap::new();
     node_id_assignments.insert(peer_node_key.to_string(), 1u32);
-    DkgMessage::SessionInit {
+    TestSessionInit {
         session_id: derive_refresh_session_id(ring_pk, &peer_node_keys, 1, "").unwrap(),
         threshold: 1,
         total_participants: 1,
@@ -628,9 +668,9 @@ async fn test_refresh_accepts_external_sender_when_local_node_in_ring() {
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
-    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(result, Ok(None)),
+        matches!(result, Ok(())),
         "Expected external sender to be accepted when local node is in ring, got: {:?}",
         result
     );
@@ -678,7 +718,7 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &other_node_key, &other_peer_hex);
 
-    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
         matches!(result, Err(crate::dkg::v0::error::DkgError::Unauthorized(ref msg)) if msg.contains("Local node")),
         "Expected Unauthorized for local node not in ring, got: {:?}",
@@ -723,7 +763,7 @@ async fn test_refresh_rejected_too_soon() {
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
-    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
         matches!(
             result,
@@ -777,7 +817,7 @@ async fn test_refresh_rejected_already_in_progress() {
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let msg = refresh_session_init(ring_pk, &local_node_key, &local_peer_hex);
 
-    let result = coordinator.handle_message(msg, &sender_peer_id).await;
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
         matches!(
             result,

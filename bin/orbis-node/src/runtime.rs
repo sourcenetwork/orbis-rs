@@ -375,7 +375,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .dkg_session_state
         .take_stall_report_receiver()
         .map(|rx| {
-            crate::dkg::v0::coordinator::network::spawn_pss_stall_reporter(
+            crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter(
                 node.app_state.clone(),
                 rx,
             )

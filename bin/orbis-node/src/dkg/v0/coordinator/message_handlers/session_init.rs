@@ -376,14 +376,14 @@ where
     })
 }
 
-/// Handle a `DkgMessage::SessionInit`.
+/// Validate and create state for a typed transport Prepare.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
 /// and node_id, and creates the session if it does not already exist.
 /// For Fresh/Refresh, when this handler creates the session and this node is
 /// `node_id == 1`, it also calls `initiate_phase1_commitments` so the protocol
 /// starts even if the gRPC initiator is not a participant.
-/// Returns `Ok(None)` — the caller should return this directly from `handle_message`.
+/// Returns `Ok(())` — the caller should return this directly from `handle_message`.
 pub async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -399,7 +399,7 @@ pub async fn handle_session_init<D>(
     ring_id: String,
     sender_peer_id: &PeerId,
     start_immediately: bool,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -683,5 +683,5 @@ where
         "DKG Coordinator: Session init"
     );
 
-    Ok(None)
+    Ok(())
 }

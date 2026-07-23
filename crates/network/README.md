@@ -1,123 +1,144 @@
 # Network crate
 
-Trait-based networking for Orbis with a **QUIC / [iroh](https://github.com/n0-computer/iroh)** implementation: persistent connections, many independent bidirectional streams per connection, ALPN-style protocol routing, and length-prefixed messages.
+Trait-based networking for Orbis with a QUIC implementation built on
+[`iroh`](https://github.com/n0-computer/iroh), authenticated pub-sub built on
+[`iroh-gossip`](https://github.com/n0-computer/iroh-gossip), ALPN protocol
+routing, bounded ingress, and length-prefixed direct messages.
 
-**Scope:** This crate defines [`Network`](src/trait.rs), [`PeerConnection`](src/trait.rs), [`Connection`](src/trait.rs), [`ProtocolHandler`](src/trait.rs), and router traits, plus the iroh types in [`src/iroh/`](src/iroh/). Types such as **`PeerConnectionPool`**, **`GenericProtocolHandler`**, and protocol **coordinators** (DKG / PRE / Sign) live in **`bin/orbis-node`**, not here—they call `Network::connect`, cache connections, and supply `ProtocolHandler` implementations.
+This crate defines [`Network`](src/trait.rs),
+[`PeerConnection`](src/trait.rs), [`Connection`](src/trait.rs),
+[`ProtocolHandler`](src/trait.rs), the router traits, and the concrete Iroh
+implementation in [`src/iroh/`](src/iroh/). Protocol coordinators and the
+bounded `PeerConnectionPool` live in `bin/orbis-node`.
 
-## Architecture (this crate + typical node layering)
+## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  APPLICATION (e.g. orbis-node — not defined in crates/network)     │
-│                                                                     │
-│   DkgCoordinator / PreCoordinator / SignCoordinator               │
-│         │                     │                     │               │
-│         └─────────────────────┼─────────────────────┘               │
-│                               │                                     │
-│              PeerConnectionPool (caches per peer+protocol)          │
-│              calls Network::connect() + open_stream()               │
-└───────────────────────────────┼─────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  crates/network                                                     │
-│                                                                     │
-│   Network::connect()  ──────────────►  IrohPeerConnection           │
-│   (IrohNetwork)                         (one QUIC connection)       │
-│                                                │                    │
-│                                                │  open_stream()     │
-│                                                ▼                    │
-│                                         IrohStreamWrapper           │
-│                                         one bidirectional stream    │
-│                                         send() / recv()             │
-└─────────────────────────────────────────────────────────────────────┘
-                                │
-                         iroh QUIC transport
-                                │
-         ┌──────────────────────┼──────────────────────┐
-         │  same IrohPeerConnection                   │
-         │  = same QUIC conn                          │
-         │  each open_stream() = new QUIC stream      │
-         │  (independent ordering vs other streams)   │
-         └────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  Router (server side) — [`src/iroh/router.rs`](src/iroh/router.rs)   │
-│                                                                     │
-│   IrohRouterBuilder::spawn() → IrohRouterWrapper                  │
-│   Per ALPN: accept_bi() → ingress limits → ProtocolHandler::handle │
-│                                                                     │
-│   Application registers handlers (e.g. orbis-node’s generic       │
-│   handler that deserializes and forwards to a coordinator).         │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  subgraph Node["orbis-node"]
+    DKG["DKG coordinator"]
+    PRE["PRE coordinator"]
+    SIGN["SIGN coordinator"]
+    Pool["Bounded peer connection pool"]
+  end
+
+  subgraph Crate["crates/network"]
+    Network["Network / IrohNetwork"]
+    Router["ALPN router and ingress limits"]
+    PubSub["Authenticated Iroh pub-sub"]
+  end
+
+  DKG -->|"control and private streams"| Pool
+  PRE -->|"request/response stream"| Pool
+  SIGN -->|"request/response stream"| Pool
+  Pool --> Network
+  DKG -->|"signed public contributions"| PubSub
+  Network --> Router
+  PubSub --> Router
 ```
 
-## Message framing
+One Iroh endpoint hosts the direct ALPN handlers and the native Gossip handler.
+`Network::connect` returns a QUIC peer connection; `open_stream` creates an
+independently ordered bidirectional stream on that connection. Pub-sub topics
+use attempt-derived IDs and endpoint-signed envelopes.
 
-[`IrohStreamWrapper`](src/iroh/base.rs) frames payloads as **`[4-byte big-endian length][payload]`** on send and expects the same on recv. `Message::data` is the payload only; length is not part of `Bytes` in the `Message` struct.
+## Protocol routes
 
-## Protocol identifiers
+The v0 DKG transport has two direct routes. Public traffic uses the native
+Iroh Gossip handler rather than a catch-all DKG ALPN.
 
-Re-exported from [`src/protocol.rs`](src/protocol.rs):
+| Plane or protocol | Route |
+| --- | --- |
+| DKG control and direct public repair | `orbis/dkg-control/0` |
+| DKG recipient-specific shares and ACKs | `orbis/dkg-private/0` |
+| DKG public dissemination | native `iroh-gossip` ALPN |
+| PRE | `orbis/reencrypt/0` |
+| SIGN | `orbis/sign/0` |
+| Reporting health | `orbis/reporting/health/0` |
 
-| Constant | Bytes |
-|----------|--------|
-| `DKG` | `b"orbis/dkg/0"` |
-| `REENCRYPT` | `b"orbis/reencrypt/0"` |
-| `SIGN` | `b"orbis/sign/0"` |
+Route descriptors are versioned in [`src/protocol.rs`](src/protocol.rs). The
+router deliberately installs only the typed DKG control and private handlers;
+there is no generic DKG route.
 
-These are ALPN / protocol names passed to `connect` and router registration.
+## Direct message framing
 
-## Traits and iroh implementations
+[`IrohStreamWrapper`](src/iroh/base.rs) frames direct messages as:
 
-| Trait | Iroh type | Notes |
-|-------|-----------|--------|
-| `Network` | [`IrohNetwork`](src/iroh/base.rs) | `connect`, `listen`, `create_router_builder`, `bound_addresses`, … |
-| `PeerConnection` | [`IrohPeerConnection`](src/iroh/base.rs) | `open_stream`, `close` |
-| `Connection` | [`IrohStreamWrapper`](src/iroh/base.rs) | `send` / `recv` with length prefix |
-| `ProtocolHandler` | *application* | e.g. orbis-node wraps coordinators; this crate only has [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) (internal) to bridge iroh’s handler API |
-| `RouterBuilder` | [`IrohRouterBuilder`](src/iroh/router.rs) | `accept`, `max_message_size`, ingress limits, `spawn` |
-| `Router` | [`IrohRouterWrapper`](src/iroh/router.rs) | `shutdown` |
+```text
+[4-byte big-endian payload length][payload bytes]
+```
 
-Public re-exports (with `feature = "iroh"`): **`NetworkImpl`** (`IrohNetwork`), **`IrohNetworkBuilder`**, **`IrohRouterBuilder`**, **`IrohRouterWrapper`**, **`SecretKey`**.
+`Message::data` contains only the payload. The length prefix is added and
+validated by the stream wrapper.
+
+## Authenticated pub-sub
+
+[`src/iroh/pubsub.rs`](src/iroh/pubsub.rs) integrates `iroh-gossip` into the
+same endpoint and router. It:
+
+- signs delivery envelopes with the Iroh endpoint identity;
+- returns the verified originating endpoint to the caller;
+- derives bounded topic IDs from domain-separated input;
+- exposes neighbor, lag, and subscription events to the DKG transport;
+- records Gossip bytes, messages, errors, and neighbor gauges.
+
+The application remains responsible for checking the authenticated endpoint
+against SourceHub `NodeInfo` and verifying the embedded origin signature on a
+relayed DKG contribution.
+
+## Traits and Iroh implementations
+
+| Trait or API | Iroh type | Purpose |
+| --- | --- | --- |
+| `Network` | `IrohNetwork` | Connect, listen, build router, inspect bound addresses |
+| `PeerConnection` | `IrohPeerConnection` | Open independent streams and close a peer connection |
+| `Connection` | `IrohStreamWrapper` | Send and receive framed direct messages |
+| `AuthenticatedPubSub` | Iroh pub-sub implementation | Join, broadcast, receive verified-origin events |
+| `RouterBuilder` | `IrohRouterBuilder` | Register ALPN handlers and ingress limits |
+| `Router` | `IrohRouterWrapper` | Own and shut down the endpoint router |
 
 ## Features
 
 | Feature | Default | Purpose |
-|---------|---------|---------|
-| `iroh` | yes | Full iroh implementation |
-| `gossip` | no | Pulls in optional [`iroh-gossip`](https://crates.io/crates/iroh-gossip) (`Cargo.toml`); no integration in this crate’s sources yet |
-| `fault-injection` | no | [`FaultNetwork`](src/fault.rs) / [`FaultNetworkController`](src/fault.rs) — block outbound peers to simulate partitions in tests |
+| --- | --- | --- |
+| `iroh` | yes | Iroh QUIC endpoint, direct connections, and router |
+| `gossip` | yes | Authenticated pub-sub and native Gossip router handler |
+| `fault-injection` | no | Deterministic direct/Gossip loss, reset, and neighbor-flap controls for tests |
 
-## Ingress Limits
+## Ingress and resource behavior
 
-[`RouterIngressLimits`](src/trait.rs) bounds inbound work before a protocol handler runs:
+[`RouterIngressLimits`](src/trait.rs) bounds inbound work before a direct
+protocol handler runs:
 
-- `max_concurrent_streams` caps concurrently executing handler tasks per registered protocol.
-- `max_streams_per_peer_per_second` caps accepted streams from one remote peer per protocol in a fixed one-second window.
-- `max_message_size` still applies inside [`IrohStreamWrapper`](src/iroh/base.rs) before payload allocation.
+- `max_concurrent_streams` caps concurrently executing streams per route;
+- `max_streams_per_peer_per_second` caps new streams from one remote peer;
+- `max_message_size` rejects an oversized frame before allocating its payload.
 
-The iroh router drops excess streams before DKG/PRE/Sign deserialization or crypto work. Dropped streams are counted under `p2p_errors_total` with `ingress_rate_limit` or `ingress_concurrency_limit`.
+The router drops excess streams before DKG, PRE, or SIGN deserialization and
+records the corresponding P2P error. The node connection pool is bounded and
+LRU-evicted. DKG pair streams are ceremony-scoped and close after the required
+share digests are acknowledged; PRE and SIGN also use bounded
+request/response streams.
 
-## Orchestration behavior (orbis-node, not this crate)
+## Key invariants
 
-The following are **not** enforced inside `crates/network`; they describe how the node binary typically uses these APIs:
+- Every direct stream is authenticated by the Iroh endpoint connection.
+- A new bidirectional stream has independent ordering from other streams on
+  the same connection.
+- Dropping `IrohStreamWrapper` finishes its send half so the peer observes a
+  stream FIN rather than an unconditional reset.
+- Native Gossip and direct ALPN handlers share one endpoint/router lifecycle.
+- The public DKG API cannot encode credentials or recipient-specific shares.
 
-- **Connection pooling** — One cached `PeerConnection` per `(peer_id, protocol)` in `PeerConnectionPool` (replaced on reconnect after errors).
-- **DKG session ordering** — DKG may use a **long-lived stream per `(session_id, peer)`** so session messages stay ordered; **fresh streams** may be used for fire-and-forget. Implementation is in the coordinator / pool, not in this crate.
-- **PRE / Sign** — Usually **one stream per request** (request/response), then drop.
+## Metrics and tests
 
-## Key invariants (this crate)
+[`src/metrics.rs`](src/metrics.rs) exposes direct and Gossip message counts,
+byte counts, errors, connection state, and Gossip neighbor gauges.
+[`src/fault.rs`](src/fault.rs) decorates the same production abstractions, so
+loss and churn tests do not require a production-only behavior branch.
 
-- **`PeerConnection::open_stream`** creates a **new** bidirectional QUIC stream; streams are independent (no head-of-line blocking between concurrent streams on the same connection).
-- **Incoming side:** [`IrohProtocolHandlerWrapper`](src/iroh/router.rs) runs `accept_bi()` in a loop, applies ingress limits, and spawns **`ProtocolHandler::handle`** per accepted stream.
-- **`IrohStreamWrapper` drop** finishes the send half so the peer sees **STREAM_FIN** rather than reset (see `Drop` impl in [`base.rs`](src/iroh/base.rs)).
+Run the crate tests with:
 
-## Metrics
-
-[`src/metrics.rs`](src/metrics.rs) records connection and message send/recv metrics (Prometheus).
-
-## Dependencies (high level)
-
-`iroh`, `tokio`, `bytes`, `async-trait`, `serde`, `prometheus`; `iroh-gossip` is an optional dependency when `gossip` is enabled.
+```console
+cargo test -p network
+```

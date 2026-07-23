@@ -44,6 +44,7 @@ pub enum Operation {
     Pre,
     Sign,
     PssRefresh,
+    PssReshare,
 }
 
 fn default_operations() -> BTreeSet<Operation> {
@@ -226,6 +227,10 @@ pub struct Experiment {
     pub pss_interval_secs: u64,
     #[serde(default = "default_pss_poll_interval")]
     pub pss_poll_interval_secs: u64,
+    /// Number of nodes shared by the current and next committees for a
+    /// `pss_reshare` trial. Reshare is opt-in and therefore has no default.
+    #[serde(default)]
+    pub reshare_overlap: Option<usize>,
 }
 
 fn default_profiles() -> Vec<NetworkProfile> {
@@ -267,6 +272,7 @@ impl Experiment {
             setup_batch_size: default_batch_size(),
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
+            reshare_overlap: None,
         }
     }
 
@@ -326,6 +332,9 @@ impl Experiment {
             bail!(
                 "pss_interval_secs must exceed the production scheduler grace window ({PSS_GRACE_PERIOD_SECS}s)"
             );
+        }
+        if self.operations.contains(&Operation::PssReshare) && self.reshare_overlap.is_none() {
+            bail!("pss_reshare experiments require reshare_overlap");
         }
         if self.rings_per_case() > MAX_LOCAL_RINGS_PER_NODE {
             bail!(
@@ -404,6 +413,25 @@ impl Experiment {
                         case.ring_size,
                         case.ring_size
                     );
+                }
+                if self.operations.contains(&Operation::PssReshare) {
+                    let overlap = self
+                        .reshare_overlap
+                        .expect("reshare_overlap was validated above");
+                    if overlap > case.ring_size {
+                        bail!(
+                            "reshare_overlap {overlap} cannot exceed ring size {}",
+                            case.ring_size
+                        );
+                    }
+                    let union_size = case.ring_size.saturating_mul(2).saturating_sub(overlap);
+                    if union_size > group.network_size {
+                        bail!(
+                            "reshare old/new union requires {union_size} nodes (ring size {}, overlap {overlap}) but network group {group_index} has {}",
+                            case.ring_size,
+                            group.network_size
+                        );
+                    }
                 }
             }
         }
@@ -513,7 +541,12 @@ impl Experiment {
         let needs_online_ring =
             self.operations.contains(&Operation::Pre) || self.operations.contains(&Operation::Sign);
         let needs_refresh_ring = self.operations.contains(&Operation::PssRefresh);
-        dkg_rings + usize::from(needs_online_ring) + usize::from(needs_refresh_ring)
+        let reshare_rings = if self.operations.contains(&Operation::PssReshare) {
+            self.warmups + self.repetitions
+        } else {
+            0
+        };
+        dkg_rings + usize::from(needs_online_ring) + usize::from(needs_refresh_ring) + reshare_rings
     }
 }
 
@@ -614,5 +647,22 @@ mod tests {
             .collect();
         assert_eq!(sizes, vec![3, 3, 5, 5]);
         assert!(plan.stacks.iter().all(|stack| stack.cases.len() == 1));
+    }
+
+    #[test]
+    fn reshare_requires_a_feasible_explicit_overlap() {
+        let mut experiment = Experiment::single(50, 34, 23);
+        experiment.operations = BTreeSet::from([Operation::PssReshare]);
+        assert!(experiment.validate().is_err());
+
+        experiment.reshare_overlap = Some(17);
+        assert!(experiment.validate().is_err(), "34 + 34 - 17 exceeds 50");
+
+        experiment.reshare_overlap = Some(18);
+        assert!(experiment.validate().is_ok());
+        assert_eq!(experiment.rings_per_case(), 6);
+
+        experiment.reshare_overlap = Some(35);
+        assert!(experiment.validate().is_err());
     }
 }

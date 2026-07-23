@@ -41,6 +41,31 @@ async fn three_node_shaped_wan_core_operations() {
     assert_core_smoke_passed(&run_dir);
 }
 
+#[tokio::test]
+#[ignore = "builds production Docker images and runs a 2-to-2 reshare over a 3-node union"]
+async fn three_node_lan_reshare() {
+    let mut experiment = smoke_experiment(NetworkProfile::lan(), 3, 2);
+    experiment.name = "docker-smoke-3-node-reshare".into();
+    experiment.operations = BTreeSet::from([Operation::PssReshare]);
+    experiment.reshare_overlap = Some(1);
+    let run_dir = BenchmarkRunner::new(experiment, RunOptions::default())
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+
+    let trials = read_trials(&run_dir).expect("read reshare smoke evidence");
+    assert_eq!(trials.len(), 1);
+    assert_eq!(trials[0].operation, Operation::PssReshare);
+    assert!(
+        trials[0].success,
+        "reshare smoke failed: {:?}; inspect {}",
+        trials[0].error,
+        run_dir.display()
+    );
+    assert_preparation_transport_evidence(&trials, 3);
+}
+
 fn assert_core_smoke_passed(run_dir: &std::path::Path) {
     let trials = read_trials(run_dir).expect("read smoke evidence");
     assert_eq!(
@@ -59,13 +84,13 @@ fn assert_core_smoke_passed(run_dir: &std::path::Path) {
     );
 }
 
-fn hybrid_event_delta(trial: &orbis_bench::results::TrialRecord, event: &str) -> f64 {
+fn transport_event_delta(trial: &orbis_bench::results::TrialRecord, event: &str) -> f64 {
     let event_label = format!("event=\"{event}\"");
     trial
         .metric_deltas
         .iter()
         .filter(|(key, _)| {
-            key.starts_with("dkg_hybrid_transport_events_total{") && key.contains(&event_label)
+            key.starts_with("dkg_transport_events_total{") && key.contains(&event_label)
         })
         .map(|(_, value)| value)
         .sum()
@@ -77,7 +102,7 @@ fn assert_preparation_transport_evidence<'a>(
 ) {
     for trial in trials {
         assert_eq!(
-            hybrid_event_delta(trial, "probe_ack"),
+            transport_event_delta(trial, "probe_ack"),
             expected_acknowledgements as f64,
             "each successful preparation must record every committee member exactly once"
         );
@@ -88,7 +113,7 @@ fn assert_preparation_transport_evidence<'a>(
             "rejoin_subscription_error",
         ]
         .into_iter()
-        .map(|event| hybrid_event_delta(trial, event))
+        .map(|event| transport_event_delta(trial, event))
         .sum::<f64>();
         assert!(
             rejoins <= expected_acknowledgements as f64,
@@ -101,7 +126,7 @@ fn assert_preparation_transport_evidence<'a>(
 #[ignore = "50-node LAN preparation gate; one warm-up plus ten measured 7-of-8 DKG trials"]
 async fn fifty_node_ring_eight_preparation_acceptance_lan() {
     let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 8);
-    experiment.name = "hybrid-50-node-ring-8-threshold-7-preparation".into();
+    experiment.name = "transport-50-node-ring-8-threshold-7-preparation".into();
     experiment.networks[0].cases[0].threshold = 7;
     experiment.warmups = 1;
     experiment.repetitions = 10;
@@ -127,10 +152,10 @@ async fn fifty_node_ring_eight_preparation_acceptance_lan() {
 }
 
 #[tokio::test]
-#[ignore = "50-node LAN/WAN hybrid acceptance; intentionally resource intensive"]
-async fn fifty_node_hybrid_acceptance_lan_and_wan() {
+#[ignore = "50-node LAN/WAN transport acceptance; intentionally resource intensive"]
+async fn fifty_node_transport_acceptance_lan_and_wan() {
     let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 50);
-    experiment.name = "hybrid-50-node-34-threshold-acceptance".into();
+    experiment.name = "transport-50-node-34-threshold-acceptance".into();
     experiment.profiles = vec![NetworkProfile::lan(), NetworkProfile::wan_50ms()];
     experiment.warmups = 1;
     experiment.repetitions = 5;
@@ -156,7 +181,46 @@ async fn fifty_node_hybrid_acceptance_lan_and_wan() {
     );
     assert!(
         measured.iter().all(|trial| trial.success),
-        "50-node hybrid acceptance produced failures; inspect {}",
+        "50-node transport acceptance produced failures; inspect {}",
+        run_dir.display()
+    );
+    assert_preparation_transport_evidence(measured, 50);
+}
+
+#[tokio::test]
+#[ignore = "50-node old/new-union reshare acceptance; intentionally resource intensive"]
+async fn fifty_node_reshare_acceptance_lan_and_wan() {
+    let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 34);
+    experiment.name = "reshare-50-node-34-member-threshold-23-overlap-18".into();
+    experiment.networks[0].cases[0].threshold = 23;
+    experiment.profiles = vec![NetworkProfile::lan(), NetworkProfile::wan_50ms()];
+    experiment.warmups = 1;
+    experiment.repetitions = 5;
+    experiment.operations = BTreeSet::from([Operation::PssReshare]);
+    experiment.reshare_overlap = Some(18);
+
+    let run_dir = BenchmarkRunner::new(experiment, RunOptions::default())
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+    assert!(run_dir.join("manifest.json").is_file());
+    assert!(run_dir.join("trials.jsonl").is_file());
+    assert!(run_dir.join("report.html").is_file());
+
+    let trials = read_trials(&run_dir).expect("read 50-node reshare acceptance evidence");
+    let measured = trials
+        .iter()
+        .filter(|trial| !trial.warmup)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        measured.len(),
+        10,
+        "five reshares are required for each of LAN and WAN"
+    );
+    assert!(
+        measured.iter().all(|trial| trial.success),
+        "50-node reshare acceptance produced failures; inspect {}",
         run_dir.display()
     );
     assert_preparation_transport_evidence(measured, 50);

@@ -92,14 +92,6 @@ pub const MAX_CACHED_PEER_CONNECTIONS: usize = 256;
 /// reshare receiver participation. Existing ring entries may still be updated.
 pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 
-/// Time-to-live for DKG sessions before they are eligible for cleanup
-///
-/// Sessions older than this duration are automatically cleaned up to prevent
-/// memory leaks from abandoned sessions. This is set to 30 minutes, which
-/// provides ample time for DKG protocols to complete while ensuring stale
-/// sessions don't accumulate indefinitely.
-pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
-
 /// Interval between session expiration checks
 ///
 /// The session expiration worker runs periodically to clean up abandoned
@@ -107,18 +99,8 @@ pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Set to 1 minute for reasonable responsiveness without excessive overhead.
 pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Timeout for a single DKG phase before the session is considered stalled
-///
-/// If a DKG session remains in the same phase for longer than this duration
-/// (including `Initializing`) it is removed by the expiration worker. This
-/// catches cases where the initiator crashes before Phase 1 starts, or where
-/// a peer never sends its commitment or share, without waiting the full
-/// SESSION_TTL. Set to 2 minutes, which gives ample headroom over
-/// PEER_RESPONSE_TIMEOUT (10s) even when all peers need to respond.
-pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Hard deadline for one hybrid DKG attempt. Unlike the legacy phase timeout,
-/// missing-message repair continues while this deadline has not elapsed.
+/// Hard deadline for one DKG attempt. Missing-message repair continues until
+/// this deadline, unless the attempt explicitly completes or aborts first.
 pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
@@ -147,13 +129,6 @@ pub const DKG_MAX_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
 /// Maximum simultaneous private pair exchanges per node.
 pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 
-/// Timeout for the durable Phase 4 completion step before cleanup considers the
-/// session abandoned.
-///
-/// Reshare completion can include threshold-signature retries and bulletin
-/// confirmation work, so this must exceed the normal phase timeout.
-pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
-
 /// Maximum time a completed DKG session may remain in memory.
 ///
 /// Normal Fresh/Refresh cleanup is immediate. Reshare cleanup may wait up to
@@ -161,23 +136,6 @@ pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
 /// so five minutes leaves margin for that task while bounding leaks if explicit
 /// cleanup never runs.
 pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
-
-/// How often to re-check session existence when an early message arrives before
-/// the session has been created (e.g. a peer's commitment races with our own
-/// SessionInit bulletin validation).  Kept small so the ceremony proceeds as
-/// soon as the session appears.
-pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Maximum grace period for a non-SessionInit message whose session has not
-/// appeared locally yet.
-///
-/// PSS refresh/reshare sessions are deterministic, so several old-committee
-/// nodes can legitimately begin the same session at almost the same time. In
-/// Docker CI the receiver may spend more than a few seconds validating or
-/// creating the corresponding SessionInit while commitments and shares are
-/// already queued behind it. Keep this shorter than a phase timeout, but long
-/// enough that valid early messages are not dropped before the session appears.
-pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants

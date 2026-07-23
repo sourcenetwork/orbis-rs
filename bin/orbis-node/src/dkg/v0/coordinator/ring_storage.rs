@@ -26,49 +26,69 @@ pub async fn cleanup_departing_dealer<D>(
 where
     D: CoordinatorDkg,
 {
-    if let Some(key) = &ring_key {
-        coord
-            .app_state
-            .local_storage
-            .delete(LocalStorageKeys::RingKey(key.clone()))
-            .map_err(|e| {
-                DkgError::Storage(format!(
-                    "Reshare Dealer: failed to delete share bundle for ring {}: {}",
-                    key, e
-                ))
-            })?;
-
-        tracing::info!(
-            session_id = session_id,
-            ring_key = %key,
-            "Reshare Dealer: deleted share bundle - node has left the ring"
-        );
-
-        let _guard = coord.app_state.ring_index_lock.lock().await;
-        remove_ring_index_entry(&coord.app_state.local_storage, key).inspect_err(|error| {
-            tracing::error!(
-                session_id = session_id,
-                ring_key = %key,
-                error = %error,
-                "Reshare Dealer: failed to remove ring index entry"
-            );
-        })?;
-
-        // All storage operations succeeded; release the PSS lock so future
-        // ceremonies are not blocked by a departed dealer.
-        coord.app_state.dkg_session_state.unmark_ring_pss(key).await;
-    }
-
+    let bulletin_post_id = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |state| {
+            state
+                .reshare
+                .params
+                .as_ref()
+                .map(|params| params.bulletin_post_id.clone())
+                .or_else(|| match &state.kind {
+                    crate::dkg::v0::messages::SessionKind::Reshare {
+                        bulletin_post_id, ..
+                    } => Some(bulletin_post_id.clone()),
+                    _ => None,
+                })
+        })
+        .await;
     coord
         .app_state
         .dkg_session_state
-        .complete_session(&session_id)
+        .update_phase(
+            &session_id,
+            crate::dkg::v0::session_state::DkgPhase::Phase4Complete,
+        )
         .await;
+    super::reshare::cleanup::spawn_bulletin_finalized_cleanup(
+        coord.app_state.clone(),
+        ring_key,
+        session_id,
+        bulletin_post_id.flatten(),
+        true,
+    );
     tracing::info!(
         session_id = session_id,
-        "Reshare Dealer: Phase 4 complete (share distribution done, secret deleted)"
+        "Reshare Dealer: share distribution complete; retaining old material until SourceHub finalization"
     );
 
+    Ok(())
+}
+
+pub(crate) async fn delete_departed_ring_material<D>(
+    app_state: &Arc<AppState<D>>,
+    session_id: u128,
+    ring_key: &str,
+) -> Result<()>
+where
+    D: Dkg + Clone + 'static,
+{
+    app_state
+        .local_storage
+        .delete(LocalStorageKeys::RingKey(ring_key.to_string()))
+        .map_err(|error| {
+            DkgError::Storage(format!(
+                "Reshare Dealer: failed to delete finalized departed share bundle for ring {ring_key}: {error}"
+            ))
+        })?;
+    let _guard = app_state.ring_index_lock.lock().await;
+    remove_ring_index_entry(&app_state.local_storage, ring_key)?;
+    tracing::info!(
+        session_id,
+        ring_key,
+        "Reshare Dealer: removed stale material after finalized committee exclusion"
+    );
     Ok(())
 }
 

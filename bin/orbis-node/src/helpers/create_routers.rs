@@ -2,8 +2,7 @@ use crate::app_state::AppState;
 use crate::constants::{
     NETWORK_MAX_CONCURRENT_INBOUND_STREAMS, NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND,
 };
-use crate::dkg::v0::coordinator::DkgCoordinator;
-use crate::dkg::v0::hybrid::{HybridControlHandler, HybridPrivateHandler};
+use crate::dkg::v0::network::{DkgControlHandler, DkgPrivateHandler};
 use crate::helpers::protocol_handler::GenericProtocolHandler;
 use crate::pre::v0::coordinator::PreCoordinator;
 use crate::reporting::v0::health::HealthProtocolHandler;
@@ -54,16 +53,12 @@ where
     for version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let routes = network::routes_for_version(*version)
             .expect("supported protocol version must have registered routes");
-        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-            DkgCoordinator::with_routes(app_state.clone(), routes),
-        )));
-        let dkg_control_handler = Arc::new(HybridControlHandler::new(app_state.clone(), routes));
-        let dkg_private_handler = Arc::new(HybridPrivateHandler::new(app_state.clone(), routes));
+        let dkg_control_handler = Arc::new(DkgControlHandler::new(app_state.clone(), routes));
+        let dkg_private_handler = Arc::new(DkgPrivateHandler::new(app_state.clone(), routes));
         let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             PreCoordinator::<D, T>::with_routes(app_state.clone(), routes),
         )));
         let health_handler = Arc::new(HealthProtocolHandler);
-        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
         router_builder =
             router_builder.accept(routes.dkg_control_alpn.to_vec(), dkg_control_handler);
         router_builder =
@@ -118,11 +113,8 @@ where
     for version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let routes = network::routes_for_version(*version)
             .expect("supported protocol version must have registered routes");
-        let dkg_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-            DkgCoordinator::with_routes(app_state.clone(), routes),
-        )));
-        let dkg_control_handler = Arc::new(HybridControlHandler::new(app_state.clone(), routes));
-        let dkg_private_handler = Arc::new(HybridPrivateHandler::new(app_state.clone(), routes));
+        let dkg_control_handler = Arc::new(DkgControlHandler::new(app_state.clone(), routes));
+        let dkg_private_handler = Arc::new(DkgPrivateHandler::new(app_state.clone(), routes));
         let pre_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             PreCoordinator::<D, T>::with_routes(app_state.clone(), routes),
         )));
@@ -130,7 +122,6 @@ where
             SignCoordinator::<D, S>::with_routes(app_state.clone(), routes),
         )));
         let health_handler = Arc::new(HealthProtocolHandler);
-        router_builder = router_builder.accept(routes.dkg_alpn.to_vec(), dkg_handler);
         router_builder =
             router_builder.accept(routes.dkg_control_alpn.to_vec(), dkg_control_handler);
         router_builder =

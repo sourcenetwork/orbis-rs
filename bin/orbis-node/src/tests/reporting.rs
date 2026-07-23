@@ -10,7 +10,7 @@
 //! FROST variant (builds the node containers with decaf377 automatically):
 //!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,decaf377" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
 
-use crate::constants::DKG_PHASE4_COMPLETION_TIMEOUT;
+use crate::constants::DKG_ATTEMPT_TIMEOUT;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
 use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
 use crate::helpers::test_helpers::wait_for_ring_finalized;
@@ -587,8 +587,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -910,8 +909,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -1209,8 +1207,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -1619,8 +1616,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2191,8 +2187,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2208,12 +2203,8 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     println!("Stopping node3 to simulate offline node during PSS refresh...");
     network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
 
-    // The scheduler tick will attempt refresh within ≤5s. However if node3 dies mid-session
-    // (while node1 is waiting to receive node3's commitment, not sending), the stuck session
-    // must expire first: DKG_PHASE_TIMEOUT (120s) + SESSION_EXPIRATION_CHECK_INTERVAL (60s) =
-    // up to 180s before the PSS claim is cleared and a fresh session (which fails the connect
-    // immediately) can start. Add margin for report signing: 300s total.
-    println!("Waiting for PSS refresh EventReportAccepted on chain (up to 300s)...");
+    // The scheduler retries after the active attempt reaches its explicit deadline.
+    println!("Waiting for PSS refresh EventReportAccepted on chain...");
     let event = sub
         .wait_for_report_accepted(RING_ID, Duration::from_secs(300))
         .await
@@ -2368,8 +2359,7 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2551,8 +2541,7 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2768,8 +2757,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -3011,8 +2999,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -3289,8 +3276,7 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -3583,8 +3569,7 @@ async fn test_report_kick_promotes_backup_node() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, RING_ID, DKG_PHASE4_COMPLETION_TIMEOUT).await;
+    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]

@@ -237,7 +237,12 @@ pub async fn create_ring_governance(
         messages.push(register_object_message(
             &creator, &policy_id, "ring", &ring.id,
         ));
-        for node_key in &ring.peer_node_keys {
+        let operator_node_keys = if ring.operator_node_keys.is_empty() {
+            &ring.peer_node_keys
+        } else {
+            &ring.operator_node_keys
+        };
+        for node_key in operator_node_keys {
             let relationship = Relationship {
                 object: Some(Object {
                     resource: "ring".to_string(),

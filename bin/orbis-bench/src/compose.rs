@@ -22,6 +22,10 @@ const BENCHMARK_CHAIN_GAS_MULTIPLIER: f64 = 3.0;
 pub struct RingDefinition {
     pub id: String,
     pub peer_node_keys: Vec<String>,
+    /// Nodes allowed to operate this ring. This is normally the current
+    /// committee and is the old/new union for a planned reshare.
+    #[serde(default)]
+    pub operator_node_keys: Vec<String>,
     pub threshold: usize,
     pub pss_interval_secs: u64,
     pub policy_id: String,
@@ -362,6 +366,7 @@ mod tests {
         let ring = RingDefinition {
             id: "golden-ring".into(),
             peer_node_keys: vec!["node-a".into(), "node-b".into(), "node-c".into()],
+            operator_node_keys: Vec::new(),
             threshold: 2,
             pss_interval_secs: 5,
             policy_id: "policy".into(),

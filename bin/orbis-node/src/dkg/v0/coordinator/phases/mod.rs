@@ -3,9 +3,8 @@ use crate::dkg::v0::helpers::{
     build_refresh_ring_bundle, fresh_commitment_hash, persist_ring_bundle,
     public_key_matches_storage_key, serialize_commitment_coefficients, session_not_found,
 };
-use crate::dkg::v0::messages::{DkgMessage, SessionKind};
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
-use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
 use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};

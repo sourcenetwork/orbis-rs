@@ -1,9 +1,9 @@
-//! Hybrid transport for fresh DKG and PSS refresh ceremonies.
+//! The sole network transport for DKG-backed ceremonies.
 //!
 //! Control messages and private shares use authenticated direct QUIC streams.
 //! Public contributions are individually endpoint-signed, collected by the
 //! canonical leader, and relayed in canonical batches over a transient Gossip
-//! topic. Reshare deliberately remains on the legacy DKG ALPN.
+//! topic. Fresh DKG, refresh, and reshare all use this transport.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -28,16 +28,18 @@ use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
-    derive_fresh_dkg_session_id, derive_refresh_session_id, ring_payload_matches_ring_key,
-    validate_fresh_dkg_ring_payload,
+    derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
+    ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
 };
-use crate::dkg::v0::messages::{DkgMessage, SessionKind};
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::{
-    HybridActivationOutcome, PublicContributionRecordOutcome, TopologyAckRecordOutcome,
+    MessageProcessingClaim, PublicContributionRecordOutcome, TopologyAckRecordOutcome,
+    TransportActivationOutcome, TransportBeginOutcome,
 };
 use crate::dkg::v0::transport::{
-    self, AttemptId, CeremonyId, DkgControlMessage, DkgPrivateMessage, DkgPublicContribution,
-    DkgPublicMessage, DkgPublicPayload, MessageId, PhaseManifest, PrepareSession, PublicPhase,
+    self, AttemptId, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
+    DkgControlMessage, DkgPrivateMessage, DkgPublicContribution, DkgPublicMessage,
+    DkgPublicPayload, MessageId, ParticipantRef, PhaseManifest, PrepareSession, PublicPhase,
     PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::auth::current_unix_time;
@@ -117,6 +119,53 @@ fn missing_topology_peer_prefixes(missing: &[String]) -> String {
         .join(",")
 }
 
+async fn expected_public_origins<D>(
+    state: &Arc<AppState<D>>,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+) -> BTreeSet<ParticipantRef>
+where
+    D: CoordinatorDkg,
+{
+    if phase == PublicPhase::RefreshHealthCheck {
+        return prepare
+            .current_participant(&prepare.leader_node_key)
+            .into_iter()
+            .collect();
+    }
+    if phase == PublicPhase::ReshareParticipantSet {
+        return BTreeSet::from([ParticipantRef::next(1)]);
+    }
+    if matches!(prepare.kind, SessionKind::Reshare { .. }) && phase == PublicPhase::CommitmentAudit
+    {
+        return prepare
+            .committees
+            .next
+            .as_ref()
+            .into_iter()
+            .flat_map(|next| next.node_id_assignments.values().copied())
+            .map(ParticipantRef::next)
+            .collect();
+    }
+    if matches!(prepare.kind, SessionKind::Reshare { .. }) && phase == PublicPhase::Commitments {
+        return state
+            .dkg_session_state
+            .transport_active_dealers(&prepare.ceremony_id.0)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+    }
+    prepare
+        .committees
+        .current
+        .node_id_assignments
+        .values()
+        .copied()
+        .map(ParticipantRef::current)
+        .collect()
+}
+
 fn control_request_scope(
     request: &DkgControlMessage,
 ) -> (&'static str, Option<CeremonyId>, Option<AttemptId>) {
@@ -132,19 +181,16 @@ fn control_request_scope(
             attempt_id,
             ..
         } => ("topology-probe-ack", Some(*ceremony_id), Some(*attempt_id)),
-        DkgControlMessage::TopologyProbeStatus {
-            ceremony_id,
-            attempt_id,
-            ..
-        } => (
-            "topology-probe-status",
-            Some(*ceremony_id),
-            Some(*attempt_id),
-        ),
         DkgControlMessage::Activate {
             ceremony_id,
             attempt_id,
+            ..
         } => ("activate", Some(*ceremony_id), Some(*attempt_id)),
+        DkgControlMessage::Begin {
+            ceremony_id,
+            attempt_id,
+            ..
+        } => ("begin", Some(*ceremony_id), Some(*attempt_id)),
         DkgControlMessage::Abort {
             ceremony_id,
             attempt_id,
@@ -191,10 +237,15 @@ fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPhase] {
         PublicPhase::CommitmentAudit,
         PublicPhase::RefreshHealthCheck,
     ];
+    const RESHARE: &[PublicPhase] = &[
+        PublicPhase::Commitments,
+        PublicPhase::CommitmentAudit,
+        PublicPhase::ReshareParticipantSet,
+    ];
     match kind {
         SessionKind::Fresh => FRESH,
         SessionKind::Refresh { .. } => REFRESH,
-        SessionKind::Reshare { .. } => &[],
+        SessionKind::Reshare { .. } => RESHARE,
     }
 }
 
@@ -249,6 +300,7 @@ async fn control_request_with_timeout<D>(
 where
     D: CoordinatorDkg,
 {
+    crate::metrics::record_dkg_transport_message("control", request.metric_label(), "sent");
     let timeout_error = control_timeout_message(peer, &request, response_timeout);
     let mut attempt_connection = None;
     let exchange = timeout(response_timeout, async {
@@ -323,7 +375,7 @@ async fn invalidate_failed_control_connection<D>(
         .invalidate_if_same(peer, routes.dkg_control_alpn, connection)
         .await
     {
-        crate::metrics::record_dkg_hybrid_event("control", "connection_invalidated");
+        crate::metrics::record_dkg_transport_event("control", "connection_invalidated");
         tracing::warn!(
             peer = %extract_node_part(peer),
             %error,
@@ -373,7 +425,7 @@ where
         {
             Ok(response) => return Ok(response),
             Err(error) if retryable_control_error(&error) => {
-                crate::metrics::record_dkg_hybrid_event("control", "preparation_retry");
+                crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
                     %error,
                     operation,
@@ -393,7 +445,7 @@ where
 }
 
 /// Inbound request/response handler for the direct control plane.
-pub struct HybridControlHandler<D>
+pub struct DkgControlHandler<D>
 where
     D: CoordinatorDkg,
 {
@@ -401,7 +453,7 @@ where
     routes: &'static network::ProtocolRoutes,
 }
 
-impl<D> HybridControlHandler<D>
+impl<D> DkgControlHandler<D>
 where
     D: CoordinatorDkg,
 {
@@ -411,7 +463,7 @@ where
 }
 
 #[async_trait]
-impl<D> ProtocolHandler for HybridControlHandler<D>
+impl<D> ProtocolHandler for DkgControlHandler<D>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -423,9 +475,16 @@ where
             &request.data,
             MAX_CONTROL_MESSAGE_BYTES,
         ) {
-            Ok(request) => handle_control(self.state.clone(), self.routes, request, &peer)
-                .await
-                .unwrap_or_else(wire_error),
+            Ok(request) => {
+                crate::metrics::record_dkg_transport_message(
+                    "control",
+                    request.metric_label(),
+                    "received",
+                );
+                handle_control(self.state.clone(), self.routes, request, &peer)
+                    .await
+                    .unwrap_or_else(wire_error)
+            }
             Err(error) => wire_error(error),
         };
         let bytes =
@@ -461,22 +520,6 @@ where
         DkgControlMessage::Prepare(prepare) => {
             prepare_participant(state, routes, *prepare, sender).await
         }
-        DkgControlMessage::TopologyProbeStatus {
-            ceremony_id,
-            attempt_id,
-            nonce,
-        } => {
-            let seen = state
-                .dkg_session_state
-                .topology_probe_seen(&ceremony_id.0, attempt_id, nonce)
-                .await;
-            Ok(DkgControlMessage::TopologyProbeStatusResponse {
-                ceremony_id,
-                attempt_id,
-                nonce,
-                seen,
-            })
-        }
         DkgControlMessage::TopologyProbeAck {
             ceremony_id,
             attempt_id,
@@ -490,7 +533,7 @@ where
                 .await
             {
                 TopologyAckRecordOutcome::Recorded => {
-                    crate::metrics::record_dkg_hybrid_event("control", "probe_ack");
+                    crate::metrics::record_dkg_transport_event("control", "probe_ack");
                 }
                 TopologyAckRecordOutcome::Duplicate => {}
                 TopologyAckRecordOutcome::StaleAttempt => {
@@ -516,55 +559,81 @@ where
         DkgControlMessage::Activate {
             ceremony_id,
             attempt_id,
+            activation_digest,
+            active_dealers,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
+            let (_, configured_attempt, config_digest) = state
+                .dkg_session_state
+                .transport_configuration(&ceremony_id.0)
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            if configured_attempt != attempt_id
+                || transport::activation_digest(config_digest, &active_dealers)
+                    .map_err(DkgError::ProtocolError)?
+                    != activation_digest
+            {
+                return Err(DkgError::Unauthorized(
+                    "activation digest or dealer set does not match prepared attempt".into(),
+                ));
+            }
             let activation = state
                 .dkg_session_state
-                .activate_hybrid_transport(&ceremony_id.0, attempt_id)
+                .activate_transport(
+                    &ceremony_id.0,
+                    attempt_id,
+                    activation_digest,
+                    active_dealers,
+                )
                 .await;
             match activation {
-                HybridActivationOutcome::AlreadyActivated => {
+                TransportActivationOutcome::AlreadyActivated => {
                     return Ok(DkgControlMessage::Activated {
                         ceremony_id,
                         attempt_id,
+                        activation_digest,
                     });
                 }
-                HybridActivationOutcome::Activated => {}
-                HybridActivationOutcome::StaleAttempt | HybridActivationOutcome::MissingSession => {
+                TransportActivationOutcome::Activated => {}
+                TransportActivationOutcome::StaleAttempt
+                | TransportActivationOutcome::MissingSession => {
                     return Err(DkgError::ProtocolError("activate for stale attempt".into()));
-                }
-            }
-            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
-            let peer_ids = state
-                .dkg_session_state
-                .get_peer_ids(&ceremony_id.0)
-                .await
-                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
-            let kind = state
-                .dkg_session_state
-                .with_state(&ceremony_id.0, |session| session.kind.clone())
-                .await
-                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
-            match kind {
-                SessionKind::Fresh => {
-                    coordinator
-                        .initiate_phase0_commitment_hashes(ceremony_id.0, &peer_ids)
-                        .await?;
-                }
-                SessionKind::Refresh { .. } => {
-                    coordinator
-                        .initiate_phase1_commitments(ceremony_id.0, &peer_ids)
-                        .await?;
-                }
-                SessionKind::Reshare { .. } => {
-                    return Err(DkgError::ProtocolError(
-                        "reshare is not supported by hybrid transport".into(),
-                    ));
                 }
             }
             Ok(DkgControlMessage::Activated {
                 ceremony_id,
                 attempt_id,
+                activation_digest,
+            })
+        }
+        DkgControlMessage::Begin {
+            ceremony_id,
+            attempt_id,
+            activation_digest,
+        } => {
+            validate_leader_sender(&state, ceremony_id.0, sender).await?;
+            match state
+                .dkg_session_state
+                .begin_transport(&ceremony_id.0, attempt_id, activation_digest)
+                .await
+            {
+                TransportBeginOutcome::Begun => {
+                    spawn_cryptographic_attempt(state, routes, ceremony_id.0);
+                }
+                TransportBeginOutcome::AlreadyBegun => {}
+                TransportBeginOutcome::NotActivated => {
+                    return Err(DkgError::InvalidState(
+                        "begin received before transport activation".into(),
+                    ));
+                }
+                TransportBeginOutcome::StaleAttempt | TransportBeginOutcome::MissingSession => {
+                    return Err(DkgError::ProtocolError("begin for stale attempt".into()));
+                }
+            }
+            Ok(DkgControlMessage::Begun {
+                ceremony_id,
+                attempt_id,
+                activation_digest,
             })
         }
         DkgControlMessage::PublicContribution(signed) => {
@@ -576,13 +645,12 @@ where
             let contribution = verify_signed_contribution(&state, &signed).await?;
             tracing::info!(
                 session_id = contribution.ceremony_id.0,
-                origin_node_id = contribution.origin_node_id,
+                origin = ?contribution.origin,
                 phase = ?contribution.payload.phase(),
                 "leader received signed public DKG contribution"
             );
             validate_leader_local(&state, contribution.ceremony_id.0).await?;
-            let recorded =
-                record_public_contribution(&state, signed.clone(), &contribution).await?;
+            record_public_contribution(&state, signed.clone(), &contribution).await?;
             publish_phase_if_complete(
                 state.clone(),
                 routes,
@@ -591,34 +659,34 @@ where
                 contribution.payload.phase(),
             )
             .await?;
-            if recorded {
-                // The direct ACK confirms authenticated retention by the leader,
-                // not completion of the leader's local protocol transition. The
-                // last contribution in a phase can enter Phase 2 and wait for
-                // every private pair exchange; withholding the ACK until then
-                // deadlocks the contributing follower before it can consume the
-                // public batch and generate its reciprocal share.
-                let dispatch_state = state.clone();
-                let dispatch_contribution = contribution.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = dispatch_public_contribution(
-                        dispatch_state,
-                        routes,
-                        signed,
-                        dispatch_contribution.clone(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            %error,
-                            session_id = dispatch_contribution.ceremony_id.0,
-                            origin_node_id = dispatch_contribution.origin_node_id,
-                            phase = ?dispatch_contribution.payload.phase(),
-                            "leader failed to apply retained public DKG contribution"
-                        );
-                    }
-                });
-            }
+            // The direct ACK confirms authenticated retention by the leader,
+            // not completion of the leader's local protocol transition. The
+            // last contribution in a phase can enter Phase 2 and wait for
+            // every private pair exchange; withholding the ACK until then
+            // deadlocks the contributing follower before it can consume the
+            // public batch and generate its reciprocal share. Dispatch is
+            // attempt-scoped and idempotent, so a retry may safely schedule it
+            // again after an earlier application failure.
+            let dispatch_state = state.clone();
+            let dispatch_contribution = contribution.clone();
+            tokio::spawn(async move {
+                if let Err(error) = dispatch_public_contribution(
+                    dispatch_state,
+                    routes,
+                    signed,
+                    dispatch_contribution.clone(),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        %error,
+                        session_id = dispatch_contribution.ceremony_id.0,
+                        origin = ?dispatch_contribution.origin,
+                        phase = ?dispatch_contribution.payload.phase(),
+                        "leader failed to apply retained public DKG contribution"
+                    );
+                }
+            });
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: contribution.ceremony_id,
                 attempt_id: contribution.attempt_id,
@@ -639,7 +707,7 @@ where
                 ));
             }
             record_public_contribution(&state, signed, &contribution).await?;
-            crate::metrics::record_dkg_hybrid_event("public", "result_staged");
+            crate::metrics::record_dkg_transport_event("public", "result_staged");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: contribution.ceremony_id,
                 attempt_id: contribution.attempt_id,
@@ -673,7 +741,12 @@ where
             }
 
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
-            if state.dkg_session_state.hybrid_attempt(&ceremony_id.0).await != Some(attempt_id) {
+            if state
+                .dkg_session_state
+                .transport_attempt(&ceremony_id.0)
+                .await
+                != Some(attempt_id)
+            {
                 return Err(DkgError::ProtocolError(
                     "refresh-result commit targets a stale attempt".into(),
                 ));
@@ -696,7 +769,11 @@ where
                     "refresh-result commit arrived before the exact result was staged".into(),
                 )
             })?;
-            apply_public_contribution(state.clone(), routes, signed, contribution).await?;
+            // StageRefreshResult already retained this exact signed message.
+            // Commit is the authorization to apply it, so bypass the generic
+            // record-and-deduplicate helper: treating the retained record as a
+            // completed application would leave followers staged forever.
+            dispatch_public_contribution(state.clone(), routes, signed, contribution).await?;
 
             let now = Instant::now();
             let mut receipts = state.dkg_public_commit_receipts.lock().await;
@@ -710,26 +787,263 @@ where
                 }
             }
             receipts.insert(receipt_key, (sender.as_bytes().to_vec(), now));
-            crate::metrics::record_dkg_hybrid_event("public", "result_committed");
+            crate::metrics::record_dkg_transport_event("public", "result_committed");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id,
                 attempt_id,
                 message_id,
             })
         }
-        DkgControlMessage::GetPublicContribution {
+        DkgControlMessage::ReshareShareAck {
             ceremony_id,
             attempt_id,
-            phase,
-            origin_node_id,
+            idempotency_key,
+            receiver,
+            dealer,
         } => {
-            validate_committee_sender(&state, ceremony_id.0, sender).await?;
-            let local_node_id = state
+            if receiver.scope != CommitteeScope::Next
+                || dealer.scope != CommitteeScope::Current
+                || receiver.node_id == 0
+                || dealer.node_id == 0
+            {
+                return Err(DkgError::Unauthorized(
+                    "reshare acknowledgement has invalid scoped participants".into(),
+                ));
+            }
+            let expected_sender = state
+                .dkg_session_state
+                .peer_id_for_participant(&ceremony_id.0, receiver)
+                .await
+                .ok_or_else(|| DkgError::Unauthorized("receiver route is missing".into()))?;
+            if !peer_matches_route(sender, &expected_sender) {
+                return Err(DkgError::Unauthorized(
+                    "reshare acknowledgement sender is not its named receiver".into(),
+                ));
+            }
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "reshare-share-ack",
+                receiver,
+                ParticipantRef::next(1),
+                &dealer,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "reshare acknowledgement key or attempt is invalid".into(),
+                ));
+            }
+            loop {
+                match state
+                    .dkg_session_state
+                    .claim_transport_message(&ceremony_id.0, idempotency_key)
+                    .await
+                {
+                    crate::dkg::v0::session_state::MessageProcessingClaim::Claimed => break,
+                    crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessed => {
+                        return Ok(DkgControlMessage::ReshareShareAcked {
+                            ceremony_id,
+                            attempt_id,
+                            idempotency_key,
+                        });
+                    }
+                    crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessing => {
+                        sleep(Duration::from_millis(10)).await;
+                    }
+                    crate::dkg::v0::session_state::MessageProcessingClaim::MissingSession => {
+                        return Err(DkgError::SessionNotFound(ceremony_id.0.to_string()));
+                    }
+                }
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = crate::dkg::v0::coordinator::message_handlers::handle_reshare_share_ack(
+                &coordinator,
+                ceremony_id.0,
+                receiver.node_id,
+                dealer.node_id,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(&ceremony_id.0, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::ReshareShareAcked {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayInvalidShareEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            evidence,
+        } => {
+            let origin = ParticipantRef::next(evidence.statement.to_node_id);
+            let expected_sender = state
+                .dkg_session_state
+                .peer_id_for_participant(&ceremony_id.0, origin)
+                .await
+                .ok_or_else(|| DkgError::Unauthorized("evidence sender route is missing".into()))?;
+            if !peer_matches_route(sender, &expected_sender) {
+                return Err(DkgError::Unauthorized(
+                    "invalid-share evidence sender is not its named receiver".into(),
+                ));
+            }
+            let local_id = state
                 .dkg_session_state
                 .with_state(&ceremony_id.0, |session| session.node.node_id())
                 .await
                 .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
-            if local_node_id != origin_node_id {
+            let recipient = ParticipantRef::current(local_id);
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "invalid-share-evidence",
+                origin,
+                recipient,
+                &evidence,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, ceremony_id.0, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result =
+                crate::dkg::v0::coordinator::evidence::handle_invalid_share_evidence_relay(
+                    &coordinator,
+                    ceremony_id.0,
+                    evidence,
+                )
+                .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(&ceremony_id.0, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayInvalidCommitmentEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            commitment_a,
+            commitment_b,
+        } => {
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "equivocation evidence sender is not in next committee".into(),
+                )
+            })?;
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "invalid-commitment-evidence",
+                origin,
+                recipient,
+                &(commitment_a.clone(), commitment_b.clone()),
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, ceremony_id.0, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result =
+                crate::dkg::v0::coordinator::evidence::handle_invalid_commitment_evidence_relay(
+                    &coordinator,
+                    ceremony_id.0,
+                    commitment_a,
+                    commitment_b,
+                )
+                .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(&ceremony_id.0, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::GetPublicContribution {
+            ceremony_id,
+            attempt_id,
+            phase,
+            origin,
+        } => {
+            validate_committee_sender(&state, ceremony_id.0, sender).await?;
+            state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |_| ())
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let committees = state
+                .dkg_session_state
+                .transport_committees(&ceremony_id.0)
+                .await
+                .ok_or_else(|| {
+                    DkgError::InvalidState("ceremony committee configuration is missing".into())
+                })?;
+            if committees.node_key(origin) != Some(state.node_key.as_str()) {
                 return Err(DkgError::Unauthorized(
                     "public origin repair must be requested from that origin".into(),
                 ));
@@ -738,7 +1052,7 @@ where
                 .dkg_session_state
                 .public_contributions(&ceremony_id.0, attempt_id, phase)
                 .await
-                .and_then(|items| items.get(&origin_node_id).cloned());
+                .and_then(|items| items.get(&origin).cloned());
             Ok(DkgControlMessage::PublicContributionResponse {
                 ceremony_id,
                 attempt_id,
@@ -772,8 +1086,13 @@ where
             reason,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
-            if state.dkg_session_state.hybrid_attempt(&ceremony_id.0).await == Some(attempt_id) {
-                tracing::warn!(session_id = ceremony_id.0, %reason, "hybrid DKG attempt aborted");
+            if state
+                .dkg_session_state
+                .transport_attempt(&ceremony_id.0)
+                .await
+                == Some(attempt_id)
+            {
+                tracing::warn!(session_id = ceremony_id.0, %reason, "transport DKG attempt aborted");
                 state.dkg_session_state.remove_session(&ceremony_id.0).await;
             }
             Ok(DkgControlMessage::Abort {
@@ -788,6 +1107,102 @@ where
     }
 }
 
+/// Begin cryptographic work only after the leader has observed an activation
+/// acknowledgement from every active participant. Keeping this separate from
+/// `Activate` prevents fast incremental reshare traffic from reaching a peer
+/// whose matching attempt is prepared but not active yet.
+async fn begin_cryptographic_attempt<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    session_id: u128,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let peer_ids = state
+        .dkg_session_state
+        .get_peer_ids(&session_id)
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let kind = state
+        .dkg_session_state
+        .with_state(&session_id, |session| session.kind.clone())
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    match kind {
+        SessionKind::Fresh => {
+            coordinator
+                .initiate_phase0_commitment_hashes(session_id, &peer_ids)
+                .await?;
+        }
+        SessionKind::Refresh { .. } => {
+            coordinator
+                .initiate_phase1_commitments(session_id, &peer_ids)
+                .await?;
+        }
+        SessionKind::Reshare { .. } => {
+            coordinator
+                .initiate_phase1_commitments(session_id, &peer_ids)
+                .await?;
+            spawn_reshare_receiver_pair_openers(state, routes, session_id);
+        }
+    }
+    Ok(())
+}
+
+fn spawn_cryptographic_attempt<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    session_id: u128,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    tokio::spawn(async move {
+        if let Err(error) = begin_cryptographic_attempt(state.clone(), routes, session_id).await {
+            tracing::error!(
+                session_id,
+                %error,
+                "activated DKG attempt failed while beginning cryptographic work"
+            );
+            state.dkg_session_state.remove_session(&session_id).await;
+        }
+    });
+}
+
+/// Claim an attempt-scoped control idempotency key. A completed duplicate is
+/// acknowledged without re-running its side effects; a concurrent duplicate
+/// waits for the first handler to publish its outcome.
+async fn claim_control_message<D>(
+    state: &Arc<AppState<D>>,
+    session_id: u128,
+    message_id: MessageId,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+{
+    loop {
+        match state
+            .dkg_session_state
+            .claim_transport_message(&session_id, message_id)
+            .await
+        {
+            crate::dkg::v0::session_state::MessageProcessingClaim::Claimed => return Ok(true),
+            crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessed => {
+                return Ok(false);
+            }
+            crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessing => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            crate::dkg::v0::session_state::MessageProcessingClaim::MissingSession => {
+                return Err(DkgError::SessionNotFound(session_id.to_string()));
+            }
+        }
+    }
+}
+
 async fn validate_leader_sender<D>(
     state: &Arc<AppState<D>>,
     session_id: u128,
@@ -796,28 +1211,17 @@ async fn validate_leader_sender<D>(
 where
     D: CoordinatorDkg,
 {
-    let leader = state
+    state
         .dkg_session_state
-        .hybrid_transport_info(&session_id)
+        .transport_info(&session_id)
         .await
-        .map(|(_, _, _, leader, _)| leader)
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
-    let keys = state
+    let route = state
         .dkg_session_state
-        .get_peer_node_keys(&session_id)
+        .transport_leader_route(&session_id)
         .await
-        .unwrap_or_default();
-    let peers = state
-        .dkg_session_state
-        .get_peer_ids(&session_id)
-        .await
-        .unwrap_or_default();
-    let route = keys
-        .iter()
-        .zip(peers.iter())
-        .find_map(|(key, peer)| (key == &leader).then_some(peer))
         .ok_or_else(|| DkgError::InvalidState("leader route is missing".into()))?;
-    if !peer_matches_route(sender, route) {
+    if !peer_matches_route(sender, &route) {
         return Err(DkgError::Unauthorized(
             "control sender is not canonical leader".into(),
         ));
@@ -848,7 +1252,7 @@ where
 {
     let peers = state
         .dkg_session_state
-        .get_peer_ids(&session_id)
+        .transport_participant_routes(&session_id)
         .await
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
     peers
@@ -866,7 +1270,7 @@ where
 {
     let leader = state
         .dkg_session_state
-        .hybrid_transport_info(&session_id)
+        .transport_info(&session_id)
         .await
         .map(|(_, _, _, leader, _)| leader)
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
@@ -937,6 +1341,119 @@ pub(crate) enum RefreshStartOutcome {
     NotDue,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReshareStartOutcome {
+    Started(CeremonyId, AttemptId),
+    AlreadyActive(CeremonyId, AttemptId),
+    CanonicalLeaderElsewhere,
+}
+
+/// Coordinate the pending SourceHub committee transition through the same
+/// typed transport used by fresh DKG and refresh.
+pub(crate) async fn start_reshare<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+) -> Result<ReshareStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    if !ring_payload_matches_ring_key(&ring_pk, &ring.ring_pk) {
+        return Err(DkgError::InvalidState(
+            "reshare ring public key differs from SourceHub state".into(),
+        ));
+    }
+    let next_keys = ring
+        .new_peer_node_keys
+        .clone()
+        .unwrap_or_else(|| ring.peer_node_keys.clone());
+    let next_threshold = ring.new_threshold.unwrap_or(ring.threshold);
+    if next_keys == ring.peer_node_keys && next_threshold == ring.threshold {
+        return Err(DkgError::InvalidState(
+            "SourceHub ring has no pending reshare transition".into(),
+        ));
+    }
+    let leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if leader != state.node_key {
+        return Ok(ReshareStartOutcome::CanonicalLeaderElsewhere);
+    }
+
+    let ceremony = CeremonyId(derive_reshare_session_id(
+        &ring_pk,
+        &ring_id,
+        &ring.peer_node_keys,
+        &next_keys,
+        next_threshold,
+    )?);
+    let _start_guard = lock_ceremony_start(&state, ceremony).await;
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
+
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let next_routes = resolve_node_routes(&state.bulletin, &next_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let current_assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let next_assignments =
+        canonical_node_id_assignments_from_node_keys(&next_keys).map_err(DkgError::InvalidInput)?;
+    let attempt = AttemptId::random();
+    let transition_digest =
+        transport::ceremony_committee_digest(&ring.peer_node_keys, Some(&next_keys));
+    let topic = transport::derive_topic_id(
+        &state.bulletin.chain_id(),
+        &ring_id,
+        &transition_digest,
+        ceremony,
+        attempt,
+    );
+    let mut prepare = PrepareSession {
+        ceremony_id: ceremony,
+        attempt_id: attempt,
+        config_digest: [0; 32],
+        topic_id: *topic.as_bytes(),
+        leader_node_key: leader,
+        committees: CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: ring.peer_node_keys.clone(),
+                peer_routes: peer_ids_from_routes(&current_routes),
+                node_id_assignments: current_assignments,
+                threshold: ring.threshold,
+            },
+            next: Some(CommitteeConfig {
+                node_keys: next_keys.clone(),
+                peer_routes: peer_ids_from_routes(&next_routes),
+                node_id_assignments: next_assignments,
+                threshold: next_threshold,
+            }),
+        },
+        token_string: String::new(),
+        kind: SessionKind::Reshare {
+            ring_pk_hex: ring_pk,
+            new_peer_node_keys: next_keys,
+            new_threshold: next_threshold,
+            bulletin_post_id: ring_id.clone(),
+        },
+        pss_interval: ring.pss_interval,
+        policy_id: ring.policy_id,
+        ring_id,
+    };
+    prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    coordinate_prepared(state, routes, prepare)
+        .await
+        .map(|(ceremony, attempt)| ReshareStartOutcome::Started(ceremony, attempt))
+}
+
 pub(crate) async fn start_refresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -968,7 +1485,7 @@ where
         .active_ring_pss_session(&ring_pk)
         .await
     {
-        if let Some(attempt_id) = state.dkg_session_state.hybrid_attempt(&session_id).await {
+        if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
             return Ok(RefreshStartOutcome::AlreadyActive(
                 CeremonyId(session_id),
                 attempt_id,
@@ -995,7 +1512,7 @@ where
     if elapsed + PSS_GRACE_PERIOD_SECS < ring.pss_interval {
         return Ok(RefreshStartOutcome::NotDue);
     }
-    if let Some(attempt_id) = state.dkg_session_state.hybrid_attempt(&session_id).await {
+    if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
         return Ok(RefreshStartOutcome::AlreadyActive(
             CeremonyId(session_id),
             attempt_id,
@@ -1003,7 +1520,7 @@ where
     }
     let ceremony_id = CeremonyId(session_id);
     let attempt_id = AttemptId::random();
-    let committee = transport::committee_digest(&ring.peer_node_keys);
+    let committee = transport::ceremony_committee_digest(&ring.peer_node_keys, None);
     let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
@@ -1023,11 +1540,15 @@ where
         config_digest: [0; 32],
         topic_id: *topic.as_bytes(),
         leader_node_key: leader,
-        threshold: ring.threshold,
-        total_participants: ring.peer_node_keys.len() as u32,
-        peer_ids,
-        peer_node_keys: ring.peer_node_keys,
-        node_id_assignments: assignments,
+        committees: CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: ring.peer_node_keys,
+                peer_routes: peer_ids,
+                node_id_assignments: assignments,
+                threshold: ring.threshold,
+            },
+            next: None,
+        },
         token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk,
@@ -1066,12 +1587,12 @@ where
     }
     let session_id = derive_fresh_dkg_session_id(&ring_id)?;
     let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
-    if let Some(attempt_id) = state.dkg_session_state.hybrid_attempt(&session_id).await {
+    if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
         return Ok((CeremonyId(session_id), attempt_id));
     }
     let ceremony_id = CeremonyId(session_id);
     let attempt_id = AttemptId::random();
-    let committee = transport::committee_digest(&ring.peer_node_keys);
+    let committee = transport::ceremony_committee_digest(&ring.peer_node_keys, None);
     let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
@@ -1091,11 +1612,15 @@ where
         config_digest: [0; 32],
         topic_id: *topic.as_bytes(),
         leader_node_key: leader,
-        threshold: ring.threshold,
-        total_participants: ring.peer_node_keys.len() as u32,
-        peer_ids: peer_ids.clone(),
-        peer_node_keys: ring.peer_node_keys.clone(),
-        node_id_assignments: assignments,
+        committees: CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: ring.peer_node_keys.clone(),
+                peer_routes: peer_ids.clone(),
+                node_id_assignments: assignments,
+                threshold: ring.threshold,
+            },
+            next: None,
+        },
         token_string,
         kind: SessionKind::Fresh,
         pss_interval: ring.pss_interval,
@@ -1127,6 +1652,247 @@ where
     result
 }
 
+const RESHARE_DEALER_INCLUSION_GRACE: Duration = Duration::from_secs(3);
+
+async fn prepare_transport_participants<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    deadline: Instant,
+) -> Result<(Vec<String>, Vec<ParticipantRef>)>
+where
+    D: CoordinatorDkg,
+{
+    let all_routes = prepare.participant_routes();
+    if prepare.committees.next.is_none() {
+        let mut tasks = JoinSet::new();
+        for peer in all_routes
+            .iter()
+            .filter(|peer| !is_self_peer_id(&state.network, peer))
+        {
+            let state = state.clone();
+            let peer = peer.clone();
+            let prepare = prepare.clone();
+            tasks.spawn(async move {
+                let response = retry_preparation_control(
+                    &state,
+                    routes,
+                    &peer,
+                    DkgControlMessage::Prepare(Box::new(prepare)),
+                    deadline,
+                )
+                .await?;
+                Ok::<_, DkgError>((peer, response))
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let (peer, response) =
+                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
+            validate_prepared_response(prepare, &peer, response)?;
+        }
+        let mut dealers: Vec<_> = prepare
+            .committees
+            .current
+            .node_id_assignments
+            .values()
+            .copied()
+            .map(ParticipantRef::current)
+            .collect();
+        dealers.sort();
+        return Ok((all_routes, dealers));
+    }
+
+    let next = prepare
+        .committees
+        .next
+        .as_ref()
+        .expect("reshare branch checked above");
+    let current = &prepare.committees.current;
+    let normalize = |route: &str| extract_node_part(route).to_lowercase();
+    let route_by_id: BTreeMap<String, String> = all_routes
+        .iter()
+        .map(|route| (normalize(route), route.clone()))
+        .collect();
+    let next_routes: BTreeSet<String> = next
+        .peer_routes
+        .iter()
+        .map(|route| normalize(route))
+        .collect();
+    let current_routes: BTreeMap<String, u32> = current
+        .node_keys
+        .iter()
+        .zip(&current.peer_routes)
+        .filter_map(|(key, route)| {
+            current
+                .node_id_assignments
+                .get(key)
+                .copied()
+                .map(|node_id| (normalize(route), node_id))
+        })
+        .collect();
+    let mut prepared: BTreeSet<String> = all_routes
+        .iter()
+        .filter(|route| is_self_peer_id(&state.network, route))
+        .map(|route| normalize(route))
+        .collect();
+    let mut grace_started = None;
+
+    loop {
+        let now = Instant::now();
+        let ready_old = current_routes
+            .keys()
+            .filter(|route| prepared.contains(*route))
+            .count();
+        let missing_new: Vec<_> = next_routes.difference(&prepared).cloned().collect();
+        let threshold_ready = missing_new.is_empty() && ready_old >= current.threshold as usize;
+        if threshold_ready {
+            let grace = grace_started.get_or_insert(now);
+            if ready_old == current.len()
+                || now.duration_since(*grace) >= RESHARE_DEALER_INCLUSION_GRACE
+            {
+                break;
+            }
+        }
+        if now >= deadline {
+            let shortfall = (current.threshold as usize).saturating_sub(ready_old);
+            return Err(DkgError::NetworkCommunication(format!(
+                "reshare preparation expired: missing_new=[{}], old_dealer_shortfall={shortfall}",
+                missing_new
+                    .iter()
+                    .map(|peer| peer.chars().take(12).collect::<String>())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )));
+        }
+
+        let request_timeout =
+            DKG_TOPOLOGY_PROBE_INTERVAL.min(deadline.saturating_duration_since(now));
+        let mut round = JoinSet::new();
+        for (route_id, peer) in &route_by_id {
+            if prepared.contains(route_id) {
+                continue;
+            }
+            let state = state.clone();
+            let peer = peer.clone();
+            let route_id = route_id.clone();
+            let request = DkgControlMessage::Prepare(Box::new(prepare.clone()));
+            round.spawn(async move {
+                (
+                    route_id,
+                    peer.clone(),
+                    control_request_with_timeout(&state, routes, &peer, request, request_timeout)
+                        .await,
+                )
+            });
+        }
+        while let Some(result) = round.join_next().await {
+            let (route_id, peer, response) =
+                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            match response {
+                Ok(response) => {
+                    validate_prepared_response(prepare, &peer, response)?;
+                    prepared.insert(route_id);
+                }
+                Err(error) if retryable_control_error(&error) => {
+                    crate::metrics::record_dkg_transport_event("control", "preparation_retry");
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    let mut active_dealers: Vec<_> = current_routes
+        .iter()
+        .filter_map(|(route, node_id)| {
+            prepared
+                .contains(route)
+                .then_some(ParticipantRef::current(*node_id))
+        })
+        .collect();
+    active_dealers.sort();
+    let active_route_ids: BTreeSet<_> = next_routes
+        .iter()
+        .cloned()
+        .chain(
+            current_routes
+                .keys()
+                .filter(|route| prepared.contains(*route))
+                .cloned(),
+        )
+        .collect();
+    let active_routes = active_route_ids
+        .iter()
+        .filter_map(|route| route_by_id.get(route).cloned())
+        .collect();
+    Ok((active_routes, active_dealers))
+}
+
+fn validate_prepared_response(
+    prepare: &PrepareSession,
+    peer: &str,
+    response: DkgControlMessage,
+) -> Result<()> {
+    match response {
+        DkgControlMessage::Prepared {
+            ceremony_id,
+            attempt_id,
+            config_digest,
+        } if ceremony_id == prepare.ceremony_id
+            && attempt_id == prepare.attempt_id
+            && config_digest == prepare.config_digest =>
+        {
+            Ok(())
+        }
+        _ => Err(DkgError::ProtocolError(format!(
+            "peer {peer} returned invalid Prepared response"
+        ))),
+    }
+}
+
+async fn cleanup_excluded_reshare_dealers<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    active_routes: &[String],
+) where
+    D: CoordinatorDkg,
+{
+    if prepare.committees.next.is_none() {
+        return;
+    }
+    let active: BTreeSet<_> = active_routes
+        .iter()
+        .map(|route| extract_node_part(route).to_lowercase())
+        .collect();
+    let mut cleanups = JoinSet::new();
+    for peer in &prepare.committees.current.peer_routes {
+        if active.contains(&extract_node_part(peer).to_lowercase())
+            || is_self_peer_id(&state.network, peer)
+        {
+            continue;
+        }
+        let state = state.clone();
+        let peer = peer.clone();
+        let ceremony_id = prepare.ceremony_id;
+        let attempt_id = prepare.attempt_id;
+        cleanups.spawn(async move {
+            let _ = control_request_with_timeout(
+                &state,
+                routes,
+                &peer,
+                DkgControlMessage::Abort {
+                    ceremony_id,
+                    attempt_id,
+                    reason: "old dealer excluded from frozen active set".into(),
+                },
+                Duration::from_secs(2),
+            )
+            .await;
+        });
+    }
+    while cleanups.join_next().await.is_some() {}
+}
+
 async fn coordinate_prepared_inner<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -1146,8 +1912,6 @@ where
     let ceremony_id = prepare.ceremony_id;
     let attempt_id = prepare.attempt_id;
     let session_id = ceremony_id.0;
-    let peer_ids = prepare.peer_ids.clone();
-
     // Prepare self first. This atomically claims the deterministic session ID,
     // preventing concurrent starts from creating competing attempts.
     let self_peer = state.network.local_peer_id();
@@ -1160,49 +1924,14 @@ where
         }
     }
 
-    let mut tasks = JoinSet::new();
-    for peer in peer_ids
-        .iter()
-        .filter(|peer| !is_self_peer_id(&state.network, peer))
-    {
-        let state = state.clone();
-        let peer = peer.clone();
-        let prepare = prepare.clone();
-        tasks.spawn(async move {
-            let response = retry_preparation_control(
-                &state,
-                routes,
-                &peer,
-                DkgControlMessage::Prepare(Box::new(prepare)),
-                deadline,
-            )
-            .await?;
-            Ok::<_, DkgError>((peer, response))
-        });
-    }
-    while let Some(result) = tasks.join_next().await {
-        let (peer, response) =
-            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
-        match response {
-            DkgControlMessage::Prepared {
-                ceremony_id: got_ceremony,
-                attempt_id: got_attempt,
-                config_digest,
-            } if got_ceremony == ceremony_id
-                && got_attempt == attempt_id
-                && config_digest == prepare.config_digest => {}
-            _ => {
-                return Err(DkgError::ProtocolError(format!(
-                    "peer {peer} returned invalid Prepared response"
-                )))
-            }
-        }
-    }
+    let (peer_ids, active_dealers) =
+        prepare_transport_participants(&state, routes, &prepare, deadline).await?;
+    cleanup_excluded_reshare_dealers(&state, routes, &prepare, &peer_ids).await;
 
     let nonce: [u8; 32] = rand::random();
     let topic_handle = state
         .dkg_session_state
-        .hybrid_topic(&session_id)
+        .transport_topic(&session_id)
         .await
         .ok_or_else(|| DkgError::InvalidState("leader did not join transient topic".into()))?;
     let probe = transport::encode(&DkgPublicMessage::TopologyProbe {
@@ -1227,7 +1956,7 @@ where
         .begin_topology_probe(&session_id, attempt_id, nonce, self_route)
         .await
         .ok_or_else(|| DkgError::InvalidState("leader cannot begin topology probe".into()))?;
-    crate::metrics::record_dkg_hybrid_event("control", "probe_ack");
+    crate::metrics::record_dkg_transport_event("control", "probe_ack");
     let probe = Bytes::from(probe);
     let mut probe_tick = tokio::time::interval(DKG_TOPOLOGY_PROBE_INTERVAL);
     probe_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1246,10 +1975,10 @@ where
             _ = probe_tick.tick() => {
                 match topic_handle.broadcast(probe.clone()).await {
                     Ok(()) => {
-                        crate::metrics::record_dkg_hybrid_event("public", "probe_broadcast");
+                        crate::metrics::record_dkg_transport_event("public", "probe_broadcast");
                     }
                     Err(error) => {
-                        crate::metrics::record_dkg_hybrid_event("public", "probe_broadcast_failure");
+                        crate::metrics::record_dkg_transport_event("public", "probe_broadcast_failure");
                         tracing::warn!(%error, session_id, "topology probe broadcast failed; retrying");
                     }
                 }
@@ -1276,41 +2005,25 @@ where
         )));
     }
 
-    // Activate and start the leader before releasing followers. This preserves
-    // the all-ready barrier while ensuring refresh contributions cannot reach
-    // the leader before it has generated and retained its own polynomial.
-    // Without this ordering, the legacy lazy-polynomial path can observe two
-    // remote commitments and attempt Phase 2 before the hybrid attempt is
-    // locally active.
+    // Activation and cryptographic start are separate barriers. Every active
+    // participant must first persist the same activation digest; only then may
+    // any node generate a contribution or open a private exchange.
+    let activation_digest = transport::activation_digest(prepare.config_digest, &active_dealers)
+        .map_err(DkgError::ProtocolError)?;
     let leader_activation = state
         .dkg_session_state
-        .activate_hybrid_transport(&session_id, attempt_id)
+        .activate_transport(
+            &session_id,
+            attempt_id,
+            activation_digest,
+            active_dealers.clone(),
+        )
         .await;
     match leader_activation {
-        HybridActivationOutcome::Activated => {
-            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
-            match &prepare.kind {
-                SessionKind::Fresh => {
-                    coordinator
-                        .initiate_phase0_commitment_hashes(session_id, &peer_ids)
-                        .await?;
-                }
-                SessionKind::Refresh { .. } => {
-                    coordinator
-                        .initiate_phase1_commitments(session_id, &peer_ids)
-                        .await?;
-                }
-                SessionKind::Reshare { .. } => {
-                    return Err(DkgError::ProtocolError(
-                        "reshare is not supported by hybrid transport".into(),
-                    ));
-                }
-            }
-        }
-        HybridActivationOutcome::AlreadyActivated => {}
-        HybridActivationOutcome::StaleAttempt | HybridActivationOutcome::MissingSession => {
+        TransportActivationOutcome::Activated | TransportActivationOutcome::AlreadyActivated => {}
+        TransportActivationOutcome::StaleAttempt | TransportActivationOutcome::MissingSession => {
             return Err(DkgError::ProtocolError(
-                "failed to activate the leader's hybrid attempt".into(),
+                "failed to activate the leader's transport attempt".into(),
             ));
         }
     }
@@ -1322,6 +2035,7 @@ where
     {
         let state = state.clone();
         let peer = peer.clone();
+        let active_dealers = active_dealers.clone();
         activations.spawn(async move {
             retry_preparation_control(
                 &state,
@@ -1330,6 +2044,8 @@ where
                 DkgControlMessage::Activate {
                     ceremony_id,
                     attempt_id,
+                    activation_digest,
+                    active_dealers,
                 },
                 deadline,
             )
@@ -1341,10 +2057,70 @@ where
             DkgControlMessage::Activated {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
-            } if got_ceremony == ceremony_id && got_attempt == attempt_id => {}
+                activation_digest: got_activation,
+            } if got_ceremony == ceremony_id
+                && got_attempt == attempt_id
+                && got_activation == activation_digest => {}
             response => {
                 return Err(DkgError::ProtocolError(format!(
                     "invalid activation response: {response:?}"
+                )))
+            }
+        }
+    }
+
+    match state
+        .dkg_session_state
+        .begin_transport(&session_id, attempt_id, activation_digest)
+        .await
+    {
+        TransportBeginOutcome::Begun => {
+            spawn_cryptographic_attempt(state.clone(), routes, session_id);
+        }
+        TransportBeginOutcome::AlreadyBegun => {}
+        TransportBeginOutcome::NotActivated
+        | TransportBeginOutcome::StaleAttempt
+        | TransportBeginOutcome::MissingSession => {
+            return Err(DkgError::ProtocolError(
+                "failed to begin the leader's activated transport attempt".into(),
+            ));
+        }
+    }
+
+    let mut beginnings = JoinSet::new();
+    for peer in peer_ids
+        .iter()
+        .filter(|peer| !is_self_peer_id(&state.network, peer))
+    {
+        let state = state.clone();
+        let peer = peer.clone();
+        beginnings.spawn(async move {
+            retry_preparation_control(
+                &state,
+                routes,
+                &peer,
+                DkgControlMessage::Begin {
+                    ceremony_id,
+                    attempt_id,
+                    activation_digest,
+                },
+                deadline,
+            )
+            .await
+        });
+    }
+    while let Some(result) = beginnings.join_next().await {
+        match result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?? {
+            DkgControlMessage::Begun {
+                ceremony_id: got_ceremony,
+                attempt_id: got_attempt,
+                activation_digest: got_activation,
+            } if got_ceremony == ceremony_id
+                && got_attempt == attempt_id
+                && got_activation == activation_digest => {}
+            response => {
+                return Err(DkgError::ProtocolError(format!(
+                    "invalid begin response: {response:?}"
                 )))
             }
         }
@@ -1353,7 +2129,7 @@ where
         ceremony_kind,
         readiness_start.elapsed().as_secs_f64(),
     );
-    crate::metrics::record_dkg_hybrid_event("control", "activated");
+    crate::metrics::record_dkg_transport_event("control", "activated");
     Ok((ceremony_id, attempt_id))
 }
 
@@ -1367,7 +2143,7 @@ async fn abort_prepared_attempt<D>(
 {
     let mut aborts = JoinSet::new();
     for peer in prepare
-        .peer_ids
+        .participant_routes()
         .iter()
         .filter(|peer| !is_self_peer_id(&state.network, peer))
     {
@@ -1394,7 +2170,7 @@ async fn abort_prepared_attempt<D>(
         });
     }
     while aborts.join_next().await.is_some() {}
-    crate::metrics::record_dkg_hybrid_event("control", "abort");
+    crate::metrics::record_dkg_transport_event("control", "abort");
 }
 
 async fn prepare_participant<D>(
@@ -1407,16 +2183,15 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if transport::canonical_leader(&prepare.peer_node_keys) != Some(&prepare.leader_node_key) {
+    if transport::canonical_leader(&prepare.committees.current.node_keys)
+        != Some(&prepare.leader_node_key)
+    {
         return Err(DkgError::Unauthorized(
             "Prepare names a non-canonical leader".into(),
         ));
     }
     let leader_route = prepare
-        .peer_node_keys
-        .iter()
-        .zip(prepare.peer_ids.iter())
-        .find_map(|(key, peer)| (key == &prepare.leader_node_key).then_some(peer))
+        .leader_route()
         .ok_or_else(|| DkgError::InvalidInput("Prepare omits leader route".into()))?;
     if !peer_matches_route(sender, leader_route) {
         return Err(DkgError::Unauthorized(
@@ -1433,11 +2208,11 @@ where
     handle_session_init(
         &coordinator,
         prepare.ceremony_id.0,
-        prepare.threshold,
-        prepare.total_participants,
-        &prepare.peer_ids,
-        &prepare.peer_node_keys,
-        &prepare.node_id_assignments,
+        prepare.committees.current.threshold,
+        prepare.committees.current.len() as u32,
+        &prepare.committees.current.peer_routes,
+        &prepare.committees.current.node_keys,
+        &prepare.committees.current.node_id_assignments,
         &prepare.token_string,
         &prepare.kind,
         prepare.pss_interval,
@@ -1453,7 +2228,7 @@ where
     // doing so emits neighbor churn across the whole transient mesh.
     if let Some((ceremony_id, attempt_id, config_digest)) = state
         .dkg_session_state
-        .hybrid_configuration(&prepare.ceremony_id.0)
+        .transport_configuration(&prepare.ceremony_id.0)
         .await
     {
         if ceremony_id == prepare.ceremony_id
@@ -1467,7 +2242,7 @@ where
             });
         }
         return Err(DkgError::ProtocolError(
-            "Prepare conflicts with the configured hybrid attempt".into(),
+            "Prepare conflicts with the configured transport attempt".into(),
         ));
     }
 
@@ -1489,29 +2264,32 @@ where
         .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
     let outcome = state
         .dkg_session_state
-        .configure_hybrid_transport(
+        .configure_transport(
             &prepare.ceremony_id.0,
             prepare.ceremony_id,
             prepare.attempt_id,
-            transport::committee_digest(&prepare.peer_node_keys),
+            prepare.committee_digest(),
             prepare.config_digest,
             topic_id,
             prepare.leader_node_key.clone(),
+            leader_route.to_string(),
+            prepare.participant_routes(),
+            prepare.committees.clone(),
             topic.clone(),
         )
         .await;
     if matches!(
         outcome,
-        crate::dkg::v0::session_state::HybridConfigureOutcome::ConflictingAttempt
-            | crate::dkg::v0::session_state::HybridConfigureOutcome::MissingSession
+        crate::dkg::v0::session_state::TransportConfigureOutcome::ConflictingAttempt
+            | crate::dkg::v0::session_state::TransportConfigureOutcome::MissingSession
     ) {
         return Err(DkgError::ProtocolError(format!(
-            "cannot configure hybrid attempt: {outcome:?}"
+            "cannot configure transport attempt: {outcome:?}"
         )));
     }
     if matches!(
         outcome,
-        crate::dkg::v0::session_state::HybridConfigureOutcome::Configured
+        crate::dkg::v0::session_state::TransportConfigureOutcome::Configured
     ) {
         let task = tokio::spawn(topic_listener(
             state.clone(),
@@ -1521,7 +2299,7 @@ where
         ));
         state
             .dkg_session_state
-            .set_hybrid_topic_task(&prepare.ceremony_id.0, task.abort_handle())
+            .set_transport_topic_task(&prepare.ceremony_id.0, task.abort_handle())
             .await;
     }
     Ok(DkgControlMessage::Prepared {
@@ -1543,7 +2321,7 @@ where
 {
     let deadline = state
         .dkg_session_state
-        .hybrid_preparation_deadline(&prepare.ceremony_id.0, prepare.attempt_id)
+        .transport_preparation_deadline(&prepare.ceremony_id.0, prepare.attempt_id)
         .await
         .map(Instant::from_std)
         .ok_or_else(|| DkgError::SessionNotFound(prepare.ceremony_id.0.to_string()))?;
@@ -1556,7 +2334,7 @@ where
     loop {
         if state
             .dkg_session_state
-            .hybrid_attempt(&prepare.ceremony_id.0)
+            .transport_attempt(&prepare.ceremony_id.0)
             .await
             != Some(prepare.attempt_id)
         {
@@ -1596,7 +2374,7 @@ where
                 )));
             }
             Err(error) if retryable_control_error(&error) => {
-                crate::metrics::record_dkg_hybrid_event("control", "preparation_retry");
+                crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
                     %error,
                     session_id = prepare.ceremony_id.0,
@@ -1624,11 +2402,8 @@ async fn topic_listener<D>(
     SignImpl: CoordinatorReportSigner<D>,
 {
     let leader_route = prepare
-        .peer_node_keys
-        .iter()
-        .zip(prepare.peer_ids.iter())
-        .find_map(|(key, peer)| (key == &prepare.leader_node_key).then_some(peer))
-        .cloned()
+        .leader_route()
+        .map(str::to_owned)
         .unwrap_or_default();
     let mut repair_tick = tokio::time::interval(DKG_REPAIR_STALL_INTERVAL);
     repair_tick.tick().await;
@@ -1640,7 +2415,7 @@ async fn topic_listener<D>(
     loop {
         if state
             .dkg_session_state
-            .hybrid_attempt(&prepare.ceremony_id.0)
+            .transport_attempt(&prepare.ceremony_id.0)
             .await
             != Some(prepare.attempt_id)
         {
@@ -1695,7 +2470,7 @@ async fn topic_listener<D>(
             }
             event = topic.recv() => event,
             _ = repair_tick.tick() => {
-                if state.dkg_session_state.hybrid_repair_due(
+                if state.dkg_session_state.transport_repair_due(
                     &prepare.ceremony_id.0,
                     prepare.attempt_id,
                     DKG_REPAIR_STALL_INTERVAL,
@@ -1812,12 +2587,19 @@ async fn topic_listener<D>(
                             .public_contributions(&ceremony_id.0, attempt_id, phase)
                             .await
                         {
-                            let expected = if phase == PublicPhase::RefreshHealthCheck {
+                            let expected = if matches!(
+                                phase,
+                                PublicPhase::RefreshHealthCheck
+                                    | PublicPhase::ReshareParticipantSet
+                            ) {
                                 1
                             } else {
-                                prepare.total_participants as usize
+                                prepare.committees.current.len()
                             };
-                            if items.len() == expected {
+                            let incremental = phase == PublicPhase::CommitmentAudit
+                                || (phase == PublicPhase::Commitments
+                                    && matches!(prepare.kind, SessionKind::Reshare { .. }));
+                            if !incremental && items.len() == expected {
                                 let ids = contribution_ids(&items);
                                 if transport::phase_root(ceremony_id, attempt_id, phase, &ids)
                                     != phase_root
@@ -1831,17 +2613,8 @@ async fn topic_listener<D>(
                         if manifest.ceremony_id == prepare.ceremony_id
                             && manifest.attempt_id == prepare.attempt_id =>
                     {
-                        let expected_origins: BTreeSet<_> =
-                            if manifest.phase == PublicPhase::RefreshHealthCheck {
-                                prepare
-                                    .node_id_assignments
-                                    .get(&prepare.leader_node_key)
-                                    .copied()
-                                    .into_iter()
-                                    .collect()
-                            } else {
-                                prepare.node_id_assignments.values().copied().collect()
-                            };
+                        let expected_origins =
+                            expected_public_origins(&state, &prepare, manifest.phase).await;
                         if let Err(error) = manifest.validate(&expected_origins) {
                             tracing::warn!(%error, phase = ?manifest.phase,
                                 "discarding invalid public DKG manifest");
@@ -1897,7 +2670,7 @@ async fn topic_listener<D>(
                 neighbor_tracker.neighbor_up(&peer);
             }
             Ok(PubSubEvent::NeighborDown(peer)) => {
-                crate::metrics::record_dkg_hybrid_event("public", "neighbor_down");
+                crate::metrics::record_dkg_transport_event("public", "neighbor_down");
                 tracing::debug!(
                     session_id = prepare.ceremony_id.0,
                     peer = %hex::encode(peer.as_bytes()),
@@ -1952,7 +2725,7 @@ where
         .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
     if state
         .dkg_session_state
-        .replace_hybrid_topic(&prepare.ceremony_id.0, prepare.attempt_id, topic.clone())
+        .replace_transport_topic(&prepare.ceremony_id.0, prepare.attempt_id, topic.clone())
         .await
         != Some(true)
     {
@@ -1974,7 +2747,7 @@ where
 {
     let hard_deadline = state
         .dkg_session_state
-        .hybrid_hard_deadline(&prepare.ceremony_id.0, prepare.attempt_id)
+        .transport_hard_deadline(&prepare.ceremony_id.0, prepare.attempt_id)
         .await
         .map(Instant::from_std)
         .ok_or_else(|| DkgError::SessionNotFound(prepare.ceremony_id.0.to_string()))?;
@@ -1982,7 +2755,7 @@ where
     loop {
         if state
             .dkg_session_state
-            .hybrid_attempt(&prepare.ceremony_id.0)
+            .transport_attempt(&prepare.ceremony_id.0)
             .await
             != Some(prepare.attempt_id)
         {
@@ -1992,11 +2765,11 @@ where
         }
         match rejoin_public_topic(state, prepare, leader_route).await {
             Ok(topic) => {
-                crate::metrics::record_dkg_hybrid_event("public", metric_event);
+                crate::metrics::record_dkg_transport_event("public", metric_event);
                 return Ok(topic);
             }
             Err(error) => {
-                crate::metrics::record_dkg_hybrid_event("public", "rejoin_failure");
+                crate::metrics::record_dkg_transport_event("public", "rejoin_failure");
                 tracing::warn!(
                     %error,
                     session_id = prepare.ceremony_id.0,
@@ -2036,7 +2809,7 @@ where
     }
     let activated = state
         .dkg_session_state
-        .hybrid_transport_info(&prepare.ceremony_id.0)
+        .transport_info(&prepare.ceremony_id.0)
         .await
         .is_some_and(|(_, attempt_id, _, _, activated)| {
             attempt_id == prepare.attempt_id && activated
@@ -2047,7 +2820,7 @@ where
     if !force_after_lag
         && !state
             .dkg_session_state
-            .hybrid_repair_due(
+            .transport_repair_due(
                 &prepare.ceremony_id.0,
                 prepare.attempt_id,
                 DKG_REPAIR_STALL_INTERVAL,
@@ -2056,11 +2829,8 @@ where
     {
         return Ok(());
     }
-    let expected = if phase == PublicPhase::RefreshHealthCheck {
-        1
-    } else {
-        prepare.total_participants as usize
-    };
+    let expected_origins = expected_public_origins(&state, &prepare, phase).await;
+    let expected = expected_origins.len();
     let present = state
         .dkg_session_state
         .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
@@ -2096,10 +2866,7 @@ where
         "requesting direct public DKG completeness repair"
     );
     let leader_peer = prepare
-        .peer_node_keys
-        .iter()
-        .zip(prepare.peer_ids.iter())
-        .find_map(|(key, peer)| (key == &prepare.leader_node_key).then_some(peer))
+        .leader_route()
         .ok_or_else(|| DkgError::InvalidState("leader repair route is missing".into()))?;
     let response = control_request(
         &state,
@@ -2152,6 +2919,10 @@ where
             apply_public_contribution(state.clone(), routes, signed, contribution).await?;
         }
     }
+    if phase == PublicPhase::CommitmentAudit {
+        crate::metrics::record_dkg_transport_event("public", "repair");
+        return Ok(());
+    }
 
     // A correct leader normally returns the complete phase. If it omitted an
     // item, fetch that exact signed contribution from its authenticated origin
@@ -2161,25 +2932,13 @@ where
         .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
         .await
         .unwrap_or_default();
-    let expected_origins: Vec<u32> = if phase == PublicPhase::RefreshHealthCheck {
-        vec![1]
-    } else {
-        (1..=prepare.total_participants).collect()
-    };
-    for origin_node_id in expected_origins {
-        if retained.contains_key(&origin_node_id) {
+    for origin in expected_origins {
+        if retained.contains_key(&origin) {
             continue;
         }
-        let origin_node_key = prepare
-            .node_id_assignments
-            .iter()
-            .find_map(|(node_key, node_id)| (*node_id == origin_node_id).then_some(node_key))
-            .ok_or_else(|| DkgError::InvalidState("origin repair node ID is unmapped".into()))?;
         let origin_peer = prepare
-            .peer_node_keys
-            .iter()
-            .zip(prepare.peer_ids.iter())
-            .find_map(|(node_key, peer)| (node_key == origin_node_key).then_some(peer))
+            .committees
+            .route(origin)
             .ok_or_else(|| DkgError::InvalidState("origin repair peer route is missing".into()))?;
         let response = control_request(
             &state,
@@ -2189,7 +2948,7 @@ where
                 ceremony_id: prepare.ceremony_id,
                 attempt_id: prepare.attempt_id,
                 phase,
-                origin_node_id,
+                origin,
             },
         )
         .await?;
@@ -2200,7 +2959,8 @@ where
         } = response
         else {
             return Err(DkgError::ProtocolError(format!(
-                "origin {origin_node_id} did not return its retained public contribution"
+                "origin {:?} did not return its retained public contribution",
+                origin
             )));
         };
         if ceremony_id != prepare.ceremony_id || attempt_id != prepare.attempt_id {
@@ -2209,7 +2969,7 @@ where
             ));
         }
         let contribution = verify_signed_contribution(&state, &signed).await?;
-        if contribution.origin_node_id != origin_node_id || contribution.payload.phase() != phase {
+        if contribution.origin != origin || contribution.payload.phase() != phase {
             return Err(DkgError::Unauthorized(
                 "public origin repair returned the wrong contribution".into(),
             ));
@@ -2219,7 +2979,7 @@ where
         } else {
             apply_public_contribution(state.clone(), routes, signed, contribution).await?;
         }
-        crate::metrics::record_dkg_hybrid_event("public", "origin_repair");
+        crate::metrics::record_dkg_transport_event("public", "origin_repair");
     }
 
     let repaired = state
@@ -2232,7 +2992,7 @@ where
             "public phase repair retained {repaired} of {expected} contributions"
         )));
     }
-    crate::metrics::record_dkg_hybrid_event("public", "repair");
+    crate::metrics::record_dkg_transport_event("public", "repair");
     tracing::info!(
         session_id = prepare.ceremony_id.0,
         phase = ?phase,
@@ -2263,7 +3023,7 @@ where
         .map_err(DkgError::Unauthorized)?;
     let info = state
         .dkg_session_state
-        .hybrid_transport_info(&contribution.ceremony_id.0)
+        .transport_info(&contribution.ceremony_id.0)
         .await
         .ok_or_else(|| DkgError::SessionNotFound(contribution.ceremony_id.0.to_string()))?;
     if info.1 != contribution.attempt_id || info.2 != contribution.committee_digest {
@@ -2273,7 +3033,7 @@ where
     }
     let expected_peer = state
         .dkg_session_state
-        .get_peer_id_for_node(&contribution.ceremony_id.0, contribution.origin_node_id)
+        .peer_id_for_participant(&contribution.ceremony_id.0, contribution.origin)
         .await
         .ok_or_else(|| {
             DkgError::Unauthorized("public contribution origin is not in committee".into())
@@ -2281,6 +3041,46 @@ where
     if !peer_matches_route(&verified.origin, &expected_peer) {
         return Err(DkgError::Unauthorized(
             "public contribution endpoint identity does not match SourceHub NodeInfo".into(),
+        ));
+    }
+    let (kind, active_dealers) = state
+        .dkg_session_state
+        .with_state(&contribution.ceremony_id.0, |session| {
+            (
+                session.kind.clone(),
+                session.transport.active_dealers.clone(),
+            )
+        })
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(contribution.ceremony_id.0.to_string()))?;
+    let phase = contribution.payload.phase();
+    let allowed = match kind {
+        SessionKind::Fresh => {
+            contribution.origin.scope == CommitteeScope::Current
+                && matches!(
+                    phase,
+                    PublicPhase::CommitmentHashes | PublicPhase::Commitments
+                )
+        }
+        SessionKind::Refresh { .. } => {
+            contribution.origin.scope == CommitteeScope::Current
+                && matches!(
+                    phase,
+                    PublicPhase::Commitments
+                        | PublicPhase::CommitmentAudit
+                        | PublicPhase::RefreshHealthCheck
+                )
+        }
+        SessionKind::Reshare { .. } => match phase {
+            PublicPhase::Commitments => active_dealers.contains(&contribution.origin),
+            PublicPhase::CommitmentAudit => contribution.origin.scope == CommitteeScope::Next,
+            PublicPhase::ReshareParticipantSet => contribution.origin == ParticipantRef::next(1),
+            PublicPhase::CommitmentHashes | PublicPhase::RefreshHealthCheck => false,
+        },
+    };
+    if !allowed {
+        return Err(DkgError::Unauthorized(
+            "public contribution origin is not permitted for this ceremony phase".into(),
         ));
     }
     Ok(contribution)
@@ -2296,7 +3096,7 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let _ = record_public_contribution(&state, signed.clone(), &contribution).await?;
+    record_public_contribution(&state, signed.clone(), &contribution).await?;
     dispatch_public_contribution(state, routes, signed, contribution).await
 }
 
@@ -2314,7 +3114,7 @@ where
             &contribution.ceremony_id.0,
             contribution.attempt_id,
             contribution.payload.phase(),
-            contribution.origin_node_id,
+            contribution.origin,
             signed.clone(),
         )
         .await;
@@ -2332,7 +3132,7 @@ where
             ))
         }
     }
-    crate::metrics::record_dkg_hybrid_event("public", "contribution");
+    crate::metrics::record_dkg_transport_event("public", "contribution");
     Ok(true)
 }
 
@@ -2346,55 +3146,124 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let local_node_id = state
+    let session_id = contribution.ceremony_id.0;
+    let message_id = contribution.message_id;
+    loop {
+        match state
+            .dkg_session_state
+            .claim_transport_message(&session_id, message_id)
+            .await
+        {
+            MessageProcessingClaim::Claimed => break,
+            MessageProcessingClaim::AlreadyProcessed => return Ok(()),
+            MessageProcessingClaim::AlreadyProcessing => {
+                sleep(Duration::from_millis(10)).await;
+            }
+            MessageProcessingClaim::MissingSession => {
+                return Err(DkgError::SessionNotFound(session_id.to_string()));
+            }
+        }
+    }
+
+    let result =
+        dispatch_public_contribution_once(state.clone(), routes, signed, contribution).await;
+    state
         .dkg_session_state
-        .with_state(&contribution.ceremony_id.0, |session| {
-            session.node.node_id()
-        })
+        .finish_transport_message(&session_id, message_id, result.is_ok())
+        .await;
+    result
+}
+
+async fn dispatch_public_contribution_once<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    _signed: SignedPayload,
+    contribution: DkgPublicContribution,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let local_is_origin = state
+        .dkg_session_state
+        .transport_committees(&contribution.ceremony_id.0)
         .await
-        .ok_or_else(|| DkgError::SessionNotFound(contribution.ceremony_id.0.to_string()))?;
-    if local_node_id == contribution.origin_node_id {
+        .and_then(|committees| {
+            committees
+                .node_key(contribution.origin)
+                .map(|node_key| node_key == state.node_key)
+        })
+        .unwrap_or(false);
+    if contribution.origin.scope == CommitteeScope::Current && local_is_origin {
         return Ok(());
     }
-    let message = match contribution.payload {
-        DkgPublicPayload::CommitmentHash { commitment_hash } => DkgMessage::CommitmentHash {
-            session_id: contribution.ceremony_id.0,
-            from_node_id: contribution.origin_node_id,
-            commitment_hash,
-        },
+    let coordinator = DkgCoordinator::with_routes(state, routes);
+    match contribution.payload {
+        DkgPublicPayload::CommitmentHash { commitment_hash } => {
+            Box::pin(coordinator.accept_public_commitment_hash(
+                contribution.ceremony_id.0,
+                contribution.origin.node_id,
+                commitment_hash,
+            ))
+            .await?
+        }
         DkgPublicPayload::Commitment {
             commitment,
             report_evidence,
-        } => DkgMessage::Commitment {
-            session_id: contribution.ceremony_id.0,
-            from_node_id: contribution.origin_node_id,
-            commitment,
-            report_evidence,
-        },
-        DkgPublicPayload::CommitmentAudit { revealed } => DkgMessage::CommitmentAudit {
-            session_id: contribution.ceremony_id.0,
-            revealer_node_id: contribution.origin_node_id,
-            revealed,
-        },
+        } => {
+            Box::pin(coordinator.accept_public_commitment(
+                contribution.ceremony_id.0,
+                contribution.origin.node_id,
+                commitment,
+                report_evidence,
+            ))
+            .await?
+        }
+        DkgPublicPayload::CommitmentAudit { revealed } => {
+            Box::pin(
+                coordinator.accept_public_commitment_audit(contribution.ceremony_id.0, revealed),
+            )
+            .await?
+        }
         DkgPublicPayload::RefreshHealthCheckResult {
             statement,
             signature,
-        } => DkgMessage::RefreshHealthCheckResult {
-            session_id: contribution.ceremony_id.0,
-            from_node_id: contribution.origin_node_id,
-            statement,
-            signature,
-        },
-    };
-    Box::pin(
-        DkgCoordinator::with_routes(state, routes)
-            .handle_message(message, &signed.origin_peer_id()),
-    )
-    .await?;
+        } => {
+            Box::pin(coordinator.accept_public_refresh_result(
+                contribution.ceremony_id.0,
+                contribution.origin.node_id,
+                statement,
+                signature,
+            ))
+            .await?
+        }
+        DkgPublicPayload::ReshareParticipantSet { selected_dealers } => {
+            if contribution.origin != ParticipantRef::next(1) {
+                return Err(DkgError::Unauthorized(
+                    "reshare participant set must originate from next-committee selector 1".into(),
+                ));
+            }
+            let selected = selected_dealers
+                .into_iter()
+                .map(|dealer| dealer.node_id)
+                .collect();
+            Box::pin(
+                crate::dkg::v0::coordinator::message_handlers::handle_reshare_participant_set(
+                    &coordinator,
+                    contribution.ceremony_id.0,
+                    contribution.origin.node_id,
+                    selected,
+                ),
+            )
+            .await?;
+        }
+    }
     Ok(())
 }
 
-fn contribution_ids(items: &BTreeMap<u32, SignedPayload>) -> BTreeMap<u32, transport::MessageId> {
+fn contribution_ids(
+    items: &BTreeMap<ParticipantRef, SignedPayload>,
+) -> BTreeMap<ParticipantRef, transport::MessageId> {
     items
         .iter()
         .filter_map(|(origin, signed)| {
@@ -2415,7 +3284,23 @@ async fn publish_phase_if_complete<D>(
 where
     D: CoordinatorDkg,
 {
-    let expected = if phase == PublicPhase::RefreshHealthCheck {
+    let is_incremental = phase == PublicPhase::CommitmentAudit
+        || (phase == PublicPhase::Commitments
+            && state
+                .dkg_session_state
+                .with_state(&session_id, |session| {
+                    matches!(session.kind, SessionKind::Reshare { .. })
+                })
+                .await
+                .unwrap_or(false));
+    if is_incremental {
+        return publish_incremental_public_contributions(state, session_id, attempt_id, phase)
+            .await;
+    }
+    let expected = if matches!(
+        phase,
+        PublicPhase::RefreshHealthCheck | PublicPhase::ReshareParticipantSet
+    ) {
         1
     } else {
         state
@@ -2455,9 +3340,9 @@ where
         .map_err(DkgError::Serialization)?;
     let topic = state
         .dkg_session_state
-        .hybrid_topic(&session_id)
+        .transport_topic(&session_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("hybrid topic is missing".into()))?;
+        .ok_or_else(|| DkgError::InvalidState("transport topic is missing".into()))?;
     let manifest = DkgPublicMessage::Manifest(PhaseManifest {
         ceremony_id,
         attempt_id,
@@ -2465,6 +3350,7 @@ where
         phase_root: root,
         contribution_ids: ids,
         chunk_count: chunks.len() as u32,
+        complete: true,
     });
     topic
         .broadcast(Bytes::from(
@@ -2485,13 +3371,115 @@ where
         "dissemination",
         dissemination_start.elapsed().as_secs_f64(),
     );
-    crate::metrics::record_dkg_hybrid_event("public", "batch_published");
+    crate::metrics::record_dkg_transport_event("public", "batch_published");
     tracing::info!(
         session_id,
         phase = ?phase,
         contribution_count = expected,
         "leader published canonical public DKG batch"
     );
+    Ok(())
+}
+
+async fn publish_incremental_public_contributions<D>(
+    state: Arc<AppState<D>>,
+    session_id: u128,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    // Coalesce contributions that arrive in the same short relay window. Every
+    // caller observes the same retained map; attempt-scoped publish claims make
+    // exactly one caller responsible for each contribution.
+    sleep(Duration::from_millis(50)).await;
+    let items = state
+        .dkg_session_state
+        .public_contributions(&session_id, attempt_id, phase)
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let topic = state
+        .dkg_session_state
+        .transport_topic(&session_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("transport topic is missing".into()))?;
+    let mut pending = BTreeMap::new();
+    for (origin, signed) in items {
+        let contribution =
+            transport::decode::<DkgPublicContribution>(&signed.data, MAX_CONTROL_MESSAGE_BYTES)
+                .map_err(DkgError::Deserialization)?;
+        if !state
+            .dkg_session_state
+            .claim_public_message_publish(&session_id, attempt_id, contribution.message_id)
+            .await
+        {
+            continue;
+        }
+        pending.insert(origin, signed);
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let ceremony_id = CeremonyId(session_id);
+    let mut batches = Vec::new();
+    let mut current = BTreeMap::new();
+    for (origin, signed) in pending {
+        let mut candidate = current.clone();
+        candidate.insert(origin, signed.clone());
+        let candidate_ids = contribution_ids(&candidate);
+        let candidate_root = transport::phase_root(ceremony_id, attempt_id, phase, &candidate_ids);
+        let chunks = transport::chunk_public_contributions(
+            ceremony_id,
+            attempt_id,
+            phase,
+            candidate_root,
+            candidate.clone(),
+        )
+        .map_err(DkgError::Serialization)?;
+        if chunks.len() > 1 && !current.is_empty() {
+            batches.push(current);
+            current = BTreeMap::from([(origin, signed)]);
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        batches.push(current);
+    }
+
+    for batch in batches {
+        let ids = contribution_ids(&batch);
+        let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
+        let chunks =
+            transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, batch)
+                .map_err(DkgError::Serialization)?;
+        let manifest = DkgPublicMessage::Manifest(PhaseManifest {
+            ceremony_id,
+            attempt_id,
+            phase,
+            phase_root: root,
+            contribution_ids: ids,
+            chunk_count: chunks.len() as u32,
+            complete: false,
+        });
+        topic
+            .broadcast(Bytes::from(
+                transport::encode(&manifest).map_err(DkgError::Serialization)?,
+            ))
+            .await
+            .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        for chunk in chunks {
+            topic
+                .broadcast(Bytes::from(
+                    transport::encode(&chunk).map_err(DkgError::Serialization)?,
+                ))
+                .await
+                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        }
+        crate::metrics::record_dkg_transport_event("public", "batch_published");
+    }
     Ok(())
 }
 
@@ -2561,7 +3549,7 @@ where
                         )))
                     }
                 }
-                crate::metrics::record_dkg_hybrid_event("control", "retry");
+                crate::metrics::record_dkg_transport_event("control", "retry");
                 let remaining = hard_deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     continue;
@@ -2598,9 +3586,9 @@ where
         .collect::<Vec<_>>();
     let hard_deadline = state
         .dkg_session_state
-        .hybrid_hard_deadline(&session_id, contribution.attempt_id)
+        .transport_hard_deadline(&session_id, contribution.attempt_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("hybrid hard deadline is missing".into()))?
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
         .into();
 
     send_refresh_result_barrier(
@@ -2615,7 +3603,7 @@ where
         "stage",
     )
     .await?;
-    crate::metrics::record_dkg_hybrid_event("public", "result_stage_barrier");
+    crate::metrics::record_dkg_transport_event("public", "result_stage_barrier");
 
     publish_phase_if_complete(
         state.clone(),
@@ -2642,7 +3630,7 @@ where
         "commit",
     )
     .await?;
-    crate::metrics::record_dkg_hybrid_event("public", "result_commit_barrier");
+    crate::metrics::record_dkg_transport_event("public", "result_commit_barrier");
     Ok(())
 }
 
@@ -2660,9 +3648,9 @@ where
     let (ceremony_id, attempt_id, committee_digest, leader, activated) = coord
         .app_state
         .dkg_session_state
-        .hybrid_transport_info(&session_id)
+        .transport_info(&session_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("session is not using hybrid transport".into()))?;
+        .ok_or_else(|| DkgError::InvalidState("session has no DKG transport state".into()))?;
     if !activated {
         return Err(DkgError::ProtocolError(
             "public contribution generated before attempt activation".into(),
@@ -2674,6 +3662,38 @@ where
         .with_state(&session_id, |session| session.node.node_id())
         .await
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let is_reshare = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |session| {
+            matches!(session.kind, SessionKind::Reshare { .. })
+        })
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let uses_next_identity = matches!(&payload, DkgPublicPayload::ReshareParticipantSet { .. })
+        || (is_reshare && matches!(&payload, DkgPublicPayload::CommitmentAudit { .. }));
+    let origin = if uses_next_identity {
+        let next_node_id = coord
+            .app_state
+            .dkg_session_state
+            .with_state(&session_id, |session| {
+                session
+                    .reshare
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.new_node_id)
+            })
+            .await
+            .flatten()
+            .ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "only a next-committee receiver may publish the participant set".into(),
+                )
+            })?;
+        ParticipantRef::next(next_node_id)
+    } else {
+        ParticipantRef::current(node_id)
+    };
     let ring_id = coord
         .app_state
         .dkg_session_state
@@ -2685,7 +3705,7 @@ where
         attempt_id,
         ring_id,
         committee_digest,
-        node_id,
+        origin,
         payload,
     )
     .map_err(DkgError::Serialization)?;
@@ -2719,7 +3739,7 @@ where
             )
             .await;
         }
-        apply_public_contribution(
+        dispatch_public_contribution(
             coord.app_state.clone(),
             coord.routes,
             signed,
@@ -2735,27 +3755,16 @@ where
         )
         .await;
     }
-    let keys = coord
+    let leader_peer = coord
         .app_state
         .dkg_session_state
-        .get_peer_node_keys(&session_id)
+        .transport_leader_route(&session_id)
         .await
-        .unwrap_or_default();
-    let peers = coord
-        .app_state
-        .dkg_session_state
-        .get_peer_ids(&session_id)
-        .await
-        .unwrap_or_default();
-    let leader_peer = keys
-        .iter()
-        .zip(peers.iter())
-        .find_map(|(key, peer)| (key == &leader).then_some(peer))
         .ok_or_else(|| DkgError::InvalidState("leader peer route is missing".into()))?;
     match control_request(
         &coord.app_state,
         coord.routes,
-        leader_peer,
+        &leader_peer,
         DkgControlMessage::PublicContribution(signed),
     )
     .await?
@@ -2776,8 +3785,197 @@ where
     }
 }
 
+pub(crate) async fn send_reshare_share_ack<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    receiver_node_id: u32,
+    dealer_id: u32,
+    selector_peer: &str,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let attempt_id = coord
+        .app_state
+        .dkg_session_state
+        .transport_attempt(&session_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("reshare transport attempt is missing".into()))?;
+    let ceremony_id = CeremonyId(session_id);
+    let receiver = ParticipantRef::next(receiver_node_id);
+    let dealer = ParticipantRef::current(dealer_id);
+    let idempotency_key = transport::derive_control_message_id(
+        ceremony_id,
+        attempt_id,
+        "reshare-share-ack",
+        receiver,
+        ParticipantRef::next(1),
+        &dealer,
+    )
+    .map_err(DkgError::Serialization)?;
+    match control_request(
+        &coord.app_state,
+        coord.routes,
+        selector_peer,
+        DkgControlMessage::ReshareShareAck {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            receiver,
+            dealer,
+        },
+    )
+    .await?
+    {
+        DkgControlMessage::ReshareShareAcked {
+            ceremony_id: got_ceremony,
+            attempt_id: got_attempt,
+            idempotency_key: got_key,
+        } if got_ceremony == ceremony_id
+            && got_attempt == attempt_id
+            && got_key == idempotency_key =>
+        {
+            Ok(())
+        }
+        response => Err(DkgError::ProtocolError(format!(
+            "selector returned invalid reshare acknowledgement response: {response:?}"
+        ))),
+    }
+}
+
+pub(crate) async fn relay_invalid_share_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    evidence: crate::dkg::v0::messages::SignedDkgShare,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    relay_private_evidence(
+        coord,
+        session_id,
+        ParticipantRef::next(evidence.statement.to_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayInvalidShareEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            evidence: evidence.clone(),
+        },
+        "invalid-share-evidence",
+        &evidence,
+    )
+    .await
+}
+
+pub(crate) async fn relay_invalid_commitment_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    commitment_a: crate::dkg::v0::messages::SignedDkgCommitment,
+    commitment_b: crate::dkg::v0::messages::SignedDkgCommitment,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .flatten()
+        .ok_or_else(|| {
+            DkgError::Unauthorized("evidence relay requires next-committee role".into())
+        })?;
+    let payload = (commitment_a.clone(), commitment_b.clone());
+    relay_private_evidence(
+        coord,
+        session_id,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayInvalidCommitmentEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            commitment_a: commitment_a.clone(),
+            commitment_b: commitment_b.clone(),
+        },
+        "invalid-commitment-evidence",
+        &payload,
+    )
+    .await
+}
+
+async fn relay_private_evidence<D, T, F>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    origin: ParticipantRef,
+    make_request: F,
+    message_kind: &str,
+    payload: &T,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    T: serde::Serialize,
+    F: Fn(CeremonyId, AttemptId, MessageId) -> DkgControlMessage,
+{
+    let attempt_id = coord
+        .app_state
+        .dkg_session_state
+        .transport_attempt(&session_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("evidence relay attempt is missing".into()))?;
+    let current_routes = coord
+        .app_state
+        .dkg_session_state
+        .with_state(&session_id, |session| {
+            session.routing.node_id_to_peer_id.clone()
+        })
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let ceremony_id = CeremonyId(session_id);
+    let mut accepted = 0usize;
+    for (node_id, peer) in current_routes {
+        let recipient = ParticipantRef::current(node_id);
+        let key = transport::derive_control_message_id(
+            ceremony_id,
+            attempt_id,
+            message_kind,
+            origin,
+            recipient,
+            payload,
+        )
+        .map_err(DkgError::Serialization)?;
+        if let Ok(DkgControlMessage::EvidenceAccepted {
+            ceremony_id: got_ceremony,
+            attempt_id: got_attempt,
+            idempotency_key,
+        }) = control_request(
+            &coord.app_state,
+            coord.routes,
+            &peer,
+            make_request(ceremony_id, attempt_id, key),
+        )
+        .await
+        {
+            if got_ceremony == ceremony_id && got_attempt == attempt_id && idempotency_key == key {
+                accepted += 1;
+            }
+        }
+    }
+    if accepted == 0 {
+        return Err(DkgError::NetworkCommunication(
+            "private evidence was not accepted by any current-committee member".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Inbound handler for one deterministic bidirectional private pair exchange.
-pub struct HybridPrivateHandler<D>
+pub struct DkgPrivateHandler<D>
 where
     D: CoordinatorDkg,
 {
@@ -2785,7 +3983,7 @@ where
     routes: &'static network::ProtocolRoutes,
 }
 
-impl<D> HybridPrivateHandler<D>
+impl<D> DkgPrivateHandler<D>
 where
     D: CoordinatorDkg,
 {
@@ -2795,7 +3993,7 @@ where
 }
 
 #[async_trait]
-impl<D> ProtocolHandler for HybridPrivateHandler<D>
+impl<D> ProtocolHandler for DkgPrivateHandler<D>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -2814,12 +4012,22 @@ where
                     PEER_RESPONSE_TIMEOUT.as_millis()
                 ))
             })??;
+        if matches!(first, DkgPrivateMessage::PairHello { .. }) {
+            return handle_inbound_pair_hello(
+                self.state.clone(),
+                self.routes,
+                &*connection,
+                &peer,
+                first,
+            )
+            .await;
+        }
         let DkgPrivateMessage::ShareDelivery {
             ceremony_id,
             attempt_id,
             message_id: incoming_id,
-            from_node_id,
-            to_node_id,
+            from,
+            to,
             share_value,
             nonce,
             report_evidence,
@@ -2830,7 +4038,13 @@ where
             ));
         };
         let session_id = ceremony_id.0;
-        if !transport::is_canonical_pair_opener(from_node_id, to_node_id) {
+        let is_reshare_delivery =
+            from.scope == CommitteeScope::Current && to.scope == CommitteeScope::Next;
+        if !is_reshare_delivery
+            && (from.scope != CommitteeScope::Current
+                || to.scope != CommitteeScope::Current
+                || !transport::is_canonical_pair_opener(from.node_id, to.node_id))
+        {
             return Err(network::error::NetworkError::Protocol(
                 "private pair exchange was opened by the non-canonical endpoint".into(),
             ));
@@ -2839,8 +4053,8 @@ where
             ceremony_id,
             attempt_id,
             message_id: incoming_id,
-            from_node_id,
-            to_node_id,
+            from,
+            to,
             share_value,
             nonce,
             report_evidence,
@@ -2848,6 +4062,11 @@ where
         validate_private_delivery(&self.state, &incoming, &peer)
             .await
             .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+        if is_reshare_delivery {
+            validate_reshare_pair_opener(&self.state, session_id, from, to, from)
+                .await
+                .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+        }
         let semaphore = self.state.dkg_private_exchange_permits.clone();
         let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
             Ok(Ok(permit)) => permit,
@@ -2857,7 +4076,7 @@ where
                 ));
             }
             Err(_) => {
-                crate::metrics::record_dkg_hybrid_event("private", "busy");
+                crate::metrics::record_dkg_transport_event("private", "busy");
                 send_private_busy(
                     &*connection,
                     self.routes.dkg_private_alpn,
@@ -2871,14 +4090,83 @@ where
         let pair_metrics = PrivatePairMetricsGuard::new();
         tracing::info!(
             session_id,
-            from_node_id,
-            to_node_id,
+            from = ?from,
+            to = ?to,
             "accepted inbound private DKG pair exchange"
         );
+        if is_reshare_delivery {
+            let reciprocal_recipient =
+                reciprocal_reshare_recipient(&self.state, session_id, from, to)
+                    .await
+                    .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+            let reciprocal = match reciprocal_recipient {
+                Some(recipient) => {
+                    let Some(bytes) = self
+                        .state
+                        .dkg_session_state
+                        .private_message_for_recipient(&session_id, recipient)
+                        .await
+                    else {
+                        send_private_busy(
+                            &*connection,
+                            self.routes.dkg_private_alpn,
+                            ceremony_id,
+                            attempt_id,
+                        )
+                        .await?;
+                        return Ok(());
+                    };
+                    Some(
+                        transport::decode::<DkgPrivateMessage>(&bytes, MAX_CONTROL_MESSAGE_BYTES)
+                            .map_err(network::error::NetworkError::Serialization)?,
+                    )
+                }
+                None => None,
+            };
+            let completion = timeout(PEER_RESPONSE_TIMEOUT, async {
+                if let Some(outgoing) = &reciprocal {
+                    send_private(&*connection, self.routes.dkg_private_alpn, outgoing).await?;
+                    let ack = recv_private(&*connection).await?;
+                    validate_share_ack(outgoing, &ack)
+                        .map_err(network::error::NetworkError::Protocol)?;
+                    if let DkgPrivateMessage::ShareAck { message_id, .. } = ack {
+                        self.state
+                            .dkg_session_state
+                            .acknowledge_private_message(&session_id, attempt_id, message_id)
+                            .await;
+                    }
+                }
+                let completion =
+                    accept_private_delivery(self.state.clone(), self.routes, &incoming, &peer)
+                        .await
+                        .map_err(|error| {
+                            network::error::NetworkError::Protocol(error.to_string())
+                        })?;
+                let ack =
+                    share_ack_for(&incoming).map_err(network::error::NetworkError::Protocol)?;
+                send_private(&*connection, self.routes.dkg_private_alpn, &ack).await?;
+                Ok::<PrivateShareCompletion, network::error::NetworkError>(completion)
+            })
+            .await
+            .map_err(|_| {
+                crate::metrics::record_dkg_transport_event("private", "inbound_timeout");
+                network::error::NetworkError::Protocol(format!(
+                    "inbound reshare delivery from {peer_prefix} timed out after {}ms",
+                    PEER_RESPONSE_TIMEOUT.as_millis()
+                ))
+            })??;
+            drop(permit);
+            pair_metrics.complete();
+            crate::metrics::record_dkg_transport_event("private", "pair_completed");
+            drive_private_completion(self.state.clone(), self.routes, completion)
+                .await
+                .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+            return Ok(());
+        }
         let Some(outgoing_bytes) = self
             .state
             .dkg_session_state
-            .private_message_for_recipient(&session_id, from_node_id)
+            .private_message_for_recipient(&session_id, from)
             .await
         else {
             send_private_busy(
@@ -2914,7 +4202,7 @@ where
         })
         .await
         .map_err(|_| {
-            crate::metrics::record_dkg_hybrid_event("private", "inbound_timeout");
+            crate::metrics::record_dkg_transport_event("private", "inbound_timeout");
             network::error::NetworkError::Protocol(format!(
                 "inbound private pair exchange with {peer_prefix} timed out after {}ms",
                 PEER_RESPONSE_TIMEOUT.as_millis()
@@ -2922,7 +4210,7 @@ where
         })??;
         drop(permit);
         pair_metrics.complete();
-        crate::metrics::record_dkg_hybrid_event("private", "pair_completed");
+        crate::metrics::record_dkg_transport_event("private", "pair_completed");
         drive_private_completion(self.state.clone(), self.routes, completion)
             .await
             .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
@@ -2930,11 +4218,195 @@ where
     }
 }
 
+async fn validate_reshare_pair_opener<D>(
+    state: &Arc<AppState<D>>,
+    session_id: u128,
+    first: ParticipantRef,
+    second: ParticipantRef,
+    actual_opener: ParticipantRef,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let committees = state
+        .dkg_session_state
+        .transport_committees(&session_id)
+        .await
+        .ok_or_else(|| {
+            DkgError::InvalidState("ceremony committee configuration is missing".into())
+        })?;
+    if committees.canonical_pair_opener(first, second) != Some(actual_opener) {
+        return Err(DkgError::Unauthorized(
+            "reshare private stream was opened by the non-canonical node key".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn reciprocal_reshare_recipient<D>(
+    state: &Arc<AppState<D>>,
+    session_id: u128,
+    remote_dealer: ParticipantRef,
+    _local_receiver: ParticipantRef,
+) -> Result<Option<ParticipantRef>>
+where
+    D: CoordinatorDkg,
+{
+    let committees = state
+        .dkg_session_state
+        .transport_committees(&session_id)
+        .await
+        .ok_or_else(|| {
+            DkgError::InvalidState("ceremony committee configuration is missing".into())
+        })?;
+    let remote_key = committees.node_key(remote_dealer).ok_or_else(|| {
+        DkgError::Unauthorized("remote dealer is outside current committee".into())
+    })?;
+    let Some(next) = committees.next.as_ref() else {
+        return Ok(None);
+    };
+    let Some(remote_receiver) = next.participant(CommitteeScope::Next, remote_key) else {
+        return Ok(None);
+    };
+    let Some(local_dealer) = committees
+        .current
+        .participant(CommitteeScope::Current, &state.node_key)
+    else {
+        return Ok(None);
+    };
+    let active = state
+        .dkg_session_state
+        .transport_active_dealers(&session_id)
+        .await
+        .unwrap_or_default();
+    Ok(active.contains(&local_dealer).then_some(remote_receiver))
+}
+
+async fn handle_inbound_pair_hello<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    connection: &dyn Connection,
+    peer: &PeerId,
+    hello: DkgPrivateMessage,
+) -> network::Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let DkgPrivateMessage::PairHello {
+        ceremony_id,
+        attempt_id,
+        pair_id,
+        opener,
+        responder,
+    } = hello
+    else {
+        unreachable!("caller accepts only PairHello");
+    };
+    if opener.scope != CommitteeScope::Next || responder.scope != CommitteeScope::Current {
+        return Err(network::error::NetworkError::Protocol(
+            "reshare PairHello must be next-receiver to current-dealer".into(),
+        ));
+    }
+    let session_id = ceremony_id.0;
+    let (_, active_attempt, _, _, activated) = state
+        .dkg_session_state
+        .transport_info(&session_id)
+        .await
+        .ok_or_else(|| network::error::NetworkError::Protocol("pair session is missing".into()))?;
+    if active_attempt != attempt_id || !activated {
+        return Err(network::error::NetworkError::Protocol(
+            "PairHello targets a stale or inactive attempt".into(),
+        ));
+    }
+    if pair_id != transport::derive_pair_hello_id(ceremony_id, attempt_id, opener, responder) {
+        return Err(network::error::NetworkError::Protocol(
+            "PairHello idempotency key is invalid".into(),
+        ));
+    }
+    let committees = state
+        .dkg_session_state
+        .transport_committees(&session_id)
+        .await
+        .ok_or_else(|| {
+            network::error::NetworkError::Protocol(
+                "ceremony committee configuration is missing".into(),
+            )
+        })?;
+    if committees.node_key(responder) != Some(state.node_key.as_str())
+        || committees
+            .route(opener)
+            .is_none_or(|route| !peer_matches_route(peer, route))
+    {
+        return Err(network::error::NetworkError::Protocol(
+            "PairHello identities do not match authenticated routes".into(),
+        ));
+    }
+    validate_reshare_pair_opener(&state, session_id, opener, responder, opener)
+        .await
+        .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
+    let active_dealers = state
+        .dkg_session_state
+        .transport_active_dealers(&session_id)
+        .await
+        .unwrap_or_default();
+    if !active_dealers.contains(&responder) {
+        return Err(network::error::NetworkError::Protocol(
+            "PairHello targets an inactive dealer".into(),
+        ));
+    }
+    let semaphore = state.dkg_private_exchange_permits.clone();
+    let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(network::error::NetworkError::Protocol(
+                "private exchange semaphore closed".into(),
+            ));
+        }
+        Err(_) => {
+            send_private_busy(connection, routes.dkg_private_alpn, ceremony_id, attempt_id).await?;
+            return Ok(());
+        }
+    };
+    let Some(outgoing_bytes) = state
+        .dkg_session_state
+        .private_message_for_recipient(&session_id, opener)
+        .await
+    else {
+        send_private_busy(connection, routes.dkg_private_alpn, ceremony_id, attempt_id).await?;
+        return Ok(());
+    };
+    let outgoing: DkgPrivateMessage = transport::decode(&outgoing_bytes, MAX_CONTROL_MESSAGE_BYTES)
+        .map_err(network::error::NetworkError::Serialization)?;
+    let exchange = timeout(PEER_RESPONSE_TIMEOUT, async {
+        send_private(connection, routes.dkg_private_alpn, &outgoing).await?;
+        let ack = recv_private(connection).await?;
+        validate_share_ack(&outgoing, &ack).map_err(network::error::NetworkError::Protocol)?;
+        if let DkgPrivateMessage::ShareAck { message_id, .. } = ack {
+            state
+                .dkg_session_state
+                .acknowledge_private_message(&session_id, attempt_id, message_id)
+                .await;
+        }
+        Ok::<(), network::error::NetworkError>(())
+    })
+    .await
+    .map_err(|_| {
+        network::error::NetworkError::Protocol(
+            "responder-only private pair exchange timed out".into(),
+        )
+    })??;
+    drop(permit);
+    crate::metrics::record_dkg_transport_event("private", "pair_completed");
+    Ok(exchange)
+}
+
 async fn send_private(
     connection: &dyn Connection,
     alpn: &[u8],
     message: &DkgPrivateMessage,
 ) -> network::Result<()> {
+    crate::metrics::record_dkg_transport_message("private", message.metric_label(), "sent");
     let bytes = transport::encode(message).map_err(network::error::NetworkError::Serialization)?;
     connection.send(Message::new(bytes, alpn.to_vec())).await
 }
@@ -2968,8 +4440,10 @@ async fn send_private_busy(
 
 async fn recv_private(connection: &dyn Connection) -> network::Result<DkgPrivateMessage> {
     let message = connection.recv().await?;
-    transport::decode(&message.data, MAX_CONTROL_MESSAGE_BYTES)
-        .map_err(network::error::NetworkError::Serialization)
+    let decoded: DkgPrivateMessage = transport::decode(&message.data, MAX_CONTROL_MESSAGE_BYTES)
+        .map_err(network::error::NetworkError::Serialization)?;
+    crate::metrics::record_dkg_transport_message("private", decoded.metric_label(), "received");
+    Ok(decoded)
 }
 
 fn share_ack_for(message: &DkgPrivateMessage) -> std::result::Result<DkgPrivateMessage, String> {
@@ -2977,8 +4451,8 @@ fn share_ack_for(message: &DkgPrivateMessage) -> std::result::Result<DkgPrivateM
         ceremony_id,
         attempt_id,
         message_id,
-        from_node_id,
-        to_node_id,
+        from,
+        to,
         share_value,
         nonce,
         ..
@@ -2993,8 +4467,8 @@ fn share_ack_for(message: &DkgPrivateMessage) -> std::result::Result<DkgPrivateM
         share_digest: transport::share_digest(
             *ceremony_id,
             *attempt_id,
-            *from_node_id,
-            *to_node_id,
+            *from,
+            *to,
             share_value,
             nonce,
         ),
@@ -3024,8 +4498,8 @@ where
         ceremony_id,
         attempt_id,
         message_id,
-        from_node_id,
-        to_node_id,
+        from,
+        to,
         share_value,
         nonce,
         ..
@@ -3037,27 +4511,46 @@ where
     };
     let (expected_ceremony, expected_attempt, _, _, activated) = state
         .dkg_session_state
-        .hybrid_transport_info(&ceremony_id.0)
+        .transport_info(&ceremony_id.0)
         .await
         .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
     if expected_ceremony != *ceremony_id || expected_attempt != *attempt_id || !activated {
-        return Err(DkgError::Unauthorized(
-            "stale or inactive private exchange".into(),
-        ));
+        return Err(DkgError::Unauthorized(format!(
+            "stale or inactive private exchange: expected ceremony={} attempt={} activated={activated}, got ceremony={} attempt={}",
+            expected_ceremony.0,
+            hex::encode(expected_attempt.0),
+            ceremony_id.0,
+            hex::encode(attempt_id.0),
+        )));
     }
     let local_node_id = state
         .dkg_session_state
         .with_state(&ceremony_id.0, |session| session.node.node_id())
         .await
         .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
-    if local_node_id != *to_node_id {
+    let expected_local_id = if to.scope == CommitteeScope::Next {
+        state
+            .dkg_session_state
+            .with_state(&ceremony_id.0, |session| {
+                session
+                    .reshare
+                    .params
+                    .as_ref()
+                    .and_then(|params| params.new_node_id)
+            })
+            .await
+            .flatten()
+    } else {
+        Some(local_node_id)
+    };
+    if expected_local_id != Some(to.node_id) {
         return Err(DkgError::Unauthorized(
             "private share delivered to wrong recipient".into(),
         ));
     }
     let expected_sender = state
         .dkg_session_state
-        .get_peer_id_for_node(&ceremony_id.0, *from_node_id)
+        .get_peer_id_for_node(&ceremony_id.0, from.node_id)
         .await
         .ok_or_else(|| DkgError::Unauthorized("private share sender is not in committee".into()))?;
     if !peer_matches_route(sender, &expected_sender) {
@@ -3068,8 +4561,8 @@ where
     let expected_id = transport::derive_private_message_id(
         *ceremony_id,
         *attempt_id,
-        *from_node_id,
-        *to_node_id,
+        *from,
+        *to,
         share_value,
         nonce,
     );
@@ -3092,7 +4585,7 @@ async fn accept_private_delivery<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     message: &DkgPrivateMessage,
-    sender: &PeerId,
+    _sender: &PeerId,
 ) -> Result<PrivateShareCompletion>
 where
     D: CoordinatorDkg,
@@ -3100,8 +4593,9 @@ where
 {
     let DkgPrivateMessage::ShareDelivery {
         ceremony_id,
-        from_node_id,
-        to_node_id,
+        message_id,
+        from,
+        to,
         share_value,
         nonce,
         report_evidence,
@@ -3113,21 +4607,19 @@ where
         ));
     };
     let should_drive = DkgCoordinator::with_routes(state, routes)
-        .accept_private_share(
-            DkgMessage::Share {
-                session_id: ceremony_id.0,
-                from_node_id,
-                to_node_id,
-                share_value,
-                nonce,
-                report_evidence,
-            },
-            sender,
+        .accept_transport_share(
+            ceremony_id.0,
+            message_id,
+            from.node_id,
+            to.node_id,
+            share_value,
+            nonce,
+            report_evidence,
         )
         .await?;
     Ok(PrivateShareCompletion {
         session_id: ceremony_id.0,
-        from_node_id,
+        from_node_id: from.node_id,
         should_drive,
     })
 }
@@ -3194,6 +4686,203 @@ fn private_retry_delay(
     Duration::from_millis(floor_ms.saturating_add(jitter_ms)).min(remaining)
 }
 
+async fn open_private_pair_hello<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    peer: String,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    opener: ParticipantRef,
+    responder: ParticipantRef,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let pair_id = transport::derive_pair_hello_id(ceremony_id, attempt_id, opener, responder);
+    let hello = DkgPrivateMessage::PairHello {
+        ceremony_id,
+        attempt_id,
+        pair_id,
+        opener,
+        responder,
+    };
+    let exact_hello = transport::encode(&hello).map_err(DkgError::Serialization)?;
+    let deadline: Instant = state
+        .dkg_session_state
+        .transport_hard_deadline(&ceremony_id.0, attempt_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
+        .into();
+    let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
+    let mut retry_attempt = 0_u32;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(DkgError::NetworkCommunication(format!(
+                "responder-only private pair exchange with {peer} exceeded hard attempt deadline"
+            )));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let permit = timeout(
+            remaining,
+            state.dkg_private_exchange_permits.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| DkgError::NetworkCommunication("private pair permit timed out".into()))?
+        .map_err(|_| DkgError::InvalidState("private exchange semaphore closed".into()))?;
+        let attempt_timeout = PEER_RESPONSE_TIMEOUT.min(remaining);
+        let mut busy_retry_after = None;
+        let mut attempt_connection = None;
+        let exchange = timeout(attempt_timeout, async {
+            let (stream, parent) = state
+                .peer_connection_pool
+                .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
+                .await
+                .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+            attempt_connection = Some(parent);
+            stream
+                .send(Message::new(
+                    exact_hello.clone(),
+                    routes.dkg_private_alpn.to_vec(),
+                ))
+                .await
+                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            let response = recv_private(&*stream)
+                .await
+                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            if let DkgPrivateMessage::Busy {
+                ceremony_id: busy_ceremony,
+                attempt_id: busy_attempt,
+                retry_after_ms,
+            } = response
+            {
+                if busy_ceremony != ceremony_id || busy_attempt != attempt_id {
+                    return Err(DkgError::ProtocolError(
+                        "private Busy response did not match PairHello attempt".into(),
+                    ));
+                }
+                busy_retry_after = Some(Duration::from_millis(retry_after_ms.max(1)));
+                return Err(DkgError::NetworkCommunication("private peer busy".into()));
+            }
+            validate_private_delivery(&state, &response, stream.peer_id()).await?;
+            let DkgPrivateMessage::ShareDelivery { from, to, .. } = response.clone() else {
+                return Err(DkgError::ProtocolError(
+                    "PairHello responder did not return ShareDelivery".into(),
+                ));
+            };
+            if from != responder || to != opener {
+                return Err(DkgError::Unauthorized(
+                    "PairHello responder returned the wrong directional obligation".into(),
+                ));
+            }
+            let completion =
+                accept_private_delivery(state.clone(), routes, &response, stream.peer_id()).await?;
+            let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
+            send_private(&*stream, routes.dkg_private_alpn, &ack)
+                .await
+                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            Ok(completion)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(DkgError::NetworkCommunication(format!(
+                "responder-only private pair exchange with {peer} timed out"
+            )))
+        });
+        drop(permit);
+        match exchange {
+            Ok(completion) => {
+                drive_private_completion(state.clone(), routes, completion).await?;
+                crate::metrics::record_dkg_transport_event("private", "pair_completed");
+                return Ok(());
+            }
+            Err(error) => {
+                if busy_retry_after.is_none() {
+                    if let Some(connection) = attempt_connection.as_ref() {
+                        state
+                            .peer_connection_pool
+                            .invalidate_if_same(&peer, routes.dkg_private_alpn, connection)
+                            .await;
+                    }
+                }
+                crate::metrics::record_dkg_transport_event("private", "retry");
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let delay = private_retry_delay(
+                    pair_id,
+                    retry_attempt,
+                    backoff,
+                    busy_retry_after,
+                    remaining,
+                );
+                tracing::debug!(%peer, %error, "retrying responder-only private pair exchange");
+                sleep(delay).await;
+                retry_attempt = retry_attempt.saturating_add(1);
+                backoff = (backoff * 2).min(DKG_MAX_REPAIR_BACKOFF);
+            }
+        }
+    }
+}
+
+fn spawn_reshare_receiver_pair_openers<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    session_id: u128,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    tokio::spawn(async move {
+        let Some(committees) = state
+            .dkg_session_state
+            .transport_committees(&session_id)
+            .await
+        else {
+            return;
+        };
+        let Some(next) = committees.next.as_ref() else {
+            return;
+        };
+        let Some(local_receiver) = next.participant(CommitteeScope::Next, &state.node_key) else {
+            return;
+        };
+        let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await else {
+            return;
+        };
+        let active_dealers = state
+            .dkg_session_state
+            .transport_active_dealers(&session_id)
+            .await
+            .unwrap_or_default();
+        let mut tasks = FuturesUnordered::new();
+        for dealer in active_dealers {
+            if committees.canonical_pair_opener(local_receiver, dealer) != Some(local_receiver) {
+                continue;
+            }
+            let Some(peer) = committees.route(dealer).map(str::to_string) else {
+                continue;
+            };
+            let state = state.clone();
+            tasks.push(async move {
+                open_private_pair_hello(
+                    state,
+                    routes,
+                    peer,
+                    CeremonyId(session_id),
+                    attempt_id,
+                    local_receiver,
+                    dealer,
+                )
+                .await
+            });
+        }
+        while let Some(result) = tasks.next().await {
+            if let Err(error) = result {
+                tracing::warn!(session_id, %error, "reshare responder-only pair exchange failed");
+            }
+        }
+    });
+}
+
 async fn open_private_pair<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -3219,9 +4908,9 @@ where
     };
     let deadline: Instant = state
         .dkg_session_state
-        .hybrid_hard_deadline(&ceremony_id.0, attempt_id)
+        .transport_hard_deadline(&ceremony_id.0, attempt_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("hybrid hard deadline is missing".into()))?
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
         .into();
     let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
     let mut retry_attempt = 0_u32;
@@ -3287,6 +4976,14 @@ where
                 busy_retry_after = Some(Duration::from_millis(retry_after_ms.max(1)));
                 return Err(DkgError::NetworkCommunication("private peer busy".into()));
             }
+            if let DkgPrivateMessage::ShareAck { .. } = response {
+                validate_share_ack(&outgoing, &response).map_err(DkgError::ProtocolError)?;
+                state
+                    .dkg_session_state
+                    .acknowledge_private_message(&ceremony_id.0, attempt_id, message_id)
+                    .await;
+                return Ok(None);
+            }
             validate_private_delivery(&state, &response, &remote).await?;
             let completion =
                 accept_private_delivery(state.clone(), routes, &response, &remote).await?;
@@ -3302,7 +4999,7 @@ where
                 .dkg_session_state
                 .acknowledge_private_message(&ceremony_id.0, attempt_id, message_id)
                 .await;
-            Ok(completion)
+            Ok(Some(completion))
         })
         .await
         .unwrap_or_else(|_| {
@@ -3315,13 +5012,15 @@ where
         match exchange {
             Ok(completion) => {
                 pair_metrics.complete();
-                crate::metrics::record_dkg_hybrid_event("private", "pair_completed");
+                crate::metrics::record_dkg_transport_event("private", "pair_completed");
                 tracing::info!(
                     session_id = ceremony_id.0,
                     %peer,
                     "private DKG pair exchange completed"
                 );
-                drive_private_completion(state.clone(), routes, completion).await?;
+                if let Some(completion) = completion {
+                    drive_private_completion(state.clone(), routes, completion).await?;
+                }
                 return Ok(());
             }
             Err(error) => {
@@ -3339,7 +5038,7 @@ where
                             .invalidate_if_same(&peer, routes.dkg_private_alpn, connection)
                             .await
                         {
-                            crate::metrics::record_dkg_hybrid_event(
+                            crate::metrics::record_dkg_transport_event(
                                 "private",
                                 "connection_invalidated",
                             );
@@ -3352,7 +5051,7 @@ where
                         }
                     }
                 }
-                crate::metrics::record_dkg_hybrid_event("private", "retry");
+                crate::metrics::record_dkg_transport_event("private", "retry");
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 let retry_delay = private_retry_delay(
                     message_id,
@@ -3391,10 +5090,31 @@ where
         .with_state(&session_id, |session| session.node.node_id())
         .await
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let committees = coord
+        .app_state
+        .dkg_session_state
+        .transport_committees(&session_id)
+        .await
+        .ok_or_else(|| {
+            DkgError::InvalidState("ceremony committee configuration is missing".into())
+        })?;
     let mut openers = FuturesUnordered::new();
     let all_message_ids: Vec<_> = outgoing.iter().map(|(_, _, id, _)| *id).collect();
     for (to_node_id, peer, _, bytes) in outgoing {
-        if transport::is_canonical_pair_opener(local_node_id, to_node_id) {
+        let decoded = transport::decode::<DkgPrivateMessage>(&bytes, MAX_CONTROL_MESSAGE_BYTES)
+            .map_err(DkgError::Deserialization)?;
+        let should_open = match decoded {
+            DkgPrivateMessage::ShareDelivery { from, to, .. }
+                if to.scope == CommitteeScope::Next =>
+            {
+                committees.canonical_pair_opener(from, to) == Some(from)
+            }
+            DkgPrivateMessage::ShareDelivery { .. } => {
+                transport::is_canonical_pair_opener(local_node_id, to_node_id)
+            }
+            _ => false,
+        };
+        if should_open {
             let state = coord.app_state.clone();
             let routes = coord.routes;
             openers.push(async move { open_private_pair(state, routes, peer, bytes).await });
@@ -3406,15 +5126,15 @@ where
     let attempt_id = coord
         .app_state
         .dkg_session_state
-        .hybrid_attempt(&session_id)
+        .transport_attempt(&session_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("hybrid attempt is missing".into()))?;
+        .ok_or_else(|| DkgError::InvalidState("transport attempt is missing".into()))?;
     let deadline: Instant = coord
         .app_state
         .dkg_session_state
-        .hybrid_hard_deadline(&session_id, attempt_id)
+        .transport_hard_deadline(&session_id, attempt_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("hybrid hard deadline is missing".into()))?
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
         .into();
     loop {
         let mut missing = 0usize;

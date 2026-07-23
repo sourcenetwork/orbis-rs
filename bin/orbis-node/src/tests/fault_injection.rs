@@ -428,7 +428,7 @@ async fn test_nonleader_dkg_start_returns_leader_preparation_error() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_dkg_repairs_gossip_loss_and_private_disconnects() {
-    let net = setup_fault_three_node_network("fault_dkg_hybrid_repair", 51058).await;
+    let net = setup_fault_three_node_network("fault_dkg_transport_repair", 51058).await;
 
     for controller in [
         &net.alice.fault_ctrl,

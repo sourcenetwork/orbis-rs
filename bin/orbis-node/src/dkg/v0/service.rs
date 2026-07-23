@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::{validate_dkg_claims, validate_fresh_dkg_ring_payload};
-use crate::dkg::v0::hybrid;
+use crate::dkg::v0::network as dkg_network;
 use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::metrics;
@@ -89,10 +89,10 @@ where
 
         let created_at = current_time as i64;
         let (ceremony_id, _attempt_id) =
-            hybrid::start_fresh(self.state.clone(), self.routes, ring_id.clone(), token_str)
+            dkg_network::start_fresh(self.state.clone(), self.routes, ring_id.clone(), token_str)
                 .await
                 .inspect_err(|error| {
-                    tracing::error!(ring_id = %ring_id, %error, "hybrid DKG start failed");
+                    tracing::error!(ring_id = %ring_id, %error, "DKG start failed");
                 })?;
         let response = StartDkgResponse {
             session_id: ceremony_id.0.to_string(),

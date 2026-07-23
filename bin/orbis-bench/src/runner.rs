@@ -1,5 +1,6 @@
 use crate::compose::{
-    node_service, write_stack_files, ComposeInput, RingDefinition, RING_GOVERNANCE_POLICY_ID,
+    node_service, write_stack_files, ComposeInput, RingDefinition, CONTROLLER_PUBLIC_KEY,
+    RING_GOVERNANCE_POLICY_ID,
 };
 use crate::config::{Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS};
 use crate::docker::{image_digest, DockerCompose};
@@ -595,6 +596,14 @@ impl BenchmarkRunner {
                 )
                 .await?;
         }
+        if self.experiment.operations.contains(&Operation::PssReshare) {
+            viable &= self
+                .run_reshare_trials(
+                    store, manifest, stack, stack_id, compose, controller, endpoints, clients,
+                    rings, completed, rng,
+                )
+                .await?;
+        }
         Ok(viable)
     }
 
@@ -1062,12 +1071,148 @@ impl BenchmarkRunner {
         }
         Ok(viable)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_reshare_trials(
+        &self,
+        store: &mut ResultStore,
+        manifest: &RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        compose: &DockerCompose,
+        controller: &SourceHubClient,
+        endpoints: &[NodeEndpoint],
+        clients: &mut DirectClients,
+        rings: &CaseRings,
+        completed: &HashSet<TrialKey>,
+        rng: &mut StdRng,
+    ) -> Result<bool> {
+        let mut viable = true;
+        for (trial, planned) in rings.reshare.iter().enumerate() {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                stack_id,
+                &stack.profile.name,
+                &rings.case,
+                Operation::PssReshare,
+                trial_index,
+                warmup,
+            );
+            if completed.contains(&key) {
+                continue;
+            }
+
+            let ring_pk = establish_ring(
+                clients,
+                controller,
+                &planned.ring,
+                rng,
+                Duration::from_secs(self.experiment.timeouts.dkg_secs),
+            )
+            .await?;
+            let old_states = clients.ring_states(&planned.ring.members, &ring_pk).await?;
+            let old_last_pss = planned
+                .ring
+                .members
+                .iter()
+                .copied()
+                .zip(old_states.iter().map(|state| state.last_pss))
+                .collect::<BTreeMap<_, _>>();
+            let union = planned.ring.authorized_members.clone();
+            let committee = union
+                .iter()
+                .map(|index| endpoints[*index - 1].clone())
+                .collect::<Vec<_>>();
+            let next_node_keys = planned.next_node_keys.clone();
+            let before = scrape_committee(&committee).await;
+            let started_at = unix_ms();
+            let started = Instant::now();
+            let result = timeout(
+                Duration::from_secs(self.experiment.timeouts.pss_refresh_secs),
+                async {
+                    let response = controller
+                        .orbis_start_ring_reshare_by_acp(
+                            &planned.ring.definition.id,
+                            next_node_keys.clone(),
+                            Some(rings.case.threshold as u32),
+                        )
+                        .await?;
+                    if response.code != 0 {
+                        bail!("SourceHub rejected reshare announcement: {}", response.log);
+                    }
+                    wait_reshare_finalized(
+                        controller,
+                        clients,
+                        &planned.ring.definition.id,
+                        &ring_pk,
+                        &planned.next_members,
+                        &next_node_keys,
+                        rings.case.threshold,
+                        &old_last_pss,
+                    )
+                    .await
+                },
+            )
+            .await;
+            let after = scrape_committee(&committee).await;
+            let metric_deltas = metric_delta(&before, &after);
+            let failures = compose.container_failures().await.unwrap_or_default();
+            let (success, class, error) = match result {
+                Ok(Ok(())) if failures.is_empty() => (true, None, None),
+                Ok(Ok(())) => (
+                    false,
+                    Some("container_failure".into()),
+                    Some(format!("{failures:?}")),
+                ),
+                Ok(Err(error)) => (
+                    false,
+                    Some("correctness_or_protocol_failure".into()),
+                    Some(format!("{error:#}")),
+                ),
+                Err(_) => (
+                    false,
+                    Some("timeout".into()),
+                    Some("PSS reshare deadline exceeded".into()),
+                ),
+            };
+            viable &= success || warmup;
+            let mut record = base_trial(
+                manifest,
+                stack,
+                stack_id,
+                rings,
+                Operation::PssReshare,
+                trial_index,
+                warmup,
+                started.elapsed().as_secs_f64() * 1000.0,
+                None,
+                success,
+                class,
+                error,
+            );
+            record.started_at_unix_ms = started_at;
+            record.ring_id = Some(planned.ring.definition.id.clone());
+            record.ring_pk = Some(ring_pk);
+            record.metric_deltas = metric_deltas;
+            store.append_trial(&record)?;
+        }
+        Ok(viable)
+    }
 }
 
 #[derive(Clone, Debug)]
 struct PlannedRing {
     definition: RingDefinition,
     members: Vec<usize>,
+    authorized_members: Vec<usize>,
+}
+
+#[derive(Clone, Debug)]
+struct PlannedReshare {
+    ring: PlannedRing,
+    next_members: Vec<usize>,
+    next_node_keys: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1076,6 +1221,7 @@ struct CaseRings {
     dkg: Vec<PlannedRing>,
     online: Option<PlannedRing>,
     refresh: Option<PlannedRing>,
+    reshare: Vec<PlannedReshare>,
 }
 
 impl CaseRings {
@@ -1084,6 +1230,7 @@ impl CaseRings {
             .iter()
             .chain(self.online.iter())
             .chain(self.refresh.iter())
+            .chain(self.reshare.iter().map(|planned| &planned.ring))
     }
 }
 
@@ -1108,7 +1255,7 @@ fn plan_rings(
             members.shuffle(&mut rng);
             members.truncate(case.ring_size);
             members.sort_unstable();
-            let node_keys = members
+            let node_keys: Vec<String> = members
                 .iter()
                 .map(|index| identities[*index - 1].node_key.clone())
                 .collect();
@@ -1116,11 +1263,13 @@ fn plan_rings(
             Ok(PlannedRing {
                 definition: RingDefinition {
                     id,
-                    peer_node_keys: node_keys,
+                    peer_node_keys: node_keys.clone(),
+                    operator_node_keys: node_keys,
                     threshold: case.threshold,
                     pss_interval_secs,
                     policy_id: RING_GOVERNANCE_POLICY_ID.to_string(),
                 },
+                authorized_members: members.clone(),
                 members,
             })
         };
@@ -1140,11 +1289,64 @@ fn plan_rings(
             .contains(&Operation::PssRefresh)
             .then(|| make("refresh", experiment.pss_interval_secs))
             .transpose()?;
+        let reshare = if experiment.operations.contains(&Operation::PssReshare) {
+            let overlap = experiment
+                .reshare_overlap
+                .context("pss_reshare requires reshare_overlap")?;
+            (0..experiment.warmups + experiment.repetitions)
+                .map(|trial| {
+                    let mut ring = make("reshare", 86_400)?;
+                    let mut selection_rng = StdRng::seed_from_u64(
+                        experiment.seed
+                            ^ (stack.stack_index as u64).rotate_left(7)
+                            ^ (case_index as u64).rotate_left(19)
+                            ^ (trial as u64).rotate_left(41),
+                    );
+                    let mut shared = ring.members.clone();
+                    shared.shuffle(&mut selection_rng);
+                    shared.truncate(overlap);
+                    let old = ring.members.iter().copied().collect::<HashSet<_>>();
+                    let mut outsiders = (1..=stack.network_size)
+                        .filter(|member| !old.contains(member))
+                        .collect::<Vec<_>>();
+                    outsiders.shuffle(&mut selection_rng);
+                    outsiders.truncate(case.ring_size - overlap);
+                    let mut next_members = shared;
+                    next_members.extend(outsiders);
+                    next_members.sort_unstable();
+
+                    let mut authorized_members = ring.members.clone();
+                    authorized_members.extend(next_members.iter().copied());
+                    authorized_members.sort_unstable();
+                    authorized_members.dedup();
+                    ring.definition.operator_node_keys = authorized_members
+                        .iter()
+                        .map(|index| identities[*index - 1].node_key.clone())
+                        .collect();
+                    ring.definition
+                        .operator_node_keys
+                        .push(CONTROLLER_PUBLIC_KEY.to_string());
+                    ring.authorized_members = authorized_members;
+                    let next_node_keys = next_members
+                        .iter()
+                        .map(|index| identities[*index - 1].node_key.clone())
+                        .collect();
+                    Ok(PlannedReshare {
+                        ring,
+                        next_members,
+                        next_node_keys,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
         output.push(CaseRings {
             case: case.clone(),
             dkg,
             online,
             refresh,
+            reshare,
         });
     }
     Ok(output)
@@ -1153,7 +1355,7 @@ fn plan_rings(
 fn node_ring_ids(cases: &[CaseRings]) -> BTreeMap<usize, Vec<String>> {
     let mut mapping: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     for ring in cases.iter().flat_map(CaseRings::all) {
-        for member in &ring.members {
+        for member in &ring.authorized_members {
             mapping
                 .entry(*member)
                 .or_default()
@@ -1612,6 +1814,82 @@ fn pss_timing(
     )
 }
 
+async fn wait_reshare_finalized(
+    controller: &SourceHubClient,
+    clients: &DirectClients,
+    ring_id: &str,
+    original_ring_pk: &str,
+    next_members: &[usize],
+    next_node_keys: &[String],
+    expected_threshold: usize,
+    old_last_pss: &BTreeMap<usize, u64>,
+) -> Result<()> {
+    let mut expected_keys = next_node_keys.to_vec();
+    expected_keys.sort();
+    let mut last_progress = Instant::now()
+        .checked_sub(Duration::from_secs(10))
+        .unwrap_or_else(Instant::now);
+    loop {
+        let ring = read_ring_with_retry(controller, ring_id)
+            .await?
+            .with_context(|| format!("reshare ring {ring_id} disappeared from SourceHub"))?;
+        let mut actual_keys = ring.peer_node_keys.clone();
+        actual_keys.sort();
+        let chain_finalized = ring.ring_pk == original_ring_pk
+            && actual_keys == expected_keys
+            && ring.threshold as usize == expected_threshold
+            && ring.new_peer_node_keys.is_empty()
+            && ring.new_threshold.is_none();
+
+        if chain_finalized {
+            match clients.ring_states(next_members, original_ring_pk).await {
+                Ok(states) => {
+                    let expected_polynomial = states
+                        .first()
+                        .map(|state| state.public_polynomial.as_str())
+                        .filter(|polynomial| !polynomial.is_empty());
+                    let matching_polynomials = expected_polynomial.is_some()
+                        && states.iter().all(|state| {
+                            Some(state.public_polynomial.as_str()) == expected_polynomial
+                        });
+                    let overlapping_members_updated =
+                        next_members.iter().zip(&states).all(|(member, state)| {
+                            old_last_pss
+                                .get(member)
+                                .is_none_or(|before| state.last_pss > *before)
+                        });
+                    if matching_polynomials && overlapping_members_updated {
+                        return Ok(());
+                    }
+                    if last_progress.elapsed() >= Duration::from_secs(10) {
+                        eprintln!(
+                            "ring {ring_id}: SourceHub reshare finalized; waiting for matching new-committee state and last_pss advancement"
+                        );
+                        last_progress = Instant::now();
+                    }
+                }
+                Err(error) if last_progress.elapsed() >= Duration::from_secs(10) => {
+                    eprintln!(
+                        "ring {ring_id}: SourceHub reshare finalized; local-state verification pending: {error:#}"
+                    );
+                    last_progress = Instant::now();
+                }
+                Err(_) => {}
+            }
+        } else if last_progress.elapsed() >= Duration::from_secs(10) {
+            eprintln!(
+                "ring {ring_id}: waiting for reshare finalization (current={}, next={}, threshold={}, key_preserved={})",
+                ring.peer_node_keys.len(),
+                ring.new_peer_node_keys.len(),
+                ring.threshold,
+                ring.ring_pk == original_ring_pk
+            );
+            last_progress = Instant::now();
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
 async fn read_ring_with_retry(controller: &SourceHubClient, ring_id: &str) -> Result<Option<Ring>> {
     const MAX_ATTEMPTS: usize = 3;
     let mut backoff = Duration::from_millis(250);
@@ -1851,6 +2129,22 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    fn test_identity(index: usize) -> NodeIdentity {
+        NodeIdentity {
+            endpoint: NodeEndpoint {
+                index,
+                service: format!("node-{index:03}"),
+                grpc_url: format!("http://node-{index:03}:50051"),
+                metrics_url: format!("http://node-{index:03}:9090"),
+            },
+            public_address: format!("orbis1{index:04}"),
+            peer_id: format!("peer-{index:03}"),
+            p2p_address: format!("peer-{index:03}@127.0.0.1:{}", 10_000 + index),
+            node_key: format!("node-key-{index:03}"),
+        }
+    }
 
     #[test]
     fn deterministic_ring_ids_are_stable_and_distinct() {
@@ -1877,5 +2171,35 @@ mod tests {
     #[test]
     fn pss_timing_separates_a_valid_scheduler_delay() {
         assert_eq!(pss_timing(1_500.0, 0.0, Some(400.0)), (1_100.0, 400.0));
+    }
+
+    #[test]
+    fn reshare_planning_is_deterministic_and_has_exact_overlap() {
+        let mut experiment = Experiment::single(50, 34, 23);
+        experiment.operations = BTreeSet::from([Operation::PssReshare]);
+        experiment.profiles = vec![crate::config::NetworkProfile::lan()];
+        experiment.reshare_overlap = Some(18);
+        let mut plan = experiment.resolve().unwrap();
+        plan.assign_indices();
+        let identities = (1..=50).map(test_identity).collect::<Vec<_>>();
+
+        let first = plan_rings("run", &plan.stacks[0], &identities, &experiment).unwrap();
+        let second = plan_rings("run", &plan.stacks[0], &identities, &experiment).unwrap();
+        assert_eq!(first[0].reshare.len(), 6);
+        for (left, right) in first[0].reshare.iter().zip(&second[0].reshare) {
+            assert_eq!(left.ring.members, right.ring.members);
+            assert_eq!(left.next_members, right.next_members);
+            let old = left.ring.members.iter().copied().collect::<HashSet<_>>();
+            let next = left.next_members.iter().copied().collect::<HashSet<_>>();
+            assert_eq!(old.intersection(&next).count(), 18);
+            assert_eq!(old.union(&next).count(), 50);
+            assert_eq!(left.ring.authorized_members.len(), 50);
+            assert_eq!(left.ring.definition.operator_node_keys.len(), 51);
+            assert!(left
+                .ring
+                .definition
+                .operator_node_keys
+                .contains(&CONTROLLER_PUBLIC_KEY.to_string()));
+        }
     }
 }

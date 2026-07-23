@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
@@ -129,6 +130,7 @@ pub fn offline_observation_from_sign_error_scoped(
     )
 }
 
+#[cfg(test)]
 pub fn is_reportable_dkg_offline_error(error: &DkgError) -> bool {
     match error {
         DkgError::NetworkConnection(_) => true,

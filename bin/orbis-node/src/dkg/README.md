@@ -1,105 +1,360 @@
-# DKG Developer Guide
+# Orbis DKG Networking and Ceremony Guide
 
-This guide is the source of truth for the behavior implemented by the current
-Rust node. [`new_dkg_flow.md`](new_dkg_flow.md) is a non-authoritative design
-draft; do not treat draft behavior as implemented unless it is also described
-here and covered by code/tests. The former `PROTOCOL_FLOW.md` was removed
-because it duplicated this guide.
+This document describes the networking behavior implemented by the current
+`orbis-node`. It is the source of truth for fresh DKG, PSS refresh, and PSS
+reshare transport.
+[`new_dkg_flow.md`](new_dkg_flow.md) is a design record, not an implementation
+contract.
 
-This module implements the node-local side of the DKG protocol. There is no
-central coordinator in the protocol. Each node has a `DkgCoordinator` that
-receives messages, validates them, records local facts, and advances its own
-session state when the state machine says the protocol is ready.
+The most important fact is that Orbis does not send every DKG message with the
+same mechanism. Every DKG-backed ceremony uses one transport with three
+strictly separated planes:
 
-The important split is:
+| Plane | Carries | Transport | Visibility |
+| --- | --- | --- | --- |
+| Control | Start forwarding, credentials, prepare, readiness, activate, abort, repair requests | Authenticated direct QUIC | Only the two endpoints |
+| Public | Topology probes, commitment hashes, commitments, reshare participant sets, audits, refresh health result | Authenticated Iroh Gossip, with direct QUIC repair | Observable to members of the transient topic |
+| Private | Recipient-specific shares and digest acknowledgements | Authenticated bidirectional QUIC pair exchange | Only the two endpoints |
 
-```text
-protocol_handler/service/scheduler
-    -> DkgCoordinator::handle_message or local phase starter
-    -> message_handlers/* record validated facts
-    -> phases::drive_event(...)
-    -> state_machine::transition(...)
-    -> phases executes selected commands
+There is no alternate DKG wire path or fallback sender. PRE and SIGN are
+separate protocols and remain bounded direct request/response operations.
+
+## Contents
+
+- [Architecture at a glance](#architecture-at-a-glance)
+- [Non-negotiable protocol properties](#non-negotiable-protocol-properties)
+- [Identity, leadership, and attempt isolation](#identity-leadership-and-attempt-isolation)
+- [Starting a ceremony](#starting-a-ceremony)
+- [Preparation and topology barrier](#preparation-and-topology-barrier)
+- [Fresh DKG phase flow](#fresh-dkg-phase-flow)
+- [Public contribution transport](#public-contribution-transport)
+- [Private share transport](#private-share-transport)
+- [PSS refresh](#pss-refresh)
+- [PSS reshare](#pss-reshare)
+- [Gossip churn and completeness repair](#gossip-churn-and-completeness-repair)
+- [Retries, deadlines, and cleanup](#retries-deadlines-and-cleanup)
+- [Security boundaries](#security-boundaries)
+- [Scaling model](#scaling-model)
+- [Observability and debugging](#observability-and-debugging)
+- [Code map and tests](#code-map-and-tests)
+
+## Architecture at a glance
+
+The canonical leader coordinates transport readiness and public batching. It
+does not perform the other nodes' cryptography and cannot manufacture a valid
+contribution for them. Every participant still validates inputs, maintains its
+own DKG state machine, generates its own polynomial and shares, and persists its
+own final ring material.
+
+```mermaid
+flowchart LR
+  Client["Client or benchmark"]
+  SourceHub[("SourceHub ring and NodeInfo")]
+
+  subgraph Committee["Ring committee"]
+    Leader["Canonical leader"]
+    A["Participant A"]
+    B["Participant B"]
+    C["Participant C"]
+  end
+
+  Client -->|"StartDkg gRPC"| A
+  A -->|"forward StartFresh and original JWT"| Leader
+
+  Leader <-->|"control QUIC"| A
+  Leader <-->|"control QUIC"| B
+  Leader <-->|"control QUIC"| C
+
+  Leader -.->|"signed public batches over Gossip"| A
+  Leader -.->|"signed public batches over Gossip"| B
+  Leader -.->|"signed public batches over Gossip"| C
+
+  A <-->|"private pair QUIC"| B
+  A <-->|"private pair QUIC"| C
+  B <-->|"private pair QUIC"| C
+
+  Leader --> SourceHub
+  A --> SourceHub
+  B --> SourceHub
+  C --> SourceHub
 ```
 
-## Directory Map
+The installed v0 DKG routes are:
 
-```text
-dkg/
-  service.rs                         fresh DKG gRPC entrypoint
-  protocol_handler.rs                network protocol adapter
-  messages.rs                        wire messages and SessionKind
-  session_state.rs                   per-session mutable state and cleanup
-  helpers.rs                         validation, session IDs, persistence helpers
-  coordinator/
-    mod.rs                           public coordinator API and inbound dispatch
-    network.rs                       send path, stream caching, per-peer locks
-    state_machine.rs                 pure transition function
-    phases/
-      mod.rs                         state-machine driver and command executor
-      phase1.rs                      commitment generation/broadcast
-      phase2.rs                      share generation/send
-      phase4.rs                      durable completion/persistence/bulletin work
-    message_handlers/
-      session_init.rs                SessionInit validation and session creation
-      commitment.rs                  commitment validation/storage
-      share.rs                       share validation/storage
-    reshare/
-      selection.rs                   reshare ACKs and participant-set selection
-      bulletin_update.rs             signed RingPayload update
-      cleanup.rs                     reshare cleanup after bulletin finalization
+| Purpose | ALPN |
+| --- | --- |
+| DKG control and direct repair | `orbis/dkg-control/0` |
+| DKG private pair exchanges | `orbis/dkg-private/0` |
+| Public dissemination | Native `iroh-gossip` ALPN |
+
+All direct requests open a lightweight stream on a pooled QUIC connection. The
+pool is global, keyed by `(peer, ALPN)`, bounded to 256 entries, and evicts the
+least recently used entry. A stream timeout can invalidate precisely the parent
+connection it used without deleting a newer connection installed concurrently.
+
+## Non-negotiable protocol properties
+
+The three-plane transport changes delivery, not the cryptographic DKG semantics.
+
+1. **Every configured fresh/refresh participant is still a dealer.** Fresh DKG
+   does not form a qualified subset when a dealer is absent.
+2. **Fresh and refresh prepare every participant.** Reshare instead requires
+   every next-committee receiver and at least the current threshold of ready
+   dealers, then freezes the ready dealer set.
+3. **Complete public phases name every expected origin.** Incremental reshare
+   batches name an authenticated non-empty subset and are independently rooted.
+4. **Every required recipient-specific share must be delivered and acknowledged.** A
+   threshold such as 34-of-50 does not permit 16 nodes to disappear during
+   fresh DKG.
+5. **Threshold controls later use of a fresh key and dealer eligibility in
+   reshare.** It does not let fresh DKG omit unavailable dealers and is not a
+   liveness quorum for the current fresh-DKG construction.
+6. **Private data never enters the public type.** The public wire enum cannot
+   encode a JWT, credential, DKG share, or private invalid-share evidence.
+7. **Retries replay retained bytes.** A connection replacement must not
+   regenerate a polynomial or share.
+
+Supporting a DKG that succeeds with an unavailable subset is a separate
+robust-DKG/qualified-dealer design, not a transport retry policy.
+
+## Identity, leadership, and attempt isolation
+
+Orbis uses several related identifiers because they solve different problems.
+
+| Identifier | Lifetime | Purpose |
+| --- | --- | --- |
+| Ring ID | Long-lived | SourceHub object being initialized or refreshed |
+| Node signing key | Long-lived | Canonical committee identity stored in SourceHub |
+| Iroh endpoint identity | Node endpoint lifetime | Authenticates QUIC and signed Gossip payloads |
+| Canonical node ID | One committee ordering | Compact `1..=n` cryptographic participant number |
+| Committee scope | One attempt | Distinguishes `Current(1)` from `Next(1)` during reshare |
+| Ceremony ID | One logical ceremony | Deterministic duplicate-start protection |
+| Attempt ID | One retry | Random 256-bit separation from stale traffic |
+| Message ID | One contribution or share | Content-bound deduplication and acknowledgement |
+| Topic ID | One attempt | Isolates transient Gossip traffic |
+
+### Canonical leader
+
+The leader is the lexicographically lowest current-committee node signing key
+in SourceHub. Every node can derive the same result without an election.
+Canonical numeric node IDs are derived independently for the current and next
+committees.
+
+If `StartDkg` reaches a nonleader, that node forwards `StartFresh` and the
+original JWT to the leader. The leader and every follower independently validate
+the ring configuration and credentials during preparation.
+
+### Content and attempt binding
+
+All derivations are domain-separated SHA-256 hashes:
+
+- the committee digest binds the current committee and optional next committee
+  without collapsing equal numeric IDs across scopes;
+- the configuration digest binds the ceremony, attempt, topic, leader,
+  threshold, routes, node-ID assignments, ceremony kind, policy, and ring;
+- the topic ID binds chain ID, ring ID, committee digest, ceremony ID, and
+  attempt ID;
+- a public message ID binds ceremony, attempt, phase, origin, optional
+  recipient, and the serialized payload;
+- a private message ID binds ceremony, attempt, scoped sender, scoped recipient, share bytes,
+  and nonce through a private-share digest;
+- a public phase root binds the canonically ordered map of scoped origins to
+  message IDs.
+
+For reshare, the activation digest additionally binds the frozen active-dealer
+set. A prepared but excluded current dealer therefore cannot inject a valid
+commitment or private delivery into the activated attempt.
+
+The logical ceremony ID prevents concurrent duplicate starts from creating two
+sessions. A new random attempt ID ensures that delayed Gossip, direct responses,
+or acknowledgements from an earlier failed attempt are rejected.
+
+## Starting a ceremony
+
+`DkgService::StartDkg` is a synchronous **readiness** call, not a synchronous
+completion call. Success means the leader has prepared and activated every
+committee member. It does **not** mean the ring is already finalized on
+SourceHub.
+
+PSS refresh and reshare are started by the scheduler on the same canonical
+leader. Refresh prepares the current committee. Reshare reads the pending
+SourceHub transition and prepares the deduplicated union of current and next
+committee endpoints.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as Client
+  participant N as API node
+  participant L as Canonical leader
+  participant F as Other participants
+  participant S as SourceHub
+
+  C->>N: StartDkg ring ID plus JWT
+  N->>S: Read ring and effective protocol version
+  N->>N: Validate JWT claims and ring
+  alt API node is not leader
+    N->>L: StartFresh ring ID plus original JWT
+  else API node is leader
+    N->>N: Enter leader path
+  end
+  L->>S: Resolve committee NodeInfo routes
+  L->>L: Derive ceremony ID and random attempt ID
+  L->>F: Prepare full configuration and credentials
+  F-->>L: Prepared with matching config digest
+  L-->>F: Repeated signed topology probe over Gossip
+  F->>L: Direct TopologyProbeAck
+  L->>L: Activate leader exactly once
+  L->>F: Activate attempt
+  F-->>L: Activated
+  L->>L: Begin leader exactly once
+  L->>F: Begin activated attempt
+  F-->>L: Begun
+  L-->>N: StartAccepted
+  N-->>C: started
+
+  Note over C,S: Public and private DKG phases continue after the gRPC response
 ```
 
-## Entry Points
+This distinction matters to callers and benchmarks:
 
-There are three ways a DKG session gets moving.
+- request acknowledgement latency ends when `StartDkg` returns;
+- end-to-end fresh-DKG latency ends when SourceHub finalization is visible and
+  every committee node exposes matching local ring state.
 
-### Fresh DKG from gRPC
+## Preparation and topology barrier
 
-`service.rs::start_dkg` handles a user request:
+Preparation deliberately finishes before any node publishes a polynomial
+commitment or sends a share.
 
-1. Validate the JWT and requested peer set.
-2. Allocate a random `session_id`.
-3. Create a local session if this node is a participant.
-4. Send `DkgMessage::SessionInit` to peers.
-5. If this node participates, call `initiate_phase1_commitments`.
+### Step 1: prepare candidate participants
 
-Remote participants receive that `SessionInit` through the network path below.
+The leader prepares itself first, then sends `PrepareSession` concurrently to
+the required committee or union. A participant:
 
-### Refresh/Reshare from PSS scheduler
+1. verifies that the named leader is canonical and is the authenticated sender;
+2. recomputes and verifies the complete configuration digest;
+3. validates SourceHub state, ring parameters, credentials, and node-ID mapping;
+4. creates or reuses the local session;
+5. subscribes to the attempt's transient Gossip topic, bootstrapping from the
+   leader route;
+6. starts exactly one topic listener;
+7. returns `Prepared` with the same configuration digest.
 
-`pss/mod.rs` periodically scans known rings.
+The configuration contains a current `CommitteeConfig` and, for reshare, a next
+`CommitteeConfig`. Each includes node signing keys, authenticated peer routes,
+canonical node-ID assignments, and threshold. An overlapping physical node has
+one network endpoint but can hold both a current-scoped dealer identity and a
+next-scoped receiver identity.
 
-For refresh, it derives a deterministic session ID from the current ring state,
-claims the ring's active PSS slot, creates a session, sends `SessionInit`, and
-starts Phase 1.
+An identical duplicate `Prepare` returns `Prepared` without creating another
+session or subscription. A conflicting attempt for the same deterministic
+ceremony is rejected.
 
-For reshare, it reads the bulletin's requested next committee/threshold, derives
-a deterministic session ID, creates a role-specific session, sends `SessionInit`
-to the old/new committee union, and old dealers begin distributing reshare
-material.
+Network and timeout failures are retryable. Authentication, configuration, and
+invalid-response failures are terminal.
 
-### Inbound Network Messages
+### Step 2: prove public-topic reachability and freeze reshare dealers
 
-`protocol_handler.rs` plugs `DkgCoordinator` into the generic protocol loop.
-Every decoded `DkgMessage` goes to `DkgCoordinator::handle_message`.
+`Prepared` proves that local setup succeeded; it does not prove the participant
+can receive Gossip traffic. The leader therefore creates one random nonce and
+one serialized `TopologyProbe`, records itself as acknowledged, and republishes
+the same semantic probe every 500 ms until every committee endpoint has sent a
+direct acknowledgement.
 
-`handle_message` is the edge of the trust boundary:
+The authenticated Gossip delivery envelope has a fresh delivery ID on each
+broadcast so Iroh does not suppress an intentional retransmission. The DKG
+probe inside that envelope keeps the same ceremony ID, attempt ID, and nonce.
 
-1. Classify the message for metrics and dedup.
-2. Handle `SessionInit` first, because it can create the session.
-3. For other messages, wait for a bounded grace period for the session to appear.
-4. Validate the authenticated peer against the claimed node ID.
-5. Atomically claim the message as in-flight to suppress concurrent duplicates.
-6. Dispatch to the per-message handler.
-7. Mark the message processed only if the handler succeeds.
+Each follower listener owns at most one acknowledgement worker for that nonce.
+The worker sends the same `TopologyProbeAck` to the leader, retrying from 250 ms
+with exponential backoff capped at two seconds. Duplicate probes do not create
+duplicate workers. Once the leader accepts the acknowledgement, later duplicate
+probes are ignored by that follower.
 
-## State Machine Model
+The leader stores acknowledgements by canonical endpoint identity:
 
-The state machine lives in `coordinator/state_machine.rs`. It is intentionally
-pure: it does not hold locks, mutate state, send network messages, or touch
-storage. It receives a `SessionSnapshot` plus a `DkgEvent`, and returns a
-`Transition`.
+- an identical duplicate is idempotent;
+- a noncommittee sender is rejected;
+- a wrong nonce is rejected;
+- a stale attempt is rejected;
+- a unique valid acknowledgement is counted exactly once.
+
+Fresh DKG and refresh require `Prepared` plus a topology acknowledgement from
+every committee member. Reshare requires both from every next-committee
+receiver and from at least the current threshold of dealers. Once that condition
+is reached, the leader waits a three-second inclusion grace period so additional
+ready current dealers can join; the wait is skipped if all current dealers are
+already ready. The resulting current-scoped dealer set is frozen into the
+activation digest.
+
+If reshare preparation fails, the error reports missing next receivers and the
+current-dealer shortfall separately. Prepared current-only nodes excluded from
+the frozen set receive an idempotent abort/cleanup. Their persisted old ring
+material is retained until SourceHub finalizes a committee that excludes them.
+
+### Step 3: activate, then begin once
+
+Only the ceremony-specific readiness condition opens the activation barrier.
+The leader first records activation on its own session and then activates every
+follower. Fresh and refresh activate the whole committee. Reshare activates
+every next receiver plus the frozen current dealers; an overlapping node that
+missed dealer inclusion can still activate as a receiver. Activation records
+the frozen configuration but does not start polynomial work.
+
+Only after every participant has returned `Activated` does the leader cross a
+second, idempotent `Begin` barrier locally and at every follower. The first
+valid `Begin` starts cryptographic work asynchronously; `Begun` acknowledges
+that start without holding the control stream open for an entire public or
+private phase. This two-step barrier prevents a fast dealer contribution or
+pair exchange from reaching a participant that has prepared the attempt but
+has not yet persisted its activation digest.
+
+Activation has internal `Activated`, `AlreadyActivated`, and `StaleAttempt`
+outcomes. Begin has corresponding `Begun`, `AlreadyBegun`, `NotActivated`, and
+stale-attempt outcomes. Identical retries return success; only the first valid
+Begin starts the cryptographic phase.
+
+If the two-minute preparation deadline expires, the leader logs full missing
+routes and returns a bounded error containing the missing endpoint-key prefixes.
+The initiating nonleader waits an extra 30 seconds beyond the leader deadline so
+that specific error can propagate instead of being hidden by a generic forward
+timeout.
+
+## Fresh DKG phase flow
+
+Fresh DKG uses a commitment-hash pre-round. A dealer cannot choose its
+commitment after observing the other dealers' revealed commitments.
+
+```mermaid
+flowchart TD
+  Start["All members activated"]
+  HLocal["Each node generates a polynomial and hashes its commitment"]
+  HCollect["Leader collects all signed commitment hashes"]
+  HBatch["Leader gossips canonical hash manifest and chunks"]
+  HBarrier{"Node has every expected hash and completed its own hash send?"}
+  HRepair["Fetch retained hash phase or missing origin directly"]
+  Reveal["Node reveals its retained commitment"]
+  CCollect["Leader collects all signed commitments"]
+  CBatch["Leader gossips canonical commitment manifest and chunks"]
+  CBarrier{"Node has every expected commitment?"}
+  CRepair["Fetch retained commitment phase or missing origin directly"]
+  Shares["Generate recipient-specific shares"]
+  Pairs["Run bounded bidirectional pair exchanges"]
+  LocalDone{"All remote shares verified and all outbound shares acknowledged?"}
+  Final["Compute and persist local ring share bundle"]
+  Chain["Finalize fresh ring on SourceHub"]
+
+  Start --> HLocal --> HCollect --> HBatch --> HBarrier
+  HBarrier -->|"no after 10-second stall"| HRepair --> HBarrier
+  HBarrier -->|"yes"| Reveal --> CCollect --> CBatch --> CBarrier
+  CBarrier -->|"no after 10-second stall"| CRepair --> CBarrier
+  CBarrier -->|"yes"| Shares --> Pairs --> LocalDone
+  LocalDone -->|"no"| Pairs
+  LocalDone -->|"yes"| Final --> Chain
+```
+
+The node-local state machine remains event driven:
 
 ```text
 SessionSnapshot + DkgEvent -> Transition
@@ -109,245 +364,683 @@ Transition:
   commands: Vec<DkgCommand>
 ```
 
-The state-machine driver is `phases::drive_event`.
+`state_machine::transition` is pure. The driver snapshots and claims a phase
+under the session lock, releases the lock, and only then runs cryptography,
+network I/O, storage, SourceHub calls, or signing. Network handlers record a
+validated local fact and emit an event; they do not directly force all nodes
+through a shared global phase.
 
-```text
-drive_event
-  1. lock session state
-  2. build SessionSnapshot
-  3. call state_machine::transition
-  4. atomically claim transition.next_phase, if any
-  5. release session state lock
-  6. execute transition.commands outside the lock
-```
+The relevant fresh-DKG transitions are:
 
-The lock boundary matters. Decisions are claimed while holding the session-state
-write lock, but slow work happens after the lock is released. Do not add network
-sends, storage writes, bulletin calls, or signing calls inside the snapshot or
-transition path.
-
-## Events And Commands
-
-Events describe facts that just became true locally.
-
-| Event | Emitted When |
+| Local fact | State-machine command |
 | --- | --- |
-| `CommitmentRecorded` | A valid commitment was stored. |
-| `ShareRecorded { from_node_id }` | A valid private share was stored. |
-| `ReshareParticipantSetAccepted` | The selected old-dealer subset was frozen or accepted. |
-| `Phase2SharesDistributed { local_node_id }` | This node finished sending Phase 2 shares. |
-| `ReadinessChanged` | Something may have unblocked Phase 4, usually a late commitment. |
+| All commitment hashes recorded and own hash send complete | Reveal retained commitment |
+| All commitments recorded | Generate and exchange private shares |
+| All required shares verified and aggregate material available | Enter single-flight Phase 4 completion |
 
-Commands describe side effects selected by the state machine.
+Phase 4 persists a `RingShareBundle` containing the local share and public
+polynomial. Fresh DKG also finalizes the ring on SourceHub. Completion is local
+and durable: `Phase4Completing` is claimed before I/O, and `Phase4Complete` is
+set only after durable work succeeds.
 
-| Command | Executed By |
+## Public contribution transport
+
+Public data is not blindly gossiped by every dealer. It follows a signed
+collection-and-relay flow.
+
+```mermaid
+flowchart LR
+  O1["Origin 1"]
+  O2["Origin 2"]
+  ON["Origin n"]
+  L["Canonical leader"]
+  M["Manifest with canonical phase root"]
+  Chunks["Chunks up to 256 KiB encoded"]
+  R["Receiver"]
+  DR["Direct repair"]
+
+  O1 -->|"signed contribution over control QUIC"| L
+  O2 -->|"signed contribution over control QUIC"| L
+  ON -->|"signed contribution over control QUIC"| L
+  L -->|"ACK exact message ID"| O1
+  L --> M --> Chunks
+  Chunks -.->|"Iroh Gossip"| R
+  R -->|"verify leader relay, every origin signature, scope, and membership"| R
+  R -->|"missing after stall or lag"| DR
+  DR -->|"GetPublicPhase"| L
+  DR -->|"missing origin item"| O2
+```
+
+### Origin submission
+
+Each dealer creates a typed `DkgPublicContribution`, derives its message ID,
+signs the serialized contribution with its Iroh endpoint identity, and retains
+the exact signed envelope locally. Nonleaders submit that envelope directly to
+the leader and require an acknowledgement for the same ceremony, attempt, and
+message ID.
+
+The leader verifies:
+
+- the direct QUIC sender matches the signed envelope origin;
+- the endpoint signature is valid for the public-contribution domain;
+- the message ID matches the payload;
+- the ceremony, attempt, committee digest, and phase are current;
+- the origin node ID maps to that endpoint through the session's SourceHub
+  `NodeInfo` routes.
+
+An identical duplicate is accepted idempotently. A different signed envelope
+for the same phase and origin is a conflicting duplicate and fails the attempt.
+
+### Canonical batch publication
+
+For fresh DKG and refresh complete phases, the leader waits for the exact
+expected contribution count. Contributions are ordered by scoped canonical
+origin. The leader then:
+
+1. derives the phase root from the ordered `(origin node ID, message ID)` map;
+2. splits signed envelopes into chunks using the exact encoded message size;
+3. rejects any individual contribution larger than the 256 KiB chunk cap;
+4. publishes a manifest containing the expected origins, phase root, and chunk
+   count;
+5. publishes the chunks over the transient Gossip topic.
+
+Reshare commitments are threshold tolerant and do not wait for every frozen
+dealer before dissemination. The leader coalesces newly retained contributions
+for 50 ms, canonically orders each incremental batch, and flushes before the
+256 KiB encoded cap. Each incremental manifest commits only to the exact
+origins in that non-empty batch. A repeated identical contribution is
+acknowledged but never republished.
+
+The selector-signed reshare participant set is a complete singleton public
+phase from `Next(1)`. Receivers reject a set unless every selected current
+dealer is active and that receiver has already accepted the dealer's valid
+commitment and share.
+
+Receivers accept Gossip DKG messages only when the authenticated publisher is
+the canonical leader. They validate the manifest's exact origin set and root,
+then independently verify every embedded origin signature and SourceHub
+membership before dispatching the contribution into the local DKG state
+machine. The leader is a relay and ordering point, not a substitute signer.
+
+### Completeness repair
+
+Gossip is the efficient dissemination path, not the sole source of truth. Every
+origin and the leader retain exact signed contributions for repair.
+
+After activation, repair becomes eligible only when no session progress has
+occurred for ten seconds. A receiver first requests the retained public phase
+from the leader over control QUIC. If an expected origin is still absent, it
+requests that exact contribution directly from the authenticated origin.
+
+For reshare commitments, direct repair expects the frozen dealer set and fetches
+missing retained contributions from the leader first, then from each scoped
+authenticated origin. On subscriber lag, the node rejoins immediately and forces completeness repair.
+Before activation, public repair is disabled; a prepared node cannot generate a
+storm of requests for phases that have not started.
+
+## Private share transport
+
+A DKG share is recipient specific and never uses Gossip. Fresh and refresh have
+both-direction obligations between every unordered committee pair. Reshare has
+directional `Current dealer -> Next receiver` obligations. In all cases the
+lower canonical node signing key in the relevant physical pair owns the logical
+exchange. Fresh/refresh node IDs are sorted by those keys, so their lower ID is
+also the opener.
+
+Before opening anything, every node serializes and caches each outbound
+`ShareDelivery`. The cached bytes include the ceremony, attempt, message ID,
+sender and recipient IDs, share bytes, nonce, and optional private evidence.
+Caching a conflicting byte string for the same message ID is rejected.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as Lower node ID A
+  participant B as Higher node ID B
+
+  Note over A,B: Both nodes already cached their exact recipient-specific delivery
+  A->>B: Open orbis/dkg-private/0 stream
+  A->>B: ShareDelivery A to B
+  B->>B: Authenticate A, validate attempt, recipient, message ID
+  alt B cannot acquire one of four node-wide permits
+    B-->>A: Busy with retry-after 250 ms
+    A->>A: Back off with deterministic jitter and resend identical bytes
+  else B accepts exchange
+    B->>A: ShareDelivery B to A
+    A->>A: Validate and record B share
+    A->>B: ShareAck for B message ID and share digest
+    B->>B: Validate ACK and record A share
+    B->>A: ShareAck for A message ID and share digest
+    A->>A: Validate final ACK
+    Note over A,B: Close ceremony stream after both directions are acknowledged
+  end
+```
+
+### Reshare pair shapes
+
+Current and next numeric node IDs cannot be compared to choose a reshare
+opener: `Current(1)` and `Next(1)` can refer to different nodes. Orbis resolves
+both scoped identities to their SourceHub node signing keys and chooses the
+lower key. Self-delivery is likewise detected by authenticated physical route,
+not by equal numeric IDs.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant O as Lower node-key owner
+  participant R as Other endpoint
+
+  alt Opener has dealer-to-receiver delivery
+    O->>R: ShareDelivery Current(O) to Next(R)
+    opt Reverse obligation exists because R is also dealer and O is also receiver
+      R->>O: ShareDelivery Current(R) to Next(O)
+      O->>R: ShareAck for R delivery
+    end
+    R->>O: ShareAck for O delivery
+  else Opener is receiver only for this pair
+    O->>R: PairHello Next(O), Current(R), attempt-scoped pair ID
+    R->>O: ShareDelivery Current(R) to Next(O)
+    O->>R: ShareAck for R delivery
+  end
+```
+
+The resulting shapes are:
+
+| Shape | Stream sequence |
 | --- | --- |
-| `InitiatePhase2Shares` | `phases::initiate_phase2_shares` |
-| `AckValidReshareShare { dealer_id }` | `reshare::selection::record_and_ack_valid_reshare_share` |
-| `CompletePhase4` | `phases::initiate_phase4_completion` |
+| Two directional obligations | opener delivery, responder delivery, opener ACK, responder ACK |
+| Opener-only obligation | opener delivery, responder ACK |
+| Responder-only obligation | `PairHello`, responder delivery, opener ACK |
+| Same physical node | local validation and delivery; no stream |
 
-The state machine should only decide that a command is needed. The command
-runner owns how that command is performed.
+`PairHello` is useful when the lower node-key owner is a next-committee
+receiver with no outbound share. The current dealer may answer `Busy` until its
+exact share has been generated and cached; the receiver retries the identical
+attempt-scoped hello with bounded jitter. Overlapping dealer-receivers combine
+the two opposite directional obligations on one stream when both are present.
 
-## Phase Flow
+The ordering makes the exchange symmetric: the opener does not receive a final
+acknowledgement until it has acknowledged the opposite share. Both share
+acknowledgements bind the complete attempt-scoped share digest.
 
-### SessionInit
+### Backpressure and retry behavior
 
-`message_handlers/session_init.rs` validates the session kind before creating
-state.
+- One node-wide semaphore covers inbound and outbound exchanges.
+- The default limit is four active endpoint-side exchanges per node.
+- An inbound exchange waits up to 500 ms for a permit, then returns `Busy`.
+- `Busy` recommends at least a 250 ms delay.
+- Other retries start at 100 ms and use deterministic per-message jitter.
+- Backoff doubles and is capped at 30 seconds.
+- Each stream attempt is bounded by the ten-second peer-response timeout.
+- The outer exchange continues only until the 15-minute hard attempt deadline.
 
-Fresh DKG validates the JWT claims against threshold, peers, and PSS interval.
-Refresh and reshare validate against the existing ring state and bulletin.
+If a stream or cached QUIC parent connection stops making progress, the precise
+parent connection is evicted and the next retry reconnects. A valid `Busy`
+response proves the connection is alive, so it is not evicted.
 
-Node IDs are not trusted blindly from the wire. The handler recomputes the
-canonical sorted peer mapping locally and rejects non-canonical assignments.
+Most importantly, every retry resends `outgoing_bytes.clone()` from session
+state. It never calls share generation again. Lost acknowledgements therefore
+produce an identical share retransmission, which the receiver accepts
+idempotently.
 
-For reshare, roles are derived from committee membership:
+After all locally opened streams complete, a node still waits until every one of
+its outbound message IDs—including those acknowledged on streams opened by
+higher-ID peers—is recorded as acknowledged.
 
-| Role | Meaning |
+## PSS refresh
+
+PSS refresh uses the same preparation, public contribution, private exchange,
+repair, and hard-deadline machinery as fresh DKG. It has different
+cryptographic and completion rules:
+
+- only the canonical leader schedules a due refresh;
+- followers join only through authenticated `Prepare`;
+- refresh starts with public commitments, without the fresh-DKG hash pre-round;
+- private pair exchanges distribute the refreshing shares;
+- the resulting local bundle is staged, not immediately promoted;
+- the existing ring public key must remain unchanged;
+- the leader, as canonical selector, obtains a threshold signature over a
+  refresh health-check statement;
+- a failed health check can publish a commitment audit;
+- the health result uses a stage/publish/commit delivery barrier.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant S as PSS scheduler on leader
+  participant L as Canonical leader
+  participant F as Followers
+  participant G as Gossip topic
+
+  S->>L: Ring is due after last_pss and grace check
+  L->>F: Prepare, probe, and activate
+  L->>F: Signed commitment batches and private pair exchanges
+  F->>L: Signed contributions, shares, and acknowledgements
+  L->>L: Stage refreshed bundle and verify unchanged public key
+  F->>F: Stage refreshed bundles and verify unchanged public key
+  L->>F: Threshold SIGN requests for health-check statement
+  F->>L: Verified signature shares
+  L->>F: StageRefreshResult with exact signed result
+  F-->>L: Result staged ACK
+  L->>G: Gossip health-result manifest and chunk
+  L->>F: CommitRefreshResult
+  F->>F: Apply result and promote or roll back staged bundle
+  F-->>L: Result committed ACK
+  L->>L: Promote or roll back local staged bundle
+```
+
+The two direct barriers prevent subscriber timing from splitting refresh state:
+
+1. **Stage barrier:** every follower retains the exact signed result but does
+   not promote its staged share.
+2. **Public publish:** the result is also announced through the normal signed
+   public plane for evidence and repair.
+3. **Commit barrier:** only the authenticated leader's commit instruction
+   applies the retained result. Duplicate commits use short-lived receipts and
+   are acknowledged idempotently even if session cleanup has begun.
+
+Successful refresh advances `last_pss`, changes the local polynomial/share
+material, and preserves the ring public key.
+
+## PSS reshare
+
+Reshare rotates shares into a pending next committee while preserving the ring
+public key. It uses the same control, public, and private planes, but its
+liveness condition is intentionally different from fresh DKG: every new
+receiver is required, while only the current threshold of old dealers must be
+available.
+
+```mermaid
+flowchart TD
+  Pending["SourceHub exposes pending next committee and threshold"]
+  Prepare["Leader prepares deduplicated current/next union"]
+  Ready{"Every next receiver ready and current threshold dealers ready?"}
+  Grace["Three-second dealer inclusion grace"]
+  Freeze["Freeze ready current dealers into activation digest"]
+  Start["Activate every participant, then cross the Begin barrier"]
+  Commit["Active dealers publish signed commitments incrementally"]
+  Shares["Directional Current dealer to Next receiver pair obligations"]
+  Ack["Receivers send valid-dealer ACKs directly to Next(1) selector"]
+  Complete{"At least old threshold dealers complete at every receiver?"}
+  Select["Selector freezes lowest current node IDs among threshold-complete dealers"]
+  Publish["Publish selector-signed participant set as singleton public phase"]
+  Aggregate["Receivers perform weighted aggregation and threshold signing"]
+  Finalize["SourceHub finalizes next membership; public key unchanged"]
+
+  Pending --> Prepare --> Ready
+  Ready -->|"no before 2-minute deadline"| Abort["Abort with missing receivers and dealer shortfall"]
+  Ready -->|"yes"| Grace --> Freeze --> Start --> Commit --> Shares --> Ack --> Complete
+  Complete -->|"no"| Shares
+  Complete -->|"yes"| Select --> Publish --> Aggregate --> Finalize
+```
+
+The current committee and next committee each have independent canonical
+node-ID assignments. Commitments may originate only from the frozen
+`Current` dealer set. Shares may flow only from a frozen `Current` dealer to a
+`Next` receiver. This scoped identity binding prevents equal old/new numeric
+IDs from colliding in deduplication, message IDs, or routing.
+
+Each receiver sends a direct, attempt-scoped, idempotent valid-share
+acknowledgement to next-committee node ID 1. Once enough dealers have a valid
+share at every receiver, the selector deterministically chooses the lowest old
+node IDs among those threshold-complete dealers. The public participant set is
+accepted only when it names active dealers for which the receiver has already
+validated both commitment and share.
+
+Invalid-share and commitment-equivocation evidence never enters Gossip. A new
+receiver relays the signed evidence directly to active current-committee
+members over control QUIC. Each relay has a scoped idempotency key, and duplicate
+delivery cannot repeat report side effects.
+
+Completion preserves the existing weighted aggregation, threshold signature,
+SourceHub update, and public-key equality checks. An old-only node retains its
+local bundle while the transition is merely pending—even if it was not selected
+as an active dealer. After SourceHub visibly finalizes a committee that excludes
+that node, the PSS reconciliation loop securely removes the stale bundle and
+ring-index entry.
+
+## Gossip churn and completeness repair
+
+Iroh Gossip neighbor changes are normal mesh behavior. A `NeighborDown` event is
+not itself a failure and no longer causes an immediate full-topic resubscribe.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Subscribed
+  Subscribed --> Subscribed: NeighborDown while another neighbor remains
+  Subscribed --> Grace: Last known neighbor goes down
+  Grace --> Subscribed: Any NeighborUp within 3 seconds
+  Grace --> Rejoining: Still isolated after 3 seconds
+  Subscribed --> Rejoining: Subscriber Lagged
+  Subscribed --> Rejoining: Subscription receive error
+  Rejoining --> Subscribed: Rejoin succeeds on same topic
+  Rejoining --> Rejoining: Retry with exponential backoff
+  Rejoining --> Aborted: Hard attempt deadline
+  Subscribed --> Complete: Session completes or aborts explicitly
+  Complete --> [*]
+  Aborted --> [*]
+```
+
+The listener tracks the current neighbor set and remembers whether it has ever
+had a neighbor. Rejoin behavior is:
+
+| Event | Action |
 | --- | --- |
-| `Dealer` | Old committee only. Sends reshare shares, then leaves. |
-| `Receiver` | New committee only. Receives old dealers' shares. |
-| `DealerReceiver` | In both committees. Sends and receives. |
+| One neighbor leaves but others remain | Update the set; keep the topic and connections |
+| Neighbor count reaches zero after previously being connected | Start a three-second isolation grace period |
+| A neighbor returns during grace | Cancel isolation recovery |
+| Isolation persists | Rejoin the same attempt topic, one attempt at a time |
+| Subscriber reports `Lagged` | Rejoin immediately, then force direct completeness repair |
+| Subscription receive fails | Treat as confirmed isolation and retry rejoin |
+| Rejoin fails | Exponential retry capped at 30 seconds, bounded by the hard deadline |
 
-### Phase 1: Commitments
+Session removal aborts the topic listener and its acknowledgement/recovery
+workers. Stale events are scoped out by attempt ID even if an old Gossip message
+remains cached in the mesh.
 
-`phases/phase1.rs::initiate_phase1_commitments` generates the local polynomial
-when needed and broadcasts the local commitment.
+## Retries, deadlines, and cleanup
 
-Incoming commitments are handled by `message_handlers/commitment.rs`:
+The defaults are intentionally layered. Extending the outer deadline should not
+be used to hide a dropped message; the shorter loops must repair it.
 
-1. Validate commitment length and coefficient count.
-2. Deserialize commitment coefficients.
-3. Store the commitment in the crypto node.
-4. Increment commitment counters.
-5. Emit `CommitmentRecorded`.
-6. For reshare, also emit Phase 4 readiness when a late selected commitment may
-   unblock completion.
+| Limit | Default | Applies to |
+| --- | ---: | --- |
+| Peer response timeout | 10 seconds | One direct control or private stream attempt |
+| Topology probe interval | 500 ms | Repeated public readiness probe |
+| Initial preparation retry | 250 ms | Prepare, activate, and probe ACK control retry |
+| Preparation retry cap | 2 seconds | Prepare, activate, and probe ACK backoff |
+| Gossip isolation grace | 3 seconds | Zero-neighbor confirmation |
+| Public repair stall interval | 10 seconds | No-progress threshold after activation |
+| Preparation deadline | 2 minutes | Prepare, join, probe, and activate all members |
+| Forwarded-start margin | 30 seconds | Lets leader's preparation error reach API node |
+| Repair/private retry cap | 30 seconds | Long-running attempt recovery |
+| DKG transport hard attempt deadline | 15 minutes | Fresh DKG, refresh, or reshare attempt |
+| QUIC keepalive | 10 seconds | Active peer connections |
+| QUIC idle timeout | 5 minutes | Connection path health and inter-phase pauses |
 
-For fresh/refresh sessions, enough commitments can cause:
+DKG transport sessions remain repairable until explicit completion, explicit
+abort, or the 15-minute hard attempt deadline. The expiration worker enforces
+that hard deadline. Short-lived completed-session receipts are retained for up
+to five minutes so a lost final response can be acknowledged idempotently.
+
+When leader preparation fails, it sends best-effort `Abort` messages and removes
+its local session. Completion or abort tears down transient topic state and
+listener-owned tasks.
+
+## Security boundaries
+
+### What is authenticated
+
+- QUIC authenticates the endpoint on every direct control and private stream.
+- Authenticated pub-sub signs delivery envelopes with the Iroh endpoint key.
+- Every relayed public contribution also has its own origin signature under the
+  DKG public-contribution domain.
+- The verified endpoint identity must match the committee route resolved from
+  SourceHub `NodeInfo` for the claimed canonical node ID.
+- Configuration, committee, topic, message, phase-root, and share-digest hashes
+  are domain separated and attempt scoped.
+
+### What is public and private
+
+Public commitment material and ceremony metadata may be visible to peers that
+join the transient topic. The attempt-derived topic is difficult to guess but
+is **not group encryption** and must not be treated as confidentiality.
+
+The following stay on authenticated direct QUIC and are unrepresentable by the
+public publisher API:
+
+- the original JWT and other credentials;
+- recipient-specific share values and nonces;
+- private share acknowledgements;
+- private invalid-share evidence.
+
+### What the leader can and cannot do
+
+The leader can delay, omit, or reorder dissemination, which can affect
+liveness. It cannot forge another origin's signed contribution. Canonical phase
+roots make the expected ordered contribution set explicit, and direct-origin
+repair removes the leader as the only data source.
+
+This is crash/reliability hardening, not a Byzantine reliable-broadcast proof.
+The all-participants-required protocol still fails if a required participant
+refuses to generate valid cryptographic material.
+
+## Scaling model
+
+Let `n` be ring size.
+
+### Public phases
+
+For each public phase:
+
+- `n - 1` nonleaders submit one signed contribution directly to the leader;
+- the leader handles its own contribution locally;
+- the leader publishes one manifest plus however many bounded chunks are
+  required;
+- Gossip performs mesh dissemination;
+- direct repair adds traffic only when delivery is incomplete.
+
+This replaces application-level public all-to-all sends with `O(n)` leader
+collection plus Gossip dissemination. The leader is deliberately the bandwidth
+and verification concentration point for public phases.
+
+Fresh DKG has two normal all-member public phases: commitment hashes and
+commitments. Refresh normally has commitments and one leader health result;
+commitment audit is conditional.
+
+### Fresh and refresh private phase
+
+Private shares remain fundamentally quadratic because every dealer has a unique
+share for every other participant:
 
 ```text
-CommitmentRecorded -> InitiatePhase2Shares
+successful-path pair streams = n(n - 1) / 2
+directional share payloads = n(n - 1)
+pair participations per node = n - 1
+active endpoint-side exchanges per node <= 4 by default
 ```
 
-Reshare dealers do not wait for every old dealer commitment before sending
-shares to the new committee. They start sending after their own commitment path
-is ready.
+Examples:
 
-### Phase 2: Shares
+| Ring size | Successful-path pair streams | Directional private shares | Pair participations per node |
+| ---: | ---: | ---: | ---: |
+| 3 | 3 | 6 | 2 |
+| 8 | 28 | 56 | 7 |
+| 9 | 36 | 72 | 8 |
+| 20 | 190 | 380 | 19 |
+| 50 | 1,225 | 2,450 | 49 |
 
-`phases/phase2.rs::initiate_phase2_shares` generates private shares and sends
-each one only to its intended recipient. For reshare, shares are routed by the
-new committee ordering stored in `reshare_params`.
+Without retries, the bidirectional design halves the number of stream
+lifecycles relative to one stream per directional share. Retries can add
+replacement streams. The semaphore prevents a 50-node ceremony from opening all
+49 pair exchanges at one node simultaneously, but it does not turn private
+share distribution into a subquadratic protocol.
 
-After sending shares, Phase 2 emits:
+### Reshare scaling
 
-```text
-Phase2SharesDistributed { local_node_id }
+Let `d` be the frozen current-dealer count and `r` the next-receiver count.
+Reshare has `d * r` directional share obligations before subtracting physical
+self-deliveries for overlapping members. The number of QUIC pair streams is the
+number of distinct physical node pairs with at least one obligation;
+overlapping dealer-receivers can carry two opposing deliveries on one stream.
+This remains quadratic when both committees grow together, while allowing
+unavailable current dealers beyond the old threshold to be excluded during
+preparation.
+
+### Capacity interpretation
+
+The node currently caps commitment coefficients at 256, concurrent DKG sessions
+at 100, pooled peer/protocol connections at 256, and locally managed rings at
+256. These are implementation/resource guards, not evidence that every ring up
+to those values will satisfy a latency or reliability target.
+
+Use [`../../../orbis-bench/README.md`](../../../orbis-bench/README.md) to
+measure a recorded host and network profile. A single-host Docker run measures
+that host plus Docker scheduling and synthetic network shaping; it is not a
+universal protocol maximum.
+
+## Observability and debugging
+
+### Metrics
+
+The following production metrics expose ceremony and transport behavior:
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `dkg_session_duration_seconds` | `kind`, `outcome` | End-to-end fresh, refresh, or reshare duration |
+| `dkg_phase_duration_seconds` | `kind`, `phase` | Time spent in actual local DKG phases |
+| `dkg_control_readiness_duration_seconds` | `kind` | Leader preparation start through all-member Begin acknowledgement |
+| `dkg_public_transport_duration_seconds` | `phase`, `stage` | Leader collection and Gossip dissemination |
+| `dkg_private_pair_duration_seconds` | `outcome` | Endpoint-side private pair exchange duration |
+| `dkg_private_active_exchanges` | none | Current endpoint-side private exchanges |
+| `dkg_transport_events_total` | `plane`, `event` | Bounded transport event counts |
+| `dkg_transport_messages_total` | `plane`, `message`, `direction` | Typed DKG message counts by plane |
+| `p2p_gossip_neighbors` | `protocol` | Current Gossip neighbor count |
+| `p2p_messages_sent_total` / `received_total` | `protocol` | P2P message counts |
+| `p2p_bytes_sent_total` / `received_total` | `protocol` | P2P byte counts |
+| `pss_scheduler_delay_seconds` | none | Delay from refresh due time to scheduler observation |
+
+Useful `dkg_transport_events_total` events include:
+
+- control: `probe_ack`, `preparation_retry`, `activated`, `abort`, `retry`,
+  `connection_invalidated`;
+- public: `probe_broadcast`, `probe_broadcast_failure`, `contribution`,
+  `batch_published`, `neighbor_down`, `rejoin_isolation`, `rejoin_lag`,
+  `rejoin_subscription_error`, `rejoin_failure`, `repair`, `origin_repair`,
+  `result_staged`, `result_stage_barrier`, `result_committed`, and
+  `result_commit_barrier`;
+- private: `busy`, `retry`, `inbound_timeout`, `connection_invalidated`, and
+  `pair_completed`.
+
+`pair_completed` and the pair-duration histogram are endpoint-side
+observations; both endpoints execute and observe their side of one bidirectional
+exchange. Do not treat a raw event total as a unique unordered-pair count without
+accounting for that.
+
+### Locating a stall
+
+```mermaid
+flowchart TD
+  A["StartDkg has not returned"] --> B{"Near the 2-minute preparation deadline?"}
+  B -->|"yes"| C["Inspect Prepare retries, probe broadcasts, unique ACKs, and missing peer prefixes"]
+  B -->|"no"| D["Inspect SourceHub lookup, JWT, config digest, and leader forwarding"]
+  E["StartDkg returned but SourceHub is not finalized"] --> F{"Public contribution count complete?"}
+  F -->|"no"| G["Inspect origin submission, batch publication, Gossip lag, and direct repair"]
+  F -->|"yes"| H{"Every private message ID acknowledged?"}
+  H -->|"no"| I["Inspect Busy, retries, pair timeout, semaphore pressure, and connection invalidation"]
+  H -->|"yes"| J["Inspect share verification, Phase4Completing, local persistence, and SourceHub finalization"]
 ```
 
-That lets the state machine handle special reshare roles:
+Common log landmarks are:
 
-| Role | After Phase 2 Distribution |
+| Log text | Interpretation |
 | --- | --- |
-| `DealerReceiver` | ACK its own valid dealer share to the selector. |
-| `Dealer` | Run Phase 4 cleanup; it does not receive shares. |
+| `Authenticated StartDkg request; forwarding to canonical DKG leader` | API validation succeeded |
+| `topology preparation barrier expired` | Preparation failed; log fields include full missing routes |
+| `submitting signed public DKG contribution` | Origin retained and is sending a public item |
+| `leader published canonical public DKG batch` | All expected contributions for that public phase reached leader |
+| `requesting direct public DKG completeness repair` | Follower has stalled with missing public data |
+| `opening private DKG pair exchange` | Lower canonical node is attempting a pair |
+| `private DKG pair exchange completed` | Both directional shares on that stream were digest-acknowledged |
+| `invalidated stalled private DKG connection` | A stream timeout caused precise parent-connection eviction |
+| `Phase 4: DKG complete! Final share computed` | Local durable completion reached the final share step |
 
-Incoming shares are handled by `message_handlers/share.rs`:
+Preparation timeout errors include the operation, peer-key prefix, ceremony ID,
+and attempt-ID prefix. A topology barrier failure additionally names every
+missing endpoint-key prefix. Preserve those fields and targeted participant
+logs in benchmark evidence.
 
-1. Validate the share is addressed to this node.
-2. Deserialize the share value.
-3. Call `receive_share`, which verifies against the sender commitment.
-4. Increment share counters.
-5. Emit `ShareRecorded { from_node_id }`.
+### Benchmarking
 
-For fresh/refresh, enough verified shares plus an aggregate public key can cause
-Phase 4 completion. For reshare receivers, a valid share also triggers an
-idempotent ACK to the selector.
+Plan a suite without starting containers:
 
-### Reshare Selection
-
-Reshare has an extra readiness step. A new-committee receiver ACKs each old
-dealer whose share it verified. The selected node-1 receiver acts as selector.
-
-The ACK path is intentionally retryable:
-
-```text
-ShareRecorded
-  -> AckValidReshareShare { dealer_id }
-  -> record dealer as locally valid
-  -> deliver ReshareShareAck to selector until delivered or selection is done
+```console
+cargo run -p orbis-bench -- plan --config bin/orbis-bench/examples/50-node.yaml
 ```
 
-The selector records ACKs by `(dealer_id, receiver_node_id)`. When all new
-receivers have ACKed enough old dealers to meet the old threshold, the selector:
+Run a focused case in the foreground:
 
-1. Freezes the first threshold-complete dealer set.
-2. Stores that set in the crypto node.
-3. Broadcasts `ReshareParticipantSet`.
-4. Emits `ReshareParticipantSetAccepted`.
-
-All new-committee receivers use the same selected old-dealer set for weighted
-reshare aggregation.
-
-### Phase 4: Durable Completion
-
-The state machine never jumps directly to `Phase4Complete`. It first claims:
-
-```text
-Phase4Completing
+```console
+cargo run -p orbis-bench -- run --network-size 50 --ring-size 9 --threshold 8
 ```
 
-This is the single-flight state for durable completion. It prevents concurrent
-handlers from starting Phase 4 twice, but it is still eligible for timeout
-cleanup if the completion task gets stuck.
+Run the versioned suite:
 
-Only after `initiate_phase4_completion` succeeds does the code mark:
-
-```text
-Phase4Complete
+```console
+cargo run -p orbis-bench -- run --config bin/orbis-bench/examples/50-node.yaml
 ```
 
-Phase 4 performs the durable work:
+Keep `manifest.json`, `trials.jsonl`, metrics deltas, resource samples, resolved
+Compose/genesis files, and failed-participant logs with any reported capacity
+number. Report the largest all-pass ring observed for that recorded hardware,
+crypto implementation, Docker allocation, and LAN/WAN profile—not a universal
+maximum.
 
-1. Compute final secret share.
-2. Compute aggregate public key and public polynomial.
-3. Persist the local ring bundle.
-4. Update local ring index when needed.
-5. For fresh DKG, post the initial `RingPayload`.
-6. For reshare selector, collect a threshold signature and update the bulletin.
-7. Remove the session, or for reshare wait until the bulletin update is visible
-   before releasing the PSS claim.
+## Code map and tests
 
-Pure reshare dealers skip secret-share computation. Their Phase 4 command
-deletes old local share material, removes the ring index entry, clears the PSS
-claim, and removes the session.
+### DKG transport
 
-## Network And Ordering
+| Area | File |
+| --- | --- |
+| Start forwarding, prepare barrier, Gossip listener, repair, public relay, private exchange | [`v0/network.rs`](v0/network.rs) |
+| Type-safe control/public/private messages and ID derivations | [`v0/transport.rs`](v0/transport.rs) |
+| Attempt state, acknowledgement sets, exact retained bytes, cleanup | [`v0/session_state.rs`](v0/session_state.rs) |
+| ALPN descriptors | [`../../../../crates/network/src/protocol.rs`](../../../../crates/network/src/protocol.rs) |
+| Authenticated Iroh pub-sub | [`../../../../crates/network/src/iroh/pubsub.rs`](../../../../crates/network/src/iroh/pubsub.rs) |
+| Bounded connection pool and private semaphore | [`../app_state.rs`](../app_state.rs) |
+| Timeouts and resource caps | [`../constants.rs`](../constants.rs) |
+| Production metrics | [`../metrics.rs`](../metrics.rs) |
 
-Outgoing session messages use `coordinator/network.rs`.
+### Cryptographic state machine
 
-For `session_id = Some(_)`, each peer gets a cached QUIC stream plus a per-peer
-send lock. This preserves local send order for that peer where possible, such as:
+| Area | File |
+| --- | --- |
+| Pure transitions | [`v0/coordinator/state_machine.rs`](v0/coordinator/state_machine.rs) |
+| Commitment-hash pre-round | [`v0/coordinator/phases/phase0.rs`](v0/coordinator/phases/phase0.rs) |
+| Commitment reveal/public submission | [`v0/coordinator/phases/phase1.rs`](v0/coordinator/phases/phase1.rs) |
+| Share creation and pair-exchange entry | [`v0/coordinator/phases/phase2.rs`](v0/coordinator/phases/phase2.rs) |
+| Durable finalization and refresh staging | [`v0/coordinator/phases/phase4.rs`](v0/coordinator/phases/phase4.rs) |
+| Refresh threshold health check | [`v0/coordinator/refresh_health_check.rs`](v0/coordinator/refresh_health_check.rs) |
+| Fresh DKG gRPC entrypoint | [`v0/service.rs`](v0/service.rs) |
+| PSS scheduling | [`../pss/v0/mod.rs`](../pss/v0/mod.rs) |
 
-```text
-SessionInit -> Commitment -> Share
+### Reshare state machine
+
+Reshare transport orchestration lives in [`v0/network.rs`](v0/network.rs),
+while weighted aggregation, selector logic, SourceHub finalization, and
+role-specific completion live in
+[`v0/coordinator/reshare`](v0/coordinator/reshare). Reshare commitments and the
+selector-signed participant set use the public plane; shares, credentials, and
+invalid-share or equivocation evidence cannot be represented by its wire type.
+
+### Focused checks
+
+```console
+cargo test -p orbis-node dkg::v0::transport
+cargo test -p orbis-node dkg::v0::network::stability_tests
+cargo test -p orbis-node dkg::v0::session_state
+cargo test -p orbis-node dkg::v0::tests::dkg
+cargo test -p orbis-node dkg::v0::tests::refresh
+cargo test -p orbis-node dkg::v0::tests::reshare
+cargo test -p orbis-node pss::v0::tests
+cargo test -p network
 ```
 
-If a cached stream fails, the send path evicts it and retries once with a fresh
-stream while holding the same per-peer lock. Session-generation checks prevent a
-stale sender from delivering messages into a newly recreated session with the
-same external `session_id`.
+When changing this code, preserve these engineering rules:
 
-Do not rely on this as a global delivery guarantee. Stream replacement,
-cross-peer delivery, and locally staged state can still make valid inbound
-messages arrive before their dependent local state is visible. Handlers should
-queue and replay early-but-valid messages instead of sleeping inside the handler
-until a timeout.
-
-## Concurrency Rules
-
-When changing this code, keep these invariants intact:
-
-1. `state_machine::transition` must stay pure and deterministic.
-2. Build snapshots and claim phase transitions under the session-state lock.
-3. Execute network, storage, bulletin, and signing side effects after releasing
-   the session-state lock.
-4. Use `Phase4Completing` to claim durable completion, and mark
-   `Phase4Complete` only after durable completion succeeds.
-5. Do not trust wire-provided node assignments without canonical validation.
-6. Let `handle_message` own inbound sender validation and message dedup claims.
-7. If a command sends an important protocol message, make it idempotent or
-   retryable.
-8. If an inbound message is authenticated and well-formed but depends on local
-   state that may arrive later, queue it and replay when that state is published.
-
-## Adding A New Transition
-
-When adding protocol behavior:
-
-1. Add a `DkgEvent` for the local fact that changed.
-2. Add a `DkgCommand` only if a side effect is needed.
-3. Extend `SessionSnapshot` with the minimum state needed to decide.
-4. Update `state_machine::transition`.
-5. Execute the command from `phases/mod.rs`, outside the state lock.
-6. Emit the event from the message handler or phase function that records the
-   fact.
-7. Add a unit test in `state_machine.rs` for the transition.
-8. Add a coordinator/session test if the behavior depends on locking, retries,
-   dedup, or cleanup.
-
-## Useful Test Slices
-
-```bash
-cargo test -p orbis-node dkg::coordinator
-cargo test -p orbis-node dkg::session_state
-cargo test -p orbis-node dkg::tests
-cargo test -p orbis-node dkg::tests::reshare
-cargo test -p orbis-node pss::tests
-```
-
-Use the broader `dkg::tests` and `pss::tests` slices after touching reshare,
-session cleanup, or Phase 4 completion. Those paths are where most state-machine
-changes show up as real ceremony behavior.
+1. Keep public and private wire types structurally separate.
+2. Validate authenticated endpoint identity against SourceHub committee routes.
+3. Keep the state-machine transition function pure.
+4. Claim transitions while holding the session lock; run side effects after
+   releasing it.
+5. Retain exact outbound public contributions and private shares until their
+   delivery contract is satisfied.
+6. Make duplicate preparation, activation, and Begin requests idempotent.
+7. Do not repair public phases before activation or before the no-progress
+   interval.
+8. Treat ordinary Gossip neighbor churn as normal; rejoin only after confirmed
+   isolation, lag, or subscription failure.
+9. Bind reshare IDs to scoped participant identities and freeze the active
+   current-dealer set into the activation digest.
+10. Interpret threshold as a key-use threshold, not permission to omit dealers
+    during fresh DKG.

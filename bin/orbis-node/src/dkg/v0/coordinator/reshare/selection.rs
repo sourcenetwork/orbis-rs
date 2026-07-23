@@ -108,14 +108,14 @@ async fn deliver_reshare_share_ack_until_done<D>(
         }
 
         attempt += 1;
-        let ack_msg = DkgMessage::ReshareShareAck {
+        match crate::dkg::v0::network::send_reshare_share_ack(
+            &coord,
             session_id,
             receiver_node_id,
             dealer_id,
-        };
-        match coord
-            .send_message_to_peer(&selector_peer_id, ack_msg, Some(session_id))
-            .await
+            &selector_peer_id,
+        )
+        .await
         {
             Ok(()) => {
                 tracing::debug!(
@@ -165,7 +165,7 @@ pub async fn handle_reshare_share_ack<D>(
     session_id: u128,
     receiver_node_id: u32,
     dealer_id: u32,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -249,11 +249,17 @@ where
             if state.reshare.selected_dealers.is_none()
                 && state.reshare.dealer_completion_order.len() >= state.node.threshold()
             {
-                let selected: Vec<u32> = state
+                let mut threshold_complete: Vec<u32> = state
                     .reshare
-                    .dealer_completion_order
+                    .share_acks
                     .iter()
-                    .copied()
+                    .filter_map(|(dealer_id, receivers)| {
+                        (receivers.len() == new_committee_size).then_some(*dealer_id)
+                    })
+                    .collect();
+                threshold_complete.sort_unstable();
+                let selected: Vec<u32> = threshold_complete
+                    .into_iter()
                     .take(state.node.threshold())
                     .collect();
                 state
@@ -303,72 +309,30 @@ where
         .await?;
     }
 
-    Ok(None)
+    Ok(())
 }
 
 async fn broadcast_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     selected_dealer_ids: &[u32],
-    new_route_peer_ids: &[String],
+    _new_route_peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    let mut failures = Vec::new();
-
-    for peer_id in new_route_peer_ids {
-        if is_self_peer_id(&coord.app_state.network, peer_id) {
-            continue;
-        }
-
-        let mut last_error = None;
-        for attempt in 1..=RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS {
-            let msg = DkgMessage::ReshareParticipantSet {
-                session_id,
-                from_node_id: 1,
-                selected_dealer_ids: selected_dealer_ids.to_vec(),
-            };
-
-            match coord
-                .send_message_to_peer(peer_id, msg, Some(session_id))
-                .await
-            {
-                Ok(()) => {
-                    last_error = None;
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                    tracing::warn!(
-                        session_id = session_id,
-                        peer_id = %peer_id,
-                        attempt = attempt,
-                        max_attempts = RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS,
-                        error = %e,
-                        "Reshare: failed to broadcast selected participant set"
-                    );
-                    if attempt < RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS {
-                        tokio::time::sleep(RESHARE_PARTICIPANT_SET_RETRY_DELAY).await;
-                    }
-                }
-            }
-        }
-
-        if let Some(error) = last_error {
-            failures.push(format!("{} ({})", peer_id, error));
-        }
-    }
-
-    if !failures.is_empty() {
-        return Err(DkgError::NetworkCommunication(format!(
-            "Reshare: failed to broadcast selected participant set after {} attempts to: {}",
-            RESHARE_PARTICIPANT_SET_SEND_ATTEMPTS,
-            failures.join(", ")
-        )));
-    }
-
-    Ok(())
+    crate::dkg::v0::network::submit_public_contribution(
+        coord,
+        session_id,
+        crate::dkg::v0::transport::DkgPublicPayload::ReshareParticipantSet {
+            selected_dealers: selected_dealer_ids
+                .iter()
+                .copied()
+                .map(crate::dkg::v0::transport::ParticipantRef::current)
+                .collect(),
+        },
+    )
+    .await
 }
 
 pub async fn handle_reshare_participant_set<D>(
@@ -376,7 +340,7 @@ pub async fn handle_reshare_participant_set<D>(
     session_id: u128,
     from_node_id: u32,
     selected_dealer_ids: Vec<u32>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -427,6 +391,19 @@ where
                         state.node.total_nodes()
                     )));
                 }
+                let dealer = crate::dkg::v0::transport::ParticipantRef::current(*dealer_id);
+                if !state.transport.active_dealers.contains(&dealer) {
+                    return Err(DkgError::Unauthorized(format!(
+                        "ReshareParticipantSet contains inactive dealer {}",
+                        dealer_id
+                    )));
+                }
+                if !state.reshare.valid_share_dealers.contains(dealer_id) {
+                    return Err(DkgError::InvalidState(format!(
+                        "ReshareParticipantSet selected dealer {} before this receiver accepted its commitment and share",
+                        dealer_id
+                    )));
+                }
             }
 
             if let Some(existing) = &state.reshare.selected_dealers {
@@ -468,5 +445,5 @@ where
         .await?;
     }
 
-    Ok(None)
+    Ok(())
 }

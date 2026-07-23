@@ -65,7 +65,7 @@ where
         ));
     }
 
-    let (commitment_bytes, node_id, threshold, is_reshare, role) = coord
+    let (commitment_bytes, node_id, is_reshare, role) = coord
         .app_state
         .dkg_session_state
         .with_state_mut(&session_id, |state| {
@@ -76,7 +76,6 @@ where
             Ok::<_, DkgError>((
                 bytes,
                 state.node.node_id(),
-                state.node.threshold(),
                 matches!(state.kind, SessionKind::Reshare { .. }),
                 state.node.role(),
             ))
@@ -93,15 +92,26 @@ where
         build_and_store_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
             .await?;
 
-    if !is_reshare
-        && coord
-            .app_state
-            .dkg_session_state
-            .hybrid_attempt(&session_id)
-            .await
-            .is_some()
+    if coord
+        .app_state
+        .dkg_session_state
+        .transport_attempt(&session_id)
+        .await
+        .is_none()
     {
-        crate::dkg::v0::hybrid::submit_public_contribution(
+        return Err(DkgError::InvalidState(
+            "DKG commitment phase has no typed transport attempt".into(),
+        ));
+    }
+
+    if coord
+        .app_state
+        .dkg_session_state
+        .transport_attempt(&session_id)
+        .await
+        .is_some()
+    {
+        crate::dkg::v0::network::submit_public_contribution(
             coord,
             session_id,
             crate::dkg::v0::transport::DkgPublicPayload::Commitment {
@@ -111,6 +121,10 @@ where
         )
         .await?;
 
+        if is_reshare && role != DkgRole::Receiver {
+            return initiate_phase2_shares(coord, session_id, peer_ids).await;
+        }
+
         // Gossip delivery is not phase-ordered. Remote commitments may have
         // arrived and been validated while this fresh session was still in the
         // hash-reveal phase. Re-evaluate Phase 1 after publishing our own
@@ -119,77 +133,9 @@ where
         return check_and_trigger_phase2(coord, session_id, peer_ids).await;
     }
 
-    let mut peers_sent = 0;
-    let mut expected_peers = 0;
-    for peer_id_str in peer_ids {
-        if is_self_peer_id(&coord.app_state.network, peer_id_str) {
-            tracing::debug!(peer_id = %peer_id_str, "Skipping self when broadcasting commitment");
-            continue;
-        }
-        expected_peers += 1;
-
-        let commitment_msg = DkgMessage::Commitment {
-            session_id,
-            from_node_id: node_id,
-            commitment: commitment_bytes.clone(),
-            report_evidence: report_evidence.clone(),
-        };
-
-        if coord
-            .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
-            .await
-            .inspect_err(|error| {
-                tracing::error!(
-                    peer_id = %peer_id_str,
-                    error = %error,
-                    "Failed to send commitment to peer"
-                );
-            })
-            .is_ok()
-        {
-            peers_sent += 1;
-        }
-    }
-
-    tracing::info!(
-        peers_sent = peers_sent,
-        expected_peers = expected_peers,
-        "Phase 1: Broadcasted commitment to peers"
-    );
-
-    if peers_sent < expected_peers && !is_reshare {
-        tracing::error!(
-            sent = peers_sent,
-            expected = expected_peers,
-            session_id = session_id,
-            "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
-        );
-        coord.remove_session(session_id).await;
-        tracing::debug!(
-            session_id = session_id,
-            "Cleaned up session after Phase 1 broadcast failure"
-        );
-        return Err(DkgError::InsufficientPeers {
-            successful: peers_sent,
-            total: expected_peers,
-            threshold,
-        });
-    }
-
-    if peers_sent < expected_peers {
-        tracing::warn!(
-            sent = peers_sent,
-            expected = expected_peers,
-            session_id = session_id,
-            "Reshare: commitment broadcast did not reach every new-committee peer; continuing until threshold selection or timeout"
-        );
-    }
-
-    if is_reshare && role != DkgRole::Receiver {
-        initiate_phase2_shares(coord, session_id, peer_ids).await?;
-    }
-
-    Ok(())
+    Err(DkgError::InvalidState(
+        "typed commitment submission returned without completing".into(),
+    ))
 }
 
 /// Check if Phase 1 is complete and trigger Phase 2 if so.

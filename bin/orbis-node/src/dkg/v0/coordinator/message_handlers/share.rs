@@ -5,11 +5,12 @@ use crate::dkg::v0::coordinator::evidence::{
 use crypto::error::CryptoError;
 use crypto::SignImpl;
 
-/// Handle a `DkgMessage::Share`.
+/// Apply a typed private share delivery.
 ///
 /// Validates the share is addressed to this node, deserializes it, passes it to the
 /// crypto layer for verification against the sender's commitment, then checks whether
 /// Phase 2 is complete.
+#[cfg(test)]
 pub async fn handle_share_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -18,7 +19,7 @@ pub async fn handle_share_message<D>(
     share_value: Vec<u8>,
     nonce: [u8; 16],
     report_evidence: Option<SignedDkgShare>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -37,12 +38,12 @@ where
         drive_accepted_share(coord, session_id, from_node_id).await?;
     }
 
-    Ok(None)
+    Ok(())
 }
 
 /// Validate and durably record a private share without advancing the ceremony.
 ///
-/// The hybrid pair transport uses this before emitting its digest ACK. Phase
+/// The private pair transport uses this before emitting its digest ACK. Phase
 /// advancement is deliberately separate because the final share can enter
 /// phase 4 and wait on SourceHub; transport acknowledgement must only cover
 /// crypto validation and local state acceptance, not the rest of the ceremony.

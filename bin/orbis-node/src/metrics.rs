@@ -80,12 +80,12 @@ lazy_static! {
     )
     .expect("failed to register pss_scheduler_delay_seconds");
 
-    pub static ref DKG_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
-        "dkg_messages_total",
-        "Total number of DKG protocol messages",
-        &["message_type", "direction"]
+    pub static ref DKG_TRANSPORT_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
+        "dkg_transport_messages_total",
+        "Total number of typed DKG transport messages",
+        &["plane", "message", "direction"]
     )
-    .expect("failed to register dkg_messages_total");
+    .expect("failed to register dkg_transport_messages_total");
 
     pub static ref DKG_ABANDONED_SESSIONS_TOTAL: Counter = register_counter!(
         "dkg_abandoned_sessions_total",
@@ -93,16 +93,16 @@ lazy_static! {
     )
     .expect("failed to register dkg_abandoned_sessions");
 
-    pub static ref DKG_HYBRID_EVENTS_TOTAL: CounterVec = register_counter_vec!(
-        "dkg_hybrid_transport_events_total",
-        "Bounded-cardinality events emitted by the hybrid DKG transport",
+    pub static ref DKG_TRANSPORT_EVENTS_TOTAL: CounterVec = register_counter_vec!(
+        "dkg_transport_events_total",
+        "Bounded-cardinality events emitted by the DKG transport",
         &["plane", "event"]
     )
-    .expect("failed to register dkg_hybrid_transport_events_total");
+    .expect("failed to register dkg_transport_events_total");
 
     pub static ref DKG_CONTROL_READINESS_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
         "dkg_control_readiness_duration_seconds",
-        "Time from canonical leader preparation start through all-member activation",
+        "Time from canonical leader preparation start through all-member Begin acknowledgement",
         &["kind"],
         vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0]
     )
@@ -299,9 +299,9 @@ pub fn init() {
     lazy_static::initialize(&DKG_PHASE_DURATION_SECONDS);
     lazy_static::initialize(&DKG_SESSION_DURATION_SECONDS);
     lazy_static::initialize(&PSS_SCHEDULER_DELAY_SECONDS);
-    lazy_static::initialize(&DKG_MESSAGES_TOTAL);
+    lazy_static::initialize(&DKG_TRANSPORT_MESSAGES_TOTAL);
     lazy_static::initialize(&DKG_ABANDONED_SESSIONS_TOTAL);
-    lazy_static::initialize(&DKG_HYBRID_EVENTS_TOTAL);
+    lazy_static::initialize(&DKG_TRANSPORT_EVENTS_TOTAL);
     lazy_static::initialize(&DKG_CONTROL_READINESS_DURATION_SECONDS);
     lazy_static::initialize(&DKG_PRIVATE_PAIR_DURATION_SECONDS);
     lazy_static::initialize(&DKG_PUBLIC_TRANSPORT_DURATION_SECONDS);
@@ -546,8 +546,8 @@ pub fn record_pss_scheduler_delay(duration_secs: f64) {
         .observe(duration_secs);
 }
 
-pub fn record_dkg_hybrid_event(plane: &str, event: &str) {
-    DKG_HYBRID_EVENTS_TOTAL
+pub fn record_dkg_transport_event(plane: &str, event: &str) {
+    DKG_TRANSPORT_EVENTS_TOTAL
         .with_label_values(&[plane, event])
         .inc();
 }
@@ -634,17 +634,9 @@ pub fn record_dkg_session_abandoned() {
     DKG_ABANDONED_SESSIONS_TOTAL.inc();
 }
 
-/// Record DKG message sent
-pub fn record_dkg_message_sent(message_type: &str) {
-    DKG_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "sent"])
-        .inc();
-}
-
-/// Record DKG message received
-pub fn record_dkg_message_received(message_type: &str) {
-    DKG_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "received"])
+pub fn record_dkg_transport_message(plane: &str, message: &str, direction: &str) {
+    DKG_TRANSPORT_MESSAGES_TOTAL
+        .with_label_values(&[plane, message, direction])
         .inc();
 }
 

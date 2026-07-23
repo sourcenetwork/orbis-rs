@@ -24,6 +24,7 @@ Run one case or the full example:
 ```console
 cargo run -p orbis-bench -- run --network-size 3 --ring-size 3 --threshold 2
 cargo run -p orbis-bench -- run --config bin/orbis-bench/examples/50-node.yaml
+cargo run -p orbis-bench -- run --config bin/orbis-bench/examples/50-node-reshare.yaml
 ```
 
 Run an advancing capacity sweep. Thresholds default to `ceil(2n/3)`:
@@ -73,6 +74,7 @@ Capacity planning conservatively partitions stacks before any node could manage 
 - PRE records server RPC, local decrypt, and total client-visible time and rejects a trial unless plaintext matches.
 - SIGN records server RPC and client verification separately. Serial and load responses are verified against the derived public key.
 - PSS refresh uses the production scheduler and a short genesis-only interval on a dedicated ring. It requires `last_pss` and every local polynomial to advance while the ring public key remains unchanged. Scheduler delay and ceremony time are recorded separately.
+- PSS reshare is opt-in through `operations: [pss_reshare]` and requires an explicit `reshare_overlap`. Every attempt uses a fresh ring, triggers the transition through SourceHub, and succeeds only when the ring public key is unchanged, SourceHub has finalized the requested committee and threshold, all next-committee nodes expose matching local state, and overlapping members advance `last_pss`. The 50-node acceptance example uses old/new committees of 34, overlap 18, and threshold 23.
 - PRE/SIGN load is closed-loop at the configured concurrency levels after a distinct warm-up window.
 
 Metrics are scraped around trials and stored as exact deltas. Docker CPU, memory, network/block I/O, PIDs, restart state, and OOM state are sampled once per second.
