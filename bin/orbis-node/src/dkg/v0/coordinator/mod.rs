@@ -93,14 +93,20 @@ where
     where
         SignImpl: CoordinatorReportSigner<D>,
     {
-        loop {
+        let guard = loop {
             match self
                 .app_state
                 .dkg_session_state
                 .claim_transport_message(&session_id, message_id)
                 .await
             {
-                MessageProcessingClaim::Claimed => break,
+                MessageProcessingClaim::Claimed => {
+                    break crate::dkg::v0::session_state::TransportMessageClaimGuard::new(
+                        self.app_state.dkg_session_state.clone(),
+                        session_id,
+                        message_id,
+                    );
+                }
                 MessageProcessingClaim::AlreadyProcessed => {
                     return self
                         .app_state
@@ -121,7 +127,7 @@ where
                     return Err(session_not_found(session_id));
                 }
             }
-        }
+        };
         let result = message_handlers::accept_private_share_message(
             self,
             session_id,
@@ -132,10 +138,7 @@ where
             report_evidence,
         )
         .await;
-        self.app_state
-            .dkg_session_state
-            .finish_transport_message(&session_id, message_id, result.is_ok())
-            .await;
+        guard.finish(result.is_ok()).await;
         result
     }
 

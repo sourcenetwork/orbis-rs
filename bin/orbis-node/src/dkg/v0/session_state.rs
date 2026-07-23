@@ -98,6 +98,59 @@ pub enum MessageProcessingClaim {
     MissingSession,
 }
 
+/// RAII guard for a `MessageProcessingClaim::Claimed` claim. Construct it
+/// immediately after a successful claim and call `finish` on the normal
+/// completion path. If the future driving processing is instead dropped
+/// before `finish` runs (e.g. by an outer `tokio::time::timeout` that fires
+/// mid-flight), `Drop` releases the claim as failed so a retried delivery of
+/// the same message can be processed again instead of spinning in
+/// `AlreadyProcessing` forever.
+pub(crate) struct TransportMessageClaimGuard<D: Dkg + 'static> {
+    session_state: Option<Arc<SessionStateManager<D>>>,
+    session_id: u128,
+    message_id: crate::dkg::v0::transport::MessageId,
+}
+
+impl<D: Dkg + 'static> TransportMessageClaimGuard<D> {
+    pub(crate) fn new(
+        session_state: Arc<SessionStateManager<D>>,
+        session_id: u128,
+        message_id: crate::dkg::v0::transport::MessageId,
+    ) -> Self {
+        Self {
+            session_state: Some(session_state),
+            session_id,
+            message_id,
+        }
+    }
+
+    /// Release the claim on the normal-completion path and disarm the
+    /// cancellation fallback in `Drop`.
+    pub(crate) async fn finish(mut self, success: bool) {
+        if let Some(session_state) = self.session_state.take() {
+            session_state
+                .finish_transport_message(&self.session_id, self.message_id, success)
+                .await;
+        }
+    }
+}
+
+impl<D: Dkg + 'static> Drop for TransportMessageClaimGuard<D> {
+    fn drop(&mut self) {
+        // Only reached if `finish` was never called, i.e. this guard's task
+        // was cancelled between claiming the message and completing it.
+        if let Some(session_state) = self.session_state.take() {
+            let session_id = self.session_id;
+            let message_id = self.message_id;
+            tokio::spawn(async move {
+                session_state
+                    .finish_transport_message(&session_id, message_id, false)
+                    .await;
+            });
+        }
+    }
+}
+
 /// Exact reshare bulletin update that this node is ready to sign.
 ///
 /// A node records this only after it has locally persisted the new reshare bundle.
