@@ -173,6 +173,7 @@ fn control_request_scope(
     match request {
         DkgControlMessage::StartFresh { .. } => ("start-fresh", None, None),
         DkgControlMessage::StartReshare { .. } => ("start-reshare", None, None),
+        DkgControlMessage::StartRefresh { .. } => ("start-refresh", None, None),
         DkgControlMessage::Prepare(prepare) => (
             "prepare",
             Some(prepare.ceremony_id),
@@ -541,6 +542,27 @@ where
                 ceremony_id,
                 attempt_id,
             })
+        }
+        DkgControlMessage::StartRefresh {
+            ring_id,
+            expected_ring_pk,
+        } => {
+            validate_refresh_start_sender(&state, routes, &ring_id, &expected_ring_pk, sender)
+                .await?;
+            let outcome = coordinate_refresh(state, routes, ring_id, expected_ring_pk).await?;
+            match outcome {
+                RefreshStartOutcome::Started(ceremony_id, attempt_id)
+                | RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+                    Ok(DkgControlMessage::RefreshStartAccepted {
+                        ceremony_id,
+                        attempt_id,
+                    })
+                }
+                RefreshStartOutcome::NotDue => Ok(DkgControlMessage::RefreshNotDue),
+                RefreshStartOutcome::Forwarded(_, _) => Err(DkgError::InvalidState(
+                    "coordinate_refresh unexpectedly forwarded a refresh start".into(),
+                )),
+            }
         }
         DkgControlMessage::Prepare(prepare) => {
             prepare_participant(state, routes, *prepare, sender).await
@@ -1357,12 +1379,15 @@ where
     }
 }
 
-/// Coordinate a due PSS refresh. Callers must be the canonical committee
-/// leader; followers join only after receiving an authenticated Prepare.
+/// Coordinate a due PSS refresh. Any current-committee member may call
+/// `start_refresh`; it walks `canonical_leader_candidates` in order and
+/// forwards to whichever candidate actually answers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RefreshStartOutcome {
     Started(CeremonyId, AttemptId),
     AlreadyActive(CeremonyId, AttemptId),
+    /// A different reachable committee member accepted and is leading.
+    Forwarded(CeremonyId, AttemptId),
     NotDue,
 }
 
@@ -1609,7 +1634,44 @@ where
     Ok(ReshareStartOutcome::Started(ceremony, attempt))
 }
 
-pub(crate) async fn start_refresh<D>(
+async fn validate_refresh_start_sender<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: &str,
+    expected_ring_pk: &str,
+    sender: &PeerId,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    if !ring_payload_matches_ring_key(expected_ring_pk, &ring.ring_pk) {
+        return Err(DkgError::InvalidState(
+            "refresh ring public key differs from SourceHub state".into(),
+        ));
+    }
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if current_routes
+        .iter()
+        .all(|route| !peer_matches_route(sender, &route.peer_id))
+    {
+        crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefresh sender is not in the current committee".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Coordinate a due PSS refresh as this node, becoming the ceremony leader.
+/// Callable both locally (this node reached its own turn in the
+/// `start_refresh` walk) and from the `StartRefresh` control handler (this
+/// node was asked directly by another current-committee member).
+async fn coordinate_refresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
@@ -1622,17 +1684,14 @@ where
     let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
         .await
         .map_err(DkgError::ProtocolError)?;
-    let leader = transport::canonical_leader(&ring.peer_node_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
-        .to_string();
-    if leader != state.node_key {
-        return Err(DkgError::Unauthorized(
-            "only the canonical leader may schedule PSS refresh".into(),
-        ));
-    }
     if !ring_payload_matches_ring_key(&ring_pk, &ring.ring_pk) {
         return Err(DkgError::InvalidState(
             "refresh ring public key differs from SourceHub state".into(),
+        ));
+    }
+    if !ring.peer_node_keys.contains(&state.node_key) {
+        return Err(DkgError::Unauthorized(
+            "only a current-committee member may coordinate PSS refresh".into(),
         ));
     }
     if let Some(session_id) = state
@@ -1694,7 +1753,7 @@ where
         attempt_id,
         config_digest: [0; 32],
         topic_id: *topic.as_bytes(),
-        leader_node_key: leader,
+        leader_node_key: state.node_key.clone(),
         committees: CeremonyConfig {
             current: CommitteeConfig {
                 node_keys: ring.peer_node_keys,
@@ -1716,6 +1775,101 @@ where
     coordinate_prepared(state, routes, prepare)
         .await
         .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
+}
+
+/// Trigger a due PSS refresh. Any current-committee member may call this: it
+/// walks `canonical_leader_candidates` in a fixed deterministic order,
+/// coordinating locally when it reaches its own key and otherwise forwarding
+/// a short, single-shot request to each candidate in turn. Because every
+/// caller uses the same order and tests real reachability instead of a
+/// staggered timer, live members converge on the same next-reachable
+/// candidate within seconds when the canonical leader is down or
+/// partitioned — no leader-only gate, no arbitrary waiting.
+pub(crate) async fn start_refresh<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let candidates = transport::canonical_leader_candidates(&ring.peer_node_keys);
+    if candidates.is_empty() {
+        return Err(DkgError::InvalidParticipantCount(0));
+    }
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+
+    for (rank, candidate) in candidates.into_iter().enumerate() {
+        if candidate == state.node_key {
+            if rank > 0 {
+                tracing::warn!(
+                    ring_id = %ring_id,
+                    rank,
+                    "PSS refresh: canonical leader(s) unreachable, this node is taking over as leader"
+                );
+                crate::metrics::record_dkg_transport_event(
+                    "control",
+                    "refresh_failover_leader_selected",
+                );
+            }
+            return coordinate_refresh(state, routes, ring_id, ring_pk).await;
+        }
+        let Some(candidate_route) = current_routes
+            .iter()
+            .find_map(|route| (route.node_key == candidate).then_some(route.peer_id.as_str()))
+        else {
+            // Route resolution comes from the same SourceHub read as the
+            // candidate list itself; an unroutable candidate is treated the
+            // same as an unreachable one.
+            continue;
+        };
+        crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
+        match control_request(
+            &state,
+            routes,
+            candidate_route,
+            DkgControlMessage::StartRefresh {
+                ring_id: ring_id.clone(),
+                expected_ring_pk: ring_pk.clone(),
+            },
+        )
+        .await
+        {
+            Ok(DkgControlMessage::RefreshStartAccepted {
+                ceremony_id,
+                attempt_id,
+            }) => {
+                return Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id));
+            }
+            Ok(DkgControlMessage::RefreshNotDue) => return Ok(RefreshStartOutcome::NotDue),
+            Ok(other) => {
+                return Err(DkgError::ProtocolError(format!(
+                    "unexpected refresh start response: {other:?}"
+                )));
+            }
+            Err(error) if retryable_control_error(&error) => {
+                tracing::debug!(
+                    candidate = %extract_node_part(candidate_route),
+                    %error,
+                    "refresh-leader candidate unreachable; trying next candidate"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    // Reached only if `state.node_key` is not itself a ring member — every
+    // real member is eventually its own candidate in the walk above.
+    Err(DkgError::Unauthorized(
+        "local node is not a member of the refresh committee".into(),
+    ))
 }
 
 async fn coordinate_fresh<D>(
@@ -2338,9 +2492,25 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if prepare.canonical_leader_node_key() != Some(&prepare.leader_node_key) {
+    // Refresh has no single fixed leader: any current-committee member may
+    // have won the `start_refresh` forward-chain walk. Fresh/Reshare keep
+    // the exact-canonical-leader match, since only one leader is ever valid
+    // for those (the fresh-DKG committee leader / the next-committee
+    // receiver leader, respectively).
+    let leader_authorized = match &prepare.kind {
+        SessionKind::Refresh { .. } => prepare
+            .committees
+            .current
+            .node_keys
+            .iter()
+            .any(|node_key| node_key == &prepare.leader_node_key),
+        SessionKind::Fresh | SessionKind::Reshare { .. } => {
+            prepare.canonical_leader_node_key() == Some(&prepare.leader_node_key)
+        }
+    };
+    if !leader_authorized {
         return Err(DkgError::Unauthorized(
-            "Prepare names a non-canonical leader".into(),
+            "Prepare names an unauthorized leader".into(),
         ));
     }
     let leader_route = prepare

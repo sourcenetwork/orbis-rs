@@ -18,11 +18,21 @@
 //! Phase 4 posts the updated `RingPayload` with `new_peer_node_keys = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
-//! Every current member may forward a pending reshare to the lowest canonical
-//! next-committee signing key. The receiver leader authenticates the forwarder,
-//! rereads SourceHub, and creates the attempt. Refresh remains scheduled only by
-//! the canonical current-committee leader. There is intentionally no receiver
-//! leader failover in protocol v0 because every next receiver is required.
+//! Reshare: every current member may forward a pending reshare to the lowest
+//! canonical next-committee signing key. The receiver leader authenticates the
+//! forwarder, rereads SourceHub, and creates the attempt. There is
+//! intentionally no receiver-leader failover for reshare in protocol v0,
+//! because every next-committee receiver is required regardless of who
+//! triggers the attempt.
+//!
+//! Refresh: every current member walks the committee in a fixed deterministic
+//! order (lowest node key first) once refresh is due, asking each candidate
+//! in turn to lead with a short single-shot request; a candidate that doesn't
+//! respond in time is skipped in favor of the next. Whichever committee
+//! member actually answers becomes the ceremony leader and owns the gossip
+//! topic. This gives refresh real availability against a down or partitioned
+//! canonical leader without waiting on the (much slower) health-check/kick
+//! pipeline.
 //!
 //! All rings carry a `pss_interval` (seconds); `0` means immediately due.
 //! Reshare is always triggered regardless of elapsed time.
@@ -282,18 +292,6 @@ where
                     elapsed_secs = elapsed,
                     pss_interval_secs = pss_interval_secs,
                     "PSS: refresh not yet due"
-                );
-                return Ok(());
-            }
-
-            let canonical_leader =
-                crate::dkg::v0::transport::canonical_leader(&ring_payload.peer_node_keys)
-                    .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
-            if canonical_leader != app_state.node_key {
-                tracing::debug!(
-                    ring_id = %post_id,
-                    leader = %canonical_leader,
-                    "PSS: refresh is due; canonical leader will schedule it"
                 );
                 return Ok(());
             }
@@ -566,6 +564,15 @@ where
             );
             return Ok(());
         }
+        crate::dkg::v0::network::RefreshStartOutcome::Forwarded(ceremony_id, attempt_id) => {
+            tracing::info!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: refresh start accepted by a reachable committee peer"
+            );
+            return Ok(());
+        }
     };
     crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
     tracing::info!(
@@ -573,7 +580,7 @@ where
         attempt_id = %hex::encode(attempt_id.0),
         ring_id = %entry.bulletin_post_id,
         threshold = ring_payload.threshold,
-        "PSS: refresh session initiated by canonical leader"
+        "PSS: refresh session initiated locally"
     );
     Ok(())
 }
