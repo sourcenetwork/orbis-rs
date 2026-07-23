@@ -2927,6 +2927,13 @@ async fn topic_listener<D>(
                                 if transport::phase_root(ceremony_id, attempt_id, phase, &ids)
                                     != phase_root
                                 {
+                                    // TODO: this only logs today. Each contribution is
+                                    // independently signature-verified, so this isn't an
+                                    // integrity hole, but a leader that equivocates on the
+                                    // aggregate root gets no automated consequence. Needs a
+                                    // new evidence/report kind (leader-equivocation on a
+                                    // phase root) fed through the existing reporting
+                                    // pipeline — out of scope for this PR.
                                     tracing::error!("public DKG phase root mismatch");
                                 }
                             }
