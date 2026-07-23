@@ -111,12 +111,26 @@ impl IrohNetworkBuilder {
         self
     }
 
-    /// Disable public relays and the default public discovery services.
+    /// Disable public relays, NAT hole-punch assistance, and the default
+    /// public discovery services.
     ///
-    /// Use this only when every peer has an authoritative direct route, such
-    /// as an isolated Docker network or an in-process test network. The
-    /// Orbis static Gossip provider remains available for explicitly supplied
-    /// peer routes.
+    /// This does more than skip peer *discovery* — `RelayMode::Disabled` also
+    /// removes Iroh's relay-assisted NAT traversal and the relayed fallback
+    /// data path used when a direct UDP connection can never be established.
+    /// Knowing a peer's address (e.g. from SourceHub `NodeInfo`) is not the
+    /// same as that address being directly dialable: orbis-node publishes its
+    /// own local bind socket with no public-IP/NAT detection, so on any
+    /// topology where direct reachability isn't already guaranteed out of
+    /// band, relay is the only connectivity fallback.
+    ///
+    /// Use this only when every peer has an authoritative *and directly
+    /// UDP-reachable* route with no NAT/firewall in the path — such as an
+    /// isolated Docker network or an in-process test network. Do not enable
+    /// this for production deployments where committee members run on
+    /// independent infrastructure (different clouds, home/office networks,
+    /// etc.), since a single unreachable member permanently fails the DKG
+    /// (fresh DKG has no qualified-subset fallback). The Orbis static Gossip
+    /// provider remains available for explicitly supplied peer routes.
     pub fn private_routes_only(mut self) -> Self {
         self.private_routes_only = true;
         self
