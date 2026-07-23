@@ -70,7 +70,7 @@ async fn invoke_session_init(
 // Reshare validation tests
 //
 // Exercise the reshare code
-// path: unknown ring, sender not in old committee, concurrent ceremony blocked.
+// path: unknown ring, noncanonical next leader, concurrent ceremony blocked.
 // Additionally, includes unit tests for the Dealer Phase 4 cleanup path
 // (share deletion, ring index removal, PSS flag cleared) and the session-state
 // PSS blocking behaviour (ring/session claim idempotency).
@@ -278,11 +278,14 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     cleanup_db(&db_path);
 }
 
-/// Reshare `SessionInit` where the ring is known but the sender is not listed in
-/// the ring's old committee (`RingPayload::peer_ids`) must be rejected.
+/// Reshare `SessionInit` must come from the canonical next-committee leader.
+///
+/// This fixture deliberately sends a fully SourceHub-anchored initialization
+/// from another authenticated next-committee receiver so the test reaches the
+/// leader check rather than failing an earlier committee or route check.
 #[tokio::test]
-async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
-    let db_name = "test_reshare_rejects_sender_not_in_committee";
+async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
+    let db_name = "test_reshare_rejects_noncanonical_next_leader";
     let db_path = test_db_path(db_name);
     let dummy_bulletin = Arc::new(
         DummyBulletin::new()
@@ -293,37 +296,112 @@ async fn test_reshare_session_init_rejects_sender_not_in_old_committee() {
         Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
 
     let ring_pk = "reshare_ring";
-    // Ring contains "aabbccdd"; sender will be "deadbeef" (not a member).
-    // Bulletin must pre-announce new_peer_node_keys and new_threshold so checks 3 & 4
-    // pass and the test actually reaches check 2 (sender membership).
-    write_ring_with_announced_reshare(
-        &app_state,
-        &dummy_bulletin,
-        ring_pk,
-        vec!["aabbccdd".to_string()],
-        Some(vec!["00112233".to_string()]),
-        Some(1),
-    )
-    .await;
+    let post_id = "test-reshare-noncanonical-next-leader".to_string();
+    let old_node_key = "old-node".to_string();
+    let old_peer_hex = "11".repeat(32);
+    let canonical_next_key = "000-next-leader".to_string();
+    let canonical_next_peer_hex = "aa".repeat(32);
+    let sender_node_key = "zzz-next-member".to_string();
+    let sender_peer_hex = "dd".repeat(32);
+    let receiver_node_key = app_state.node_key.clone();
+    let receiver_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let mut next_node_keys = vec![
+        canonical_next_key.clone(),
+        sender_node_key.clone(),
+        receiver_node_key.clone(),
+    ];
+    next_node_keys.sort();
+    assert_eq!(
+        crate::dkg::v0::transport::canonical_leader(&next_node_keys),
+        Some(canonical_next_key.as_str())
+    );
 
-    let sender_bytes = hex::decode("deadbeef").unwrap();
+    for (node_key, peer_id) in [
+        (&old_node_key, &old_peer_hex),
+        (&canonical_next_key, &canonical_next_peer_hex),
+        (&sender_node_key, &sender_peer_hex),
+        (&receiver_node_key, &receiver_peer_hex),
+    ] {
+        dummy_bulletin
+            .set_node_info(
+                node_key.clone(),
+                NodeInfo {
+                    peer_id: peer_id.clone(),
+                    controller_key: "test-controller-key".to_string(),
+                    whitelisted_policy_ids: vec![],
+                    whitelisted_ring_ids: vec![post_id.clone()],
+                },
+            )
+            .expect("seed routed NodeInfo");
+    }
+    dummy_bulletin
+        .set_ring(
+            post_id.clone(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: ring_pk.to_string(),
+                peer_node_keys: vec![old_node_key.clone()],
+                new_peer_node_keys: Some(next_node_keys.clone()),
+                new_threshold: Some(2),
+                threshold: 1,
+                pss_interval: 86400,
+                block_number_nonce: 0,
+                policy_id: None,
+                reporting: Default::default(),
+            },
+        )
+        .expect("seed reshare announcement");
+    app_state
+        .local_storage
+        .set(
+            LocalStorageKeys::RingIndex,
+            serde_json::to_vec(&vec![RingIndexEntry {
+                ring_pk_str: ring_pk.to_string(),
+                bulletin_post_id: post_id.clone(),
+                indexed_at_secs: 0,
+            }])
+            .unwrap(),
+        )
+        .unwrap();
+
+    let session_id = derive_reshare_session_id(
+        ring_pk,
+        &post_id,
+        std::slice::from_ref(&old_node_key),
+        &next_node_keys,
+        2,
+    )
+    .unwrap();
+    let msg = TestSessionInit {
+        session_id,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: vec![old_peer_hex],
+        peer_node_keys: vec![old_node_key.clone()],
+        node_id_assignments: std::collections::HashMap::from([(old_node_key, 1)]),
+        token_string: String::new(),
+        kind: SessionKind::Reshare {
+            ring_pk_hex: ring_pk.to_string(),
+            new_peer_node_keys: next_node_keys,
+            new_threshold: 2,
+            bulletin_post_id: post_id,
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: String::new(),
+    };
+
+    let sender_bytes = hex::decode(sender_peer_hex).unwrap();
     let sender_peer_id = PeerId::from_bytes(&sender_bytes);
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
-    let msg = reshare_session_init(
-        ring_pk,
-        vec!["deadbeef".to_string()],
-        vec!["00112233".to_string()],
-        1,
-    );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
-    assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
+    match result {
+        Err(crate::dkg::v0::error::DkgError::Unauthorized(message)) => assert!(
+            message.contains("not the canonical next-committee leader"),
+            "expected canonical next-leader rejection, got: {message}"
         ),
-        "Expected Unauthorized for sender not in old committee, got: {:?}",
-        result
-    );
+        other => panic!("Expected Unauthorized for noncanonical next leader, got: {other:?}"),
+    }
     cleanup_db(&db_path);
 }
 
@@ -1488,13 +1566,24 @@ async fn run_reshare_ceremony(
     bulletin_post_id: &str,
     new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
 ) {
-    let leader_key = crate::dkg::v0::transport::canonical_leader(old_peer_node_keys)
-        .expect("old committee has a canonical transport leader");
+    let leader_key = crate::dkg::v0::transport::canonical_leader(sorted_new_peer_node_keys)
+        .expect("new committee has a canonical transport leader");
+    assert!(
+        new_committee_states
+            .iter()
+            .any(|state| state.node_key == leader_key),
+        "canonical next-committee transport leader is present in the test network"
+    );
     let initiator_state = old_committee_states
         .iter()
         .copied()
-        .find(|state| state.node_key == leader_key)
-        .expect("canonical transport leader is present in the test network");
+        .find(|old| {
+            new_committee_states
+                .iter()
+                .any(|new| new.node_key == old.node_key)
+        })
+        .or_else(|| old_committee_states.first().copied())
+        .expect("reshare test has at least one current member to forward start");
 
     let session_id = derive_reshare_session_id(
         key_string,
@@ -1515,19 +1604,41 @@ async fn run_reshare_ceremony(
         })
         .collect();
 
-    let outcome = crate::dkg::v0::network::start_reshare(
+    let secondary_state = old_committee_states
+        .iter()
+        .copied()
+        .find(|state| state.node_key != initiator_state.node_key)
+        .expect("reshare convergence test has two live current members");
+    let first_start = crate::dkg::v0::network::start_reshare(
         Arc::new(initiator_state.clone()),
         &::network::V0,
         bulletin_post_id.to_string(),
         key_string.to_string(),
-    )
-    .await
-    .expect("start reshare through typed transport");
-    assert!(matches!(
-        outcome,
-        crate::dkg::v0::network::ReshareStartOutcome::Started(ceremony, _)
-            if ceremony.0 == session_id
-    ));
+    );
+    let second_start = crate::dkg::v0::network::start_reshare(
+        Arc::new(secondary_state.clone()),
+        &::network::V0,
+        bulletin_post_id.to_string(),
+        key_string.to_string(),
+    );
+    let (first_outcome, second_outcome) = tokio::join!(first_start, second_start);
+    let first_outcome = first_outcome.expect("first current member starts reshare");
+    let second_outcome = second_outcome.expect("second current member starts reshare");
+    let outcome_ids = |outcome| match outcome {
+        crate::dkg::v0::network::ReshareStartOutcome::Started(ceremony, attempt)
+        | crate::dkg::v0::network::ReshareStartOutcome::Forwarded(ceremony, attempt)
+        | crate::dkg::v0::network::ReshareStartOutcome::AlreadyActive(ceremony, attempt) => {
+            (ceremony, attempt)
+        }
+    };
+    let (first_ceremony, first_attempt) = outcome_ids(first_outcome);
+    let (second_ceremony, second_attempt) = outcome_ids(second_outcome);
+    assert_eq!(first_ceremony.0, session_id);
+    assert_eq!(second_ceremony, first_ceremony);
+    assert_eq!(
+        second_attempt, first_attempt,
+        "concurrent current-member forwards must converge on the one attempt created by the next leader"
+    );
 
     // Wait until every new-committee node has a fresh share bundle.
     let start = Instant::now();
@@ -1937,15 +2048,15 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     let (key_string, _ring_pk_hex, original_pk_bytes) =
         wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
 
-    // Phase B: retain two old members and add D, while taking one non-leader
-    // old dealer offline. The transport intentionally has no leader failover,
-    // so the unavailable dealer must not be the canonical current leader.
+    // Phase B: retain two old members and add D while taking the canonical old
+    // dealer offline. Reshare leadership belongs to the next committee, so no
+    // particular old dealer is required while the old threshold remains.
     let leader_key = crate::dkg::v0::transport::canonical_leader(&old_peer_node_keys)
-        .expect("old committee has a canonical leader");
+        .expect("old committee has a canonical dealer");
     let offline_index = old_peer_node_keys
         .iter()
-        .rposition(|node_key| node_key != &leader_key)
-        .expect("three-node committee has a non-leader dealer");
+        .position(|node_key| node_key == &leader_key)
+        .expect("canonical old dealer is present");
     let mut sorted_new = old_peer_node_keys
         .iter()
         .enumerate()
@@ -1991,9 +2102,15 @@ async fn test_reshare_one_old_dealer_offline_completes() {
         .map(|(_, state)| *state)
         .chain(std::iter::once(&dave.app_state))
         .collect();
+    let live_old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_node_states
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != offline_index)
+        .map(|(_, state)| *state)
+        .collect();
 
     run_reshare_ceremony(
-        &old_node_states,
+        &live_old_node_states,
         &old_peer_node_keys,
         &key_string,
         &sorted_new,

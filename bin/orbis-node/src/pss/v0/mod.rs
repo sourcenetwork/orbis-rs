@@ -18,9 +18,11 @@
 //! Phase 4 posts the updated `RingPayload` with `new_peer_node_keys = None` so subsequent
 //! ticks revert to the normal refresh cadence.
 //!
-//! Every current member observes due work, but only the lowest canonical current-committee
-//! signing key schedules the ceremony. Other members wait for that leader's authenticated
-//! preparation request. There is intentionally no leader failover in protocol v0.
+//! Every current member may forward a pending reshare to the lowest canonical
+//! next-committee signing key. The receiver leader authenticates the forwarder,
+//! rereads SourceHub, and creates the attempt. Refresh remains scheduled only by
+//! the canonical current-committee leader. There is intentionally no receiver
+//! leader failover in protocol v0 because every next receiver is required.
 //!
 //! All rings carry a `pss_interval` (seconds); `0` means immediately due.
 //! Reshare is always triggered regardless of elapsed time.
@@ -251,10 +253,15 @@ where
                         );
                         Ok(())
                     }
-                    crate::dkg::v0::network::ReshareStartOutcome::CanonicalLeaderElsewhere => {
-                        tracing::debug!(
+                    crate::dkg::v0::network::ReshareStartOutcome::Forwarded(
+                        ceremony_id,
+                        attempt_id,
+                    ) => {
+                        tracing::info!(
+                            session_id = ceremony_id.0,
+                            attempt_id = %hex::encode(attempt_id.0),
                             ring_id = %entry.bulletin_post_id,
-                            "PSS: pending reshare will be scheduled by its canonical leader"
+                            "PSS: reshare start accepted by canonical next-committee leader"
                         );
                         Ok(())
                     }

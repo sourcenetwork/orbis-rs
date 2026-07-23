@@ -198,6 +198,11 @@ async fn fifty_node_reshare_acceptance_lan_and_wan() {
     experiment.repetitions = 5;
     experiment.operations = BTreeSet::from([Operation::PssReshare]);
     experiment.reshare_overlap = Some(18);
+    // Fifty schedulers polling SourceHub every second can saturate Docker
+    // Desktop's bridge while the initial all-member DKG is exchanging UDP.
+    // Ten seconds still exercises production scheduling while keeping the
+    // chain-control plane available to finalize the ceremony.
+    experiment.pss_poll_interval_secs = 10;
 
     let run_dir = BenchmarkRunner::new(experiment, RunOptions::default())
         .unwrap()

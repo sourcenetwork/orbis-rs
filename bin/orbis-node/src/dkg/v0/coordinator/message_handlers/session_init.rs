@@ -240,12 +240,6 @@ where
             ring_pk_hex
         )));
     }
-    if node_key_for_peer(&old_routes, sender_hex).is_none() {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare initiator {} is not a member of ring {}",
-            sender_hex, ring_pk_hex
-        )));
-    }
     let old_route_assignments =
         canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
             .map_err(DkgError::InvalidInput)?;
@@ -258,6 +252,14 @@ where
     let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    let expected_leader = crate::dkg::v0::transport::canonical_leader(reshare_new_peer_node_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+    if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare initiator {} is not the canonical next-committee leader for ring {}",
+            sender_hex, ring_pk_hex
+        )));
+    }
     let new_route_peer_ids = peer_ids_from_routes(&new_routes);
     let new_route_assignments =
         canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)

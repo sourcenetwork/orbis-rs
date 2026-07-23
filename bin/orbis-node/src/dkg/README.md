@@ -40,11 +40,13 @@ separate protocols and remain bounded direct request/response operations.
 
 ## Architecture at a glance
 
-The canonical leader coordinates transport readiness and public batching. It
-does not perform the other nodes' cryptography and cannot manufacture a valid
+The ceremony's canonical leader coordinates transport readiness and public
+batching. Fresh DKG and refresh use the current committee's lowest signing key;
+reshare uses the next committee's lowest signing key. The leader does not
+perform the other nodes' cryptography and cannot manufacture a valid
 contribution for them. Every participant still validates inputs, maintains its
-own DKG state machine, generates its own polynomial and shares, and persists its
-own final ring material.
+own DKG state machine, generates its own polynomial and shares when its role
+requires them, and persists its own final ring material.
 
 ```mermaid
 flowchart LR
@@ -135,10 +137,12 @@ Orbis uses several related identifiers because they solve different problems.
 
 ### Canonical leader
 
-The leader is the lexicographically lowest current-committee node signing key
-in SourceHub. Every node can derive the same result without an election.
-Canonical numeric node IDs are derived independently for the current and next
-committees.
+Fresh DKG and refresh choose the lexicographically lowest current-committee
+node signing key in SourceHub. Reshare chooses the lexicographically lowest
+next-committee signing key, which is also next-committee node ID 1 and the
+participant-set selector. Every node can derive these results without an
+election. Canonical numeric node IDs are derived independently for the current
+and next committees.
 
 If `StartDkg` reaches a nonleader, that node forwards `StartFresh` and the
 original JWT to the leader. The leader and every follower independently validate
@@ -176,10 +180,13 @@ completion call. Success means the leader has prepared and activated every
 committee member. It does **not** mean the ring is already finalized on
 SourceHub.
 
-PSS refresh and reshare are started by the scheduler on the same canonical
-leader. Refresh prepares the current committee. Reshare reads the pending
-SourceHub transition and prepares the deduplicated union of current and next
-committee endpoints.
+PSS refresh is started directly by its current-committee leader. For reshare,
+any current member that observes the pending transition sends an authenticated,
+idempotent `StartReshare` request to the canonical next-committee leader. That
+receiver independently rereads SourceHub, creates the attempt, and prepares the
+deduplicated union of current and next committee endpoints. Once a current
+member receives `Prepare`, subsequent scheduler ticks observe its active attempt
+and stop forwarding.
 
 ```mermaid
 sequenceDiagram
@@ -648,12 +655,15 @@ Reshare rotates shares into a pending next committee while preserving the ring
 public key. It uses the same control, public, and private planes, but its
 liveness condition is intentionally different from fresh DKG: every new
 receiver is required, while only the current threshold of old dealers must be
-available.
+available. Leadership follows that liveness condition: the next committee's
+canonical node ID 1 leads transport and selection, so no particular old dealer
+is required.
 
 ```mermaid
 flowchart TD
   Pending["SourceHub exposes pending next committee and threshold"]
-  Prepare["Leader prepares deduplicated current/next union"]
+  Forward["Any current member forwards StartReshare"]
+  Prepare["Next(1) leader validates SourceHub and prepares the deduplicated union"]
   Ready{"Every next receiver ready and current threshold dealers ready?"}
   Grace["Three-second dealer inclusion grace"]
   Freeze["Freeze ready current dealers into activation digest"]
@@ -667,7 +677,7 @@ flowchart TD
   Aggregate["Receivers perform weighted aggregation and threshold signing"]
   Finalize["SourceHub finalizes next membership; public key unchanged"]
 
-  Pending --> Prepare --> Ready
+  Pending --> Forward --> Prepare --> Ready
   Ready -->|"no before 2-minute deadline"| Abort["Abort with missing receivers and dealer shortfall"]
   Ready -->|"yes"| Grace --> Freeze --> Start --> Commit --> Shares --> Ack --> Complete
   Complete -->|"no"| Shares
@@ -903,7 +913,9 @@ The following production metrics expose ceremony and transport behavior:
 Useful `dkg_transport_events_total` events include:
 
 - control: `probe_ack`, `preparation_retry`, `activated`, `abort`, `retry`,
-  `connection_invalidated`;
+  `connection_invalidated`, `reshare_next_leader_selected`,
+  `reshare_start_forwarded`, `reshare_start_accepted`, `reshare_start_duplicate`, and
+  `reshare_start_rejected`;
 - public: `probe_broadcast`, `probe_broadcast_failure`, `contribution`,
   `batch_published`, `neighbor_down`, `rejoin_isolation`, `rejoin_lag`,
   `rejoin_subscription_error`, `rejoin_failure`, `repair`, `origin_repair`,

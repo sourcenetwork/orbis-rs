@@ -128,11 +128,19 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Initialize network for node-to-node communication
         tracing::info!("Initializing network");
+        let mut network_builder = network::NetworkImpl::builder()
+            .secret_key(secret_key)
+            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+            .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS);
+        if args.network_private_routes_only {
+            tracing::info!(
+                "Public Iroh relay and default discovery disabled; \
+                 using authoritative direct peer routes"
+            );
+            network_builder = network_builder.private_routes_only();
+        }
         let network: Arc<dyn Network> = Arc::new(
-            network::NetworkImpl::builder()
-                .secret_key(secret_key)
-                .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
-                .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
+            network_builder
                 .build()
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,

@@ -513,13 +513,24 @@ impl PrepareSession {
     }
 
     pub fn leader_route(&self) -> Option<&str> {
-        let current = &self.committees.current;
-        current
+        let committee = self.leader_committee()?;
+        committee
             .node_keys
             .iter()
             .position(|key| key == &self.leader_node_key)
-            .and_then(|index| current.peer_routes.get(index))
+            .and_then(|index| committee.peer_routes.get(index))
             .map(String::as_str)
+    }
+
+    pub fn leader_committee(&self) -> Option<&CommitteeConfig> {
+        match self.kind {
+            SessionKind::Reshare { .. } => self.committees.next.as_ref(),
+            SessionKind::Fresh | SessionKind::Refresh { .. } => Some(&self.committees.current),
+        }
+    }
+
+    pub fn canonical_leader_node_key(&self) -> Option<&str> {
+        canonical_leader(&self.leader_committee()?.node_keys)
     }
 
     pub fn current_participant(&self, node_key: &str) -> Option<ParticipantRef> {
@@ -546,6 +557,14 @@ pub enum DkgControlMessage {
         token_string: String,
     },
     StartAccepted {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+    },
+    StartReshare {
+        ring_id: String,
+        expected_ring_pk: String,
+    },
+    ReshareStartAccepted {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
     },
@@ -668,6 +687,8 @@ impl DkgControlMessage {
         match self {
             Self::StartFresh { .. } => "start_fresh",
             Self::StartAccepted { .. } => "start_accepted",
+            Self::StartReshare { .. } => "start_reshare",
+            Self::ReshareStartAccepted { .. } => "reshare_start_accepted",
             Self::Prepare(_) => "prepare",
             Self::Prepared { .. } => "prepared",
             Self::TopologyProbeAck { .. } => "topology_probe_ack",
@@ -1132,6 +1153,44 @@ mod tests {
         let b = vec!["node-b".into(), "node-c".into(), "node-a".into()];
         assert_eq!(canonical_leader(&a), Some("node-a"));
         assert_eq!(committee_digest(&a), committee_digest(&b));
+    }
+
+    #[test]
+    fn reshare_leader_is_canonical_next_receiver_and_is_digest_bound() {
+        let mut prepare = PrepareSession {
+            ceremony_id: CeremonyId(42),
+            attempt_id: AttemptId([3; 32]),
+            config_digest: [0; 32],
+            topic_id: [4; 32],
+            leader_node_key: "new-a".into(),
+            committees: CeremonyConfig {
+                current: committee(&[("old-a", "peer-old-a", 1), ("old-b", "peer-old-b", 2)], 2),
+                next: Some(committee(
+                    &[("new-b", "peer-new-b", 2), ("new-a", "peer-new-a", 1)],
+                    2,
+                )),
+            },
+            token_string: String::new(),
+            kind: SessionKind::Reshare {
+                ring_pk_hex: "ring-pk".into(),
+                new_peer_node_keys: vec!["new-a".into(), "new-b".into()],
+                new_threshold: 2,
+                bulletin_post_id: "ring".into(),
+            },
+            pss_interval: 60,
+            policy_id: Some("policy".into()),
+            ring_id: "ring".into(),
+        };
+        assert_eq!(prepare.canonical_leader_node_key(), Some("new-a"));
+        assert_eq!(prepare.leader_route(), Some("peer-new-a"));
+
+        let next_leader_digest = config_digest(&prepare).unwrap();
+        prepare.leader_node_key = "old-a".into();
+        assert_ne!(config_digest(&prepare).unwrap(), next_leader_digest);
+        assert_ne!(
+            prepare.canonical_leader_node_key(),
+            Some(prepare.leader_node_key.as_str())
+        );
     }
 
     #[test]

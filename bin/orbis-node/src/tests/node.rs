@@ -100,6 +100,7 @@ async fn make_test_node_config(
             loki_url: None,
             runtime_base_path: None,
             reshare_interval_secs: 0, // disabled in tests
+            network_private_routes_only: false,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
@@ -160,6 +161,7 @@ fn node_info_test_args(
         loki_url: None,
         runtime_base_path: None,
         reshare_interval_secs: 0,
+        network_private_routes_only: false,
         node_controller_key: controller_key.to_string(),
         node_peer_id,
         node_whitelisted_policy_ids: policy_ids.into_iter().map(str::to_string).collect(),
@@ -665,6 +667,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             loki_url: None,
             runtime_base_path: None,
             reshare_interval_secs: 0,
+            network_private_routes_only: false,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],

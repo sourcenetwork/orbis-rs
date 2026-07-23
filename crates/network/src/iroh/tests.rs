@@ -31,7 +31,7 @@ fn peer_addr(network: &IrohNetwork) -> PeerId {
 async fn new_test_network() -> IrohNetwork {
     IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network")
@@ -288,14 +288,14 @@ async fn iroh_router_builder_max_message_size() {
     let large_size = 2 * 1024 * 1024; // 2MB
     let net1 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .max_message_size(large_size)
         .build()
         .await
         .expect("Should create network 1");
     let net2 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network 2");

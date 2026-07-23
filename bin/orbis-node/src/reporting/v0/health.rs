@@ -122,7 +122,7 @@ mod tests {
         let target: Arc<dyn Network> = Arc::new(
             NetworkImpl::builder()
                 .bind_addr_v4("127.0.0.1:0".parse().unwrap())
-                .no_relay()
+                .private_routes_only()
                 .build()
                 .await
                 .unwrap(),
@@ -137,7 +137,7 @@ mod tests {
         let source: Arc<dyn Network> = Arc::new(
             NetworkImpl::builder()
                 .bind_addr_v4("127.0.0.1:0".parse().unwrap())
-                .no_relay()
+                .private_routes_only()
                 .build()
                 .await
                 .unwrap(),

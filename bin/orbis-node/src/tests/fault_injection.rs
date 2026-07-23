@@ -226,6 +226,7 @@ async fn setup_fault_three_node_network(
                 loki_url: None,
                 runtime_base_path: None,
                 reshare_interval_secs: 0,
+                network_private_routes_only: false,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],

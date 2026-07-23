@@ -172,6 +172,7 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         "/data".to_string(),
         "--reshare-interval-secs".to_string(),
         input.scheduler_poll_secs.to_string(),
+        "--network-private-routes-only".to_string(),
         "--node-controller-key".to_string(),
         CONTROLLER_PUBLIC_KEY.to_string(),
     ];
@@ -288,6 +289,7 @@ mod tests {
         assert!(yaml.contains("node-050"));
         assert_eq!(yaml.matches("127.0.0.1::50051").count(), 50);
         assert_eq!(yaml.matches("--chain-gas-multiplier").count(), 50);
+        assert_eq!(yaml.matches("--network-private-routes-only").count(), 50);
         let document: Value = serde_yaml::from_str(&yaml).unwrap();
         for service in document["services"].as_object().unwrap().values() {
             let Some(command) = service.get("command").and_then(Value::as_array) else {
@@ -374,11 +376,11 @@ mod tests {
         let genesis = serde_json::to_string_pretty(&genesis_patch(&[ring])).unwrap();
         assert_eq!(
             hex::encode(Sha256::digest(compose_3)),
-            "b07b6053d8d7be2de84bc4fb1ee26da99a0bb9590db041c3f3a3b2865715dcd5"
+            "61cfdd6c1e9a341d9a9f94ecc9fb6a31c5a041276448667b60f6c23a1f7cb97e"
         );
         assert_eq!(
             hex::encode(Sha256::digest(compose_50)),
-            "9852a702c91d6e0978852626476d90146e2ba64b32d3c6bfc1f1096dbedfac96"
+            "95d157dadd35be09d9bd9d70897a60a647e2fb60a2df55e6cd8334f0f5c17e48"
         );
         assert_eq!(
             hex::encode(Sha256::digest(genesis)),

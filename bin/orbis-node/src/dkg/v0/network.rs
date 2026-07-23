@@ -50,6 +50,7 @@ use crate::helpers::node_routes::{
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::ring_state::RingShareBundle;
+use bulletin::r#trait::RingPayload;
 use crypto::SignImpl;
 
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -171,6 +172,7 @@ fn control_request_scope(
 ) -> (&'static str, Option<CeremonyId>, Option<AttemptId>) {
     match request {
         DkgControlMessage::StartFresh { .. } => ("start-fresh", None, None),
+        DkgControlMessage::StartReshare { .. } => ("start-reshare", None, None),
         DkgControlMessage::Prepare(prepare) => (
             "prepare",
             Some(prepare.ceremony_id),
@@ -513,6 +515,29 @@ where
             let (ceremony_id, attempt_id) =
                 coordinate_fresh(state, routes, ring_id, token_string).await?;
             Ok(DkgControlMessage::StartAccepted {
+                ceremony_id,
+                attempt_id,
+            })
+        }
+        DkgControlMessage::StartReshare {
+            ring_id,
+            expected_ring_pk,
+        } => {
+            validate_reshare_start_sender(&state, routes, &ring_id, &expected_ring_pk, sender)
+                .await?;
+            let outcome = coordinate_reshare(state, routes, ring_id, expected_ring_pk).await?;
+            let (ceremony_id, attempt_id) = match outcome {
+                ReshareStartOutcome::Started(ceremony_id, attempt_id)
+                | ReshareStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+                    (ceremony_id, attempt_id)
+                }
+                ReshareStartOutcome::Forwarded(_, _) => {
+                    return Err(DkgError::InvalidState(
+                        "canonical next-committee leader forwarded a reshare start".into(),
+                    ));
+                }
+            };
+            Ok(DkgControlMessage::ReshareStartAccepted {
                 ceremony_id,
                 attempt_id,
             })
@@ -1345,25 +1370,14 @@ pub(crate) enum RefreshStartOutcome {
 pub(crate) enum ReshareStartOutcome {
     Started(CeremonyId, AttemptId),
     AlreadyActive(CeremonyId, AttemptId),
-    CanonicalLeaderElsewhere,
+    Forwarded(CeremonyId, AttemptId),
 }
 
-/// Coordinate the pending SourceHub committee transition through the same
-/// typed transport used by fresh DKG and refresh.
-pub(crate) async fn start_reshare<D>(
-    state: Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    ring_id: String,
-    ring_pk: String,
-) -> Result<ReshareStartOutcome>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
-        .await
-        .map_err(DkgError::ProtocolError)?;
-    if !ring_payload_matches_ring_key(&ring_pk, &ring.ring_pk) {
+fn pending_reshare_parameters(
+    ring: &RingPayload,
+    expected_ring_pk: &str,
+) -> Result<(Vec<String>, u32)> {
+    if !ring_payload_matches_ring_key(expected_ring_pk, &ring.ring_pk) {
         return Err(DkgError::InvalidState(
             "reshare ring public key differs from SourceHub state".into(),
         ));
@@ -1378,13 +1392,31 @@ where
             "SourceHub ring has no pending reshare transition".into(),
         ));
     }
-    let leader = transport::canonical_leader(&ring.peer_node_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
-        .to_string();
-    if leader != state.node_key {
-        return Ok(ReshareStartOutcome::CanonicalLeaderElsewhere);
-    }
+    Ok((next_keys, next_threshold))
+}
 
+/// Observe a pending transition as a current member and route it to the
+/// canonical next-committee leader. Any current member may forward; the next
+/// leader independently authenticates the sender and SourceHub state.
+pub(crate) async fn start_reshare<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+) -> Result<ReshareStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, next_threshold) = pending_reshare_parameters(&ring, &ring_pk)?;
+    if !ring.peer_node_keys.contains(&state.node_key) {
+        return Err(DkgError::Unauthorized(
+            "only a current-committee member may request reshare start".into(),
+        ));
+    }
     let ceremony = CeremonyId(derive_reshare_session_id(
         &ring_pk,
         &ring_id,
@@ -1392,8 +1424,131 @@ where
         &next_keys,
         next_threshold,
     )?);
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_start_duplicate");
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
+
+    let leader = transport::canonical_leader(&next_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    crate::metrics::record_dkg_transport_event("control", "reshare_next_leader_selected");
+    if leader == state.node_key {
+        return coordinate_reshare(state, routes, ring_id, ring_pk).await;
+    }
+
+    let next_routes = resolve_node_routes(&state.bulletin, &next_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_peer = next_routes
+        .iter()
+        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.as_str()))
+        .ok_or_else(|| DkgError::InvalidState("next-committee leader route is missing".into()))?;
+    crate::metrics::record_dkg_transport_event("control", "reshare_start_forwarded");
+    tracing::info!(
+        ring_id = %ring_id,
+        leader = %leader,
+        "forwarding pending reshare to canonical next-committee leader"
+    );
+    let forwarding_deadline =
+        Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
+    match retry_preparation_control(
+        &state,
+        routes,
+        leader_peer,
+        DkgControlMessage::StartReshare {
+            ring_id,
+            expected_ring_pk: ring_pk,
+        },
+        forwarding_deadline,
+    )
+    .await?
+    {
+        DkgControlMessage::ReshareStartAccepted {
+            ceremony_id,
+            attempt_id,
+        } if ceremony_id == ceremony => Ok(ReshareStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        response => Err(DkgError::ProtocolError(format!(
+            "next-committee leader returned unexpected reshare start response: {response:?}"
+        ))),
+    }
+}
+
+async fn validate_reshare_start_sender<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: &str,
+    expected_ring_pk: &str,
+    sender: &PeerId,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, _) = pending_reshare_parameters(&ring, expected_ring_pk)?;
+    let expected_leader = transport::canonical_leader(&next_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+    if expected_leader != state.node_key {
+        crate::metrics::record_dkg_transport_event("control", "reshare_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartReshare reached a nonleader next-committee receiver".into(),
+        ));
+    }
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if current_routes
+        .iter()
+        .all(|route| !peer_matches_route(sender, &route.peer_id))
+    {
+        crate::metrics::record_dkg_transport_event("control", "reshare_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartReshare sender is not in the current committee".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Coordinate the pending SourceHub transition as the canonical next-committee
+/// receiver. Only this function creates an attempt ID.
+async fn coordinate_reshare<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+) -> Result<ReshareStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, next_threshold) = pending_reshare_parameters(&ring, &ring_pk)?;
+    let leader = transport::canonical_leader(&next_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if leader != state.node_key {
+        return Err(DkgError::Unauthorized(
+            "only the canonical next-committee leader may coordinate reshare".into(),
+        ));
+    }
+    let ceremony = CeremonyId(derive_reshare_session_id(
+        &ring_pk,
+        &ring_id,
+        &ring.peer_node_keys,
+        &next_keys,
+        next_threshold,
+    )?);
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_start_duplicate");
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
     let _start_guard = lock_ceremony_start(&state, ceremony).await;
     if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_start_duplicate");
         return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
     }
 
@@ -1449,9 +1604,9 @@ where
         ring_id,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
-    coordinate_prepared(state, routes, prepare)
-        .await
-        .map(|(ceremony, attempt)| ReshareStartOutcome::Started(ceremony, attempt))
+    let (ceremony, attempt) = coordinate_prepared(state, routes, prepare).await?;
+    crate::metrics::record_dkg_transport_event("control", "reshare_start_accepted");
+    Ok(ReshareStartOutcome::Started(ceremony, attempt))
 }
 
 pub(crate) async fn start_refresh<D>(
@@ -2183,9 +2338,7 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if transport::canonical_leader(&prepare.committees.current.node_keys)
-        != Some(&prepare.leader_node_key)
-    {
+    if prepare.canonical_leader_node_key() != Some(&prepare.leader_node_key) {
         return Err(DkgError::Unauthorized(
             "Prepare names a non-canonical leader".into(),
         ));
@@ -5163,6 +5316,41 @@ where
 #[cfg(test)]
 mod stability_tests {
     use super::*;
+
+    fn pending_reshare_ring() -> RingPayload {
+        RingPayload {
+            upgrade_info: Default::default(),
+            ring_pk: "authoritative-ring-key".to_string(),
+            peer_node_keys: vec!["current-b".to_string(), "current-a".to_string()],
+            new_peer_node_keys: Some(vec!["next-b".to_string(), "next-a".to_string()]),
+            new_threshold: Some(2),
+            threshold: 2,
+            pss_interval: 60,
+            block_number_nonce: 0,
+            policy_id: None,
+            reporting: Default::default(),
+        }
+    }
+
+    #[test]
+    fn reshare_start_rejects_stale_ring_key_before_leader_selection() {
+        let error = pending_reshare_parameters(&pending_reshare_ring(), "stale-ring-key")
+            .expect_err("a stale scheduler observation must not start reshare");
+        assert!(matches!(error, DkgError::InvalidState(_)));
+        assert!(error.to_string().contains("differs from SourceHub state"));
+    }
+
+    #[test]
+    fn threshold_only_reshare_uses_current_committee_as_next() {
+        let mut ring = pending_reshare_ring();
+        ring.new_peer_node_keys = None;
+        ring.new_threshold = Some(1);
+        let (next_keys, next_threshold) =
+            pending_reshare_parameters(&ring, "authoritative-ring-key").unwrap();
+        assert_eq!(next_keys, ring.peer_node_keys);
+        assert_eq!(next_threshold, 1);
+        assert_eq!(transport::canonical_leader(&next_keys), Some("current-a"));
+    }
 
     #[test]
     fn neighbor_churn_only_schedules_rejoin_after_sustained_full_isolation() {

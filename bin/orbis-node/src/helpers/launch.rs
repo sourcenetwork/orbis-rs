@@ -60,6 +60,10 @@ pub struct Args {
     /// Set to 0 to disable automatic resharing. Defaults to 86400 (24 hours).
     #[arg(long, default_value_t = crate::constants::DEFAULT_RESHARE_INTERVAL_SECS)]
     pub reshare_interval_secs: u64,
+    /// Disable public Iroh relays and discovery when every peer has an
+    /// authoritative direct route, such as a generated Docker network.
+    #[arg(long, default_value_t = false)]
+    pub network_private_routes_only: bool,
     /// Hex-encoded public key of the external controller allowed to update node info.
     #[arg(long)]
     pub node_controller_key: String,

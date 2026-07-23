@@ -80,7 +80,7 @@ pub struct IrohNetworkBuilder {
     config: IrohNetworkConfig,
     secret_key: Option<SecretKey>,
     bind_addr_v4: Option<SocketAddrV4>,
-    no_relay: bool,
+    private_routes_only: bool,
     idle_timeout_ms: Option<u32>,
     keep_alive_interval_ms: Option<u64>,
 }
@@ -111,10 +111,14 @@ impl IrohNetworkBuilder {
         self
     }
 
-    /// Disable the relay (DERP) server. Useful for in-process tests where all
-    /// nodes are on the same machine and a relay would only add latency.
-    pub fn no_relay(mut self) -> Self {
-        self.no_relay = true;
+    /// Disable public relays and the default public discovery services.
+    ///
+    /// Use this only when every peer has an authoritative direct route, such
+    /// as an isolated Docker network or an in-process test network. The
+    /// Orbis static Gossip provider remains available for explicitly supplied
+    /// peer routes.
+    pub fn private_routes_only(mut self) -> Self {
+        self.private_routes_only = true;
         self
     }
 
@@ -147,8 +151,10 @@ impl IrohNetworkBuilder {
             builder = builder.bind_addr_v4(addr);
         }
 
-        if self.no_relay {
-            builder = builder.relay_mode(iroh::RelayMode::Disabled);
+        if self.private_routes_only {
+            builder = builder
+                .relay_mode(iroh::RelayMode::Disabled)
+                .clear_discovery();
         }
 
         if self.idle_timeout_ms.is_some() || self.keep_alive_interval_ms.is_some() {
