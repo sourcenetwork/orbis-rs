@@ -138,6 +138,36 @@ pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
 
 // ============================================================================
+// Ring Finalization Constants
+// ============================================================================
+
+/// Maximum retries for both halves of `post_and_verify_fresh_ring_finalization`:
+/// reposting a `FinalizeRing` transaction whose confirmation is missing on-chain,
+/// and retrying a failed `ring_finalization_status` query. Shared between the two
+/// because both represent the same underlying condition (SourceHub is not yet
+/// reflecting this node's confirmation) and should give up after comparable effort.
+pub const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
+
+/// Initial backoff before retrying a failed `FinalizeRing` post/status query.
+/// Also the value `retry_delay` resets to once this node's own confirmation
+/// reappears mid-loop, since that clears the condition the backoff was for.
+pub const FINALIZATION_PERSISTENCE_RETRY_INITIAL: Duration = Duration::from_millis(250);
+
+/// Upper bound for the exponential backoff between finalization retries.
+pub const FINALIZATION_PERSISTENCE_RETRY_CAP: Duration = Duration::from_secs(2);
+
+/// Poll interval used while this node's own confirmation is already visible
+/// on-chain but the full confirmation set is still being observed. Distinct
+/// from the retry backoff above: this is a steady cadence, not exponential,
+/// since there's no failure to back off from.
+pub const FINALIZATION_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Hard deadline for the whole post-and-verify finalization loop. Bounds how
+/// long a node will wait for every participant's `FinalizeRing` confirmation
+/// to land on-chain before giving up on this ring.
+pub const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
+// ============================================================================
 // PRE (Proxy Re-Encryption) Constants
 // ============================================================================
 

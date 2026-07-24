@@ -1,5 +1,9 @@
 use crate::app_state::AppState;
-use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
+use crate::constants::{
+    FINALIZATION_COMPLETION_TIMEOUT, FINALIZATION_PERSISTENCE_RETRY_CAP,
+    FINALIZATION_PERSISTENCE_RETRY_INITIAL, FINALIZATION_PERSISTENCE_RETRY_LIMIT,
+    FINALIZATION_STATUS_POLL_INTERVAL, MAX_LOCAL_RINGS_PER_NODE,
+};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::DkgPhase;
@@ -9,16 +13,9 @@ use bulletin::r#trait::{Bulletin, BulletinWriteKind, RingFinalizationPayload};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::time::{sleep, Instant};
 
 use super::{types::CoordinatorDkg, DkgCoordinator};
-
-const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
-const FINALIZATION_PERSISTENCE_RETRY_INITIAL: Duration = Duration::from_millis(250);
-const FINALIZATION_PERSISTENCE_RETRY_CAP: Duration = Duration::from_secs(2);
-const FINALIZATION_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,

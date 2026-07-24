@@ -131,10 +131,11 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
         }
         for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
             node.router = Some(
-                create_router_with_all_handlers::<DkgImpl, crypto::PreImpl, crypto::SignImpl>(
-                    &node.app_state.network,
-                    Arc::new(node.app_state.clone()),
-                )
+                crate::helpers::create_routers::create_router_with_all_handlers::<
+                    DkgImpl,
+                    crypto::PreImpl,
+                    crypto::SignImpl,
+                >(&node.app_state.network, Arc::new(node.app_state.clone()))
                 .expect("start faultable refresh test router"),
             );
         }
@@ -414,10 +415,11 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
     }
     for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
         node.router = Some(
-            create_router_with_all_handlers::<DkgImpl, crypto::PreImpl, crypto::SignImpl>(
-                &node.app_state.network,
-                Arc::new(node.app_state.clone()),
-            )
+            crate::helpers::create_routers::create_router_with_all_handlers::<
+                DkgImpl,
+                crypto::PreImpl,
+                crypto::SignImpl,
+            >(&node.app_state.network, Arc::new(node.app_state.clone()))
             .expect("start faultable refresh-failover test router"),
         );
     }
@@ -481,7 +483,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         network.bob.app_state.node_key.clone(),
         network.charlie.app_state.node_key.clone(),
     ];
-    let candidates = canonical_leader_candidates(&peer_node_keys);
+    let candidates = crate::dkg::v0::transport::canonical_leader_candidates(&peer_node_keys);
     let canonical_key = candidates[0].to_string();
     let fallback_key = candidates[1].to_string();
 
