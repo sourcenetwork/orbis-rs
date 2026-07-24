@@ -21,9 +21,7 @@ use crate::constants::{
     DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, PEER_RESPONSE_TIMEOUT,
     PSS_GRACE_PERIOD_SECS,
 };
-use crate::dkg::v0::coordinator::message_handlers::{
-    drive_private_share_completion, handle_session_init,
-};
+use crate::dkg::v0::coordinator::message_handlers::{drive_accepted_share, handle_session_init};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -4977,7 +4975,7 @@ where
     D: CoordinatorDkg,
 {
     if completion.should_drive {
-        drive_private_share_completion(
+        drive_accepted_share(
             &DkgCoordinator::with_routes(state, routes),
             completion.session_id,
             completion.from_node_id,

@@ -128,7 +128,7 @@ where
                 }
             }
         };
-        let result = message_handlers::accept_private_share_message(
+        let result = message_handlers::accept_share_message(
             self,
             session_id,
             from_node_id,

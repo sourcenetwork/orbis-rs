@@ -47,43 +47,7 @@ where
 /// advancement is deliberately separate because the final share can enter
 /// phase 4 and wait on SourceHub; transport acknowledgement must only cover
 /// crypto validation and local state acceptance, not the rest of the ceremony.
-pub(crate) async fn accept_private_share_message<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
-    from_node_id: u32,
-    to_node_id: u32,
-    share_value: Vec<u8>,
-    nonce: [u8; 16],
-    report_evidence: Option<SignedDkgShare>,
-) -> Result<bool>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    accept_share_message(
-        coord,
-        session_id,
-        from_node_id,
-        to_node_id,
-        share_value,
-        nonce,
-        report_evidence,
-    )
-    .await
-}
-
-pub(crate) async fn drive_private_share_completion<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
-    from_node_id: u32,
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-{
-    drive_accepted_share(coord, session_id, from_node_id).await
-}
-
-async fn accept_share_message<D>(
+pub(crate) async fn accept_share_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,
@@ -353,7 +317,7 @@ where
     Ok(())
 }
 
-async fn drive_accepted_share<D>(
+pub(crate) async fn drive_accepted_share<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     from_node_id: u32,

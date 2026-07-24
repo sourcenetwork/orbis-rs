@@ -51,4 +51,4 @@ pub use commitment_hash::handle_commitment_hash_message;
 pub use session_init::handle_session_init;
 #[cfg(test)]
 pub use share::handle_share_message;
-pub(crate) use share::{accept_private_share_message, drive_private_share_completion};
+pub(crate) use share::{accept_share_message, drive_accepted_share};
