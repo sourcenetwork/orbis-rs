@@ -447,3 +447,125 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::test_helpers::create_test_app_state_default;
+    use crypto::r#trait::Dkg as _;
+    use crypto::DkgImpl;
+    use std::sync::Arc;
+
+    /// Build a receiver-role coordinator with a reshare session already
+    /// configured with a given `active_dealers`/`valid_share_dealers` state,
+    /// as if Phase 1 (commitment relay) and Phase 3 (share acceptance) had
+    /// already run for those dealers. `handle_reshare_participant_set` never
+    /// touches the node's crypto state on the rejection paths this exercises,
+    /// so a bare `DkgImpl::new` receiver node is sufficient — no full reshare
+    /// ceremony is required.
+    async fn reshare_receiver_test_coordinator(
+        db_name: &str,
+        session_id: u128,
+        active_dealers: Vec<u32>,
+        valid_share_dealers: Vec<u32>,
+    ) -> DkgCoordinator<DkgImpl> {
+        let state = Arc::new(create_test_app_state_default(db_name).await);
+        let node = *DkgImpl::new(1, 1, 2, 0, DkgRole::Receiver)
+            .expect("construct receiver DkgImpl for test session");
+        assert_eq!(
+            state
+                .dkg_session_state
+                .create_session(session_id, node, 2, |_| {})
+                .await,
+            crate::dkg::v0::session_state::CreateSessionOutcome::Created
+        );
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            let session = states
+                .get_mut(&session_id)
+                .expect("session was just created");
+            session.kind = SessionKind::Reshare {
+                ring_pk_hex: "test-ring".to_string(),
+                new_peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+                new_threshold: 1,
+                bulletin_post_id: "test-ring-post".to_string(),
+            };
+            session.transport.active_dealers = active_dealers
+                .into_iter()
+                .map(crate::dkg::v0::transport::ParticipantRef::current)
+                .collect();
+            session.reshare.valid_share_dealers = valid_share_dealers.into_iter().collect();
+        }
+        DkgCoordinator::with_routes(state, &::network::V0)
+    }
+
+    #[tokio::test]
+    async fn rejects_dealer_not_in_active_dealers() {
+        let coord = reshare_receiver_test_coordinator(
+            "reshare_participant_set_rejects_inactive_dealer",
+            1001,
+            vec![],  // no active dealers at all
+            vec![1], // dealer 1 already gave a valid share, but was never marked active
+        )
+        .await;
+
+        let error = handle_reshare_participant_set(&coord, 1001, 1, vec![1])
+            .await
+            .expect_err("a dealer outside active_dealers must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("inactive dealer"));
+    }
+
+    #[tokio::test]
+    async fn rejects_dealer_without_a_previously_accepted_valid_share() {
+        let coord = reshare_receiver_test_coordinator(
+            "reshare_participant_set_rejects_no_valid_share",
+            1002,
+            vec![1], // dealer 1 is active
+            vec![],  // ...but this receiver never validated a commitment/share from it
+        )
+        .await;
+
+        let error = handle_reshare_participant_set(&coord, 1002, 1, vec![1])
+            .await
+            .expect_err(
+                "a dealer this receiver never independently validated a share from must be rejected",
+            );
+        assert!(matches!(error, DkgError::InvalidState(_)));
+        assert!(error.to_string().contains("before this receiver accepted"));
+    }
+
+    #[tokio::test]
+    async fn rejects_participant_set_from_a_non_leader_sender() {
+        let coord = reshare_receiver_test_coordinator(
+            "reshare_participant_set_rejects_non_leader",
+            1003,
+            vec![1],
+            vec![1],
+        )
+        .await;
+
+        // Only new-committee node 1 may send ReshareParticipantSet; this must
+        // be rejected before the active_dealers/valid_share_dealers checks
+        // are even reached.
+        let error = handle_reshare_participant_set(&coord, 1003, 2, vec![1])
+            .await
+            .expect_err("a non-leader sender must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn accepts_dealer_that_is_both_active_and_share_validated() {
+        let coord = reshare_receiver_test_coordinator(
+            "reshare_participant_set_accepts_valid_dealer",
+            1004,
+            vec![1],
+            vec![1],
+        )
+        .await;
+
+        handle_reshare_participant_set(&coord, 1004, 1, vec![1])
+            .await
+            .expect("a dealer that is both active and share-validated must be accepted");
+    }
+}
