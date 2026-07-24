@@ -139,15 +139,7 @@ where
         })
         .ok();
 
-    if let Err(e) = broadcast_result(
-        coord,
-        session_id,
-        &candidate.peer_ids,
-        &statement,
-        signature.clone(),
-    )
-    .await
-    {
+    if let Err(e) = broadcast_result(coord, session_id, &statement, signature.clone()).await {
         tracing::warn!(
             session_id = session_id,
             error = %e,
@@ -164,7 +156,6 @@ where
 async fn broadcast_result<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
-    _peer_ids: &[String],
     statement: &RefreshHealthCheckStatement,
     signature: Option<String>,
 ) -> Result<()>

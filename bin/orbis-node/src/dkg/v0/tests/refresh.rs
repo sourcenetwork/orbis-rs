@@ -14,9 +14,7 @@ use crate::dkg::v0::{
     messages::SessionKind,
     network::{start_refresh, RefreshStartOutcome},
     session_state::{DkgPhase, RingPssClaimOutcome},
-    transport::canonical_leader_candidates,
 };
-use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
