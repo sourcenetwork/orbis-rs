@@ -239,6 +239,84 @@ async fn test_concurrent_starts_on_different_nodes_share_one_attempt() {
     }
 }
 
+/// The gRPC caller need not itself be a member of the target ring.
+/// `start_fresh` forwards a `StartDkgRequest` landing on a non-participant
+/// node to the ring's canonical leader over the network, and the ceremony
+/// completes normally, driven entirely by the real participants
+/// (Alice/Bob/Charlie) — the forwarding node never joins a session at all.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_start_dkg_forwards_when_initiator_is_not_a_ring_participant() {
+    let db_name = "test_start_dkg_forwards_non_participant_initiator";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+        test_db_path(&format!("{}_4", db_name)),
+    ];
+
+    let mut network = setup_three_node_network(true, db_name).await;
+
+    // A fourth node sharing the same chain/bulletin state but deliberately
+    // NOT included in the ring's peer_node_keys — it plays the role of an
+    // arbitrary orbis-node instance an external caller happened to reach.
+    let dummy_bulletin = network.dummy_bulletin.clone().expect("dummy bulletin");
+    let outsider_app_state = Arc::new(
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), &format!("{}_4", db_name))
+            .await,
+    );
+    let outsider_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(outsider_app_state.clone(), &network::V0);
+
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("DKG JWT");
+    let request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+
+    let result = outsider_service.start_dkg(request).await;
+    assert!(
+        result.is_ok(),
+        "start_dkg via a non-participant initiator should forward to the canonical leader: {result:?}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let all_finished = network.alice.app_state.dkg_session_state.session_count().await == 0
+            && network.bob.app_state.dkg_session_state.session_count().await == 0
+            && network.charlie.app_state.dkg_session_state.session_count().await == 0;
+        if all_finished {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "DKG forwarded by a non-participant initiator did not complete"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+    let ring = get_test_ring_post(&dummy_bulletin);
+    assert!(
+        !ring.payload.is_empty(),
+        "the forwarded DKG must finalize just like a participant-initiated one"
+    );
+
+    // The outsider forwarded the request but never became a participant.
+    assert_eq!(
+        outsider_app_state.dkg_session_state.session_count().await,
+        0
+    );
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
 /// Test: start_dkg fails closed when the ring does not exist on the bulletin.
 ///
 /// In the new flow the bulletin is read before any participant resolution happens,
