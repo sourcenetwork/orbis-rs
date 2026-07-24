@@ -1802,9 +1802,24 @@ where
     if candidates.is_empty() {
         return Err(DkgError::InvalidParticipantCount(0));
     }
-    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+    // A route that fails to resolve here means some committee member has
+    // never published NodeInfo on-chain at all — a ring-configuration gap,
+    // not network-level unreachability (that's caught below, per candidate,
+    // when the actual RPC attempt fails). No candidate can build a valid
+    // Prepare without every member's route, so every node should stand down
+    // quietly and retry next tick rather than surface a per-tick error.
+    let Ok(current_routes) = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
-        .map_err(DkgError::Unauthorized)?;
+        .inspect_err(|error| {
+            tracing::debug!(
+                ring_id = %ring_id,
+                %error,
+                "PSS: refresh committee routes are not fully resolvable yet; standing down"
+            );
+        })
+    else {
+        return Ok(RefreshStartOutcome::NotDue);
+    };
 
     for (rank, candidate) in candidates.into_iter().enumerate() {
         if candidate == state.node_key {
@@ -2542,7 +2557,6 @@ where
         prepare.policy_id.clone(),
         prepare.ring_id.clone(),
         sender,
-        false,
     )
     .await?;
 
@@ -5732,10 +5746,14 @@ mod stability_tests {
         kind: SessionKind,
         active_dealers: Vec<ParticipantRef>,
         origin: ParticipantRef,
-    ) -> (Arc<AppState<crypto::DkgImpl>>, CeremonyId, AttemptId, [u8; 32]) {
-        let state = Arc::new(
-            crate::helpers::test_helpers::create_test_app_state_default(db_name).await,
-        );
+    ) -> (
+        Arc<AppState<crypto::DkgImpl>>,
+        CeremonyId,
+        AttemptId,
+        [u8; 32],
+    ) {
+        let state =
+            Arc::new(crate::helpers::test_helpers::create_test_app_state_default(db_name).await);
         let node = *{
             use crypto::r#trait::Dkg as _;
             crypto::DkgImpl::new(1, 2, 3, 0, crypto::r#trait::DkgRole::Standard)
@@ -5756,7 +5774,9 @@ mod stability_tests {
 
         {
             let mut states = state.dkg_session_state.states.write().await;
-            let session = states.get_mut(&session_id).expect("session was just created");
+            let session = states
+                .get_mut(&session_id)
+                .expect("session was just created");
             session.kind = kind;
             session.transport.ceremony_id = Some(ceremony_id);
             session.transport.attempt_id = Some(attempt_id);
@@ -5836,8 +5856,8 @@ mod stability_tests {
         let error = verify_signed_contribution(&state, &signed)
             .await
             .expect_err(
-                "a non-dealer origin must not be allowed to submit a reshare Commitments contribution",
-            );
+            "a non-dealer origin must not be allowed to submit a reshare Commitments contribution",
+        );
         assert!(matches!(error, DkgError::Unauthorized(_)));
     }
 
@@ -5871,9 +5891,9 @@ mod stability_tests {
         )
         .await;
 
-        verify_signed_contribution(&state, &signed)
-            .await
-            .expect("an active dealer must be allowed to submit a reshare Commitments contribution");
+        verify_signed_contribution(&state, &signed).await.expect(
+            "an active dealer must be allowed to submit a reshare Commitments contribution",
+        );
     }
 
     #[tokio::test]

@@ -3300,7 +3300,8 @@ mod tests {
     async fn transport_claim_guard_finish_marks_processed() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         let session_id = 100u128;
-        mgr.create_session(session_id, make_node(1), 3, |_| {}).await;
+        mgr.create_session(session_id, make_node(1), 3, |_| {})
+            .await;
         let message_id = crate::dkg::v0::transport::MessageId([1u8; 32]);
 
         assert_eq!(
@@ -3321,7 +3322,8 @@ mod tests {
     async fn transport_claim_guard_releases_claim_when_dropped_without_finish() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         let session_id = 101u128;
-        mgr.create_session(session_id, make_node(1), 3, |_| {}).await;
+        mgr.create_session(session_id, make_node(1), 3, |_| {})
+            .await;
         let message_id = crate::dkg::v0::transport::MessageId([2u8; 32]);
 
         assert_eq!(

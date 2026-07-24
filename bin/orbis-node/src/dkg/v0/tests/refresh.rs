@@ -66,7 +66,6 @@ async fn invoke_session_init(
         init.policy_id,
         init.ring_id,
         sender,
-        false,
     )
     .await
 }
