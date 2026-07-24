@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
-use crate::error::Result;
+use crate::error::{NetworkError, Result};
 use crate::iroh::base::IrohStreamWrapper;
 use crate::metrics;
 use crate::r#trait::{PeerId, ProtocolHandler, RouterIngressLimits};
@@ -31,9 +31,10 @@ pub struct IrohRouterWrapper {
 #[async_trait]
 impl RouterTrait for IrohRouterWrapper {
     async fn shutdown(self: Box<Self>) -> Result<()> {
-        self.router.shutdown().await.map_err(|e| {
-            crate::error::NetworkError::Protocol(format!("Failed to shutdown router: {}", e))
-        })?;
+        self.router
+            .shutdown()
+            .await
+            .map_err(|e| NetworkError::Protocol(format!("Failed to shutdown router: {}", e)))?;
         Ok(())
     }
 }

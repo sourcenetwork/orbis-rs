@@ -13,7 +13,9 @@
 use crate::constants::DKG_ATTEMPT_TIMEOUT;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
 use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
-use crate::helpers::test_helpers::wait_for_ring_finalized;
+use crate::helpers::test_helpers::{
+    create_ring_governance_with_ring, wait_for_nodes_ready, wait_for_ring_finalized,
+};
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
     RelayRequestStatement, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, RELAY_REQUEST_DOMAIN,
@@ -501,8 +503,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -542,12 +543,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -823,8 +820,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     let node1_endpoint = endpoints[0].to_string();
     let node2_endpoint = endpoints[1].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -864,12 +860,8 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -1121,8 +1113,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     let endpoint = endpoints[0].to_string();
     let node3_endpoint = endpoints[2].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -1162,12 +1153,8 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -1530,8 +1517,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     let endpoint = endpoints[0].to_string();
     let node2_endpoint = endpoints[1].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -1571,12 +1557,8 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -2101,8 +2083,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -2142,12 +2123,8 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -2273,8 +2250,7 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -2314,12 +2290,8 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -2455,8 +2427,7 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -2496,12 +2467,8 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch - update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -2671,8 +2638,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -2712,12 +2678,8 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     .await
     .expect("controller chain client");
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -2902,8 +2864,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     let endpoint = endpoints[0].to_string();
     let node4_endpoint = endpoints[3].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -2951,12 +2912,8 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     .expect("controller chain client");
 
     let initial_node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &initial_node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &initial_node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -3179,8 +3136,7 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
     let endpoint = endpoints[0].to_string();
     let node4_endpoint = endpoints[3].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -3228,12 +3184,8 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
     .expect("controller chain client");
 
     let initial_node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &initial_node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &initial_node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch - update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
@@ -3473,8 +3425,7 @@ async fn test_report_kick_promotes_backup_node() {
     let endpoints = network.all_endpoints();
     let endpoint = endpoints[0].to_string();
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
 
     let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
         .await
@@ -3524,12 +3475,8 @@ async fn test_report_kick_promotes_backup_node() {
         "genesis should seed node3 with kick_threshold - 1 demerits"
     );
 
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &node_keys,
-    )
-    .await;
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
     assert_eq!(
         governance_policy_id, RING_GOVERNANCE_POLICY_ID,
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"

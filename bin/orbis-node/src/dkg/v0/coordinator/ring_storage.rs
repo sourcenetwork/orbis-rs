@@ -1,6 +1,8 @@
 use crate::app_state::AppState;
 use crate::constants::MAX_LOCAL_RINGS_PER_NODE;
 use crate::dkg::v0::error::{DkgError, Result};
+use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::session_state::DkgPhase;
 use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingIndexEntry;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, RingFinalizationPayload};
@@ -36,7 +38,7 @@ where
                 .as_ref()
                 .map(|params| params.bulletin_post_id.clone())
                 .or_else(|| match &state.kind {
-                    crate::dkg::v0::messages::SessionKind::Reshare {
+                    SessionKind::Reshare {
                         bulletin_post_id, ..
                     } => Some(bulletin_post_id.clone()),
                     _ => None,
@@ -46,10 +48,7 @@ where
     coord
         .app_state
         .dkg_session_state
-        .update_phase(
-            &session_id,
-            crate::dkg::v0::session_state::DkgPhase::Phase4Complete,
-        )
+        .update_phase(&session_id, DkgPhase::Phase4Complete)
         .await;
     super::reshare::cleanup::spawn_bulletin_finalized_cleanup(
         coord.app_state.clone(),

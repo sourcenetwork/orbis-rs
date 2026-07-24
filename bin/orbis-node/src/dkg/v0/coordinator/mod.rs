@@ -33,7 +33,12 @@ pub(crate) mod types;
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
-use crate::dkg::v0::session_state::{CreateSessionOutcome, MessageProcessingClaim};
+use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::session_state::{
+    CreateSessionOutcome, DkgSessionState, MessageProcessingClaim, TransportMessageClaimGuard,
+};
+use crate::dkg::v0::transport::MessageId;
+use crate::sign::v0::messages::RefreshHealthCheckStatement;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
@@ -83,12 +88,12 @@ where
     pub(crate) async fn accept_transport_share(
         &self,
         session_id: u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
         from_node_id: u32,
         to_node_id: u32,
         share_value: Vec<u8>,
         nonce: [u8; 16],
-        report_evidence: Option<crate::dkg::v0::messages::SignedDkgShare>,
+        report_evidence: Option<SignedDkgShare>,
     ) -> Result<bool>
     where
         SignImpl: CoordinatorReportSigner<D>,
@@ -101,7 +106,7 @@ where
                 .await
             {
                 MessageProcessingClaim::Claimed => {
-                    break crate::dkg::v0::session_state::TransportMessageClaimGuard::new(
+                    break TransportMessageClaimGuard::new(
                         self.app_state.dkg_session_state.clone(),
                         session_id,
                         message_id,
@@ -166,7 +171,7 @@ where
         session_id: u128,
         from_node_id: u32,
         commitment: Vec<u8>,
-        report_evidence: Option<crate::dkg::v0::messages::SignedDkgCommitment>,
+        report_evidence: Option<SignedDkgCommitment>,
     ) -> Result<()>
     where
         SignImpl: CoordinatorReportSigner<D>,
@@ -185,7 +190,7 @@ where
     pub(crate) async fn accept_public_commitment_audit(
         &self,
         session_id: u128,
-        revealed: Vec<crate::dkg::v0::messages::SignedDkgCommitment>,
+        revealed: Vec<SignedDkgCommitment>,
     ) -> Result<()>
     where
         SignImpl: CoordinatorReportSigner<D>,
@@ -198,7 +203,7 @@ where
         &self,
         session_id: u128,
         from_node_id: u32,
-        statement: crate::sign::v0::messages::RefreshHealthCheckStatement,
+        statement: RefreshHealthCheckStatement,
         signature: Option<String>,
     ) -> Result<()>
     where
@@ -227,7 +232,7 @@ where
         init_fn: F,
     ) -> Result<()>
     where
-        F: FnOnce(&mut crate::dkg::v0::session_state::DkgSessionState<D>),
+        F: FnOnce(&mut DkgSessionState<D>),
     {
         if total_nodes == 0 {
             return Err(DkgError::InvalidParticipantCount(total_nodes));

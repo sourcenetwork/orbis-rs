@@ -108,7 +108,7 @@ async fn deliver_reshare_share_ack_until_done<D>(
         }
 
         attempt += 1;
-        match crate::dkg::v0::network::send_reshare_share_ack(
+        match send_reshare_share_ack(
             &coord,
             session_id,
             receiver_node_id,
@@ -321,14 +321,14 @@ async fn broadcast_reshare_participant_set<D>(
 where
     D: CoordinatorDkg,
 {
-    crate::dkg::v0::network::submit_public_contribution(
+    submit_public_contribution(
         coord,
         session_id,
-        crate::dkg::v0::transport::DkgPublicPayload::ReshareParticipantSet {
+        DkgPublicPayload::ReshareParticipantSet {
             selected_dealers: selected_dealer_ids
                 .iter()
                 .copied()
-                .map(crate::dkg::v0::transport::ParticipantRef::current)
+                .map(ParticipantRef::current)
                 .collect(),
         },
     )
@@ -391,7 +391,7 @@ where
                         state.node.total_nodes()
                     )));
                 }
-                let dealer = crate::dkg::v0::transport::ParticipantRef::current(*dealer_id);
+                let dealer = ParticipantRef::current(*dealer_id);
                 if !state.transport.active_dealers.contains(&dealer) {
                     return Err(DkgError::Unauthorized(format!(
                         "ReshareParticipantSet contains inactive dealer {}",
@@ -477,7 +477,7 @@ mod tests {
                 .dkg_session_state
                 .create_session(session_id, node, 2, |_| {})
                 .await,
-            crate::dkg::v0::session_state::CreateSessionOutcome::Created
+            CreateSessionOutcome::Created
         );
         {
             let mut states = state.dkg_session_state.states.write().await;
@@ -492,7 +492,7 @@ mod tests {
             };
             session.transport.active_dealers = active_dealers
                 .into_iter()
-                .map(crate::dkg::v0::transport::ParticipantRef::current)
+                .map(ParticipantRef::current)
                 .collect();
             session.reshare.valid_share_dealers = valid_share_dealers.into_iter().collect();
         }

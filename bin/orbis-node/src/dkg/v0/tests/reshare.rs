@@ -1,8 +1,12 @@
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::{message_handlers::handle_session_init, DkgCoordinator},
+    error::{DkgError, Result},
     helpers::derive_reshare_session_id,
     messages::SessionKind,
+    network::{start_reshare, ReshareStartOutcome},
+    session_state::{RingPssClaimOutcome, SessionStateManager},
+    transport::canonical_leader,
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
@@ -46,7 +50,7 @@ async fn invoke_session_init(
     coordinator: &DkgCoordinator<DkgImpl>,
     init: TestSessionInit,
     sender: &PeerId,
-) -> crate::dkg::v0::error::Result<()> {
+) -> Result<()> {
     handle_session_init(
         coordinator,
         init.session_id,
@@ -131,7 +135,6 @@ fn write_last_refresh(
 /// different session ID, and after unmark the ring can be claimed again.
 #[tokio::test]
 async fn test_rings_pss_blocks_refresh_and_reshare_equally() {
-    use crate::dkg::v0::session_state::{RingPssClaimOutcome, SessionStateManager};
     let manager: SessionStateManager<DkgImpl> = SessionStateManager::new();
     let ring_pk = "ring_pss_idempotent_test";
 
@@ -190,10 +193,7 @@ async fn test_reshare_session_init_rejects_unknown_ring() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::ProtocolError(_))
-        ),
+        matches!(result, Err(DkgError::ProtocolError(_))),
         "Expected ProtocolError for unknown ring, got: {:?}",
         result
     );
@@ -267,10 +267,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized when bulletin ring_pk != session ring, got: {:?}",
         result
     );
@@ -311,7 +308,7 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
     ];
     next_node_keys.sort();
     assert_eq!(
-        crate::dkg::v0::transport::canonical_leader(&next_node_keys),
+        canonical_leader(&next_node_keys),
         Some(canonical_next_key.as_str())
     );
 
@@ -395,7 +392,7 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
     let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     match result {
-        Err(crate::dkg::v0::error::DkgError::Unauthorized(message)) => assert!(
+        Err(DkgError::Unauthorized(message)) => assert!(
             message.contains("not the canonical next-committee leader"),
             "expected canonical next-leader rejection, got: {message}"
         ),
@@ -493,7 +490,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     match result {
-        Err(crate::dkg::v0::error::DkgError::Unauthorized(message)) => {
+        Err(DkgError::Unauthorized(message)) => {
             assert!(
                 message.contains("does not allow policy_id"),
                 "expected NodeInfo allowlist rejection, got: {}",
@@ -553,7 +550,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
             .dkg_session_state
             .claim_ring_pss_session(ring_pk, 42)
             .await,
-        crate::dkg::v0::session_state::RingPssClaimOutcome::Claimed,
+        RingPssClaimOutcome::Claimed,
         "initial conflicting claim should succeed"
     );
 
@@ -563,10 +560,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     let msg = reshare_session_init(ring_pk, vec![sender_hex.to_string()], vec![our_hex], 1);
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for already-in-progress reshare, got: {:?}",
         result
     );
@@ -647,11 +641,10 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
     // Phase 4 only marks the dealer complete locally. Until SourceHub finalizes
     // the exclusion, both the secret bundle and its index entry remain usable.
     assert!(
-        crate::ring_state::RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk)
-            .is_ok(),
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk).is_ok(),
         "share bundle must be retained before committee finalization"
     );
-    let retained_index: Vec<crate::ring_state::RingIndexEntry> = app_state
+    let retained_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(local_storage::r#trait::LocalStorageKeys::RingIndex)
         .ok()
@@ -682,11 +675,10 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
     }
 
     assert!(
-        crate::ring_state::RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk)
-            .is_err(),
+        RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk).is_err(),
         "share bundle should be deleted after finalized committee exclusion"
     );
-    let finalized_index: Vec<crate::ring_state::RingIndexEntry> = app_state
+    let finalized_index: Vec<RingIndexEntry> = app_state
         .local_storage
         .get(local_storage::r#trait::LocalStorageKeys::RingIndex)
         .ok()
@@ -770,7 +762,7 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
             .dkg_session_state
             .claim_ring_pss_session(ring_pk, session_id)
             .await,
-        crate::dkg::v0::session_state::RingPssClaimOutcome::Claimed,
+        RingPssClaimOutcome::Claimed,
         "PSS claim should be markable before Phase 4"
     );
 
@@ -834,7 +826,6 @@ async fn write_ring_with_announced_reshare(
     announced_new_peer_node_keys: Option<Vec<String>>,
     announced_new_threshold: Option<u32>,
 ) {
-    use crate::ring_state::RingIndexEntry;
     use local_storage::r#trait::LocalStorageKeys;
 
     let payload = RingPayload {
@@ -916,10 +907,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_peer_node_keys() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for mismatched new_peer_node_keys, got: {:?}",
         result
     );
@@ -969,10 +957,7 @@ async fn test_reshare_session_init_rejects_mismatched_new_threshold() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for mismatched new_threshold, got: {:?}",
         result
     );
@@ -1029,10 +1014,7 @@ async fn test_reshare_session_init_rejects_no_bulletin_announcement() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized when proposed peers differ from fallback committee, got: {:?}",
         result
     );
@@ -1065,10 +1047,7 @@ async fn test_reshare_session_init_rejects_empty_new_committee() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::InvalidInput(_))
-        ),
+        matches!(result, Err(DkgError::InvalidInput(_))),
         "Expected InvalidInput for empty new_peer_node_keys, got: {:?}",
         result
     );
@@ -1102,10 +1081,7 @@ async fn test_reshare_session_init_rejects_threshold_exceeds_committee_size() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::InvalidInput(_))
-        ),
+        matches!(result, Err(DkgError::InvalidInput(_))),
         "Expected InvalidInput for new_threshold > committee size, got: {:?}",
         result
     );
@@ -1138,10 +1114,7 @@ async fn test_reshare_session_init_rejects_zero_threshold() {
     );
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::InvalidInput(_))
-        ),
+        matches!(result, Err(DkgError::InvalidInput(_))),
         "Expected InvalidInput for new_threshold = 0, got: {:?}",
         result
     );
@@ -1170,7 +1143,6 @@ async fn post_ring_for_validation(
     new_peer_node_keys: Option<Vec<String>>,
     new_threshold: Option<u32>,
 ) {
-    use crate::ring_state::RingIndexEntry;
     use local_storage::r#trait::LocalStorageKeys;
 
     let payload = RingPayload {
@@ -1351,10 +1323,7 @@ async fn test_validate_reshare_rejects_when_peers_differ_from_fallback() {
     )
     .await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized when proposed peers differ from fallback: {:?}",
         result
     );
@@ -1405,10 +1374,7 @@ async fn test_validate_reshare_rejects_when_threshold_differs_from_fallback() {
     )
     .await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized when proposed threshold differs from fallback: {:?}",
         result
     );
@@ -1565,7 +1531,7 @@ async fn run_reshare_ceremony(
     bulletin_post_id: &str,
     new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
 ) {
-    let leader_key = crate::dkg::v0::transport::canonical_leader(sorted_new_peer_node_keys)
+    let leader_key = canonical_leader(sorted_new_peer_node_keys)
         .expect("new committee has a canonical transport leader");
     assert!(
         new_committee_states
@@ -1608,13 +1574,13 @@ async fn run_reshare_ceremony(
         .copied()
         .find(|state| state.node_key != initiator_state.node_key)
         .expect("reshare convergence test has two live current members");
-    let first_start = crate::dkg::v0::network::start_reshare(
+    let first_start = start_reshare(
         Arc::new(initiator_state.clone()),
         &::network::V0,
         bulletin_post_id.to_string(),
         key_string.to_string(),
     );
-    let second_start = crate::dkg::v0::network::start_reshare(
+    let second_start = start_reshare(
         Arc::new(secondary_state.clone()),
         &::network::V0,
         bulletin_post_id.to_string(),
@@ -1624,11 +1590,9 @@ async fn run_reshare_ceremony(
     let first_outcome = first_outcome.expect("first current member starts reshare");
     let second_outcome = second_outcome.expect("second current member starts reshare");
     let outcome_ids = |outcome| match outcome {
-        crate::dkg::v0::network::ReshareStartOutcome::Started(ceremony, attempt)
-        | crate::dkg::v0::network::ReshareStartOutcome::Forwarded(ceremony, attempt)
-        | crate::dkg::v0::network::ReshareStartOutcome::AlreadyActive(ceremony, attempt) => {
-            (ceremony, attempt)
-        }
+        ReshareStartOutcome::Started(ceremony, attempt)
+        | ReshareStartOutcome::Forwarded(ceremony, attempt)
+        | ReshareStartOutcome::AlreadyActive(ceremony, attempt) => (ceremony, attempt),
     };
     let (first_ceremony, first_attempt) = outcome_ids(first_outcome);
     let (second_ceremony, second_attempt) = outcome_ids(second_outcome);
@@ -2050,8 +2014,8 @@ async fn test_reshare_one_old_dealer_offline_completes() {
     // Phase B: retain two old members and add D while taking the canonical old
     // dealer offline. Reshare leadership belongs to the next committee, so no
     // particular old dealer is required while the old threshold remains.
-    let leader_key = crate::dkg::v0::transport::canonical_leader(&old_peer_node_keys)
-        .expect("old committee has a canonical dealer");
+    let leader_key =
+        canonical_leader(&old_peer_node_keys).expect("old committee has a canonical dealer");
     let offline_index = old_peer_node_keys
         .iter()
         .position(|node_key| node_key == &leader_key)

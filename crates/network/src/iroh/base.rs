@@ -15,6 +15,7 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
+use crate::iroh::pubsub::IrohPubSub;
 use crate::iroh::router::IrohRouterBuilder;
 use crate::metrics;
 use crate::r#trait::{
@@ -46,7 +47,7 @@ pub struct IrohNetwork {
     #[cfg(feature = "gossip")]
     gossip: iroh_gossip::net::Gossip,
     #[cfg(feature = "gossip")]
-    pubsub: Arc<crate::iroh::pubsub::IrohPubSub>,
+    pubsub: Arc<IrohPubSub>,
 }
 
 impl IrohNetwork {
@@ -199,7 +200,7 @@ impl IrohNetworkBuilder {
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());
         #[cfg(feature = "gossip")]
-        let pubsub = Arc::new(crate::iroh::pubsub::IrohPubSub::new(
+        let pubsub = Arc::new(IrohPubSub::new(
             endpoint.clone(),
             gossip.clone(),
             static_provider,

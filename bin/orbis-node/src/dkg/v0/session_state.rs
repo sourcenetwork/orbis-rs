@@ -16,6 +16,10 @@ use crate::dkg::v0::error::DkgError;
 #[cfg(test)]
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::transport::{
+    decode, AttemptId, CeremonyConfig, CeremonyId, CommitteeScope, DkgPrivateMessage, MessageId,
+    ParticipantRef, PublicPhase,
+};
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
@@ -108,14 +112,14 @@ pub enum MessageProcessingClaim {
 pub(crate) struct TransportMessageClaimGuard<D: Dkg + 'static> {
     session_state: Option<Arc<SessionStateManager<D>>>,
     session_id: u128,
-    message_id: crate::dkg::v0::transport::MessageId,
+    message_id: MessageId,
 }
 
 impl<D: Dkg + 'static> TransportMessageClaimGuard<D> {
     pub(crate) fn new(
         session_state: Arc<SessionStateManager<D>>,
         session_id: u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
     ) -> Self {
         Self {
             session_state: Some(session_state),
@@ -349,15 +353,15 @@ pub(crate) struct DkgReportEvidenceBinding {
 }
 
 pub(crate) struct DkgSessionTransportState {
-    pub ceremony_id: Option<crate::dkg::v0::transport::CeremonyId>,
-    pub attempt_id: Option<crate::dkg::v0::transport::AttemptId>,
+    pub ceremony_id: Option<CeremonyId>,
+    pub attempt_id: Option<AttemptId>,
     pub committee_digest: Option<[u8; 32]>,
     pub config_digest: Option<[u8; 32]>,
     pub topic_id: Option<network::TopicId>,
     pub leader_node_key: Option<String>,
     pub leader_peer_route: Option<String>,
     pub participant_routes: Vec<String>,
-    pub committees: Option<crate::dkg::v0::transport::CeremonyConfig>,
+    pub committees: Option<CeremonyConfig>,
     pub topic: Option<Arc<dyn network::Topic>>,
     pub topology_probe_nonce: Option<[u8; 32]>,
     pub topology_probe_acknowledgements: BTreeSet<String>,
@@ -365,21 +369,19 @@ pub(crate) struct DkgSessionTransportState {
     pub activated: bool,
     pub begun: bool,
     pub activation_digest: Option<[u8; 32]>,
-    pub active_dealers: Vec<crate::dkg::v0::transport::ParticipantRef>,
+    pub active_dealers: Vec<ParticipantRef>,
     pub prepared_at: Option<Instant>,
     pub hard_deadline: Option<Instant>,
     pub last_progress_at: Instant,
-    pub public_contributions: HashMap<
-        crate::dkg::v0::transport::PublicPhase,
-        BTreeMap<crate::dkg::v0::transport::ParticipantRef, network::SignedPayload>,
-    >,
-    pub public_phase_started_at: HashMap<crate::dkg::v0::transport::PublicPhase, Instant>,
-    pub published_public_phases: HashSet<crate::dkg::v0::transport::PublicPhase>,
-    pub published_public_messages: HashSet<crate::dkg::v0::transport::MessageId>,
-    pub outbound_private_messages: HashMap<crate::dkg::v0::transport::MessageId, Vec<u8>>,
-    pub acknowledged_private_messages: HashSet<crate::dkg::v0::transport::MessageId>,
-    pub processing_message_ids: HashSet<crate::dkg::v0::transport::MessageId>,
-    pub processed_message_ids: HashSet<crate::dkg::v0::transport::MessageId>,
+    pub public_contributions:
+        HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
+    pub public_phase_started_at: HashMap<PublicPhase, Instant>,
+    pub published_public_phases: HashSet<PublicPhase>,
+    pub published_public_messages: HashSet<MessageId>,
+    pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
+    pub acknowledged_private_messages: HashSet<MessageId>,
+    pub processing_message_ids: HashSet<MessageId>,
+    pub processed_message_ids: HashSet<MessageId>,
     pub topic_task: Option<tokio::task::AbortHandle>,
 }
 
@@ -1150,15 +1152,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn configure_transport(
         &self,
         session_id: &u128,
-        ceremony_id: crate::dkg::v0::transport::CeremonyId,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
         committee_digest: [u8; 32],
         config_digest: [u8; 32],
         topic_id: network::TopicId,
         leader_node_key: String,
         leader_peer_route: String,
         participant_routes: Vec<String>,
-        committees: crate::dkg::v0::transport::CeremonyConfig,
+        committees: CeremonyConfig,
         topic: Arc<dyn network::Topic>,
     ) -> TransportConfigureOutcome {
         self.with_state_mut(session_id, |state| {
@@ -1196,9 +1198,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn activate_transport(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         activation_digest: [u8; 32],
-        active_dealers: Vec<crate::dkg::v0::transport::ParticipantRef>,
+        active_dealers: Vec<ParticipantRef>,
     ) -> TransportActivationOutcome {
         self.with_state_mut(session_id, |state| {
             if state.transport.attempt_id != Some(attempt_id) {
@@ -1234,7 +1236,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn begin_transport(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         activation_digest: [u8; 32],
     ) -> TransportBeginOutcome {
         self.with_state_mut(session_id, |state| {
@@ -1262,11 +1264,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_configuration(
         &self,
         session_id: &u128,
-    ) -> Option<(
-        crate::dkg::v0::transport::CeremonyId,
-        crate::dkg::v0::transport::AttemptId,
-        [u8; 32],
-    )> {
+    ) -> Option<(CeremonyId, AttemptId, [u8; 32])> {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
             Some((
@@ -1279,10 +1277,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .flatten()
     }
 
-    pub(crate) async fn transport_attempt(
-        &self,
-        session_id: &u128,
-    ) -> Option<crate::dkg::v0::transport::AttemptId> {
+    pub(crate) async fn transport_attempt(&self, session_id: &u128) -> Option<AttemptId> {
         self.with_state(session_id, |state| state.transport.attempt_id)
             .await
             .flatten()
@@ -1291,7 +1286,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_hard_deadline(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
     ) -> Option<Instant> {
         self.with_state(session_id, |state| {
             (state.transport.attempt_id == Some(attempt_id))
@@ -1305,7 +1300,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_preparation_deadline(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
     ) -> Option<Instant> {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
@@ -1330,10 +1325,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .flatten()
     }
 
-    pub(crate) async fn transport_committees(
-        &self,
-        session_id: &u128,
-    ) -> Option<crate::dkg::v0::transport::CeremonyConfig> {
+    pub(crate) async fn transport_committees(&self, session_id: &u128) -> Option<CeremonyConfig> {
         self.with_state(session_id, |state| state.transport.committees.clone())
             .await
             .flatten()
@@ -1342,7 +1334,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn replace_transport_topic(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         topic: Arc<dyn network::Topic>,
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
@@ -1372,7 +1364,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn begin_topology_probe(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         nonce: [u8; 32],
         self_peer: String,
     ) -> Option<Arc<Notify>> {
@@ -1394,7 +1386,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn record_topology_probe(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         nonce: [u8; 32],
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
@@ -1418,7 +1410,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn record_topology_probe_ack(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         nonce: [u8; 32],
         peer: String,
     ) -> TopologyAckRecordOutcome {
@@ -1446,7 +1438,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn topology_probe_acknowledgements(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         nonce: [u8; 32],
     ) -> Option<BTreeSet<String>> {
         self.with_state(session_id, |state| {
@@ -1462,9 +1454,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn record_public_contribution(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        phase: crate::dkg::v0::transport::PublicPhase,
-        origin: crate::dkg::v0::transport::ParticipantRef,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+        origin: ParticipantRef,
         contribution: network::SignedPayload,
     ) -> PublicContributionRecordOutcome {
         self.with_state_mut(session_id, |state| {
@@ -1503,9 +1495,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn public_contributions(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        phase: crate::dkg::v0::transport::PublicPhase,
-    ) -> Option<BTreeMap<crate::dkg::v0::transport::ParticipantRef, network::SignedPayload>> {
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+    ) -> Option<BTreeMap<ParticipantRef, network::SignedPayload>> {
         self.with_state(session_id, |state| {
             (state.transport.attempt_id == Some(attempt_id)).then(|| {
                 state
@@ -1523,8 +1515,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn public_phase_collection_elapsed(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        phase: crate::dkg::v0::transport::PublicPhase,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
     ) -> Option<std::time::Duration> {
         self.with_state(session_id, |state| {
             (state.transport.attempt_id == Some(attempt_id))
@@ -1544,8 +1536,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn claim_public_phase_publish(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        phase: crate::dkg::v0::transport::PublicPhase,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
         expected: usize,
     ) -> bool {
         self.with_state_mut(session_id, |state| {
@@ -1570,8 +1562,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn claim_public_message_publish(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        message_id: crate::dkg::v0::transport::MessageId,
+        attempt_id: AttemptId,
+        message_id: MessageId,
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
@@ -1585,7 +1577,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_active_dealers(
         &self,
         session_id: &u128,
-    ) -> Option<Vec<crate::dkg::v0::transport::ParticipantRef>> {
+    ) -> Option<Vec<ParticipantRef>> {
         self.with_state(session_id, |state| state.transport.active_dealers.clone())
             .await
     }
@@ -1593,13 +1585,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_info(
         &self,
         session_id: &u128,
-    ) -> Option<(
-        crate::dkg::v0::transport::CeremonyId,
-        crate::dkg::v0::transport::AttemptId,
-        [u8; 32],
-        String,
-        bool,
-    )> {
+    ) -> Option<(CeremonyId, AttemptId, [u8; 32], String, bool)> {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
             Some((
@@ -1635,7 +1621,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn transport_repair_due(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
+        attempt_id: AttemptId,
         stall_interval: std::time::Duration,
     ) -> bool {
         self.with_state(session_id, |state| {
@@ -1651,7 +1637,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn cache_private_message(
         &self,
         session_id: &u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
         exact_bytes: Vec<u8>,
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
@@ -1672,8 +1658,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn acknowledge_private_message(
         &self,
         session_id: &u128,
-        attempt_id: crate::dkg::v0::transport::AttemptId,
-        message_id: crate::dkg::v0::transport::MessageId,
+        attempt_id: AttemptId,
+        message_id: MessageId,
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
             if state.transport.attempt_id != Some(attempt_id) {
@@ -1693,7 +1679,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn private_message(
         &self,
         session_id: &u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
     ) -> Option<Vec<u8>> {
         self.with_state(session_id, |state| {
             state
@@ -1709,7 +1695,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn private_message_for_recipient(
         &self,
         session_id: &u128,
-        recipient: crate::dkg::v0::transport::ParticipantRef,
+        recipient: ParticipantRef,
     ) -> Option<Vec<u8>> {
         self.with_state(session_id, |state| {
             state
@@ -1717,13 +1703,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 .outbound_private_messages
                 .values()
                 .find(|bytes| {
-                    crate::dkg::v0::transport::decode::<
-                        crate::dkg::v0::transport::DkgPrivateMessage,
-                    >(bytes, 2 * 1024 * 1024)
-                    .is_ok_and(|message| {
+                    decode::<DkgPrivateMessage>(bytes, 2 * 1024 * 1024).is_ok_and(|message| {
                         matches!(
                             message,
-                            crate::dkg::v0::transport::DkgPrivateMessage::ShareDelivery {
+                            DkgPrivateMessage::ShareDelivery {
                                 to,
                                 ..
                             } if to == recipient
@@ -1739,7 +1722,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn private_message_acknowledged(
         &self,
         session_id: &u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
     ) -> bool {
         self.with_state(session_id, |state| {
             state
@@ -1754,7 +1737,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn claim_transport_message(
         &self,
         session_id: &u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
     ) -> MessageProcessingClaim {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
@@ -1773,7 +1756,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn finish_transport_message(
         &self,
         session_id: &u128,
-        message_id: crate::dkg::v0::transport::MessageId,
+        message_id: MessageId,
         success: bool,
     ) {
         let _ = self
@@ -1814,15 +1797,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub(crate) async fn peer_id_for_participant(
         &self,
         session_id: &u128,
-        participant: crate::dkg::v0::transport::ParticipantRef,
+        participant: ParticipantRef,
     ) -> Option<String> {
         self.with_state(session_id, |state| match participant.scope {
-            crate::dkg::v0::transport::CommitteeScope::Current => state
+            CommitteeScope::Current => state
                 .routing
                 .node_id_to_peer_id
                 .get(&participant.node_id)
                 .cloned(),
-            crate::dkg::v0::transport::CommitteeScope::Next => state
+            CommitteeScope::Next => state
                 .routing
                 .reshare_new_node_id_to_peer_id
                 .get(&participant.node_id)
@@ -2837,13 +2820,13 @@ mod tests {
     async fn private_retransmission_keeps_exact_cached_bytes() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(21, make_node(1), 3, |_| {}).await;
-        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        let attempt = AttemptId([7; 32]);
         {
             let mut states = mgr.states.write().await;
             let state = states.get_mut(&21).expect("session");
             state.transport.attempt_id = Some(attempt);
         }
-        let message_id = crate::dkg::v0::transport::MessageId([9; 32]);
+        let message_id = MessageId([9; 32]);
         let exact = vec![1, 2, 3, 4, 5];
         assert_eq!(
             mgr.cache_private_message(&21, message_id, exact.clone())
@@ -2869,13 +2852,13 @@ mod tests {
     async fn public_duplicates_are_idempotent_and_conflicts_are_rejected() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(22, make_node(1), 3, |_| {}).await;
-        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        let attempt = AttemptId([7; 32]);
         {
             let mut states = mgr.states.write().await;
             states.get_mut(&22).expect("session").transport.attempt_id = Some(attempt);
         }
-        let phase = crate::dkg::v0::transport::PublicPhase::Commitments;
-        let origin = crate::dkg::v0::transport::ParticipantRef::current(2);
+        let phase = PublicPhase::Commitments;
+        let origin = ParticipantRef::current(2);
         let exact = network::SignedPayload {
             origin: vec![1; 32],
             signature: vec![2; 64],
@@ -2908,9 +2891,9 @@ mod tests {
         assert_eq!(
             mgr.record_public_contribution(
                 &22,
-                crate::dkg::v0::transport::AttemptId([8; 32]),
+                AttemptId([8; 32]),
                 phase,
-                crate::dkg::v0::transport::ParticipantRef::current(3),
+                ParticipantRef::current(3),
                 exact,
             )
             .await,
@@ -2923,8 +2906,8 @@ mod tests {
     async fn topology_acknowledgements_are_scoped_and_idempotent() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(23, make_node(1), 3, |_| {}).await;
-        let ceremony = crate::dkg::v0::transport::CeremonyId(23);
-        let attempt = crate::dkg::v0::transport::AttemptId([7; 32]);
+        let ceremony = CeremonyId(23);
+        let attempt = AttemptId([7; 32]);
         let nonce = [9; 32];
         {
             let mut states = mgr.states.write().await;
@@ -2952,13 +2935,8 @@ mod tests {
             TopologyAckRecordOutcome::WrongNonce
         );
         assert_eq!(
-            mgr.record_topology_probe_ack(
-                &23,
-                crate::dkg::v0::transport::AttemptId([6; 32]),
-                nonce,
-                "peer-b".into(),
-            )
-            .await,
+            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-b".into(),)
+                .await,
             TopologyAckRecordOutcome::StaleAttempt
         );
         assert_eq!(
@@ -2973,7 +2951,7 @@ mod tests {
     async fn activation_and_begin_are_idempotent_and_gate_stall_repair() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(24, make_node(1), 3, |_| {}).await;
-        let attempt = crate::dkg::v0::transport::AttemptId([4; 32]);
+        let attempt = AttemptId([4; 32]);
         {
             let mut states = mgr.states.write().await;
             states.get_mut(&24).expect("session").transport.attempt_id = Some(attempt);
@@ -3010,8 +2988,7 @@ mod tests {
             TransportBeginOutcome::AlreadyBegun
         );
         assert_eq!(
-            mgr.begin_transport(&24, crate::dkg::v0::transport::AttemptId([5; 32]), [8; 32],)
-                .await,
+            mgr.begin_transport(&24, AttemptId([5; 32]), [8; 32],).await,
             TransportBeginOutcome::StaleAttempt
         );
         assert!(
@@ -3302,7 +3279,7 @@ mod tests {
         let session_id = 100u128;
         mgr.create_session(session_id, make_node(1), 3, |_| {})
             .await;
-        let message_id = crate::dkg::v0::transport::MessageId([1u8; 32]);
+        let message_id = MessageId([1u8; 32]);
 
         assert_eq!(
             mgr.claim_transport_message(&session_id, message_id).await,
@@ -3324,7 +3301,7 @@ mod tests {
         let session_id = 101u128;
         mgr.create_session(session_id, make_node(1), 3, |_| {})
             .await;
-        let message_id = crate::dkg::v0::transport::MessageId([2u8; 32]);
+        let message_id = MessageId([2u8; 32]);
 
         assert_eq!(
             mgr.claim_transport_message(&session_id, message_id).await,

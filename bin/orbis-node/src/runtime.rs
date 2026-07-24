@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
+use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
@@ -382,12 +383,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .app_state
         .dkg_session_state
         .take_stall_report_receiver()
-        .map(|rx| {
-            crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter(
-                node.app_state.clone(),
-                rx,
-            )
-        });
+        .map(|rx| spawn_pss_stall_reporter(node.app_state.clone(), rx));
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");

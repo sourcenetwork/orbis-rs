@@ -8,9 +8,11 @@ use sha2::{Digest, Sha256};
 use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_RETRY_DELAY};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
+use crate::dkg::v0::network::submit_public_contribution;
 use crate::dkg::v0::session_state::{
     DkgPhase, PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate,
 };
+use crate::dkg::v0::transport::DkgPublicPayload;
 use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
@@ -169,10 +171,10 @@ async fn broadcast_result<D>(
 where
     D: CoordinatorDkg,
 {
-    crate::dkg::v0::network::submit_public_contribution(
+    submit_public_contribution(
         coord,
         session_id,
-        crate::dkg::v0::transport::DkgPublicPayload::RefreshHealthCheckResult {
+        DkgPublicPayload::RefreshHealthCheckResult {
             statement: statement.clone(),
             signature,
         },

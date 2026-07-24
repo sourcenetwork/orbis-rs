@@ -21,7 +21,13 @@ use crate::constants::{
     DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, PEER_RESPONSE_TIMEOUT,
     PSS_GRACE_PERIOD_SECS,
 };
-use crate::dkg::v0::coordinator::message_handlers::{drive_accepted_share, handle_session_init};
+use crate::dkg::v0::coordinator::evidence::{
+    handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
+};
+use crate::dkg::v0::coordinator::message_handlers::{
+    drive_accepted_share, handle_reshare_participant_set, handle_reshare_share_ack,
+    handle_session_init,
+};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -29,10 +35,12 @@ use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
     ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
 };
-use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+#[cfg(test)]
+use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
     MessageProcessingClaim, PublicContributionRecordOutcome, TopologyAckRecordOutcome,
-    TransportActivationOutcome, TransportBeginOutcome,
+    TransportActivationOutcome, TransportBeginOutcome, TransportConfigureOutcome,
 };
 use crate::dkg::v0::transport::{
     self, AttemptId, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
@@ -46,6 +54,8 @@ use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
+#[cfg(test)]
+use crate::helpers::test_helpers::create_test_app_state_default;
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
@@ -891,24 +901,24 @@ where
                     .claim_transport_message(&ceremony_id.0, idempotency_key)
                     .await
                 {
-                    crate::dkg::v0::session_state::MessageProcessingClaim::Claimed => break,
-                    crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessed => {
+                    MessageProcessingClaim::Claimed => break,
+                    MessageProcessingClaim::AlreadyProcessed => {
                         return Ok(DkgControlMessage::ReshareShareAcked {
                             ceremony_id,
                             attempt_id,
                             idempotency_key,
                         });
                     }
-                    crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessing => {
+                    MessageProcessingClaim::AlreadyProcessing => {
                         sleep(Duration::from_millis(10)).await;
                     }
-                    crate::dkg::v0::session_state::MessageProcessingClaim::MissingSession => {
+                    MessageProcessingClaim::MissingSession => {
                         return Err(DkgError::SessionNotFound(ceremony_id.0.to_string()));
                     }
                 }
             }
             let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
-            let result = crate::dkg::v0::coordinator::message_handlers::handle_reshare_share_ack(
+            let result = handle_reshare_share_ack(
                 &coordinator,
                 ceremony_id.0,
                 receiver.node_id,
@@ -978,12 +988,7 @@ where
             }
             let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
             let result =
-                crate::dkg::v0::coordinator::evidence::handle_invalid_share_evidence_relay(
-                    &coordinator,
-                    ceremony_id.0,
-                    evidence,
-                )
-                .await;
+                handle_invalid_share_evidence_relay(&coordinator, ceremony_id.0, evidence).await;
             state
                 .dkg_session_state
                 .finish_transport_message(&ceremony_id.0, idempotency_key, result.is_ok())
@@ -1050,14 +1055,13 @@ where
                 });
             }
             let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
-            let result =
-                crate::dkg::v0::coordinator::evidence::handle_invalid_commitment_evidence_relay(
-                    &coordinator,
-                    ceremony_id.0,
-                    commitment_a,
-                    commitment_b,
-                )
-                .await;
+            let result = handle_invalid_commitment_evidence_relay(
+                &coordinator,
+                ceremony_id.0,
+                commitment_a,
+                commitment_b,
+            )
+            .await;
             state
                 .dkg_session_state
                 .finish_transport_message(&ceremony_id.0, idempotency_key, result.is_ok())
@@ -1234,14 +1238,14 @@ where
             .claim_transport_message(&session_id, message_id)
             .await
         {
-            crate::dkg::v0::session_state::MessageProcessingClaim::Claimed => return Ok(true),
-            crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessed => {
+            MessageProcessingClaim::Claimed => return Ok(true),
+            MessageProcessingClaim::AlreadyProcessed => {
                 return Ok(false);
             }
-            crate::dkg::v0::session_state::MessageProcessingClaim::AlreadyProcessing => {
+            MessageProcessingClaim::AlreadyProcessing => {
                 sleep(Duration::from_millis(10)).await;
             }
-            crate::dkg::v0::session_state::MessageProcessingClaim::MissingSession => {
+            MessageProcessingClaim::MissingSession => {
                 return Err(DkgError::SessionNotFound(session_id.to_string()));
             }
         }
@@ -2615,17 +2619,13 @@ where
         .await;
     if matches!(
         outcome,
-        crate::dkg::v0::session_state::TransportConfigureOutcome::ConflictingAttempt
-            | crate::dkg::v0::session_state::TransportConfigureOutcome::MissingSession
+        TransportConfigureOutcome::ConflictingAttempt | TransportConfigureOutcome::MissingSession
     ) {
         return Err(DkgError::ProtocolError(format!(
             "cannot configure transport attempt: {outcome:?}"
         )));
     }
-    if matches!(
-        outcome,
-        crate::dkg::v0::session_state::TransportConfigureOutcome::Configured
-    ) {
+    if matches!(outcome, TransportConfigureOutcome::Configured) {
         let task = tokio::spawn(topic_listener(
             state.clone(),
             routes,
@@ -3589,14 +3589,12 @@ where
                 .into_iter()
                 .map(|dealer| dealer.node_id)
                 .collect();
-            Box::pin(
-                crate::dkg::v0::coordinator::message_handlers::handle_reshare_participant_set(
-                    &coordinator,
-                    contribution.ceremony_id.0,
-                    contribution.origin.node_id,
-                    selected,
-                ),
-            )
+            Box::pin(handle_reshare_participant_set(
+                &coordinator,
+                contribution.ceremony_id.0,
+                contribution.origin.node_id,
+                selected,
+            ))
             .await?;
         }
     }
@@ -4188,7 +4186,7 @@ where
 pub(crate) async fn relay_invalid_share_evidence<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
-    evidence: crate::dkg::v0::messages::SignedDkgShare,
+    evidence: SignedDkgShare,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -4212,8 +4210,8 @@ where
 pub(crate) async fn relay_invalid_commitment_evidence<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
-    commitment_a: crate::dkg::v0::messages::SignedDkgCommitment,
-    commitment_b: crate::dkg::v0::messages::SignedDkgCommitment,
+    commitment_a: SignedDkgCommitment,
+    commitment_b: SignedDkgCommitment,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -5750,8 +5748,7 @@ mod stability_tests {
         AttemptId,
         [u8; 32],
     ) {
-        let state =
-            Arc::new(crate::helpers::test_helpers::create_test_app_state_default(db_name).await);
+        let state = Arc::new(create_test_app_state_default(db_name).await);
         let node = *{
             use crypto::r#trait::Dkg as _;
             crypto::DkgImpl::new(1, 2, 3, 0, crypto::r#trait::DkgRole::Standard)
@@ -5762,7 +5759,7 @@ mod stability_tests {
                 .dkg_session_state
                 .create_session(session_id, node, 3, |_| {})
                 .await,
-            crate::dkg::v0::session_state::CreateSessionOutcome::Created
+            CreateSessionOutcome::Created
         );
 
         let ceremony_id = CeremonyId(session_id);

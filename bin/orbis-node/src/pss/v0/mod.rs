@@ -44,6 +44,9 @@ use crate::app_state::AppState;
 use crate::constants::PSS_GRACE_PERIOD_SECS;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::ring_payload_matches_ring_key;
+use crate::dkg::v0::network::{
+    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
+};
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
@@ -232,7 +235,7 @@ where
     match protocol_routes.version {
         0 => {
             if is_reshare {
-                return match crate::dkg::v0::network::start_reshare(
+                return match start_reshare(
                     app_state.clone(),
                     protocol_routes,
                     entry.bulletin_post_id.clone(),
@@ -240,10 +243,7 @@ where
                 )
                 .await?
                 {
-                    crate::dkg::v0::network::ReshareStartOutcome::Started(
-                        ceremony_id,
-                        attempt_id,
-                    ) => {
+                    ReshareStartOutcome::Started(ceremony_id, attempt_id) => {
                         tracing::info!(
                             session_id = ceremony_id.0,
                             attempt_id = %hex::encode(attempt_id.0),
@@ -252,10 +252,7 @@ where
                         );
                         Ok(())
                     }
-                    crate::dkg::v0::network::ReshareStartOutcome::AlreadyActive(
-                        ceremony_id,
-                        attempt_id,
-                    ) => {
+                    ReshareStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
                         tracing::debug!(
                             session_id = ceremony_id.0,
                             attempt_id = %hex::encode(attempt_id.0),
@@ -263,10 +260,7 @@ where
                         );
                         Ok(())
                     }
-                    crate::dkg::v0::network::ReshareStartOutcome::Forwarded(
-                        ceremony_id,
-                        attempt_id,
-                    ) => {
+                    ReshareStartOutcome::Forwarded(ceremony_id, attempt_id) => {
                         tracing::info!(
                             session_id = ceremony_id.0,
                             attempt_id = %hex::encode(attempt_id.0),
@@ -537,7 +531,7 @@ where
         + Sync
         + 'static,
 {
-    let outcome = crate::dkg::v0::network::start_refresh(
+    let outcome = start_refresh(
         app_state.clone(),
         protocol_routes,
         entry.bulletin_post_id.clone(),
@@ -545,10 +539,8 @@ where
     )
     .await?;
     let (ceremony_id, attempt_id) = match outcome {
-        crate::dkg::v0::network::RefreshStartOutcome::Started(ceremony_id, attempt_id) => {
-            (ceremony_id, attempt_id)
-        }
-        crate::dkg::v0::network::RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+        RefreshStartOutcome::Started(ceremony_id, attempt_id) => (ceremony_id, attempt_id),
+        RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
             tracing::debug!(
                 session_id = ceremony_id.0,
                 attempt_id = %hex::encode(attempt_id.0),
@@ -557,14 +549,14 @@ where
             );
             return Ok(());
         }
-        crate::dkg::v0::network::RefreshStartOutcome::NotDue => {
+        RefreshStartOutcome::NotDue => {
             tracing::debug!(
                 ring_id = %entry.bulletin_post_id,
                 "PSS: refresh became not due while scheduler state was being resolved"
             );
             return Ok(());
         }
-        crate::dkg::v0::network::RefreshStartOutcome::Forwarded(ceremony_id, attempt_id) => {
+        RefreshStartOutcome::Forwarded(ceremony_id, attempt_id) => {
             tracing::info!(
                 session_id = ceremony_id.0,
                 attempt_id = %hex::encode(attempt_id.0),

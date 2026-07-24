@@ -2,7 +2,7 @@ use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::{message_handlers::handle_session_init, DkgCoordinator},
-    error::DkgError,
+    error::{DkgError, Result},
     messages::SessionKind,
     session_state::{CreateSessionOutcome, SessionStateManager},
 };
@@ -43,7 +43,7 @@ async fn invoke_session_init(
     coordinator: &DkgCoordinator<crypto::DkgImpl>,
     init: TestSessionInit,
     sender: &network::PeerId,
-) -> crate::dkg::v0::error::Result<()> {
+) -> Result<()> {
     handle_session_init(
         coordinator,
         init.session_id,
@@ -262,8 +262,12 @@ async fn test_start_dkg_forwards_when_initiator_is_not_a_ring_participant() {
     // arbitrary orbis-node instance an external caller happened to reach.
     let dummy_bulletin = network.dummy_bulletin.clone().expect("dummy bulletin");
     let outsider_app_state = Arc::new(
-        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), &format!("{}_4", db_name))
-            .await,
+        create_test_app_state_with_bulletin(
+            true,
+            dummy_bulletin.clone(),
+            &format!("{}_4", db_name),
+        )
+        .await,
     );
     let outsider_service =
         DkgServiceImpl::<DkgImpl>::with_routes(outsider_app_state.clone(), &network::V0);
@@ -287,9 +291,27 @@ async fn test_start_dkg_forwards_when_initiator_is_not_a_ring_participant() {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let all_finished = network.alice.app_state.dkg_session_state.session_count().await == 0
-            && network.bob.app_state.dkg_session_state.session_count().await == 0
-            && network.charlie.app_state.dkg_session_state.session_count().await == 0;
+        let all_finished = network
+            .alice
+            .app_state
+            .dkg_session_state
+            .session_count()
+            .await
+            == 0
+            && network
+                .bob
+                .app_state
+                .dkg_session_state
+                .session_count()
+                .await
+                == 0
+            && network
+                .charlie
+                .app_state
+                .dkg_session_state
+                .session_count()
+                .await
+                == 0;
         if all_finished {
             break;
         }

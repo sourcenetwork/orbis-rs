@@ -2,6 +2,8 @@ use crate::compose::{
     node_service, write_stack_files, ComposeInput, RingDefinition, CONTROLLER_PUBLIC_KEY,
     RING_GOVERNANCE_POLICY_ID,
 };
+#[cfg(test)]
+use crate::config::NetworkProfile;
 use crate::config::{Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS};
 use crate::docker::{image_digest, DockerCompose};
 use crate::metrics::{aggregate, delta, retain_benchmark_metrics, scrape, MetricSnapshot};
@@ -2177,7 +2179,7 @@ mod tests {
     fn reshare_planning_is_deterministic_and_has_exact_overlap() {
         let mut experiment = Experiment::single(50, 34, 23);
         experiment.operations = BTreeSet::from([Operation::PssReshare]);
-        experiment.profiles = vec![crate::config::NetworkProfile::lan()];
+        experiment.profiles = vec![NetworkProfile::lan()];
         experiment.reshare_overlap = Some(18);
         let mut plan = experiment.resolve().unwrap();
         plan.assign_indices();

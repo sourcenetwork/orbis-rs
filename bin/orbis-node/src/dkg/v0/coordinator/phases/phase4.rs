@@ -471,10 +471,10 @@ where
         return Ok(());
     }
 
-    crate::dkg::v0::network::submit_public_contribution(
+    submit_public_contribution(
         coord,
         session_id,
-        crate::dkg::v0::transport::DkgPublicPayload::CommitmentAudit { revealed },
+        DkgPublicPayload::CommitmentAudit { revealed },
     )
     .await
 }

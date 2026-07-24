@@ -7,17 +7,23 @@ use crate::dkg::v0::{
         },
         DkgCoordinator,
     },
-    helpers::{derive_refresh_session_id, serialize_commitment_coefficients},
+    error::{DkgError, Result},
+    helpers::{
+        derive_refresh_session_id, fresh_commitment_hash, serialize_commitment_coefficients,
+    },
     messages::SessionKind,
-    session_state::DkgPhase,
+    network::{start_refresh, RefreshStartOutcome},
+    session_state::{DkgPhase, RingPssClaimOutcome},
+    transport::canonical_leader_candidates,
 };
+use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default,
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
-use crate::ring_state::RingPolyState;
+use crate::ring_state::{RingPolyState, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole, PubPoly as PubPolyTrait};
@@ -51,7 +57,7 @@ async fn invoke_session_init(
     coordinator: &DkgCoordinator<DkgImpl>,
     init: TestSessionInit,
     sender: &PeerId,
-) -> crate::dkg::v0::error::Result<()> {
+) -> Result<()> {
     handle_session_init(
         coordinator,
         init.session_id,
@@ -127,11 +133,10 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
         }
         for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
             node.router = Some(
-                crate::helpers::create_routers::create_router_with_all_handlers::<
-                    DkgImpl,
-                    crypto::PreImpl,
-                    crypto::SignImpl,
-                >(&node.app_state.network, Arc::new(node.app_state.clone()))
+                create_router_with_all_handlers::<DkgImpl, crypto::PreImpl, crypto::SignImpl>(
+                    &node.app_state.network,
+                    Arc::new(node.app_state.clone()),
+                )
                 .expect("start faultable refresh test router"),
             );
         }
@@ -222,9 +227,8 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
         &network.bob.app_state,
         &network.charlie.app_state,
     ] {
-        let mut bundle =
-            crate::ring_state::RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
-                .expect("load RingShareBundle for backdate");
+        let mut bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
+            .expect("load RingShareBundle for backdate");
         bundle.last_pss = 0;
         bundle
             .save_by_ring_key(&state.local_storage, &key_string)
@@ -257,7 +261,7 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
             .await;
     }
 
-    let refresh_outcome = crate::dkg::v0::network::start_refresh(
+    let refresh_outcome = start_refresh(
         Arc::new(initiator_state),
         &::network::V0,
         TEST_FRESH_DKG_RING_ID.to_string(),
@@ -265,9 +269,7 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
     )
     .await
     .expect("canonical leader should start transport refresh");
-    let crate::dkg::v0::network::RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) =
-        refresh_outcome
-    else {
+    let RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) = refresh_outcome else {
         panic!("backdated refresh should start, got {refresh_outcome:?}");
     };
 
@@ -358,7 +360,7 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
             ("bob", &network.bob.app_state.local_storage),
             ("charlie", &network.charlie.app_state.local_storage),
         ] {
-            let bundle = crate::ring_state::RingShareBundle::load_by_ring_key(storage, &key_string)
+            let bundle = RingShareBundle::load_by_ring_key(storage, &key_string)
                 .unwrap_or_else(|e| panic!("{label}: load post-refresh bundle: {e}"));
             let poly_bytes = hex::decode(&bundle.public_polynomial)
                 .unwrap_or_else(|e| panic!("{label}: decode public_polynomial hex: {e}"));
@@ -414,11 +416,10 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
     }
     for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
         node.router = Some(
-            crate::helpers::create_routers::create_router_with_all_handlers::<
-                DkgImpl,
-                crypto::PreImpl,
-                crypto::SignImpl,
-            >(&node.app_state.network, Arc::new(node.app_state.clone()))
+            create_router_with_all_handlers::<DkgImpl, crypto::PreImpl, crypto::SignImpl>(
+                &node.app_state.network,
+                Arc::new(node.app_state.clone()),
+            )
             .expect("start faultable refresh-failover test router"),
         );
     }
@@ -467,9 +468,8 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         &network.bob.app_state,
         &network.charlie.app_state,
     ] {
-        let mut bundle =
-            crate::ring_state::RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
-                .expect("load RingShareBundle for backdate");
+        let mut bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &key_string)
+            .expect("load RingShareBundle for backdate");
         bundle.last_pss = 0;
         bundle
             .save_by_ring_key(&state.local_storage, &key_string)
@@ -483,7 +483,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         network.bob.app_state.node_key.clone(),
         network.charlie.app_state.node_key.clone(),
     ];
-    let candidates = crate::dkg::v0::transport::canonical_leader_candidates(&peer_node_keys);
+    let candidates = canonical_leader_candidates(&peer_node_keys);
     let canonical_key = candidates[0].to_string();
     let fallback_key = candidates[1].to_string();
 
@@ -511,7 +511,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         }
     }
 
-    let outcome = crate::dkg::v0::network::start_refresh(
+    let outcome = start_refresh(
         Arc::new(fallback_state),
         &::network::V0,
         TEST_FRESH_DKG_RING_ID.to_string(),
@@ -520,10 +520,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
     .await
     .expect("the reachable fallback candidate should take over refresh leadership");
     assert!(
-        matches!(
-            outcome,
-            crate::dkg::v0::network::RefreshStartOutcome::Started(_, _)
-        ),
+        matches!(outcome, RefreshStartOutcome::Started(_, _)),
         "expected the fallback candidate to become leader locally after the \
          canonical leader was unreachable, got {outcome:?}"
     );
@@ -621,8 +618,7 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .expect("sender polynomial");
     let commitment = serialize_commitment_coefficients(&sender_node.commitment().coefficients)
         .expect("serialize sender commitment");
-    let commitment_hash =
-        crate::dkg::v0::helpers::fresh_commitment_hash(session_id, 2, &commitment);
+    let commitment_hash = fresh_commitment_hash(session_id, 2, &commitment);
     let share = sender_node
         .generate_shares()
         .expect("sender shares")
@@ -689,7 +685,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
             .dkg_session_state
             .claim_ring_pss_session(ring_key, refresh_session_id)
             .await,
-        crate::dkg::v0::session_state::RingPssClaimOutcome::Claimed,
+        RingPssClaimOutcome::Claimed,
         "should be able to claim a fresh ring as refreshing"
     );
 
@@ -735,7 +731,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // ── Step 4: Storage last-writer-wins race. ────────────────────────────────
     // Simulate Phase 4 of the fresh DKG writing its bundle first.
-    let fresh_dkg_bundle = crate::ring_state::RingShareBundle {
+    let fresh_dkg_bundle = RingShareBundle {
         share_bytes: vec![0xAA; 32].into(),
         public_polynomial: "fresh_poly".to_string(),
         last_pss: 1_000,
@@ -745,7 +741,7 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
         .expect("fresh DKG bundle write should succeed");
 
     // Simulate Phase 4 of the refresh writing its bundle second (wins).
-    let refresh_bundle = crate::ring_state::RingShareBundle {
+    let refresh_bundle = RingShareBundle {
         share_bytes: vec![0xBB; 32].into(),
         public_polynomial: "refresh_poly".to_string(),
         last_pss: 2_000,
@@ -756,9 +752,8 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
 
     // The refresh silently overwrote the fresh DKG result — no error, but the
     // fresh DKG's polynomial is gone.  This demonstrates the unguarded race.
-    let stored =
-        crate::ring_state::RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_key)
-            .expect("bundle should be readable");
+    let stored = RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_key)
+        .expect("bundle should be readable");
     assert_eq!(
         stored.public_polynomial, "refresh_poly",
         "refresh bundle (written last) should have overwritten the fresh DKG bundle"
@@ -788,7 +783,7 @@ fn write_last_refresh(
     ring_pk: &str,
     secs: u64,
 ) {
-    let bundle = crate::ring_state::RingShareBundle {
+    let bundle = RingShareBundle {
         share_bytes: vec![].into(),
         public_polynomial: String::new(),
         last_pss: secs,
@@ -901,7 +896,7 @@ async fn test_refresh_rejected_local_node_not_in_ring() {
 
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(result, Err(crate::dkg::v0::error::DkgError::Unauthorized(ref msg)) if msg.contains("Local node")),
+        matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Local node")),
         "Expected Unauthorized for local node not in ring, got: {:?}",
         result
     );
@@ -946,10 +941,7 @@ async fn test_refresh_rejected_too_soon() {
 
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for refresh too soon, got: {:?}",
         result
     );
@@ -989,7 +981,7 @@ async fn test_refresh_rejected_already_in_progress() {
             .dkg_session_state
             .claim_ring_pss_session(ring_pk, expected_session_id + 1)
             .await,
-        crate::dkg::v0::session_state::RingPssClaimOutcome::Claimed,
+        RingPssClaimOutcome::Claimed,
         "initial conflicting claim should succeed"
     );
 
@@ -1000,10 +992,7 @@ async fn test_refresh_rejected_already_in_progress() {
 
     let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
     assert!(
-        matches!(
-            result,
-            Err(crate::dkg::v0::error::DkgError::Unauthorized(_))
-        ),
+        matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for refresh already in progress, got: {:?}",
         result
     );

@@ -159,24 +159,19 @@ where
                 }
                 _ => None,
             };
-            let message_id = crate::dkg::v0::transport::derive_private_message_id(
+            let message_id = derive_private_message_id(
                 ceremony_id,
                 attempt_id,
-                crate::dkg::v0::transport::ParticipantRef::current(node_id),
+                ParticipantRef::current(node_id),
                 if is_reshare {
-                    crate::dkg::v0::transport::ParticipantRef::next(share.to_id)
+                    ParticipantRef::next(share.to_id)
                 } else {
-                    crate::dkg::v0::transport::ParticipantRef::current(share.to_id)
+                    ParticipantRef::current(share.to_id)
                 },
                 &share_value,
                 &share.nonce,
             );
-            if is_reshare
-                && crate::helpers::identity::is_self_peer_id(
-                    &coord.app_state.network,
-                    &target_peer_id,
-                )
-            {
+            if is_reshare && is_self_peer_id(&coord.app_state.network, &target_peer_id) {
                 // A DealerReceiver's own reshare contribution is evaluated from
                 // its retained polynomial by the crypto implementation. Feeding
                 // it back through `receive_share` would be both redundant and
@@ -184,22 +179,21 @@ where
                 // event records this dealer as locally valid for selection.
                 continue;
             }
-            let private = crate::dkg::v0::transport::DkgPrivateMessage::ShareDelivery {
+            let private = DkgPrivateMessage::ShareDelivery {
                 ceremony_id,
                 attempt_id,
                 message_id,
-                from: crate::dkg::v0::transport::ParticipantRef::current(node_id),
+                from: ParticipantRef::current(node_id),
                 to: if is_reshare {
-                    crate::dkg::v0::transport::ParticipantRef::next(share.to_id)
+                    ParticipantRef::next(share.to_id)
                 } else {
-                    crate::dkg::v0::transport::ParticipantRef::current(share.to_id)
+                    ParticipantRef::current(share.to_id)
                 },
                 share_value,
                 nonce: share.nonce,
                 report_evidence,
             };
-            let exact_bytes =
-                crate::dkg::v0::transport::encode(&private).map_err(DkgError::Serialization)?;
+            let exact_bytes = encode(&private).map_err(DkgError::Serialization)?;
             if coord
                 .app_state
                 .dkg_session_state
@@ -219,7 +213,7 @@ where
             pair_count = outgoing.len(),
             "Phase 2: cached exact private shares; starting bounded pair exchanges"
         );
-        crate::dkg::v0::network::exchange_private_shares(coord, session_id, outgoing).await?;
+        exchange_private_shares(coord, session_id, outgoing).await?;
         return drive_post_phase2_event(
             coord,
             session_id,

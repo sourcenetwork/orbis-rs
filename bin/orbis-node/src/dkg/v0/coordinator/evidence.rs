@@ -11,6 +11,7 @@ use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{deserialize_wire_commitment, session_not_found};
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::network::relay_invalid_commitment_evidence;
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::node_key_for_canonical_node_id;
@@ -405,13 +406,7 @@ async fn relay_equivocation_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    crate::dkg::v0::network::relay_invalid_commitment_evidence(
-        coord,
-        session_id,
-        commitment_a,
-        commitment_b,
-    )
-    .await
+    relay_invalid_commitment_evidence(coord, session_id, commitment_a, commitment_b).await
 }
 
 pub async fn handle_invalid_commitment_evidence_relay<D>(
