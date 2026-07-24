@@ -25,9 +25,11 @@ use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
-    drive_accepted_share, handle_reshare_participant_set, handle_reshare_share_ack,
+    drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
+    handle_commitment_message, handle_reshare_participant_set, handle_reshare_share_ack,
     handle_session_init,
 };
+use crate::dkg::v0::coordinator::refresh_health_check::handle_result;
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -3542,7 +3544,8 @@ where
     let coordinator = DkgCoordinator::with_routes(state, routes);
     match contribution.payload {
         DkgPublicPayload::CommitmentHash { commitment_hash } => {
-            Box::pin(coordinator.accept_public_commitment_hash(
+            Box::pin(handle_commitment_hash_message(
+                &coordinator,
                 contribution.ceremony_id.0,
                 contribution.origin.node_id,
                 commitment_hash,
@@ -3553,7 +3556,8 @@ where
             commitment,
             report_evidence,
         } => {
-            Box::pin(coordinator.accept_public_commitment(
+            Box::pin(handle_commitment_message(
+                &coordinator,
                 contribution.ceremony_id.0,
                 contribution.origin.node_id,
                 commitment,
@@ -3562,16 +3566,19 @@ where
             .await?
         }
         DkgPublicPayload::CommitmentAudit { revealed } => {
-            Box::pin(
-                coordinator.accept_public_commitment_audit(contribution.ceremony_id.0, revealed),
-            )
+            Box::pin(handle_commitment_audit_message(
+                &coordinator,
+                contribution.ceremony_id.0,
+                revealed,
+            ))
             .await?
         }
         DkgPublicPayload::RefreshHealthCheckResult {
             statement,
             signature,
         } => {
-            Box::pin(coordinator.accept_public_refresh_result(
+            Box::pin(handle_result(
+                &coordinator,
                 contribution.ceremony_id.0,
                 contribution.origin.node_id,
                 statement,

@@ -23,7 +23,7 @@ pub(crate) mod evidence;
 pub(crate) mod message_handlers;
 mod peers;
 mod phases;
-mod refresh_health_check;
+pub(crate) mod refresh_health_check;
 pub(crate) mod reporting;
 mod reshare;
 mod ring_storage;
@@ -33,12 +33,11 @@ pub(crate) mod types;
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
-use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::SignedDkgShare;
 use crate::dkg::v0::session_state::{
     CreateSessionOutcome, DkgSessionState, MessageProcessingClaim, TransportMessageClaimGuard,
 };
 use crate::dkg::v0::transport::MessageId;
-use crate::sign::v0::messages::RefreshHealthCheckStatement;
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
@@ -145,73 +144,6 @@ where
         .await;
         guard.finish(result.is_ok()).await;
         result
-    }
-
-    pub(crate) async fn accept_public_commitment_hash(
-        &self,
-        session_id: u128,
-        from_node_id: u32,
-        commitment_hash: [u8; 32],
-    ) -> Result<()>
-    where
-        SignImpl: CoordinatorReportSigner<D>,
-    {
-        message_handlers::handle_commitment_hash_message(
-            self,
-            session_id,
-            from_node_id,
-            commitment_hash,
-        )
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn accept_public_commitment(
-        &self,
-        session_id: u128,
-        from_node_id: u32,
-        commitment: Vec<u8>,
-        report_evidence: Option<SignedDkgCommitment>,
-    ) -> Result<()>
-    where
-        SignImpl: CoordinatorReportSigner<D>,
-    {
-        message_handlers::handle_commitment_message(
-            self,
-            session_id,
-            from_node_id,
-            commitment,
-            report_evidence,
-        )
-        .await?;
-        Ok(())
-    }
-
-    pub(crate) async fn accept_public_commitment_audit(
-        &self,
-        session_id: u128,
-        revealed: Vec<SignedDkgCommitment>,
-    ) -> Result<()>
-    where
-        SignImpl: CoordinatorReportSigner<D>,
-    {
-        message_handlers::handle_commitment_audit_message(self, session_id, revealed).await?;
-        Ok(())
-    }
-
-    pub(crate) async fn accept_public_refresh_result(
-        &self,
-        session_id: u128,
-        from_node_id: u32,
-        statement: RefreshHealthCheckStatement,
-        signature: Option<String>,
-    ) -> Result<()>
-    where
-        SignImpl: CoordinatorReportSigner<D>,
-    {
-        refresh_health_check::handle_result(self, session_id, from_node_id, statement, signature)
-            .await?;
-        Ok(())
     }
 
     /// Create a new DKG session.
