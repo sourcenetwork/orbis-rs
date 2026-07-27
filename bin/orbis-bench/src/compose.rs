@@ -151,6 +151,14 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
 
 fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
     let service = node_service(index);
+    // Deliberately not passing `--network-private-routes-only` here: it disables
+    // Iroh's relay-assisted hole punching and clears all discovery, leaving each
+    // private DKG pair exchange with exactly one connection path and no fallback.
+    // At 50-node scale that turns ordinary transient connection failures into a
+    // sustained retry storm that never converges (confirmed by bisecting to the
+    // commit that introduced the flag: private pair exchange completes cleanly
+    // without it, and stalls indefinitely with it). Iroh's default relay/discovery
+    // add real but acceptable overhead for a same-host Docker network.
     let mut command = vec![
         "--addr".to_string(),
         "0.0.0.0:50051".to_string(),
@@ -172,7 +180,6 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         "/data".to_string(),
         "--reshare-interval-secs".to_string(),
         input.scheduler_poll_secs.to_string(),
-        "--network-private-routes-only".to_string(),
         "--node-controller-key".to_string(),
         CONTROLLER_PUBLIC_KEY.to_string(),
     ];
@@ -289,7 +296,6 @@ mod tests {
         assert!(yaml.contains("node-050"));
         assert_eq!(yaml.matches("127.0.0.1::50051").count(), 50);
         assert_eq!(yaml.matches("--chain-gas-multiplier").count(), 50);
-        assert_eq!(yaml.matches("--network-private-routes-only").count(), 50);
         let document: Value = serde_yaml::from_str(&yaml).unwrap();
         for service in document["services"].as_object().unwrap().values() {
             let Some(command) = service.get("command").and_then(Value::as_array) else {
