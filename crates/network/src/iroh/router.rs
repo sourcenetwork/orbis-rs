@@ -42,7 +42,6 @@ impl RouterTrait for IrohRouterWrapper {
 /// Builder for creating a router with multiple protocol handlers
 pub struct IrohRouterBuilder {
     endpoint: Endpoint,
-    #[cfg(feature = "gossip")]
     gossip: Option<iroh_gossip::net::Gossip>,
     handlers: Vec<(Vec<u8>, Arc<dyn ProtocolHandler>)>,
     max_message_size: usize,
@@ -79,7 +78,6 @@ impl RouterBuilderTrait for IrohRouterBuilder {
 
     fn spawn(self: Box<Self>) -> Result<Box<dyn RouterTrait>> {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
-        #[cfg(feature = "gossip")]
         if let Some(gossip) = self.gossip.clone() {
             builder = builder.accept(iroh_gossip::ALPN, gossip);
         }
@@ -109,13 +107,9 @@ impl RouterBuilderTrait for IrohRouterBuilder {
 
 impl IrohRouterBuilder {
     /// Create a new router builder from an endpoint
-    pub fn new(
-        endpoint: Endpoint,
-        #[cfg(feature = "gossip")] gossip: Option<iroh_gossip::net::Gossip>,
-    ) -> Self {
+    pub fn new(endpoint: Endpoint, gossip: Option<iroh_gossip::net::Gossip>) -> Self {
         Self {
             endpoint,
-            #[cfg(feature = "gossip")]
             gossip,
             handlers: Vec::new(),
             max_message_size: 1024 * 1024, // 1MB default

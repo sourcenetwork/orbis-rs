@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 iroh = "0.95"
+iroh-gossip = "0.95"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
@@ -22,14 +23,9 @@ tracing = "0.1"
 rand = { workspace = true }
 
 [features]
-default = ["iroh", "gossip"]
+default = ["iroh"]
 iroh = []
-gossip = ["dep:iroh-gossip"]
 fault-injection = []
-
-[dependencies.iroh-gossip]
-version = "0.95"
-optional = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

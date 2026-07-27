@@ -44,9 +44,7 @@ pub struct IrohNetwork {
     local_peer_id: PeerId,
     config: IrohNetworkConfig,
     handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
-    #[cfg(feature = "gossip")]
     gossip: iroh_gossip::net::Gossip,
-    #[cfg(feature = "gossip")]
     pubsub: Arc<IrohPubSub>,
 }
 
@@ -191,15 +189,11 @@ impl IrohNetworkBuilder {
         let node_id = endpoint.id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
 
-        #[cfg(feature = "gossip")]
         let static_provider = iroh::discovery::static_provider::StaticProvider::new();
-        #[cfg(feature = "gossip")]
         endpoint.discovery().add(static_provider.clone());
-        #[cfg(feature = "gossip")]
         let gossip = iroh_gossip::net::Gossip::builder()
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());
-        #[cfg(feature = "gossip")]
         let pubsub = Arc::new(IrohPubSub::new(
             endpoint.clone(),
             gossip.clone(),
@@ -211,9 +205,7 @@ impl IrohNetworkBuilder {
             local_peer_id: peer_id,
             config: self.config,
             handlers: Arc::new(RwLock::new(HashMap::new())),
-            #[cfg(feature = "gossip")]
             gossip,
-            #[cfg(feature = "gossip")]
             pubsub,
         })
     }
@@ -318,7 +310,6 @@ impl Network for IrohNetwork {
         self.endpoint.bound_sockets()
     }
 
-    #[cfg(feature = "gossip")]
     fn pubsub(&self) -> Option<Arc<dyn crate::pubsub::PubSub>> {
         Some(self.pubsub.clone())
     }
@@ -326,7 +317,6 @@ impl Network for IrohNetwork {
     fn create_router_builder(&self) -> Result<Box<dyn RouterBuilderTrait>> {
         Ok(Box::new(IrohRouterBuilder::new(
             self.endpoint.clone(),
-            #[cfg(feature = "gossip")]
             Some(self.gossip.clone()),
         )))
     }
