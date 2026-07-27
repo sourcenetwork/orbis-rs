@@ -1785,19 +1785,23 @@ where
     // never published NodeInfo on-chain at all — a ring-configuration gap,
     // not network-level unreachability (that's caught below, per candidate,
     // when the actual RPC attempt fails). No candidate can build a valid
-    // Prepare without every member's route, so every node should stand down
-    // quietly and retry next tick rather than surface a per-tick error.
-    let Ok(current_routes) = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
-        .await
-        .inspect_err(|error| {
+    // Prepare without every member's route, so nobody can proceed. The
+    // canonical leader is still responsible for surfacing that loudly (the
+    // pre-failover contract: a misconfigured ring is a real, reportable
+    // error). Any fallback candidate's inability to even attempt stepping up
+    // is inherently best-effort, so it stands down quietly instead.
+    let is_canonical_leader = candidates[0] == state.node_key;
+    let current_routes = match resolve_node_routes(&state.bulletin, &ring.peer_node_keys).await {
+        Ok(routes) => routes,
+        Err(error) if is_canonical_leader => return Err(DkgError::Unauthorized(error)),
+        Err(error) => {
             tracing::debug!(
                 ring_id = %ring_id,
                 %error,
                 "PSS: refresh committee routes are not fully resolvable yet; standing down"
             );
-        })
-    else {
-        return Ok(RefreshStartOutcome::NotDue);
+            return Ok(RefreshStartOutcome::NotDue);
+        }
     };
 
     for (rank, candidate) in candidates.into_iter().enumerate() {
