@@ -148,6 +148,13 @@ If `StartDkg` reaches a nonleader, that node forwards `StartFresh` and the
 original JWT to the leader. The leader and every follower independently validate
 the ring configuration and credentials during preparation.
 
+Refresh's leadership rule has one exception: unlike fresh DKG and reshare,
+where only the single canonical leader is ever accepted, a refresh `Prepare`
+is accepted from **any** current-committee member (still route-verified
+against SourceHub `NodeInfo`). This lets refresh survive an unreachable
+canonical leader — see [PSS refresh](#pss-refresh) for the forward-chain walk
+that decides who actually leads a given attempt.
+
 ### Content and attempt binding
 
 All derivations are domain-separated SHA-256 hashes:
@@ -180,13 +187,20 @@ completion call. Success means the leader has prepared and activated every
 committee member. It does **not** mean the ring is already finalized on
 SourceHub.
 
-PSS refresh is started directly by its current-committee leader. For reshare,
-any current member that observes the pending transition sends an authenticated,
-idempotent `StartReshare` request to the canonical next-committee leader. That
-receiver independently rereads SourceHub, creates the attempt, and prepares the
-deduplicated union of current and next committee endpoints. Once a current
-member receives `Prepare`, subsequent scheduler ticks observe its active attempt
-and stop forwarding.
+PSS refresh and PSS reshare both start through a forwarding mechanism, but
+they tolerate different failures. For reshare, any current member that
+observes the pending transition sends an authenticated, idempotent
+`StartReshare` request to the fixed canonical next-committee leader; there is
+no fallback if that specific receiver is unreachable, since every
+next-committee receiver is required regardless of who triggers the attempt.
+That receiver independently rereads SourceHub, creates the attempt, and
+prepares the deduplicated union of current and next committee endpoints. For
+refresh, every current member's scheduler independently walks the committee
+in canonical order once a refresh is due, asking each candidate in turn to
+lead; the first reachable candidate becomes leader for that attempt — see
+[PSS refresh](#pss-refresh). Once a current member receives `Prepare` for
+either ceremony, subsequent scheduler ticks observe its active attempt and
+stop forwarding.
 
 ```mermaid
 sequenceDiagram
@@ -464,10 +478,12 @@ dealer is active and that receiver has already accepted the dealer's valid
 commitment and share.
 
 Receivers accept Gossip DKG messages only when the authenticated publisher is
-the canonical leader. They validate the manifest's exact origin set and root,
-then independently verify every embedded origin signature and SourceHub
-membership before dispatching the contribution into the local DKG state
-machine. The leader is a relay and ordering point, not a substitute signer.
+the canonical leader — except for refresh, where any current-committee member
+may be the leader for a given attempt (see [PSS refresh](#pss-refresh)).
+Receivers validate the manifest's exact origin set and root, then
+independently verify every embedded origin signature and SourceHub membership
+before dispatching the contribution into the local DKG state machine. The
+leader is a relay and ordering point, not a substitute signer.
 
 ### Completeness repair
 
@@ -600,8 +616,11 @@ PSS refresh uses the same preparation, public contribution, private exchange,
 repair, and hard-deadline machinery as fresh DKG. It has different
 cryptographic and completion rules:
 
-- only the canonical leader schedules a due refresh;
-- followers join only through authenticated `Prepare`;
+- any current-committee member may trigger a due refresh; its scheduler walks
+  the committee in canonical order and the first reachable candidate leads
+  the attempt (see [Refresh leader failover](#refresh-leader-failover));
+- unlike fresh DKG and reshare, a refresh `Prepare` is accepted from any
+  current-committee member, not only the fixed canonical leader;
 - refresh starts with public commitments, without the fresh-DKG hash pre-round;
 - private pair exchanges distribute the refreshing shares;
 - the resulting local bundle is staged, not immediately promoted;
@@ -611,14 +630,41 @@ cryptographic and completion rules:
 - a failed health check can publish a commitment audit;
 - the health result uses a stage/publish/commit delivery barrier.
 
+### Refresh leader failover
+
+Unlike reshare, refresh has no single point of forwarding failure. Every
+current-committee member's scheduler independently walks
+`canonical_leader_candidates` (the committee sorted by node signing key) in
+the same fixed order once a refresh is due. For each candidate: if it is the
+local node, it coordinates the refresh itself; otherwise it sends a short,
+single-shot `StartRefresh` request and waits up to the peer-response timeout.
+A candidate that does not answer in time is skipped in favor of the next.
+Because every observer uses the same order and tests real reachability rather
+than a fixed target or a staggered timer, live members converge on the same
+next-reachable candidate within seconds when the canonical leader is down or
+partitioned — without waiting on the much slower health-check/kick pipeline.
+
+A route that cannot be resolved at all — a committee member that never
+published `NodeInfo` on SourceHub — is a chain-configuration gap, not a
+reachability failure. Every node treats this as "not ready yet" and stands
+down quietly rather than erroring, since no candidate can build a valid
+`Prepare` without every member's route, regardless of rank.
+
+If two candidates rarely and briefly both believe they should lead (an
+asymmetric partition), the existing conflicting-attempt rejection in
+[Preparation and topology barrier](#preparation-and-topology-barrier) bounds
+the outcome to a wasted, unjoined attempt that times out and retries next
+tick — not a split ceremony.
+
 ```mermaid
 sequenceDiagram
   autonumber
-  participant S as PSS scheduler on leader
-  participant L as Canonical leader
+  participant S as PSS scheduler (any current member)
+  participant L as Leader for this attempt
   participant F as Followers
   participant G as Gossip topic
 
+  Note over S,L: S walks the committee in canonical order until a reachable<br/>candidate answers a short StartRefresh request; that candidate becomes L
   S->>L: Ring is due after last_pss and grace check
   L->>F: Prepare, probe, and activate
   L->>F: Signed commitment batches and private pair exchanges
@@ -914,8 +960,9 @@ Useful `dkg_transport_events_total` events include:
 
 - control: `probe_ack`, `preparation_retry`, `activated`, `abort`, `retry`,
   `connection_invalidated`, `reshare_next_leader_selected`,
-  `reshare_start_forwarded`, `reshare_start_accepted`, `reshare_start_duplicate`, and
-  `reshare_start_rejected`;
+  `reshare_start_forwarded`, `reshare_start_accepted`, `reshare_start_duplicate`,
+  `reshare_start_rejected`, `refresh_start_forwarded`,
+  `refresh_failover_leader_selected`, and `refresh_start_rejected`;
 - public: `probe_broadcast`, `probe_broadcast_failure`, `contribution`,
   `batch_published`, `neighbor_down`, `rejoin_isolation`, `rejoin_lag`,
   `rejoin_subscription_error`, `rejoin_failure`, `repair`, `origin_repair`,
@@ -1034,6 +1081,7 @@ cargo test -p orbis-node dkg::v0::session_state
 cargo test -p orbis-node dkg::v0::tests::dkg
 cargo test -p orbis-node dkg::v0::tests::refresh
 cargo test -p orbis-node dkg::v0::tests::reshare
+cargo test -p orbis-node dkg::v0::coordinator::reshare::selection
 cargo test -p orbis-node pss::v0::tests
 cargo test -p network
 ```
