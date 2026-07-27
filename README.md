@@ -419,6 +419,8 @@ Open [http://localhost:3000](http://localhost:3000), log in with `admin` / `admi
 
 Provisioning files live in `docker/grafana/` and are mounted into the container at startup.
 
+To load these dashboards into a Grafana instance that doesn't support file-based provisioning (e.g. a Kubernetes Grafana, where there's no host volume to mount), use `docker/grafana/sync-dashboards.sh push` instead — it uploads the dashboard JSON over Grafana's HTTP API. Point it at another instance with `GRAFANA_URL` (and `GRAFANA_API_KEY`, or `GRAFANA_USER`/`GRAFANA_PASSWORD`). Run `sync-dashboards.sh dump` to pull dashboard edits made in the Grafana UI back into the repo. See the script header for full usage.
+
 ## Documentation
 
 - **Crate READMEs** — [`crates/crypto`](crates/crypto/README.md), [`crates/network`](crates/network/README.md), [`crates/common`](crates/common/README.md), [`bin/orbis-node`](bin/orbis-node/README.md), and other crates under `crates/` and `bin/`.
