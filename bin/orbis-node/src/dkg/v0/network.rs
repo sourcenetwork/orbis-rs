@@ -2300,6 +2300,19 @@ where
             .filter(|peer| missing.contains(&extract_node_part(peer).to_lowercase()))
             .cloned()
             .collect();
+        // TODO: this only logs today. `missing_routes` already has everything
+        // `queue_pss_offline_report_task` needs (peer route, prepare.kind,
+        // prepare.ring_id, session_id) — that function doesn't require a live
+        // session and already no-ops for SessionKind::Fresh, so reporting a
+        // participant that never acknowledges the topology probe during
+        // preparation should be a small addition (spawn a report per missing
+        // peer here, same pattern as `report_abandoned_pss_session`), not a
+        // new detection mechanism. Needed because refresh/reshare require
+        // every current member (refresh) or every next-committee receiver
+        // (reshare) to ack before activation, and today only the later
+        // Phase1Commitments/Phase2Shares stall path (G1) produces a
+        // `node_offline` report — a member unreachable from the very start
+        // never gets past this barrier, so it's never reported at all.
         tracing::error!(
             session_id,
             attempt_id = %hex::encode(attempt_id.0),
