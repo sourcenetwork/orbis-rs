@@ -291,18 +291,6 @@ where
     lock.lock_owned().await
 }
 
-async fn control_request<D>(
-    state: &Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    peer: &str,
-    request: DkgControlMessage,
-) -> Result<DkgControlMessage>
-where
-    D: CoordinatorDkg,
-{
-    control_request_with_timeout(state, routes, peer, request, PEER_RESPONSE_TIMEOUT).await
-}
-
 async fn control_request_with_timeout<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -1081,7 +1069,7 @@ where
             phase,
             origin,
         } => {
-            validate_committee_sender(&state, ceremony_id.0, sender).await?;
+            canonical_committee_peer(&state, ceremony_id.0, sender).await?;
             state
                 .dkg_session_state
                 .with_state(&ceremony_id.0, |_| ())
@@ -1116,7 +1104,7 @@ where
             phase,
         } => {
             validate_leader_local(&state, ceremony_id.0).await?;
-            validate_committee_sender(&state, ceremony_id.0, sender).await?;
+            canonical_committee_peer(&state, ceremony_id.0, sender).await?;
             let contributions = state
                 .dkg_session_state
                 .public_contributions(&ceremony_id.0, attempt_id, phase)
@@ -1278,19 +1266,6 @@ where
         ));
     }
     Ok(())
-}
-
-async fn validate_committee_sender<D>(
-    state: &Arc<AppState<D>>,
-    session_id: u128,
-    sender: &PeerId,
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-{
-    canonical_committee_peer(state, session_id, sender)
-        .await
-        .map(|_| ())
 }
 
 async fn canonical_committee_peer<D>(
@@ -1850,7 +1825,7 @@ where
             continue;
         };
         crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
-        match control_request(
+        match control_request_with_timeout(
             &state,
             routes,
             candidate_route,
@@ -1858,6 +1833,7 @@ where
                 ring_id: ring_id.clone(),
                 expected_ring_pk: ring_pk.clone(),
             },
+            PEER_RESPONSE_TIMEOUT,
         )
         .await
         {
@@ -2483,7 +2459,7 @@ async fn abort_prepared_attempt<D>(
         aborts.spawn(async move {
             timeout(
                 Duration::from_secs(2),
-                control_request(
+                control_request_with_timeout(
                     &state,
                     routes,
                     &peer,
@@ -2492,6 +2468,7 @@ async fn abort_prepared_attempt<D>(
                         attempt_id,
                         reason,
                     },
+                    PEER_RESPONSE_TIMEOUT,
                 ),
             )
             .await
@@ -3212,7 +3189,7 @@ where
     let leader_peer = prepare
         .leader_route()
         .ok_or_else(|| DkgError::InvalidState("leader repair route is missing".into()))?;
-    let response = control_request(
+    let response = control_request_with_timeout(
         &state,
         routes,
         leader_peer,
@@ -3221,6 +3198,7 @@ where
             attempt_id: prepare.attempt_id,
             phase,
         },
+        PEER_RESPONSE_TIMEOUT,
     )
     .await?;
     let DkgControlMessage::PublicPhaseResponse {
@@ -3284,7 +3262,7 @@ where
             .committees
             .route(origin)
             .ok_or_else(|| DkgError::InvalidState("origin repair peer route is missing".into()))?;
-        let response = control_request(
+        let response = control_request_with_timeout(
             &state,
             routes,
             origin_peer,
@@ -3294,6 +3272,7 @@ where
                 phase,
                 origin,
             },
+            PEER_RESPONSE_TIMEOUT,
         )
         .await?;
         let DkgControlMessage::PublicContributionResponse {
@@ -3862,7 +3841,13 @@ where
                 let remaining = hard_deadline.saturating_duration_since(now);
                 let response = timeout(
                     remaining,
-                    control_request(&state, routes, &peer, request.clone()),
+                    control_request_with_timeout(
+                        &state,
+                        routes,
+                        &peer,
+                        request.clone(),
+                        PEER_RESPONSE_TIMEOUT,
+                    ),
                 )
                 .await;
                 match response {
@@ -4108,11 +4093,12 @@ where
         .transport_leader_route(&session_id)
         .await
         .ok_or_else(|| DkgError::InvalidState("leader peer route is missing".into()))?;
-    match control_request(
+    match control_request_with_timeout(
         &coord.app_state,
         coord.routes,
         &leader_peer,
         DkgControlMessage::PublicContribution(signed),
+        PEER_RESPONSE_TIMEOUT,
     )
     .await?
     {
@@ -4160,7 +4146,7 @@ where
         &dealer,
     )
     .map_err(DkgError::Serialization)?;
-    match control_request(
+    match control_request_with_timeout(
         &coord.app_state,
         coord.routes,
         selector_peer,
@@ -4171,6 +4157,7 @@ where
             receiver,
             dealer,
         },
+        PEER_RESPONSE_TIMEOUT,
     )
     .await?
     {
@@ -4300,11 +4287,12 @@ where
             ceremony_id: got_ceremony,
             attempt_id: got_attempt,
             idempotency_key,
-        }) = control_request(
+        }) = control_request_with_timeout(
             &coord.app_state,
             coord.routes,
             &peer,
             make_request(ceremony_id, attempt_id, key),
+            PEER_RESPONSE_TIMEOUT,
         )
         .await
         {
