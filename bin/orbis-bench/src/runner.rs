@@ -29,6 +29,7 @@ use rand::seq::SliceRandom;
 use rand::{RngCore, SeedableRng};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -50,6 +51,34 @@ pub struct BenchmarkRunner {
     repository_root: PathBuf,
 }
 
+#[derive(Debug)]
+pub struct BenchmarkInterrupted {
+    run_dir: PathBuf,
+}
+
+impl BenchmarkInterrupted {
+    pub fn run_dir(&self) -> &Path {
+        &self.run_dir
+    }
+}
+
+impl fmt::Display for BenchmarkInterrupted {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "benchmark interrupted; partial evidence: {}",
+            self.run_dir.display()
+        )
+    }
+}
+
+impl std::error::Error for BenchmarkInterrupted {}
+
+enum StackRunOutcome {
+    Completed(bool),
+    Interrupted,
+}
+
 impl BenchmarkRunner {
     pub fn new(experiment: Experiment, options: RunOptions) -> Result<Self> {
         experiment.validate()?;
@@ -60,7 +89,27 @@ impl BenchmarkRunner {
         })
     }
 
-    pub async fn run(mut self) -> Result<PathBuf> {
+    pub async fn run(self) -> Result<PathBuf> {
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+        let signal_task = tokio::spawn(async move {
+            match tokio::signal::ctrl_c().await {
+                Ok(()) => {
+                    interrupt_tx.send(true).ok();
+                }
+                Err(error) => {
+                    eprintln!("failed to install Ctrl-C handler: {error}");
+                }
+            }
+        });
+        let result = self.run_with_interrupt(interrupt_rx).await;
+        signal_task.abort();
+        result
+    }
+
+    async fn run_with_interrupt(
+        mut self,
+        mut interrupt_rx: watch::Receiver<bool>,
+    ) -> Result<PathBuf> {
         let (mut store, mut manifest) = if let Some(run_dir) = &self.options.resume {
             let (store, mut manifest) = ResultStore::resume(run_dir.clone())?;
             self.experiment = manifest.experiment.clone();
@@ -114,8 +163,13 @@ impl BenchmarkRunner {
         let mut consecutive_non_viable = 0usize;
         let mut current_ring_size = None;
         let mut current_size_viable = true;
+        let mut interrupted = false;
 
         for (stack_position, stack) in plan.stacks.iter().enumerate() {
+            if *interrupt_rx.borrow() {
+                interrupted = true;
+                break;
+            }
             let stack_ring_size = stack.cases.iter().map(|case| case.ring_size).max();
             if self.options.stop_after_two_non_viable_sizes
                 && current_ring_size.is_some()
@@ -154,10 +208,21 @@ impl BenchmarkRunner {
                 stack.cases.len()
             );
             let result = self
-                .run_stack(&mut store, &mut manifest, stack, &stack_id, &completed)
+                .run_stack(
+                    &mut store,
+                    &mut manifest,
+                    stack,
+                    &stack_id,
+                    &completed,
+                    &mut interrupt_rx,
+                )
                 .await;
             let case_viability = match result {
-                Ok(viability) => viability,
+                Ok(StackRunOutcome::Completed(viability)) => viability,
+                Ok(StackRunOutcome::Interrupted) => {
+                    interrupted = true;
+                    break;
+                }
                 Err(error) => {
                     eprintln!("[{stack_id}] setup failed: {error:#}");
                     store.append_setup_failure(&SetupFailureRecord {
@@ -183,6 +248,30 @@ impl BenchmarkRunner {
         }
 
         manifest.completed_at_unix_ms = Some(unix_ms());
+        if interrupted {
+            manifest.status = RunStatus::Interrupted;
+            manifest
+                .warnings
+                .push("Benchmark interrupted by Ctrl-C; partial evidence was preserved.".into());
+            store.update_manifest(&manifest)?;
+            store.write_summary()?;
+            if let Err(error) = generate_report(store.root()) {
+                manifest.warnings.push(format!(
+                    "interrupted-run report generation failed: {error:#}"
+                ));
+                store.update_manifest(&manifest)?;
+            }
+            eprintln!(
+                "benchmark run {} interrupted; partial evidence: {}",
+                manifest.run_id,
+                store.root().display()
+            );
+            return Err(BenchmarkInterrupted {
+                run_dir: store.root().to_path_buf(),
+            }
+            .into());
+        }
+
         manifest.status = RunStatus::Completed;
         store.update_manifest(&manifest)?;
         store.write_summary()?;
@@ -206,7 +295,8 @@ impl BenchmarkRunner {
         stack: &StackPlan,
         stack_id: &str,
         completed: &HashSet<TrialKey>,
-    ) -> Result<bool> {
+        interrupt_rx: &mut watch::Receiver<bool>,
+    ) -> Result<StackRunOutcome> {
         let stack_dir = store.root().join("stacks").join(stack_id);
         let empty_ring_ids = BTreeMap::new();
         let run_id = manifest.run_id.clone();
@@ -225,7 +315,7 @@ impl BenchmarkRunner {
         let artifacts = write_stack_files(&stack_dir, &initial_input)?;
         let compose = DockerCompose::new(stack_id.to_string(), artifacts.compose_file.clone())?;
 
-        let stack_result = async {
+        let stack_work = async {
             if self.options.resume.is_some() {
                 // Resume replays setup on clean volumes while keeping committed
                 // trial records. This avoids coupling correctness to whatever
@@ -250,7 +340,10 @@ impl BenchmarkRunner {
             .ok();
             store.update_manifest(manifest)?;
 
-            eprintln!("[{stack_id}] starting bootstrap SourceHub and {} nodes", stack.network_size);
+            eprintln!(
+                "[{stack_id}] starting bootstrap SourceHub and {} nodes",
+                stack.network_size
+            );
             compose.up_sourcehub().await?;
             compose.up_nodes().await?;
             let bootstrap_endpoints = discover_endpoints(&compose, stack.network_size).await?;
@@ -259,7 +352,10 @@ impl BenchmarkRunner {
                 Duration::from_secs(self.experiment.timeouts.setup_secs),
             )
             .await?;
-            eprintln!("[{stack_id}] discovered {} persistent node identities", bootstrap_identities.len());
+            eprintln!(
+                "[{stack_id}] discovered {} persistent node identities",
+                bootstrap_identities.len()
+            );
             compose.stop_nodes(stack.network_size).await?;
 
             let mut case_rings = plan_rings(
@@ -280,7 +376,10 @@ impl BenchmarkRunner {
                 ..initial_input
             };
             write_stack_files(&stack_dir, &final_input)?;
-            eprintln!("[{stack_id}] recreating SourceHub with {} genesis rings", definitions.len());
+            eprintln!(
+                "[{stack_id}] recreating SourceHub with {} genesis rings",
+                definitions.len()
+            );
             compose.recreate_sourcehub().await?;
             let chain_config = discover_chain_config(&compose).await?;
             let controller = controller_client(chain_config.clone()).await?;
@@ -345,9 +444,7 @@ impl BenchmarkRunner {
             for case_rings in &case_rings {
                 eprintln!(
                     "[{stack_id}] measuring ring={} threshold={} ({})",
-                    case_rings.case.ring_size,
-                    case_rings.case.threshold,
-                    stack.profile.name
+                    case_rings.case.ring_size, case_rings.case.threshold, stack.profile.name
                 );
                 let viable = self
                     .run_case(
@@ -385,14 +482,24 @@ impl BenchmarkRunner {
             sample_task.await.ok();
             drain_resource_samples(store, &mut sample_rx)?;
             Ok::<_, anyhow::Error>(all_cases_viable)
-        }
-        .await;
+        };
 
-        if stack_result.is_err() {
+        let stack_result = tokio::select! {
+            biased;
+            _ = wait_for_interrupt(interrupt_rx) => None,
+            result = stack_work => Some(result),
+        };
+
+        if stack_result.as_ref().is_some_and(Result::is_err) {
             compose
                 .write_failure_logs(&store.root().join("logs"), "setup")
                 .await
                 .ok();
+        }
+        if stack_result.is_none() {
+            eprintln!(
+                "[{stack_id}] Ctrl-C received; stopping exact Compose project before exiting"
+            );
         }
         if !self.options.keep_network {
             if let Err(error) = compose.down().await {
@@ -400,8 +507,15 @@ impl BenchmarkRunner {
                     "cleanup failed for exact project {stack_id}: {error:#}"
                 ));
             }
+        } else if stack_result.is_none() {
+            eprintln!(
+                "[{stack_id}] --keep-network is set; leaving the exact Compose project running"
+            );
         }
-        stack_result
+        match stack_result {
+            Some(result) => result.map(StackRunOutcome::Completed),
+            None => Ok(StackRunOutcome::Interrupted),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1957,6 +2071,20 @@ fn drain_resource_samples(
     Ok(())
 }
 
+async fn wait_for_interrupt(interrupt_rx: &mut watch::Receiver<bool>) {
+    if *interrupt_rx.borrow() {
+        return;
+    }
+    loop {
+        if interrupt_rx.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+        if *interrupt_rx.borrow() {
+            return;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct TrialKey {
     stack_id: String,
@@ -2173,6 +2301,57 @@ mod tests {
     #[test]
     fn pss_timing_separates_a_valid_scheduler_delay() {
         assert_eq!(pss_timing(1_500.0, 0.0, Some(400.0)), (1_100.0, 400.0));
+    }
+
+    #[tokio::test]
+    async fn interrupt_waiter_observes_an_existing_signal() {
+        let (interrupt_tx, mut interrupt_rx) = watch::channel(false);
+        interrupt_tx.send(true).unwrap();
+
+        timeout(
+            Duration::from_millis(100),
+            wait_for_interrupt(&mut interrupt_rx),
+        )
+        .await
+        .expect("interrupt waiter should complete");
+    }
+
+    #[tokio::test]
+    async fn interrupt_waiter_observes_a_later_signal() {
+        let (interrupt_tx, mut interrupt_rx) = watch::channel(false);
+        tokio::spawn(async move {
+            interrupt_tx.send(true).unwrap();
+        });
+
+        timeout(
+            Duration::from_millis(100),
+            wait_for_interrupt(&mut interrupt_rx),
+        )
+        .await
+        .expect("interrupt waiter should complete");
+    }
+
+    #[tokio::test]
+    async fn interruption_preserves_evidence_and_marks_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut experiment = Experiment::single(3, 3, 2);
+        experiment.output_dir = temp.path().join("results");
+        let runner = BenchmarkRunner::new(experiment, RunOptions::default()).unwrap();
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+        interrupt_tx.send(true).unwrap();
+
+        let error = runner.run_with_interrupt(interrupt_rx).await.unwrap_err();
+        let interrupted = error
+            .downcast_ref::<BenchmarkInterrupted>()
+            .expect("interruption should use the typed error");
+        let manifest: RunManifest =
+            serde_json::from_slice(&fs::read(interrupted.run_dir().join("manifest.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(manifest.status, RunStatus::Interrupted);
+        assert!(manifest.completed_at_unix_ms.is_some());
+        assert!(interrupted.run_dir().join("summary.csv").is_file());
+        assert!(interrupted.run_dir().join("report.html").is_file());
     }
 
     #[test]

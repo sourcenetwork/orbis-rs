@@ -46,6 +46,7 @@ impl DockerCompose {
 
     fn command(&self) -> Command {
         let mut command = Command::new("docker");
+        command.kill_on_drop(true);
         command
             .arg("compose")
             .arg("--project-name")
@@ -279,7 +280,9 @@ impl DockerCompose {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let output = Command::new("docker")
+        let mut command = Command::new("docker");
+        command.kill_on_drop(true);
+        let output = command
             .arg("stats")
             .arg("--no-stream")
             .arg("--format")
@@ -305,10 +308,9 @@ impl DockerCompose {
         let ids = self.output(&["ps", "--all", "--quiet"]).await?;
         let mut failures = Vec::new();
         for id in ids.lines().filter(|line| !line.is_empty()) {
-            let output = Command::new("docker")
-                .args(["inspect", id])
-                .output()
-                .await?;
+            let mut command = Command::new("docker");
+            command.kill_on_drop(true);
+            let output = command.args(["inspect", id]).output().await?;
             if !output.status.success() {
                 continue;
             }
@@ -530,7 +532,9 @@ pub async fn doctor(runtime_image: Option<&str>) -> Result<DoctorReport> {
     }
 
     let net_admin_probe = if let Some(image) = runtime_image {
-        let output = Command::new("docker")
+        let mut command = Command::new("docker");
+        command.kill_on_drop(true);
+        let output = command
             .args([
                 "run",
                 "--rm",
@@ -579,11 +583,9 @@ pub async fn image_digest(image: &str) -> Result<String> {
 }
 
 async fn command_text(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .await?;
+    let mut command = Command::new(program);
+    command.kill_on_drop(true);
+    let output = command.args(args).stdin(Stdio::null()).output().await?;
     if !output.status.success() {
         bail!(
             "{} {} failed: {}",
