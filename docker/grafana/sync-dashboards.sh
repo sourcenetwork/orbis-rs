@@ -87,7 +87,7 @@ set_auth_args() {
 api_call() {
   local method="$1" path="$2" data="${3:-}"
   local url="${GRAFANA_URL%/}${path}"
-  local -a curl_args=(-sS -w '\n%{http_code}' -X "$method" "${AUTH_ARGS[@]}" -H 'Content-Type: application/json')
+  local -a curl_args=(-sS --connect-timeout 10 --max-time 60 -w '\n%{http_code}' -X "$method" "${AUTH_ARGS[@]}" -H 'Content-Type: application/json')
   if [[ -n "$data" ]]; then
     curl_args+=(-d "$data")
   fi
@@ -136,6 +136,11 @@ cmd_push() {
     local dashboard uid title payload
     dashboard=$(jq '.id = null' "$file")
     uid=$(jq -r '.uid' <<<"$dashboard")
+     if [[ -z "$uid" || "$uid" == "null" ]]; then
+      echo "FAILED: $file has no 'uid' field; push is not idempotent without one" >&2
+      failed=1
+      continue
+    fi
     title=$(jq -r '.title' <<<"$dashboard")
     payload=$(jq -n --argjson dashboard "$dashboard" --arg folderUid "$folder_uid" \
       '{dashboard: $dashboard, folderUid: $folderUid, overwrite: true, message: "sync-dashboards.sh push"}')
@@ -162,8 +167,6 @@ cmd_dump() {
     esac
   done
 
-  local folder_uid
-  folder_uid=$(resolve_folder_uid)
 
   # Map local files to their tracked uid via parallel arrays (not an
   # associative array -- those need bash 4+, and macOS ships bash 3.2).
@@ -183,6 +186,8 @@ cmd_dump() {
   fi
 
   if [[ $dump_all -eq 1 ]]; then
+    local folder_uid
+    folder_uid=$(resolve_folder_uid)
     local search remote_uid already existing
     search=$(api_call GET "/api/search?folderUIDs=${folder_uid}&type=dash-db")
     while IFS= read -r remote_uid; do
@@ -201,8 +206,13 @@ cmd_dump() {
   fi
 
   local uid resp dashboard title target slug idx
+  local dump_failed=0
   for uid in "${uids[@]}"; do
-    resp=$(api_call GET "/api/dashboards/uid/${uid}")
+   if ! resp=$(api_call GET "/api/dashboards/uid/${uid}"); then
+      echo "FAILED: could not fetch uid=$uid" >&2
+      dump_failed=1
+      continue
+    fi
     dashboard=$(jq '.dashboard | .id = null' <<<"$resp")
     title=$(jq -r '.title' <<<"$dashboard")
 
@@ -213,6 +223,7 @@ cmd_dump() {
         break
       fi
     done
+    exit "$dump_failed"
     if [[ -z "$target" ]]; then
       slug=$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
       target="$DASHBOARD_DIR/${slug}.json"
@@ -237,10 +248,18 @@ main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dir)
+       if [[ $# -lt 2 ]]; then
+          echo "error: --dir requires an argument" >&2
+          exit 1
+        fi
         DASHBOARD_DIR="$2"
         shift 2
         ;;
       --folder)
+        if [[ $# -lt 2 ]]; then
+          echo "error: --folder requires an argument" >&2
+          exit 1
+        fi
         GRAFANA_FOLDER="$2"
         shift 2
         ;;
