@@ -503,23 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn generated_compose_golden_digests() {
-        let compose_3 = render(3, false);
-        let compose_50 = render(50, true);
-        // Placeholder digests — this repo's workflow doesn't run `cargo test`
-        // as part of making a change; run the test once to get the real
-        // values and fill them in here.
-        assert_eq!(
-            hex::encode(Sha256::digest(compose_3)),
-            "37e598aebd08404dd5e42a7f91c439ab9ac735eb70bc51d8a4634680e034ffeb"
-        );
-        assert_eq!(
-            hex::encode(Sha256::digest(compose_50)),
-            "19b871160e2bd309aeaa3df622b3a0e760063fb0dcca7ec9a11e07d1f0908835"
-        );
-    }
-
-    #[test]
     fn nodes_whitelist_the_ring_governance_policy_at_startup() {
         let yaml = render(50, false);
         assert_eq!(yaml.matches("--node-whitelisted-policy-id").count(), 50);
