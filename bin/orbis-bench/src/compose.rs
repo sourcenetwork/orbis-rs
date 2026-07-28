@@ -195,7 +195,23 @@ set -eu
 touch /tmp/boot-marker
 rm -rf /home/node/.sourcehub/*
 sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
-while [ ! -f /handoff/ready ] || [ /handoff/ready -ot /tmp/boot-marker ]; do sleep 1; done
+handoff_timeout_seconds=300
+handoff_waited_seconds=0
+while :; do
+  ready_is_current=
+  if [ -f /handoff/ready ]; then
+    ready_is_current="$$(find /handoff/ready -newer /tmp/boot-marker -print 2>/dev/null)"
+  fi
+  if [ -n "$$ready_is_current" ]; then
+    break
+  fi
+  if [ "$$handoff_waited_seconds" -ge "$$handoff_timeout_seconds" ]; then
+    echo "sourcehub replica timed out after $${handoff_timeout_seconds}s waiting for a current /handoff/ready marker" >&2
+    exit 1
+  fi
+  sleep 1
+  handoff_waited_seconds=$$((handoff_waited_seconds + 1))
+done
 cp /handoff/genesis.json /home/node/.sourcehub/config/genesis.json
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@sourcehub:26656"
 "#;
@@ -458,6 +474,35 @@ mod tests {
     }
 
     #[test]
+    fn replica_handoff_wait_is_posix_and_bounded() {
+        let mut experiment = Experiment::single(3, 3, 2);
+        experiment.sourcehub_replicas = 2;
+        experiment.profiles = vec![NetworkProfile::lan()];
+        let mut plan = experiment.resolve().unwrap();
+        plan.assign_indices();
+        let input = ComposeInput {
+            repository_root: Path::new("/repo"),
+            run_id: "run",
+            stack_id: "orbis-bench-run-s000",
+            stack: &plan.stacks[0],
+            crypto: experiment.crypto,
+            sourcehub_ref: &experiment.sourcehub_ref,
+            sourcehub_replicas: experiment.sourcehub_replicas,
+            resources: &experiment.resources,
+            scheduler_poll_secs: 1,
+        };
+        let document = compose_document(&input).unwrap();
+        let command = document["services"]["sourcehub-001"]["command"][0]
+            .as_str()
+            .expect("replica startup command");
+        assert!(!command.contains(" -ot "));
+        assert!(command.contains("find /handoff/ready -newer /tmp/boot-marker -print"));
+        assert!(command.contains("handoff_timeout_seconds=300"));
+        assert!(command.contains("sourcehub replica timed out after"));
+        assert!(command.contains("exit 1"));
+    }
+
+    #[test]
     fn generated_compose_golden_digests() {
         let compose_3 = render(3, false);
         let compose_50 = render(50, true);
@@ -466,21 +511,18 @@ mod tests {
         // values and fill them in here.
         assert_eq!(
             hex::encode(Sha256::digest(compose_3)),
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            "37e598aebd08404dd5e42a7f91c439ab9ac735eb70bc51d8a4634680e034ffeb"
         );
         assert_eq!(
             hex::encode(Sha256::digest(compose_50)),
-            "0000000000000000000000000000000000000000000000000000000000000000"
+            "19b871160e2bd309aeaa3df622b3a0e760063fb0dcca7ec9a11e07d1f0908835"
         );
     }
 
     #[test]
     fn nodes_whitelist_the_ring_governance_policy_at_startup() {
         let yaml = render(50, false);
-        assert_eq!(
-            yaml.matches("--node-whitelisted-policy-id").count(),
-            50
-        );
+        assert_eq!(yaml.matches("--node-whitelisted-policy-id").count(), 50);
         assert!(!yaml.contains("--node-whitelisted-ring-id"));
         let document: Value = serde_yaml::from_str(&yaml).unwrap();
         for service in document["services"].as_object().unwrap().values() {

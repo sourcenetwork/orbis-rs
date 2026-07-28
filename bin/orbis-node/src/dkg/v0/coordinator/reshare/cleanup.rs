@@ -106,7 +106,6 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                         %error,
                         "Reshare Dealer: failed finalized stale-material cleanup"
                     );
-                    return;
                 }
             } else {
                 tracing::warn!(

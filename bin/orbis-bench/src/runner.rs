@@ -321,6 +321,7 @@ impl BenchmarkRunner {
         let artifacts = write_stack_files(&stack_dir, &input)?;
         let compose = DockerCompose::new(stack_id.to_string(), artifacts.compose_file.clone())?;
 
+        let mut resource_sampler = None;
         let stack_work = async {
             if self.options.resume.is_some() {
                 // Resume replays setup on clean volumes while keeping committed
@@ -369,12 +370,8 @@ impl BenchmarkRunner {
 
             let chain_config = discover_chain_config(&compose).await?;
             let controller = controller_client(chain_config.clone()).await?;
-            let funding = fund_nodes(
-                &controller,
-                &identities,
-                self.experiment.setup_batch_size,
-            )
-            .await?;
+            let funding =
+                fund_nodes(&controller, &identities, self.experiment.setup_batch_size).await?;
             manifest.setup_batch_evidence.insert(
                 format!("{stack_id}/funding"),
                 serde_json::to_value(funding)?,
@@ -443,11 +440,14 @@ impl BenchmarkRunner {
             );
             store.update_manifest(manifest)?;
 
-            let (sample_stop, mut sample_rx, sample_task) = start_resource_sampler(
+            resource_sampler = Some(start_resource_sampler(
                 compose.clone(),
                 manifest.run_id.clone(),
                 stack_id.to_string(),
-            );
+            ));
+            let sampler = resource_sampler
+                .as_mut()
+                .expect("resource sampler was just started");
             let mut clients = DirectClients::connect(&endpoints).await?;
             let mut rng = StdRng::seed_from_u64(
                 self.experiment.seed ^ (stack.stack_index as u64).rotate_left(17),
@@ -472,7 +472,7 @@ impl BenchmarkRunner {
                         case_rings,
                         completed,
                         &mut rng,
-                        &mut sample_rx,
+                        &mut sampler.sample_rx,
                     )
                     .await;
                 if let Err(error) = &viable {
@@ -489,11 +489,8 @@ impl BenchmarkRunner {
                     ));
                 }
                 all_cases_viable &= viable.unwrap_or(false);
-                drain_resource_samples(store, &mut sample_rx)?;
+                drain_resource_samples(store, &mut sampler.sample_rx)?;
             }
-            sample_stop.send(true).ok();
-            sample_task.await.ok();
-            drain_resource_samples(store, &mut sample_rx)?;
             Ok::<_, anyhow::Error>(all_cases_viable)
         };
 
@@ -502,6 +499,12 @@ impl BenchmarkRunner {
             _ = wait_for_interrupt(interrupt_rx) => None,
             result = stack_work => Some(result),
         };
+        let sampler_result = stop_resource_sampler(resource_sampler.take(), store).await;
+        if let Err(error) = &sampler_result {
+            manifest.warnings.push(format!(
+                "resource sampler shutdown failed for {stack_id}: {error:#}"
+            ));
+        }
 
         if stack_result.as_ref().is_some_and(Result::is_err) {
             compose
@@ -526,7 +529,8 @@ impl BenchmarkRunner {
             );
         }
         match stack_result {
-            Some(result) => result.map(StackRunOutcome::Completed),
+            Some(Ok(viable)) => sampler_result.map(|()| StackRunOutcome::Completed(viable)),
+            Some(Err(error)) => Err(error),
             None => Ok(StackRunOutcome::Interrupted),
         }
     }
@@ -2025,15 +2029,17 @@ async fn read_ring_with_retry(controller: &SourceHubClient, ring_id: &str) -> Re
     unreachable!("bounded retry loop always returns")
 }
 
+struct ResourceSampler {
+    stop_tx: watch::Sender<bool>,
+    sample_rx: mpsc::Receiver<crate::results::ResourceSample>,
+    task: JoinHandle<()>,
+}
+
 fn start_resource_sampler(
     compose: DockerCompose,
     run_id: String,
     stack_id: String,
-) -> (
-    watch::Sender<bool>,
-    mpsc::Receiver<crate::results::ResourceSample>,
-    JoinHandle<()>,
-) {
+) -> ResourceSampler {
     let (stop_tx, mut stop_rx) = watch::channel(false);
     let (sample_tx, sample_rx) = mpsc::channel(10_000);
     let task = tokio::spawn(async move {
@@ -2054,7 +2060,30 @@ fn start_resource_sampler(
             }
         }
     });
-    (stop_tx, sample_rx, task)
+    ResourceSampler {
+        stop_tx,
+        sample_rx,
+        task,
+    }
+}
+
+async fn stop_resource_sampler(
+    sampler: Option<ResourceSampler>,
+    store: &mut ResultStore,
+) -> Result<()> {
+    let Some(ResourceSampler {
+        stop_tx,
+        mut sample_rx,
+        task,
+    }) = sampler
+    else {
+        return Ok(());
+    };
+    stop_tx.send(true).ok();
+    let task_result = task.await;
+    let drain_result = drain_resource_samples(store, &mut sample_rx);
+    task_result.context("resource sampler task failed")?;
+    drain_result
 }
 
 fn drain_resource_samples(
@@ -2325,6 +2354,66 @@ mod tests {
         assert!(manifest.completed_at_unix_ms.is_some());
         assert!(interrupted.run_dir().join("summary.csv").is_file());
         assert!(interrupted.run_dir().join("report.html").is_file());
+    }
+
+    #[tokio::test]
+    async fn resource_sampler_shutdown_waits_and_drains_buffered_samples() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut experiment = Experiment::single(3, 3, 2);
+        experiment.output_dir = temp.path().join("results");
+        let runner = BenchmarkRunner::new(experiment, RunOptions::default()).unwrap();
+        let (interrupt_tx, interrupt_rx) = watch::channel(false);
+        interrupt_tx.send(true).unwrap();
+        let error = runner.run_with_interrupt(interrupt_rx).await.unwrap_err();
+        let run_dir = error
+            .downcast_ref::<BenchmarkInterrupted>()
+            .unwrap()
+            .run_dir()
+            .to_path_buf();
+        let (mut store, _) = ResultStore::resume(run_dir.clone()).unwrap();
+
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let (sample_tx, sample_rx) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            sample_tx
+                .send(crate::results::ResourceSample {
+                    run_id: "run".into(),
+                    stack_id: "stack".into(),
+                    sampled_at_unix_ms: 1,
+                    service: "node-001".into(),
+                    container_id: "container".into(),
+                    cpu_percent: Some(1.0),
+                    memory_bytes: Some(2),
+                    memory_limit_bytes: Some(3),
+                    network_rx_bytes: Some(4),
+                    network_tx_bytes: Some(5),
+                    block_read_bytes: Some(6),
+                    block_write_bytes: Some(7),
+                    pids: Some(8),
+                })
+                .await
+                .unwrap();
+            if !*stop_rx.borrow() {
+                stop_rx.changed().await.unwrap();
+            }
+        });
+        let sampler = ResourceSampler {
+            stop_tx,
+            sample_rx,
+            task,
+        };
+
+        timeout(
+            Duration::from_secs(1),
+            stop_resource_sampler(Some(sampler), &mut store),
+        )
+        .await
+        .expect("sampler shutdown should not hang")
+        .unwrap();
+        drop(store);
+        assert!(fs::read_to_string(run_dir.join("resource-samples.csv"))
+            .unwrap()
+            .contains("node-001"));
     }
 
     #[test]

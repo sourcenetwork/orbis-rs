@@ -104,7 +104,11 @@ impl DockerCompose {
 
     pub async fn up_sourcehub(&self, replicas: usize) -> Result<()> {
         let services: Vec<String> = (0..replicas).map(sourcehub_service_name).collect();
-        let mut args = vec!["up".to_string(), "--detach".to_string(), "--wait".to_string()];
+        let mut args = vec![
+            "up".to_string(),
+            "--detach".to_string(),
+            "--wait".to_string(),
+        ];
         args.extend(services);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.status(&refs).await

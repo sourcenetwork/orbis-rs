@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream::FuturesUnordered, StreamExt};
 use network::{Connection, Message, PeerId, ProtocolHandler, PubSubEvent, SignedPayload, Topic};
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::{Arc, Weak};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
@@ -274,10 +274,38 @@ fn peer_matches_route(peer: &PeerId, route: &str) -> bool {
     hex::encode(peer.as_bytes()) == extract_node_part(route).to_lowercase()
 }
 
+struct CeremonyStartGuard {
+    ceremony_id: u128,
+    lock: Weak<tokio::sync::Mutex<()>>,
+    locks: Arc<tokio::sync::Mutex<HashMap<u128, Arc<tokio::sync::Mutex<()>>>>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for CeremonyStartGuard {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        let ceremony_id = self.ceremony_id;
+        let lock = self.lock.clone();
+        let locks = self.locks.clone();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let mut locks = locks.lock().await;
+            let remove = locks.get(&ceremony_id).is_some_and(|current| {
+                Weak::ptr_eq(&lock, &Arc::downgrade(current)) && Arc::strong_count(current) == 1
+            });
+            if remove {
+                locks.remove(&ceremony_id);
+            }
+        });
+    }
+}
+
 async fn lock_ceremony_start<D>(
     state: &Arc<AppState<D>>,
     ceremony_id: CeremonyId,
-) -> tokio::sync::OwnedMutexGuard<()>
+) -> CeremonyStartGuard
 where
     D: CoordinatorDkg,
 {
@@ -288,7 +316,14 @@ where
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
-    lock.lock_owned().await
+    let weak_lock = Arc::downgrade(&lock);
+    let guard = lock.lock_owned().await;
+    CeremonyStartGuard {
+        ceremony_id: ceremony_id.0,
+        lock: weak_lock,
+        locks: state.dkg_ceremony_start_locks.clone(),
+        guard: Some(guard),
+    }
 }
 
 async fn control_request_with_timeout<D>(
@@ -5622,6 +5657,61 @@ mod stability_tests {
         let missing = missing_topology_peers(&expected, &acknowledged);
         assert_eq!(missing, vec!["bbbbbbbbbbbbbbbb"]);
         assert_eq!(missing_topology_peer_prefixes(&missing), "bbbbbbbbbbbb");
+    }
+
+    #[tokio::test]
+    async fn ceremony_start_lock_is_removed_after_the_last_waiter_releases_it() {
+        let state = Arc::new(create_test_app_state_default("ceremony_start_lock_cleanup").await);
+        let ceremony = CeremonyId(91);
+        let first = lock_ceremony_start(&state, ceremony).await;
+        assert!(state
+            .dkg_ceremony_start_locks
+            .lock()
+            .await
+            .contains_key(&ceremony.0));
+
+        let waiter_state = state.clone();
+        let waiter =
+            tokio::spawn(async move { lock_ceremony_start(&waiter_state, ceremony).await });
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let references = {
+                    let locks = state.dkg_ceremony_start_locks.lock().await;
+                    Arc::strong_count(locks.get(&ceremony.0).expect("lock entry must exist"))
+                };
+                if references >= 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("waiter should retain the existing lock");
+
+        drop(first);
+        let second = waiter.await.expect("waiter task should complete");
+        assert!(state
+            .dkg_ceremony_start_locks
+            .lock()
+            .await
+            .contains_key(&ceremony.0));
+        drop(second);
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if !state
+                    .dkg_ceremony_start_locks
+                    .lock()
+                    .await
+                    .contains_key(&ceremony.0)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("last guard should remove the ceremony lock entry");
     }
 
     #[test]

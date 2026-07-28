@@ -70,6 +70,7 @@ pub(crate) async fn delete_departed_ring_material<D>(
 where
     D: Dkg + Clone + 'static,
 {
+    let _guard = app_state.ring_index_lock.lock().await;
     app_state
         .local_storage
         .delete(LocalStorageKeys::RingKey(ring_key.to_string()))
@@ -78,7 +79,6 @@ where
                 "Reshare Dealer: failed to delete finalized departed share bundle for ring {ring_key}: {error}"
             ))
         })?;
-    let _guard = app_state.ring_index_lock.lock().await;
     remove_ring_index_entry(&app_state.local_storage, ring_key)?;
     tracing::info!(
         session_id,
@@ -346,12 +346,70 @@ fn ensure_local_ring_capacity(ring_index: &[RingIndexEntry], storage_key: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
     use bulletin::error::BulletinError;
     use bulletin::r#trait::{
         BulletinKind, BulletinPost, BulletinReportSubmission, RingFinalizationStatus,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn departed_bundle_deletion_waits_for_ring_index_lock() {
+        let db_name = "departed_bundle_deletion_lock_order";
+        let db_path = test_db_path(db_name);
+        let state = Arc::new(create_test_app_state_default(db_name).await);
+        let ring_key = "departed-ring";
+        state
+            .local_storage
+            .set(
+                LocalStorageKeys::RingKey(ring_key.to_string()),
+                vec![1, 2, 3],
+            )
+            .unwrap();
+        state
+            .local_storage
+            .set(
+                LocalStorageKeys::RingIndex,
+                serde_json::to_vec(&vec![RingIndexEntry {
+                    ring_pk_str: ring_key.to_string(),
+                    bulletin_post_id: "ring-post".to_string(),
+                    indexed_at_secs: 0,
+                }])
+                .unwrap(),
+            )
+            .unwrap();
+
+        let ring_index_guard = state.ring_index_lock.clone().lock_owned().await;
+        let delete_state = state.clone();
+        let deletion =
+            tokio::spawn(
+                async move { delete_departed_ring_material(&delete_state, 7, ring_key).await },
+            );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert_eq!(
+            state
+                .local_storage
+                .get(LocalStorageKeys::RingKey(ring_key.to_string()))
+                .unwrap(),
+            Some(vec![1, 2, 3]),
+            "bundle deletion must not race ahead of the ring-index lock"
+        );
+
+        drop(ring_index_guard);
+        deletion.await.unwrap().unwrap();
+        assert_eq!(
+            state
+                .local_storage
+                .get(LocalStorageKeys::RingKey(ring_key.to_string()))
+                .unwrap(),
+            None
+        );
+
+        drop(state);
+        cleanup_db(&db_path);
+    }
 
     #[derive(Default)]
     struct LostFirstConfirmationBulletin {
