@@ -207,6 +207,31 @@ impl SourceHubClient {
         self.resync_nonce_inner(signer).await
     }
 
+    /// Resync both the signer's account number and nonce from the chain.
+    ///
+    /// `with_signer` fetches account info once at construction time. If the
+    /// account did not exist yet at that point (a brand-new address with no
+    /// prior transactions), the chain returns account_number 0 as a
+    /// placeholder — but once something else (e.g. a funding transfer) creates
+    /// the account, it gets a real, non-zero account_number. Unlike a sequence
+    /// drift, `resync_nonce` alone can't recover from this: it only re-fetches
+    /// sequence, so a signer constructed before the account existed keeps
+    /// signing with the wrong account_number forever. Call this once after
+    /// confirming the account now exists (e.g. after a balance-check retry
+    /// loop succeeds) and before this signer's first outgoing transaction.
+    ///
+    /// Returns `(account_number, sequence)`, or an error if no signer is
+    /// configured or the chain query fails.
+    pub async fn resync_account(&self) -> Result<(u64, u64)> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let account_info = self.get_account(&signer.address()).await?;
+        signer.set_account_number(account_info.account_number);
+        signer.set_nonce(account_info.sequence);
+        Ok((account_info.account_number, account_info.sequence))
+    }
+
     /// Resync nonce given an already-resolved signer reference. Used internally
     /// when the signer is already in scope to avoid a second borrow.
     async fn resync_nonce_inner(&self, signer: &TxSigner) -> Result<u64> {

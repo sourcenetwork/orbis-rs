@@ -15,7 +15,10 @@ use crate::report::generate_report;
 use crate::results::{
     read_trials, HostMetadata, ResultStore, RunManifest, RunStatus, SetupFailureRecord, TrialRecord,
 };
-use crate::setup::{create_ring_governance, fund_nodes, update_peer_addresses};
+use crate::setup::{
+    create_ring_governance_policy, create_rings_on_chain, fund_nodes, register_ring_governance,
+    update_peer_addresses,
+};
 use anyhow::{bail, Context, Result};
 use common::blockchain::{
     orbis::Ring, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
@@ -37,6 +40,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout, Instant};
+
+/// Protocol version stamped on rings created for this benchmark. Matches
+/// `network::V0.version` without pulling in the network crate just for one
+/// constant.
+const RING_PROTOCOL_VERSION: u64 = 0;
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
@@ -298,21 +306,19 @@ impl BenchmarkRunner {
         interrupt_rx: &mut watch::Receiver<bool>,
     ) -> Result<StackRunOutcome> {
         let stack_dir = store.root().join("stacks").join(stack_id);
-        let empty_ring_ids = BTreeMap::new();
         let run_id = manifest.run_id.clone();
-        let initial_input = ComposeInput {
+        let input = ComposeInput {
             repository_root: &self.repository_root,
             run_id: &run_id,
             stack_id,
             stack,
             crypto: self.experiment.crypto,
             sourcehub_ref: &self.experiment.sourcehub_ref,
-            rings: &[],
-            node_ring_ids: &empty_ring_ids,
+            sourcehub_replicas: self.experiment.sourcehub_replicas,
             resources: &self.experiment.resources,
             scheduler_poll_secs: self.experiment.pss_poll_interval_secs,
         };
-        let artifacts = write_stack_files(&stack_dir, &initial_input)?;
+        let artifacts = write_stack_files(&stack_dir, &input)?;
         let compose = DockerCompose::new(stack_id.to_string(), artifacts.compose_file.clone())?;
 
         let stack_work = async {
@@ -341,51 +347,31 @@ impl BenchmarkRunner {
             store.update_manifest(manifest)?;
 
             eprintln!(
-                "[{stack_id}] starting bootstrap SourceHub and {} nodes",
+                "[{stack_id}] starting SourceHub and {} nodes",
                 stack.network_size
             );
-            compose.up_sourcehub().await?;
+            compose
+                .up_sourcehub(self.experiment.sourcehub_replicas)
+                .await?;
             compose.up_nodes().await?;
-            let bootstrap_endpoints = discover_endpoints(&compose, stack.network_size).await?;
-            let bootstrap_identities = discover_identities(
-                &bootstrap_endpoints,
+            let endpoints = discover_endpoints(&compose, stack.network_size).await?;
+            let identities = discover_identities(
+                &endpoints,
                 Duration::from_secs(self.experiment.timeouts.setup_secs),
             )
             .await?;
             eprintln!(
                 "[{stack_id}] discovered {} persistent node identities",
-                bootstrap_identities.len()
+                identities.len()
             );
-            compose.stop_nodes(stack.network_size).await?;
 
-            let mut case_rings = plan_rings(
-                &manifest.run_id,
-                stack,
-                &bootstrap_identities,
-                &self.experiment,
-            )?;
-            let definitions: Vec<RingDefinition> = case_rings
-                .iter()
-                .flat_map(CaseRings::all)
-                .map(|ring| ring.definition.clone())
-                .collect();
-            let node_ring_ids = node_ring_ids(&case_rings);
-            let final_input = ComposeInput {
-                rings: &definitions,
-                node_ring_ids: &node_ring_ids,
-                ..initial_input
-            };
-            write_stack_files(&stack_dir, &final_input)?;
-            eprintln!(
-                "[{stack_id}] recreating SourceHub with {} genesis rings",
-                definitions.len()
-            );
-            compose.recreate_sourcehub().await?;
+            let mut case_rings = plan_rings(stack, &identities, &self.experiment)?;
+
             let chain_config = discover_chain_config(&compose).await?;
             let controller = controller_client(chain_config.clone()).await?;
             let funding = fund_nodes(
                 &controller,
-                &bootstrap_identities,
+                &identities,
                 self.experiment.setup_batch_size,
             )
             .await?;
@@ -394,15 +380,18 @@ impl BenchmarkRunner {
                 serde_json::to_value(funding)?,
             );
             store.update_manifest(manifest)?;
-            eprintln!("[{stack_id}] funded nodes; restarting persistent node volumes");
-            compose.up_nodes().await?;
-            let endpoints = discover_endpoints(&compose, stack.network_size).await?;
-            let identities = wait_nodes_ready(
+
+            // Nodes block in NodeStatus::WaitingForFunding until they notice their
+            // own on-chain balance, then self-register their NodeInfo record before
+            // reaching NodeStatus::Ready. update_peer_addresses references that
+            // NodeInfo, so it must wait for readiness rather than firing right after
+            // the funding broadcast returns.
+            wait_nodes_ready(
                 &endpoints,
                 Duration::from_secs(self.experiment.timeouts.setup_secs),
             )
             .await?;
-            ensure_same_identities(&bootstrap_identities, &identities)?;
+
             let peer_updates =
                 update_peer_addresses(&controller, &identities, self.experiment.setup_batch_size)
                     .await?;
@@ -411,15 +400,39 @@ impl BenchmarkRunner {
                 serde_json::to_value(peer_updates)?,
             );
             store.update_manifest(manifest)?;
-            let governance =
-                create_ring_governance(&controller, &definitions, self.experiment.setup_batch_size)
-                    .await?;
+            eprintln!("[{stack_id}] funded nodes and registered peer addresses");
+
+            // The governance policy must exist on-chain before any ring can
+            // reference it: MsgCreateRing rejects a policy_id that doesn't
+            // exist yet.
+            create_ring_governance_policy(&controller).await?;
+
+            for case in &mut case_rings {
+                create_rings_on_chain(
+                    &controller,
+                    case.all_mut().map(|planned| &mut planned.definition),
+                    RING_PROTOCOL_VERSION,
+                )
+                .await?;
+            }
+            let definitions: Vec<RingDefinition> = case_rings
+                .iter()
+                .flat_map(CaseRings::all)
+                .map(|ring| ring.definition.clone())
+                .collect();
+            eprintln!("[{stack_id}] created {} rings on-chain", definitions.len());
+            let governance = register_ring_governance(
+                &controller,
+                &definitions,
+                self.experiment.setup_batch_size,
+            )
+            .await?;
             manifest.setup_batch_evidence.insert(
                 format!("{stack_id}/ring-governance"),
                 serde_json::to_value(governance)?,
             );
             store.update_manifest(manifest)?;
-            eprintln!("[{stack_id}] registered peer addresses and ring permissions");
+            eprintln!("[{stack_id}] registered ring permissions");
 
             let calibration = compose
                 .apply_network_profile(&stack.profile, stack.network_size)
@@ -1348,10 +1361,17 @@ impl CaseRings {
             .chain(self.refresh.iter())
             .chain(self.reshare.iter().map(|planned| &planned.ring))
     }
+
+    fn all_mut(&mut self) -> impl Iterator<Item = &mut PlannedRing> {
+        self.dkg
+            .iter_mut()
+            .chain(self.online.iter_mut())
+            .chain(self.refresh.iter_mut())
+            .chain(self.reshare.iter_mut().map(|planned| &mut planned.ring))
+    }
 }
 
 fn plan_rings(
-    run_id: &str,
     stack: &StackPlan,
     identities: &[NodeIdentity],
     experiment: &Experiment,
@@ -1359,7 +1379,7 @@ fn plan_rings(
     let mut output = Vec::new();
     for (case_index, case) in stack.cases.iter().enumerate() {
         let mut ordinal = 0usize;
-        let mut make = |purpose: &str, pss_interval_secs: u64| -> Result<PlannedRing> {
+        let mut make = |pss_interval_secs: u64| -> Result<PlannedRing> {
             let mut rng = StdRng::seed_from_u64(
                 experiment.seed
                     ^ (stack.stack_index as u64).rotate_left(11)
@@ -1375,10 +1395,11 @@ fn plan_rings(
                 .iter()
                 .map(|index| identities[*index - 1].node_key.clone())
                 .collect();
-            let id = deterministic_ring_id(run_id, stack.stack_index, case_index, ordinal, purpose);
             Ok(PlannedRing {
+                // Filled in by `create_rings_on_chain` once the ring exists on-chain
+                // (SourceHub assigns the ID; it's no longer precomputed).
                 definition: RingDefinition {
-                    id,
+                    id: String::new(),
                     peer_node_keys: node_keys.clone(),
                     operator_node_keys: node_keys,
                     threshold: case.threshold,
@@ -1391,19 +1412,19 @@ fn plan_rings(
         };
         let dkg = if experiment.operations.contains(&Operation::Dkg) {
             (0..experiment.warmups + experiment.repetitions)
-                .map(|_| make("dkg", 86_400))
+                .map(|_| make(86_400))
                 .collect::<Result<Vec<_>>>()?
         } else {
             Vec::new()
         };
         let online = (experiment.operations.contains(&Operation::Pre)
             || experiment.operations.contains(&Operation::Sign))
-        .then(|| make("online", 86_400))
+        .then(|| make(86_400))
         .transpose()?;
         let refresh = experiment
             .operations
             .contains(&Operation::PssRefresh)
-            .then(|| make("refresh", experiment.pss_interval_secs))
+            .then(|| make(experiment.pss_interval_secs))
             .transpose()?;
         let reshare = if experiment.operations.contains(&Operation::PssReshare) {
             let overlap = experiment
@@ -1411,7 +1432,7 @@ fn plan_rings(
                 .context("pss_reshare requires reshare_overlap")?;
             (0..experiment.warmups + experiment.repetitions)
                 .map(|trial| {
-                    let mut ring = make("reshare", 86_400)?;
+                    let mut ring = make(86_400)?;
                     let mut selection_rng = StdRng::seed_from_u64(
                         experiment.seed
                             ^ (stack.stack_index as u64).rotate_left(7)
@@ -1466,19 +1487,6 @@ fn plan_rings(
         });
     }
     Ok(output)
-}
-
-fn node_ring_ids(cases: &[CaseRings]) -> BTreeMap<usize, Vec<String>> {
-    let mut mapping: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for ring in cases.iter().flat_map(CaseRings::all) {
-        for member in &ring.authorized_members {
-            mapping
-                .entry(*member)
-                .or_default()
-                .push(ring.definition.id.clone());
-        }
-    }
-    mapping
 }
 
 fn committee_endpoints(ring: &PlannedRing, endpoints: &[NodeEndpoint]) -> Vec<NodeEndpoint> {
@@ -1850,18 +1858,6 @@ async fn controller_client(config: ChainConfig) -> Result<SourceHubClient> {
     Ok(SourceHubClient::with_signer(config, signer).await?)
 }
 
-fn ensure_same_identities(before: &[NodeIdentity], after: &[NodeIdentity]) -> Result<()> {
-    for (before, after) in before.iter().zip(after) {
-        if before.node_key != after.node_key || before.public_address != after.public_address {
-            bail!(
-                "node {} identity changed across SourceHub recreation",
-                before.endpoint.index
-            );
-        }
-    }
-    Ok(())
-}
-
 async fn scrape_committee(committee: &[NodeEndpoint]) -> Vec<MetricSnapshot> {
     join_all(
         committee
@@ -2153,17 +2149,6 @@ fn completed_trial_keys(root: &Path) -> Result<HashSet<TrialKey>> {
         .collect())
 }
 
-fn deterministic_ring_id(
-    run_id: &str,
-    stack: usize,
-    case: usize,
-    ordinal: usize,
-    purpose: &str,
-) -> String {
-    let digest = Sha256::digest(format!("{run_id}:{stack}:{case}:{ordinal}:{purpose}"));
-    format!("bench-{}", hex::encode(&digest[..16]))
-}
-
 fn new_run_id(name: &str) -> String {
     let safe: String = name
         .chars()
@@ -2277,18 +2262,6 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_ring_ids_are_stable_and_distinct() {
-        assert_eq!(
-            deterministic_ring_id("r", 1, 2, 3, "dkg"),
-            deterministic_ring_id("r", 1, 2, 3, "dkg")
-        );
-        assert_ne!(
-            deterministic_ring_id("r", 1, 2, 3, "dkg"),
-            deterministic_ring_id("r", 1, 2, 4, "dkg")
-        );
-    }
-
-    #[test]
     fn interpolated_percentile_is_reported() {
         assert_eq!(percentile_sorted(&[1.0, 2.0, 3.0], 0.5), Some(2.0));
     }
@@ -2364,8 +2337,8 @@ mod tests {
         plan.assign_indices();
         let identities = (1..=50).map(test_identity).collect::<Vec<_>>();
 
-        let first = plan_rings("run", &plan.stacks[0], &identities, &experiment).unwrap();
-        let second = plan_rings("run", &plan.stacks[0], &identities, &experiment).unwrap();
+        let first = plan_rings(&plan.stacks[0], &identities, &experiment).unwrap();
+        let second = plan_rings(&plan.stacks[0], &identities, &experiment).unwrap();
         assert_eq!(first[0].reshare.len(), 6);
         for (left, right) in first[0].reshare.iter().zip(&second[0].reshare) {
             assert_eq!(left.ring.members, right.ring.members);

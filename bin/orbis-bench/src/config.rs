@@ -182,6 +182,9 @@ fn default_output_dir() -> PathBuf {
 fn default_sourcehub_ref() -> String {
     "392d69c6f8c10c2f9f9bf45eda882d2da2ab854c".to_string()
 }
+fn default_sourcehub_replicas() -> usize {
+    1
+}
 fn default_batch_size() -> usize {
     25
 }
@@ -221,6 +224,12 @@ pub struct Experiment {
     pub output_dir: PathBuf,
     #[serde(default = "default_sourcehub_ref")]
     pub sourcehub_ref: String,
+    /// Number of SourceHub Docker services to run. Index 0 is the sole
+    /// validator (genesis init + gentx); the rest are non-validating full
+    /// nodes that sync via P2P and independently serve REST/RPC reads and tx
+    /// relay, spreading load that would otherwise hit one REST server.
+    #[serde(default = "default_sourcehub_replicas")]
+    pub sourcehub_replicas: usize,
     #[serde(default = "default_batch_size")]
     pub setup_batch_size: usize,
     #[serde(default = "default_pss_interval")]
@@ -269,6 +278,7 @@ impl Experiment {
             resources: ResourceLimits::default(),
             output_dir: default_output_dir(),
             sourcehub_ref: default_sourcehub_ref(),
+            sourcehub_replicas: default_sourcehub_replicas(),
             setup_batch_size: default_batch_size(),
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
@@ -308,6 +318,9 @@ impl Experiment {
         }
         if self.setup_batch_size == 0 {
             bail!("setup_batch_size must be at least 1");
+        }
+        if self.sourcehub_replicas == 0 {
+            bail!("sourcehub_replicas must be at least 1");
         }
         if self.load.measure_secs == 0 {
             bail!("load.measure_secs must be at least 1");
@@ -396,6 +409,13 @@ impl Experiment {
             }
             if group.cases.is_empty() {
                 bail!("network group {group_index} has no ring cases");
+            }
+            if self.sourcehub_replicas > group.network_size {
+                bail!(
+                    "sourcehub_replicas {} cannot exceed network_size {} for network group {group_index}",
+                    self.sourcehub_replicas,
+                    group.network_size
+                );
             }
             for case in &group.cases {
                 if case.ring_size == 0 || case.ring_size > group.network_size {

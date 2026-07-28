@@ -1,4 +1,4 @@
-use crate::compose::{node_service, SOURCEHUB_SERVICE};
+use crate::compose::{node_service, sourcehub_service_name, SOURCEHUB_SERVICE};
 use crate::config::{NetworkProfile, NetworkProfileKind};
 use crate::results::ResourceSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -102,34 +102,16 @@ impl DockerCompose {
             .await
     }
 
-    pub async fn up_sourcehub(&self) -> Result<()> {
-        self.status(&["up", "--detach", "--wait", SOURCEHUB_SERVICE])
-            .await
-    }
-
-    pub async fn up_nodes(&self) -> Result<()> {
-        self.status(&["up", "--detach", "--no-build"]).await
-    }
-
-    pub async fn stop_nodes(&self, node_count: usize) -> Result<()> {
-        let services: Vec<String> = (1..=node_count).map(node_service).collect();
-        let mut args = vec!["stop".to_string()];
+    pub async fn up_sourcehub(&self, replicas: usize) -> Result<()> {
+        let services: Vec<String> = (0..replicas).map(sourcehub_service_name).collect();
+        let mut args = vec!["up".to_string(), "--detach".to_string(), "--wait".to_string()];
         args.extend(services);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.status(&refs).await
     }
 
-    pub async fn recreate_sourcehub(&self) -> Result<()> {
-        self.status(&["rm", "--stop", "--force", SOURCEHUB_SERVICE])
-            .await?;
-        self.status(&[
-            "up",
-            "--detach",
-            "--force-recreate",
-            "--wait",
-            SOURCEHUB_SERVICE,
-        ])
-        .await
+    pub async fn up_nodes(&self) -> Result<()> {
+        self.status(&["up", "--detach", "--no-build"]).await
     }
 
     pub async fn down(&self) -> Result<()> {
