@@ -26,6 +26,19 @@ const TX_POLL_MAX_ATTEMPTS: u32 = 30;
 const TX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 // ============================================================================
+// ABCI Query Retry Constants
+// ============================================================================
+
+/// Maximum attempts for an ABCI query before giving up. Only transport-level
+/// failures (e.g. a brief Docker/DNS blip between containers) are retried -
+/// a response the chain actually returned (including "not found") is
+/// authoritative and returned immediately.
+const ABCI_QUERY_MAX_ATTEMPTS: u32 = 4;
+
+/// Base delay between ABCI query retries, scaled linearly by attempt number.
+const ABCI_QUERY_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+
+// ============================================================================
 // Gas Simulation Constants
 // ============================================================================
 
@@ -524,10 +537,21 @@ impl SourceHubClient {
             .transpose()
             .map_err(|e| BlockchainError::Query(format!("Invalid block height: {}", e)))?;
 
-        let response = self
-            .rpc_client
-            .abci_query(Some(path.to_string()), data, height, prove)
-            .await?;
+        let mut attempt = 0;
+        let response = loop {
+            attempt += 1;
+            match self
+                .rpc_client
+                .abci_query(Some(path.to_string()), data.clone(), height, prove)
+                .await
+            {
+                Ok(response) => break response,
+                Err(_) if attempt < ABCI_QUERY_MAX_ATTEMPTS => {
+                    sleep(ABCI_QUERY_RETRY_BASE_DELAY * attempt).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
 
         if response.code.is_err() {
             let log = response.log.to_lowercase();
