@@ -80,18 +80,55 @@ lazy_static! {
     )
     .expect("failed to register pss_scheduler_delay_seconds");
 
-    pub static ref DKG_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
-        "dkg_messages_total",
-        "Total number of DKG protocol messages",
-        &["message_type", "direction"]
+    pub static ref DKG_TRANSPORT_MESSAGES_TOTAL: CounterVec = register_counter_vec!(
+        "dkg_transport_messages_total",
+        "Total number of typed DKG transport messages",
+        &["plane", "message", "direction"]
     )
-    .expect("failed to register dkg_messages_total");
+    .expect("failed to register dkg_transport_messages_total");
 
     pub static ref DKG_ABANDONED_SESSIONS_TOTAL: Counter = register_counter!(
         "dkg_abandoned_sessions_total",
         "Total number of DKG sessions abandoned"
     )
     .expect("failed to register dkg_abandoned_sessions");
+
+    pub static ref DKG_TRANSPORT_EVENTS_TOTAL: CounterVec = register_counter_vec!(
+        "dkg_transport_events_total",
+        "Bounded-cardinality events emitted by the DKG transport",
+        &["plane", "event"]
+    )
+    .expect("failed to register dkg_transport_events_total");
+
+    pub static ref DKG_CONTROL_READINESS_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "dkg_control_readiness_duration_seconds",
+        "Time from canonical leader preparation start through all-member Begin acknowledgement",
+        &["kind"],
+        vec![0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0]
+    )
+    .expect("failed to register dkg_control_readiness_duration_seconds");
+
+    pub static ref DKG_PRIVATE_PAIR_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "dkg_private_pair_duration_seconds",
+        "Duration of an acknowledged bidirectional private pair exchange",
+        &["outcome"],
+        vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+    )
+    .expect("failed to register dkg_private_pair_duration_seconds");
+
+    pub static ref DKG_PUBLIC_TRANSPORT_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
+        "dkg_public_transport_duration_seconds",
+        "Public DKG contribution collection and canonical batch dissemination duration",
+        &["phase", "stage"],
+        vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0]
+    )
+    .expect("failed to register dkg_public_transport_duration_seconds");
+
+    pub static ref DKG_PRIVATE_ACTIVE_EXCHANGES: Gauge = register_gauge!(
+        "dkg_private_active_exchanges",
+        "Number of active inbound and outbound private pair exchanges"
+    )
+    .expect("failed to register dkg_private_active_exchanges");
 
     // ============================================================================
     // PRE Protocol Metrics
@@ -262,8 +299,13 @@ pub fn init() {
     lazy_static::initialize(&DKG_PHASE_DURATION_SECONDS);
     lazy_static::initialize(&DKG_SESSION_DURATION_SECONDS);
     lazy_static::initialize(&PSS_SCHEDULER_DELAY_SECONDS);
-    lazy_static::initialize(&DKG_MESSAGES_TOTAL);
+    lazy_static::initialize(&DKG_TRANSPORT_MESSAGES_TOTAL);
     lazy_static::initialize(&DKG_ABANDONED_SESSIONS_TOTAL);
+    lazy_static::initialize(&DKG_TRANSPORT_EVENTS_TOTAL);
+    lazy_static::initialize(&DKG_CONTROL_READINESS_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_PRIVATE_PAIR_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_PUBLIC_TRANSPORT_DURATION_SECONDS);
+    lazy_static::initialize(&DKG_PRIVATE_ACTIVE_EXCHANGES);
     lazy_static::initialize(&PRE_REQUESTS_TOTAL);
     lazy_static::initialize(&PRE_ACTIVE_REQUESTS);
     lazy_static::initialize(&PRE_REQUEST_DURATION_SECONDS);
@@ -504,6 +546,59 @@ pub fn record_pss_scheduler_delay(duration_secs: f64) {
         .observe(duration_secs);
 }
 
+pub fn record_dkg_transport_event(plane: &str, event: &str) {
+    DKG_TRANSPORT_EVENTS_TOTAL
+        .with_label_values(&[plane, event])
+        .inc();
+}
+
+pub fn record_dkg_control_readiness(kind: DkgCeremonyKind, duration_secs: f64) {
+    DKG_CONTROL_READINESS_DURATION_SECONDS
+        .with_label_values(&[kind.as_str()])
+        .observe(duration_secs);
+}
+
+pub fn record_dkg_public_transport(phase: &str, stage: &str, duration_secs: f64) {
+    DKG_PUBLIC_TRANSPORT_DURATION_SECONDS
+        .with_label_values(&[phase, stage])
+        .observe(duration_secs);
+}
+
+pub struct PrivatePairMetricsGuard {
+    start: Instant,
+    finished: bool,
+}
+
+impl PrivatePairMetricsGuard {
+    pub fn new() -> Self {
+        DKG_PRIVATE_ACTIVE_EXCHANGES.inc();
+        Self {
+            start: Instant::now(),
+            finished: false,
+        }
+    }
+
+    pub fn complete(mut self) {
+        DKG_PRIVATE_PAIR_DURATION_SECONDS
+            .with_label_values(&["completed"])
+            .observe(self.start.elapsed().as_secs_f64());
+        DKG_PRIVATE_ACTIVE_EXCHANGES.dec();
+        self.finished = true;
+    }
+}
+
+impl Drop for PrivatePairMetricsGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        DKG_PRIVATE_PAIR_DURATION_SECONDS
+            .with_label_values(&["failed"])
+            .observe(self.start.elapsed().as_secs_f64());
+        DKG_PRIVATE_ACTIVE_EXCHANGES.dec();
+    }
+}
+
 /// Record a gRPC request
 pub fn record_grpc_request(service: &str, method: &str, status: &str, duration_secs: f64) {
     GRPC_REQUESTS_TOTAL
@@ -539,17 +634,9 @@ pub fn record_dkg_session_abandoned() {
     DKG_ABANDONED_SESSIONS_TOTAL.inc();
 }
 
-/// Record DKG message sent
-pub fn record_dkg_message_sent(message_type: &str) {
-    DKG_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "sent"])
-        .inc();
-}
-
-/// Record DKG message received
-pub fn record_dkg_message_received(message_type: &str) {
-    DKG_MESSAGES_TOTAL
-        .with_label_values(&[message_type, "received"])
+pub fn record_dkg_transport_message(plane: &str, message: &str, direction: &str) {
+    DKG_TRANSPORT_MESSAGES_TOTAL
+        .with_label_values(&[plane, message, direction])
         .inc();
 }
 
@@ -732,5 +819,25 @@ mod tests {
         DkgSessionMetricsGuard::new(DkgCeremonyKind::Fresh).complete();
         assert_eq!(DKG_ACTIVE_SESSIONS.get(), active_before);
         assert_eq!(histogram.get_sample_count(), count_before + 1);
+    }
+
+    #[test]
+    fn private_pair_guard_balances_active_gauge_for_success_and_failure() {
+        let _lock = DKG_METRICS_TEST_LOCK.lock().unwrap();
+        let baseline = DKG_PRIVATE_ACTIVE_EXCHANGES.get();
+        let failed = DKG_PRIVATE_PAIR_DURATION_SECONDS.with_label_values(&["failed"]);
+        let failed_before = failed.get_sample_count();
+        {
+            let _guard = PrivatePairMetricsGuard::new();
+            assert_eq!(DKG_PRIVATE_ACTIVE_EXCHANGES.get(), baseline + 1.0);
+        }
+        assert_eq!(DKG_PRIVATE_ACTIVE_EXCHANGES.get(), baseline);
+        assert_eq!(failed.get_sample_count(), failed_before + 1);
+
+        let completed = DKG_PRIVATE_PAIR_DURATION_SECONDS.with_label_values(&["completed"]);
+        let completed_before = completed.get_sample_count();
+        PrivatePairMetricsGuard::new().complete();
+        assert_eq!(DKG_PRIVATE_ACTIVE_EXCHANGES.get(), baseline);
+        assert_eq!(completed.get_sample_count(), completed_before + 1);
     }
 }

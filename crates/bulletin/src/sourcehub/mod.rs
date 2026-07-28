@@ -3,7 +3,8 @@ use crate::{
     r#trait::{
         Bulletin, BulletinKind, BulletinPost, BulletinReportSubmission, BulletinWriteKind,
         DemeritConfig, DocumentPayload, KeyDerivation, NodeInfo, ReportingConfig,
-        RingCancellationPayload, RingFinalizationPayload, RingPayload, UpgradeInfo,
+        RingCancellationPayload, RingFinalizationPayload, RingFinalizationStatus, RingPayload,
+        UpgradeInfo,
     },
 };
 use async_trait::async_trait;
@@ -205,6 +206,24 @@ impl Bulletin for SourceHubBulletin {
         }
     }
 
+    async fn ring_finalization_status(&self, id: String) -> Result<RingFinalizationStatus> {
+        let ring = self
+            .chain_client
+            .orbis_read_ring(&id)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?
+            .ok_or(BulletinError::NotFound { id })?;
+        Ok(RingFinalizationStatus {
+            ring_pk: ring.ring_pk,
+            confirmation_node_keys: Some(
+                ring.confirmations
+                    .into_iter()
+                    .map(|confirmation| confirmation.node_key)
+                    .collect(),
+            ),
+        })
+    }
+
     fn chain_id(&self) -> String {
         self.chain_client.config().chain_id.clone()
     }
@@ -312,6 +331,20 @@ impl SourceHubBulletin {
                     ))
                 })?;
         }
+
+        // The signer was initialized (account_number captured) when this
+        // client was constructed above, which can be before this address had
+        // ever received funds — the chain reports account_number 0 for an
+        // account that doesn't exist yet. If something else (e.g. an external
+        // funder) created the account in the meantime, that cached
+        // account_number is now wrong and every signature this signer
+        // produces will fail verification. Resync before the first outgoing
+        // transaction below.
+        client
+            .chain_client
+            .resync_account()
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 
         // Transfer to self to register account on-chain (registers public key)
         let result = client

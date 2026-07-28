@@ -198,6 +198,17 @@ pub struct RingFinalizationPayload {
     pub ring_pk: String,
 }
 
+/// Chain-observed state for a fresh-DKG finalization.
+///
+/// Backends that expose individual confirmations return `Some`; older or
+/// non-chain backends may return `None`, in which case a successful `post` is
+/// the strongest acknowledgement available.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+pub struct RingFinalizationStatus {
+    pub ring_pk: String,
+    pub confirmation_node_keys: Option<Vec<String>>,
+}
+
 /// Payload for cancelling an unfinished fresh DKG ring.
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
 pub struct RingCancellationPayload {
@@ -366,6 +377,17 @@ pub trait Bulletin {
     async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
     /// Read a typed Orbis object.
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
+    /// Read fresh-DKG finalization progress. SourceHub overrides this to expose
+    /// the exact persisted confirmation set, allowing a node to detect a
+    /// successful transaction response whose concurrent state write was lost.
+    async fn ring_finalization_status(&self, id: String) -> Result<RingFinalizationStatus> {
+        let post = self.read(id, BulletinKind::Ring).await?;
+        let ring = RingPayload::try_from(post)?;
+        Ok(RingFinalizationStatus {
+            ring_pk: ring.ring_pk,
+            confirmation_node_keys: None,
+        })
+    }
     /// Submit a threshold-signed MPC fault report to the chain.
     async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()>;
     /// Chain ID used when building chain-bound signing statements.

@@ -275,6 +275,13 @@ async fn test_bulletin_ring() {
         ..payload
     };
     assert_eq!(read_payload, expected, "Read payload should match");
+
+    let finalization = bulletin
+        .ring_finalization_status(ring_id)
+        .await
+        .expect("read pending finalization status");
+    assert!(finalization.ring_pk.is_empty());
+    assert_eq!(finalization.confirmation_node_keys, Some(Vec::new()));
 }
 
 #[tokio::test]

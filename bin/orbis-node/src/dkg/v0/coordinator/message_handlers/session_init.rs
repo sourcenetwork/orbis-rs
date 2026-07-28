@@ -1,8 +1,8 @@
 use super::*;
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
+use crate::dkg::v0::transport::canonical_leader;
 use crate::helpers::protocol_version::read_ring_for_protocol;
 use bulletin::r#trait::RingPayload;
-
 /// Peer routing resolved and validated for one SessionInit, ready to seed session state.
 ///
 /// Produced by the per-kind validation functions (`validate_fresh_init`,
@@ -240,12 +240,6 @@ where
             ring_pk_hex
         )));
     }
-    if node_key_for_peer(&old_routes, sender_hex).is_none() {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare initiator {} is not a member of ring {}",
-            sender_hex, ring_pk_hex
-        )));
-    }
     let old_route_assignments =
         canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
             .map_err(DkgError::InvalidInput)?;
@@ -258,6 +252,14 @@ where
     let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    let expected_leader = canonical_leader(reshare_new_peer_node_keys)
+        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+    if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare initiator {} is not the canonical next-committee leader for ring {}",
+            sender_hex, ring_pk_hex
+        )));
+    }
     let new_route_peer_ids = peer_ids_from_routes(&new_routes);
     let new_route_assignments =
         canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)
@@ -376,14 +378,13 @@ where
     })
 }
 
-/// Handle a `DkgMessage::SessionInit`.
+/// Validate and create state for a typed transport Prepare.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
 /// and node_id, and creates the session if it does not already exist.
-/// For Fresh/Refresh, when this handler creates the session and this node is
-/// `node_id == 1`, it also calls `initiate_phase1_commitments` so the protocol
-/// starts even if the gRPC initiator is not a participant.
-/// Returns `Ok(None)` — the caller should return this directly from `handle_message`.
+/// Cryptographic work starts later, once `begin_cryptographic_attempt` observes
+/// an activation acknowledgement from every active participant.
+/// Returns `Ok(())` — the caller should return this directly from `handle_message`.
 pub async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -398,7 +399,7 @@ pub async fn handle_session_init<D>(
     policy_id: Option<String>,
     ring_id: String,
     sender_peer_id: &PeerId,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
@@ -566,7 +567,6 @@ where
 
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.
-    let mut session_created_here = false;
     if !coord
         .app_state
         .dkg_session_state
@@ -599,9 +599,7 @@ where
             )
             .await
         {
-            Ok(()) => {
-                session_created_here = true;
-            }
+            Ok(()) => {}
             Err(DkgError::SessionAlreadyExists) => {
                 tracing::debug!(
                     session_id = session_id,
@@ -639,39 +637,6 @@ where
         }
     }
 
-    // When the gRPC initiator is not a participant, nobody calls the local start path
-    // from `service.rs`:
-    // - Fresh: every participant starts Phase 0 so all commitment hashes arrive before
-    //   any commitment reveal.
-    // - Refresh: node 1 (lowest sorted peer, agreed via `node_id_assignments`)
-    //   starts Phase 1 so peers are not stuck waiting for the first commitment.
-    // - Reshare: dealers do not need to wait for commitments from other old dealers.
-    //   Remote old-committee nodes start as soon as their SessionInit is processed,
-    //   broadcasting their commitment to the new committee and then sending shares.
-    let session_init_from_self = *sender_peer_id == coord.app_state.network.local_peer_id();
-    let starts_phase = match kind {
-        SessionKind::Fresh => true,
-        SessionKind::Refresh { .. } => assigned_node_id == 1,
-        SessionKind::Reshare { .. } => !session_init_from_self,
-    };
-    if session_created_here && starts_phase && dkg_role != DkgRole::Receiver {
-        let peer_ids_for_phase1 = coord
-            .app_state
-            .dkg_session_state
-            .get_peer_ids(&session_id)
-            .await
-            .unwrap_or_default();
-        if matches!(kind, SessionKind::Fresh) {
-            coord
-                .initiate_phase0_commitment_hashes(session_id, &peer_ids_for_phase1)
-                .await?;
-        } else {
-            coord
-                .initiate_phase1_commitments(session_id, &peer_ids_for_phase1)
-                .await?;
-        }
-    }
-
     tracing::info!(
         session_id = session_id,
         threshold = threshold,
@@ -682,5 +647,5 @@ where
         "DKG Coordinator: Session init"
     );
 
-    Ok(None)
+    Ok(())
 }

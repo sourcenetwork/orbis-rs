@@ -8,25 +8,28 @@
 //! a single unified structure.
 
 use crate::constants::{
-    DKG_COMPLETED_SESSION_TTL, DKG_PHASE4_COMPLETION_TIMEOUT, DKG_PHASE_TIMEOUT, MAX_DKG_SESSIONS,
-    SESSION_EXPIRATION_CHECK_INTERVAL, SESSION_TTL,
+    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, MAX_DKG_SESSIONS,
+    SESSION_EXPIRATION_CHECK_INTERVAL,
 };
 use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
+#[cfg(test)]
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::transport::{
+    decode, AttemptId, CeremonyConfig, CeremonyId, CommitteeScope, DkgPrivateMessage, MessageId,
+    ParticipantRef, PublicPhase,
+};
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
-use network::Connection;
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use zeroize::Zeroize;
@@ -91,28 +94,65 @@ pub enum RingPssClaimOutcome {
     Conflict { active_session_id: u128 },
 }
 
-/// DKG Message Type for deduplication (more efficient than String)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DkgMessageType {
-    CommitmentHash,
-    CommitmentAudit,
-    Commitment,
-    Share,
-    DkgInvalidShareEvidence,
-    DkgInvalidCommitmentEvidence,
-    ReshareShareAck,
-    ReshareParticipantSet,
-    RefreshHealthCheckResult,
-    SessionInit,
-    Error,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageProcessingClaim {
     Claimed,
     AlreadyProcessed,
     AlreadyProcessing,
     MissingSession,
+}
+
+/// RAII guard for a `MessageProcessingClaim::Claimed` claim. Construct it
+/// immediately after a successful claim and call `finish` on the normal
+/// completion path. If the future driving processing is instead dropped
+/// before `finish` runs (e.g. by an outer `tokio::time::timeout` that fires
+/// mid-flight), `Drop` releases the claim as failed so a retried delivery of
+/// the same message can be processed again instead of spinning in
+/// `AlreadyProcessing` forever.
+pub(crate) struct TransportMessageClaimGuard<D: Dkg + 'static> {
+    session_state: Option<Arc<SessionStateManager<D>>>,
+    session_id: u128,
+    message_id: MessageId,
+}
+
+impl<D: Dkg + 'static> TransportMessageClaimGuard<D> {
+    pub(crate) fn new(
+        session_state: Arc<SessionStateManager<D>>,
+        session_id: u128,
+        message_id: MessageId,
+    ) -> Self {
+        Self {
+            session_state: Some(session_state),
+            session_id,
+            message_id,
+        }
+    }
+
+    /// Release the claim on the normal-completion path and disarm the
+    /// cancellation fallback in `Drop`.
+    pub(crate) async fn finish(mut self, success: bool) {
+        if let Some(session_state) = self.session_state.take() {
+            session_state
+                .finish_transport_message(&self.session_id, self.message_id, success)
+                .await;
+        }
+    }
+}
+
+impl<D: Dkg + 'static> Drop for TransportMessageClaimGuard<D> {
+    fn drop(&mut self) {
+        // Only reached if `finish` was never called, i.e. this guard's task
+        // was cancelled between claiming the message and completing it.
+        if let Some(session_state) = self.session_state.take() {
+            let session_id = self.session_id;
+            let message_id = self.message_id;
+            tokio::spawn(async move {
+                session_state
+                    .finish_transport_message(&session_id, message_id, false)
+                    .await;
+            });
+        }
+    }
 }
 
 /// Exact reshare bulletin update that this node is ready to sign.
@@ -176,20 +216,16 @@ pub(crate) struct SessionRoutingState {
     pub ring_id: String,
 }
 
-pub(crate) struct MessageTrackingState<ShareValue: Zeroize> {
+pub(crate) struct PendingDeliveryState<ShareValue: Zeroize> {
     pub pending_shares_waiting_for_commitment: HashMap<u32, PendingDkgShare<ShareValue>>,
     pub pending_commitments_waiting_for_hash: HashMap<u32, PendingDkgCommitment>,
-    pub processed: HashSet<(u128, u32, DkgMessageType)>,
-    pub processing: HashSet<(u128, u32, DkgMessageType)>,
 }
 
-impl<ShareValue: Zeroize> Default for MessageTrackingState<ShareValue> {
+impl<ShareValue: Zeroize> Default for PendingDeliveryState<ShareValue> {
     fn default() -> Self {
         Self {
             pending_shares_waiting_for_commitment: HashMap::new(),
             pending_commitments_waiting_for_hash: HashMap::new(),
-            processed: HashSet::new(),
-            processing: HashSet::new(),
         }
     }
 }
@@ -211,6 +247,49 @@ pub(crate) enum CommitmentHashRecordOutcome {
     Recorded,
     DuplicateSame,
     Mismatch { existing: [u8; 32] },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportConfigureOutcome {
+    Configured,
+    AlreadyConfigured,
+    ConflictingAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportActivationOutcome {
+    Activated,
+    AlreadyActivated,
+    StaleAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportBeginOutcome {
+    Begun,
+    AlreadyBegun,
+    NotActivated,
+    StaleAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopologyAckRecordOutcome {
+    Recorded,
+    Duplicate,
+    StaleAttempt,
+    WrongNonce,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicContributionRecordOutcome {
+    Recorded,
+    DuplicateSame,
+    ConflictingDuplicate,
+    StaleAttempt,
+    MissingSession,
 }
 
 #[derive(Default)]
@@ -274,10 +353,81 @@ pub(crate) struct DkgReportEvidenceBinding {
     pub receiver_node_keys: Vec<String>,
 }
 
-#[derive(Default)]
-pub(crate) struct SessionTransportState {
-    pub peer_streams: HashMap<String, Arc<dyn Connection>>,
-    pub peer_send_locks: HashMap<String, Arc<Mutex<()>>>,
+pub(crate) struct DkgSessionTransportState {
+    pub ceremony_id: Option<CeremonyId>,
+    pub attempt_id: Option<AttemptId>,
+    pub committee_digest: Option<[u8; 32]>,
+    pub config_digest: Option<[u8; 32]>,
+    pub topic_id: Option<network::TopicId>,
+    pub leader_node_key: Option<String>,
+    pub leader_peer_route: Option<String>,
+    pub participant_routes: Vec<String>,
+    pub committees: Option<CeremonyConfig>,
+    pub topic: Option<Arc<dyn network::Topic>>,
+    pub topology_probe_nonce: Option<[u8; 32]>,
+    pub topology_probe_acknowledgements: BTreeSet<String>,
+    pub topology_probe_notify: Arc<Notify>,
+    pub activated: bool,
+    pub begun: bool,
+    pub activation_digest: Option<[u8; 32]>,
+    pub active_dealers: Vec<ParticipantRef>,
+    pub prepared_at: Option<Instant>,
+    pub hard_deadline: Option<Instant>,
+    pub last_progress_at: Instant,
+    pub public_contributions:
+        HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
+    pub public_phase_started_at: HashMap<PublicPhase, Instant>,
+    pub published_public_phases: HashSet<PublicPhase>,
+    pub published_public_messages: HashSet<MessageId>,
+    pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
+    pub acknowledged_private_messages: HashSet<MessageId>,
+    pub processing_message_ids: HashSet<MessageId>,
+    pub processed_message_ids: HashSet<MessageId>,
+    pub topic_task: Option<tokio::task::AbortHandle>,
+}
+
+impl Default for DkgSessionTransportState {
+    fn default() -> Self {
+        Self {
+            ceremony_id: None,
+            attempt_id: None,
+            committee_digest: None,
+            config_digest: None,
+            topic_id: None,
+            leader_node_key: None,
+            leader_peer_route: None,
+            participant_routes: Vec::new(),
+            committees: None,
+            topic: None,
+            topology_probe_nonce: None,
+            topology_probe_acknowledgements: BTreeSet::new(),
+            topology_probe_notify: Arc::new(Notify::new()),
+            activated: false,
+            begun: false,
+            activation_digest: None,
+            active_dealers: Vec::new(),
+            prepared_at: None,
+            hard_deadline: None,
+            last_progress_at: Instant::now(),
+            public_contributions: HashMap::new(),
+            public_phase_started_at: HashMap::new(),
+            published_public_phases: HashSet::new(),
+            published_public_messages: HashSet::new(),
+            outbound_private_messages: HashMap::new(),
+            acknowledged_private_messages: HashSet::new(),
+            processing_message_ids: HashSet::new(),
+            processed_message_ids: HashSet::new(),
+            topic_task: None,
+        }
+    }
+}
+
+impl Drop for DkgSessionTransportState {
+    fn drop(&mut self) {
+        if let Some(task) = self.topic_task.take() {
+            task.abort();
+        }
+    }
 }
 
 /// Reshare-specific parameters stored in session state during an active reshare ceremony.
@@ -335,12 +485,6 @@ impl<ShareValue: Zeroize + std::fmt::Debug> std::fmt::Debug for ReshareParams<Sh
 /// - The cryptographic DKG node (polynomial, commitments, shares)
 /// - Protocol state (phase, connections, message deduplication)
 pub struct DkgSessionState<D: Dkg> {
-    /// Monotonic generation assigned when this session state instance is created.
-    ///
-    /// Lets callers distinguish a stale removed session from a newer session that
-    /// reused the same externally-visible `session_id`.
-    pub generation: u64,
-
     // === Crypto State (the DKG node) ===
     /// The DKG node containing cryptographic state (polynomial, commitments, shares)
     pub node: D,
@@ -372,7 +516,7 @@ pub struct DkgSessionState<D: Dkg> {
     /// Refresh/reshare-only: received signed commitments for on-failure equivocation audit.
     pub(crate) commitment_audit: CommitmentAuditState,
     /// Message ordering and deduplication state.
-    pub(crate) messages: MessageTrackingState<D::ShareValue>,
+    pub(crate) pending: PendingDeliveryState<D::ShareValue>,
     /// This node's signed commitment evidence for Refresh/Reshare share reports.
     pub(crate) local_signed_commitment: Option<SignedDkgCommitment>,
     /// Cached non-secret binding data for Refresh/Reshare DKG report evidence.
@@ -396,16 +540,15 @@ pub struct DkgSessionState<D: Dkg> {
     /// a new nonce so honest retries cannot be framed as equivocation.
     pub(crate) session_nonce: [u8; 16],
     /// Per-session network streams and send serialization.
-    pub(crate) transport: SessionTransportState,
+    pub(crate) transport: DkgSessionTransportState,
     /// Owns active metrics for exactly the lifetime of this ceremony.
     metrics_guard: Option<metrics::DkgSessionMetricsGuard>,
 }
 
 impl<D: Dkg> DkgSessionState<D> {
     /// Create a new DKG session state with the given DKG node
-    pub fn new(node: D, _total_participants: usize, generation: u64) -> Self {
+    pub fn new(node: D, _total_participants: usize) -> Self {
         Self {
-            generation,
             node,
             created_at: Instant::now(),
             protocol_version: network::V0.version,
@@ -419,7 +562,7 @@ impl<D: Dkg> DkgSessionState<D> {
             reshare: ReshareSessionState::default(),
             commit_reveal: CommitRevealState::default(),
             commitment_audit: CommitmentAuditState::default(),
-            messages: MessageTrackingState::default(),
+            pending: PendingDeliveryState::default(),
             local_signed_commitment: None,
             report_evidence_binding: None,
             kind: SessionKind::Fresh,
@@ -427,7 +570,7 @@ impl<D: Dkg> DkgSessionState<D> {
             policy_id: None,
             refresh: RefreshSessionState::default(),
             session_nonce: rand::random::<[u8; 16]>(),
-            transport: SessionTransportState::default(),
+            transport: DkgSessionTransportState::default(),
             metrics_guard: None,
         }
     }
@@ -454,6 +597,7 @@ impl<D: Dkg> DkgSessionState<D> {
         );
         self.phase = phase;
         self.phase_started_at = Instant::now();
+        self.transport.last_progress_at = Instant::now();
     }
 
     /// Generate the polynomial for this session.
@@ -561,68 +705,10 @@ impl<D: Dkg> DkgSessionState<D> {
     }
 }
 
-/// Guard that automatically cleans up a DKG session on drop unless defused.
-///
-/// This implements the RAII pattern for session cleanup. Create a guard when
-/// starting a session operation, and call `defuse()` when the operation completes
-/// successfully. If the guard is dropped without being defused (e.g., due to an
-/// early return or error), it will automatically queue the session for cleanup.
-///
-/// # Example
-/// ```ignore
-/// let guard = state_manager.cleanup_guard(session_id);
-/// // ... do work that might fail ...
-/// guard.defuse(); // Session completed successfully, don't clean up
-/// ```
-pub struct SessionCleanupGuard {
-    cleanup_tx: mpsc::UnboundedSender<u128>,
-    session_id: u128,
-    defused: Arc<AtomicBool>,
-}
-
-impl SessionCleanupGuard {
-    fn new(cleanup_tx: mpsc::UnboundedSender<u128>, session_id: u128) -> Self {
-        Self {
-            cleanup_tx,
-            session_id,
-            defused: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Prevent cleanup from running when the guard is dropped.
-    /// Call this when the session completes successfully.
-    pub fn defuse(self) {
-        self.defused.store(true, Ordering::SeqCst);
-    }
-}
-
-impl Drop for SessionCleanupGuard {
-    fn drop(&mut self) {
-        if !self.defused.load(Ordering::SeqCst) {
-            // Queue cleanup - the background task will handle it
-            if self.cleanup_tx.send(self.session_id).is_err() {
-                tracing::warn!(
-                    session_id = self.session_id,
-                    "SessionCleanupGuard: Failed to queue session cleanup (receiver dropped)"
-                );
-            } else {
-                tracing::debug!(
-                    session_id = self.session_id,
-                    "SessionCleanupGuard: Queued session for cleanup on error path"
-                );
-            }
-        }
-    }
-}
-
 /// Global session state manager
 pub struct SessionStateManager<D: Dkg> {
     /// session_id -> session state
     pub(crate) states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
-    /// Channel for queueing session cleanup requests
-    cleanup_tx: mpsc::UnboundedSender<u128>,
-    /// Monotonic counter used to stamp each newly created in-memory session state.
-    next_session_generation: AtomicU64,
     /// Ring public key strings mapped to their active in-progress PSS ceremony
     /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
     /// that a new ceremony can be initiated after failure.
@@ -640,28 +726,11 @@ pub struct SessionStateManager<D: Dkg> {
 impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Create a new SessionStateManager and spawn background tasks
     pub fn new() -> Self {
-        let (cleanup_tx, cleanup_rx) = mpsc::unbounded_channel();
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_pss = Arc::new(RwLock::new(HashMap::new()));
         let reshare_signature_ready = Arc::new(RwLock::new(HashSet::new()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut background_tasks = Vec::new();
-
-        // Spawn background cleanup task (handles guard-triggered cleanup)
-        let states_clone = states.clone();
-        let pss_clone = rings_pss.clone();
-        let ready_clone = reshare_signature_ready.clone();
-        let cleanup_shutdown = shutdown_rx.clone();
-        background_tasks.push(tokio::spawn(async move {
-            Self::cleanup_worker(
-                states_clone,
-                cleanup_rx,
-                pss_clone,
-                ready_clone,
-                cleanup_shutdown,
-            )
-            .await;
-        }));
 
         // Spawn background expiration task (handles abandoned sessions). It owns the sole
         // sender for the stall-report channel, so the receiver stays open for the worker's life.
@@ -682,8 +751,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
         Self {
             states,
-            cleanup_tx,
-            next_session_generation: AtomicU64::new(1),
             rings_pss,
             reshare_signature_ready,
             shutdown_tx,
@@ -705,63 +772,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .take()
     }
 
-    /// Background task that processes cleanup requests from guards
-    async fn cleanup_worker(
-        states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
-        mut rx: mpsc::UnboundedReceiver<u128>,
-        rings_pss: Arc<RwLock<HashMap<String, u128>>>,
-        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
-        mut shutdown_rx: watch::Receiver<bool>,
-    ) {
-        loop {
-            let session_id = tokio::select! {
-                changed = shutdown_rx.changed() => {
-                    if changed.is_err() || *shutdown_rx.borrow() {
-                        break;
-                    }
-                    continue;
-                }
-                session_id = rx.recv() => {
-                    let Some(session_id) = session_id else {
-                        break;
-                    };
-                    session_id
-                }
-            };
-            let mut states = states.write().await;
-            if let Some(mut state) = states.remove(&session_id) {
-                if let Some(guard) = state.metrics_guard.take() {
-                    guard.abandon();
-                }
-                // If this was a refresh or reshare session, unblock the ring.
-                if let Some(ring_key) = state.kind.ring_key() {
-                    let mut claims = rings_pss.write().await;
-                    if claims.get(ring_key).copied() == Some(session_id) {
-                        claims.remove(ring_key);
-                        tracing::debug!(
-                            session_id = session_id,
-                            ring_key = %ring_key,
-                            "SessionStateManager: Cleared in-progress PSS claim on cleanup"
-                        );
-                    }
-                }
-                reshare_signature_ready
-                    .write()
-                    .await
-                    .retain(|k| k.session_id != session_id);
-                tracing::debug!(
-                    session_id = session_id,
-                    "SessionStateManager: Cleaned up abandoned session"
-                );
-            }
-        }
-        tracing::debug!("SessionStateManager: Cleanup worker shutting down");
-    }
-
     /// Background task that periodically removes expired sessions
     ///
-    /// Active sessions older than `SESSION_TTL` and completed sessions retained
-    /// longer than `DKG_COMPLETED_SESSION_TTL` are removed to prevent memory leaks.
+    /// Active sessions are removed only at their hard attempt deadline. Completed
+    /// sessions are retained only for `DKG_COMPLETED_SESSION_TTL`.
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, u128>>>,
@@ -803,27 +817,16 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     }
                     continue;
                 }
-                let age = now.duration_since(state.created_at);
-                if age > SESSION_TTL {
-                    tracing::warn!(
-                        session_id = session_id,
-                        age_secs = age.as_secs(),
-                        phase = ?state.phase,
-                        "SessionStateManager: Removing expired DKG session"
-                    );
-                    to_remove_ids.push(*session_id);
-                    continue;
-                }
-                let phase_timeout = match state.phase {
-                    DkgPhase::Phase4Completing => DKG_PHASE4_COMPLETION_TIMEOUT,
-                    _ => DKG_PHASE_TIMEOUT,
-                };
-                if phase_age > phase_timeout {
+                let hard_deadline = state
+                    .transport
+                    .hard_deadline
+                    .unwrap_or(state.created_at + DKG_ATTEMPT_TIMEOUT);
+                if now >= hard_deadline {
                     tracing::warn!(
                         session_id = session_id,
                         phase = ?state.phase,
-                        phase_age_secs = phase_age.as_secs(),
-                        "SessionStateManager: Removing DKG session stalled in phase"
+                        attempt_id = ?state.transport.attempt_id,
+                        "SessionStateManager: Removing DKG attempt at hard deadline"
                     );
                     to_remove_ids.push(*session_id);
 
@@ -932,7 +935,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.rings_pss.read().await.contains_key(ring_pk_key)
     }
 
-    #[cfg(any(test, feature = "unsafe-testing"))]
+    /// Return the deterministic session currently claiming this ring, if any.
+    /// The production scheduler uses this to distinguish a new refresh from a
+    /// harmless tick that observes the already-active attempt.
     pub async fn active_ring_pss_session(&self, ring_pk_key: &str) -> Option<u128> {
         self.rings_pss.read().await.get(ring_pk_key).copied()
     }
@@ -959,15 +964,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         if claims.get(ring_pk_hex).copied() == Some(session_id) {
             claims.remove(ring_pk_hex);
         }
-    }
-
-    /// Create a cleanup guard for a session.
-    ///
-    /// The guard will automatically clean up the session when dropped unless
-    /// `defuse()` is called. Use this to ensure sessions are cleaned up on
-    /// error paths without manual cleanup code.
-    pub fn cleanup_guard(&self, session_id: u128) -> SessionCleanupGuard {
-        SessionCleanupGuard::new(self.cleanup_tx.clone(), session_id)
     }
 
     /// Stop and join the manager's background cleanup workers.
@@ -1060,8 +1056,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             return CreateSessionOutcome::LimitReached;
         }
 
-        let generation = self.next_session_generation.fetch_add(1, Ordering::SeqCst);
-        let mut new_state = DkgSessionState::new(node, total_participants, generation);
+        let mut new_state = DkgSessionState::new(node, total_participants);
         init_fn(&mut new_state);
         let ceremony_kind = new_state.ceremony_kind();
         new_state.metrics_guard = Some(metrics::DkgSessionMetricsGuard::new(ceremony_kind));
@@ -1074,18 +1069,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.states.read().await.contains_key(session_id)
     }
 
+    #[cfg(test)]
     pub async fn set_peer_ids(&self, session_id: &u128, peer_ids: Vec<String>) {
         self.with_state_mut(session_id, |s| s.routing.peer_ids = peer_ids)
             .await;
     }
 
+    #[cfg(test)]
     pub async fn set_peer_node_keys(&self, session_id: &u128, peer_node_keys: Vec<String>) {
         self.with_state_mut(session_id, |s| s.routing.peer_node_keys = peer_node_keys)
-            .await;
-    }
-
-    pub async fn set_ring_id(&self, session_id: &u128, ring_id: String) {
-        self.with_state_mut(session_id, |s| s.routing.ring_id = ring_id)
             .await;
     }
 
@@ -1142,11 +1134,6 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Store the PSS refresh interval for this session so Phase 4 can persist it.
-    pub async fn set_pss_interval(&self, session_id: &u128, interval: u64) {
-        self.with_state_mut(session_id, |s| s.pss_interval = interval)
-            .await;
-    }
-
     pub async fn get_peer_ids(&self, session_id: &u128) -> Option<Vec<String>> {
         self.with_state(session_id, |s| s.routing.peer_ids.clone())
             .await
@@ -1162,7 +1149,630 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn configure_transport(
+        &self,
+        session_id: &u128,
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        committee_digest: [u8; 32],
+        config_digest: [u8; 32],
+        topic_id: network::TopicId,
+        leader_node_key: String,
+        leader_peer_route: String,
+        participant_routes: Vec<String>,
+        committees: CeremonyConfig,
+        topic: Arc<dyn network::Topic>,
+    ) -> TransportConfigureOutcome {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if let Some(existing) = transport.attempt_id {
+                return if existing == attempt_id
+                    && transport.ceremony_id == Some(ceremony_id)
+                    && transport.config_digest == Some(config_digest)
+                {
+                    TransportConfigureOutcome::AlreadyConfigured
+                } else {
+                    TransportConfigureOutcome::ConflictingAttempt
+                };
+            }
+            let now = Instant::now();
+            transport.ceremony_id = Some(ceremony_id);
+            transport.attempt_id = Some(attempt_id);
+            transport.committee_digest = Some(committee_digest);
+            transport.config_digest = Some(config_digest);
+            transport.topic_id = Some(topic_id);
+            transport.leader_node_key = Some(leader_node_key);
+            transport.leader_peer_route = Some(leader_peer_route);
+            transport.participant_routes = participant_routes;
+            transport.committees = Some(committees);
+            transport.topic = Some(topic);
+            transport.prepared_at = Some(now);
+            transport.last_progress_at = now;
+            transport.hard_deadline = Some(now + crate::constants::DKG_ATTEMPT_TIMEOUT);
+            TransportConfigureOutcome::Configured
+        })
+        .await
+        .unwrap_or(TransportConfigureOutcome::MissingSession)
+    }
+
+    pub(crate) async fn activate_transport(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        activation_digest: [u8; 32],
+        active_dealers: Vec<ParticipantRef>,
+    ) -> TransportActivationOutcome {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.attempt_id != Some(attempt_id) {
+                return TransportActivationOutcome::StaleAttempt;
+            }
+            if state.transport.activated {
+                return if state.transport.activation_digest == Some(activation_digest)
+                    && state.transport.active_dealers == active_dealers
+                {
+                    TransportActivationOutcome::AlreadyActivated
+                } else {
+                    TransportActivationOutcome::StaleAttempt
+                };
+            }
+            if let Some(params) = state.reshare.params.as_mut() {
+                params.participating_ids =
+                    active_dealers.iter().map(|dealer| dealer.node_id).collect();
+            }
+            state.transport.activated = true;
+            state.transport.activation_digest = Some(activation_digest);
+            state.transport.active_dealers = active_dealers;
+            state.transport.last_progress_at = Instant::now();
+            TransportActivationOutcome::Activated
+        })
+        .await
+        .unwrap_or(TransportActivationOutcome::MissingSession)
+    }
+
+    /// Claim the one transition from an activated transport barrier into
+    /// cryptographic work. The claim is attempt-scoped so a retransmitted
+    /// `Begin` request can be acknowledged without regenerating contributions
+    /// or private shares.
+    pub(crate) async fn begin_transport(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        activation_digest: [u8; 32],
+    ) -> TransportBeginOutcome {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return TransportBeginOutcome::StaleAttempt;
+            }
+            if !transport.activated {
+                return TransportBeginOutcome::NotActivated;
+            }
+            if transport.activation_digest != Some(activation_digest) {
+                return TransportBeginOutcome::StaleAttempt;
+            }
+            if transport.begun {
+                return TransportBeginOutcome::AlreadyBegun;
+            }
+            transport.begun = true;
+            transport.last_progress_at = Instant::now();
+            TransportBeginOutcome::Begun
+        })
+        .await
+        .unwrap_or(TransportBeginOutcome::MissingSession)
+    }
+
+    pub(crate) async fn transport_configuration(
+        &self,
+        session_id: &u128,
+    ) -> Option<(CeremonyId, AttemptId, [u8; 32])> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            Some((
+                transport.ceremony_id?,
+                transport.attempt_id?,
+                transport.config_digest?,
+            ))
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn transport_attempt(&self, session_id: &u128) -> Option<AttemptId> {
+        self.with_state(session_id, |state| state.transport.attempt_id)
+            .await
+            .flatten()
+    }
+
+    pub(crate) async fn transport_hard_deadline(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+    ) -> Option<Instant> {
+        self.with_state(session_id, |state| {
+            (state.transport.attempt_id == Some(attempt_id))
+                .then_some(state.transport.hard_deadline)
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn transport_preparation_deadline(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+    ) -> Option<Instant> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            (transport.attempt_id == Some(attempt_id))
+                .then(|| {
+                    transport
+                        .prepared_at
+                        .map(|prepared_at| prepared_at + crate::constants::DKG_PREPARATION_TIMEOUT)
+                })
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn transport_topic(
+        &self,
+        session_id: &u128,
+    ) -> Option<Arc<dyn network::Topic>> {
+        self.with_state(session_id, |state| state.transport.topic.clone())
+            .await
+            .flatten()
+    }
+
+    pub(crate) async fn transport_committees(&self, session_id: &u128) -> Option<CeremonyConfig> {
+        self.with_state(session_id, |state| state.transport.committees.clone())
+            .await
+            .flatten()
+    }
+
+    pub(crate) async fn replace_transport_topic(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        topic: Arc<dyn network::Topic>,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            state.transport.topic = Some(topic);
+            state.transport.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    pub(crate) async fn set_transport_topic_task(
+        &self,
+        session_id: &u128,
+        task: tokio::task::AbortHandle,
+    ) -> Option<()> {
+        self.with_state_mut(session_id, |state| {
+            if let Some(previous) = state.transport.topic_task.replace(task) {
+                previous.abort();
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn begin_topology_probe(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        nonce: [u8; 32],
+        self_peer: String,
+    ) -> Option<Arc<Notify>> {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return None;
+            }
+            transport.topology_probe_nonce = Some(nonce);
+            transport.topology_probe_acknowledgements.clear();
+            transport.topology_probe_acknowledgements.insert(self_peer);
+            transport.last_progress_at = Instant::now();
+            Some(transport.topology_probe_notify.clone())
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn record_topology_probe(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        nonce: [u8; 32],
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            if state
+                .transport
+                .topology_probe_nonce
+                .is_some_and(|existing| existing != nonce)
+            {
+                return false;
+            }
+            state.transport.topology_probe_nonce = Some(nonce);
+            state.transport.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    pub(crate) async fn record_topology_probe_ack(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        nonce: [u8; 32],
+        peer: String,
+    ) -> TopologyAckRecordOutcome {
+        let outcome = self
+            .with_state_mut(session_id, |state| {
+                let transport = &mut state.transport;
+                if transport.attempt_id != Some(attempt_id) {
+                    return TopologyAckRecordOutcome::StaleAttempt;
+                }
+                if transport.topology_probe_nonce != Some(nonce) {
+                    return TopologyAckRecordOutcome::WrongNonce;
+                }
+                if !transport.topology_probe_acknowledgements.insert(peer) {
+                    return TopologyAckRecordOutcome::Duplicate;
+                }
+                transport.last_progress_at = Instant::now();
+                transport.topology_probe_notify.notify_waiters();
+                TopologyAckRecordOutcome::Recorded
+            })
+            .await
+            .unwrap_or(TopologyAckRecordOutcome::MissingSession);
+        outcome
+    }
+
+    pub(crate) async fn topology_probe_acknowledgements(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        nonce: [u8; 32],
+    ) -> Option<BTreeSet<String>> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            (transport.attempt_id == Some(attempt_id)
+                && transport.topology_probe_nonce == Some(nonce))
+            .then(|| transport.topology_probe_acknowledgements.clone())
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn record_public_contribution(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+        origin: ParticipantRef,
+        contribution: network::SignedPayload,
+    ) -> PublicContributionRecordOutcome {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.attempt_id != Some(attempt_id) {
+                return PublicContributionRecordOutcome::StaleAttempt;
+            }
+            let transport = &mut state.transport;
+            match transport
+                .public_contributions
+                .get(&phase)
+                .and_then(|contributions| contributions.get(&origin))
+            {
+                Some(existing) if existing == &contribution => {
+                    PublicContributionRecordOutcome::DuplicateSame
+                }
+                Some(_) => PublicContributionRecordOutcome::ConflictingDuplicate,
+                None => {
+                    transport
+                        .public_phase_started_at
+                        .entry(phase)
+                        .or_insert_with(Instant::now);
+                    transport
+                        .public_contributions
+                        .entry(phase)
+                        .or_default()
+                        .insert(origin, contribution);
+                    transport.last_progress_at = Instant::now();
+                    PublicContributionRecordOutcome::Recorded
+                }
+            }
+        })
+        .await
+        .unwrap_or(PublicContributionRecordOutcome::MissingSession)
+    }
+
+    pub(crate) async fn public_contributions(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+    ) -> Option<BTreeMap<ParticipantRef, network::SignedPayload>> {
+        self.with_state(session_id, |state| {
+            (state.transport.attempt_id == Some(attempt_id)).then(|| {
+                state
+                    .transport
+                    .public_contributions
+                    .get(&phase)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn public_phase_collection_elapsed(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+    ) -> Option<std::time::Duration> {
+        self.with_state(session_id, |state| {
+            (state.transport.attempt_id == Some(attempt_id))
+                .then(|| {
+                    state
+                        .transport
+                        .public_phase_started_at
+                        .get(&phase)
+                        .map(Instant::elapsed)
+                })
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn claim_public_phase_publish(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+        expected: usize,
+    ) -> bool {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id)
+                || transport
+                    .public_contributions
+                    .get(&phase)
+                    .map_or(0, BTreeMap::len)
+                    != expected
+                || transport.published_public_phases.contains(&phase)
+            {
+                return false;
+            }
+            transport.published_public_phases.insert(phase);
+            true
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn claim_public_message_publish(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        message_id: MessageId,
+    ) -> bool {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            transport.attempt_id == Some(attempt_id)
+                && transport.published_public_messages.insert(message_id)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn transport_active_dealers(
+        &self,
+        session_id: &u128,
+    ) -> Option<Vec<ParticipantRef>> {
+        self.with_state(session_id, |state| state.transport.active_dealers.clone())
+            .await
+    }
+
+    pub(crate) async fn transport_info(
+        &self,
+        session_id: &u128,
+    ) -> Option<(CeremonyId, AttemptId, [u8; 32], String, bool)> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            Some((
+                transport.ceremony_id?,
+                transport.attempt_id?,
+                transport.committee_digest?,
+                transport.leader_node_key.clone()?,
+                transport.activated,
+            ))
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn transport_participant_routes(
+        &self,
+        session_id: &u128,
+    ) -> Option<Vec<String>> {
+        self.with_state(session_id, |state| {
+            state.transport.participant_routes.clone()
+        })
+        .await
+    }
+
+    pub(crate) async fn transport_leader_route(&self, session_id: &u128) -> Option<String> {
+        self.with_state(session_id, |state| {
+            state.transport.leader_peer_route.clone()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn transport_repair_due(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        stall_interval: std::time::Duration,
+    ) -> bool {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            transport.attempt_id == Some(attempt_id)
+                && transport.activated
+                && transport.last_progress_at.elapsed() >= stall_interval
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn cache_private_message(
+        &self,
+        session_id: &u128,
+        message_id: MessageId,
+        exact_bytes: Vec<u8>,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            match state.transport.outbound_private_messages.get(&message_id) {
+                Some(existing) => existing == &exact_bytes,
+                None => {
+                    state
+                        .transport
+                        .outbound_private_messages
+                        .insert(message_id, exact_bytes);
+                    true
+                }
+            }
+        })
+        .await
+    }
+
+    pub(crate) async fn acknowledge_private_message(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        message_id: MessageId,
+    ) -> Option<bool> {
+        self.with_state_mut(session_id, |state| {
+            if state.transport.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            state
+                .transport
+                .acknowledged_private_messages
+                .insert(message_id);
+            state.transport.last_progress_at = Instant::now();
+            true
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn private_message(
+        &self,
+        session_id: &u128,
+        message_id: MessageId,
+    ) -> Option<Vec<u8>> {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .outbound_private_messages
+                .get(&message_id)
+                .cloned()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn private_message_for_recipient(
+        &self,
+        session_id: &u128,
+        recipient: ParticipantRef,
+    ) -> Option<Vec<u8>> {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .outbound_private_messages
+                .values()
+                .find(|bytes| {
+                    decode::<DkgPrivateMessage>(bytes, 2 * 1024 * 1024).is_ok_and(|message| {
+                        matches!(
+                            message,
+                            DkgPrivateMessage::ShareDelivery {
+                                to,
+                                ..
+                            } if to == recipient
+                        )
+                    })
+                })
+                .cloned()
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn private_message_acknowledged(
+        &self,
+        session_id: &u128,
+        message_id: MessageId,
+    ) -> bool {
+        self.with_state(session_id, |state| {
+            state
+                .transport
+                .acknowledged_private_messages
+                .contains(&message_id)
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn claim_transport_message(
+        &self,
+        session_id: &u128,
+        message_id: MessageId,
+    ) -> MessageProcessingClaim {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.processed_message_ids.contains(&message_id) {
+                MessageProcessingClaim::AlreadyProcessed
+            } else if !transport.processing_message_ids.insert(message_id) {
+                MessageProcessingClaim::AlreadyProcessing
+            } else {
+                MessageProcessingClaim::Claimed
+            }
+        })
+        .await
+        .unwrap_or(MessageProcessingClaim::MissingSession)
+    }
+
+    pub(crate) async fn finish_transport_message(
+        &self,
+        session_id: &u128,
+        message_id: MessageId,
+        success: bool,
+    ) {
+        let _ = self
+            .with_state_mut(session_id, |state| {
+                let transport = &mut state.transport;
+                transport.processing_message_ids.remove(&message_id);
+                if success {
+                    transport.processed_message_ids.insert(message_id);
+                }
+            })
+            .await;
+    }
+
     /// Set node_id to peer_id mappings for efficient routing
+    #[cfg(test)]
     pub async fn set_node_peer_mappings(
         &self,
         session_id: &u128,
@@ -1185,43 +1795,25 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .flatten()
     }
 
-    /// Atomically claim a message for processing.
-    pub async fn try_claim_message_processing(
+    pub(crate) async fn peer_id_for_participant(
         &self,
         session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-    ) -> MessageProcessingClaim {
-        self.with_state_mut(session_id, |state| {
-            let key = (*session_id, from_node_id, message_type);
-            if state.messages.processed.contains(&key) {
-                return MessageProcessingClaim::AlreadyProcessed;
-            }
-            if !state.messages.processing.insert(key) {
-                return MessageProcessingClaim::AlreadyProcessing;
-            }
-            MessageProcessingClaim::Claimed
+        participant: ParticipantRef,
+    ) -> Option<String> {
+        self.with_state(session_id, |state| match participant.scope {
+            CommitteeScope::Current => state
+                .routing
+                .node_id_to_peer_id
+                .get(&participant.node_id)
+                .cloned(),
+            CommitteeScope::Next => state
+                .routing
+                .reshare_new_node_id_to_peer_id
+                .get(&participant.node_id)
+                .cloned(),
         })
         .await
-        .unwrap_or(MessageProcessingClaim::MissingSession)
-    }
-
-    /// Finish a previously claimed message, marking it processed only on success.
-    pub async fn finish_message_processing(
-        &self,
-        session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-        processed: bool,
-    ) {
-        self.with_state_mut(session_id, |state| {
-            let key = (*session_id, from_node_id, message_type);
-            state.messages.processing.remove(&key);
-            if processed {
-                state.messages.processed.insert(key);
-            }
-        })
-        .await;
+        .flatten()
     }
 
     /// Store a share whose sender commitment has not arrived yet.
@@ -1238,13 +1830,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.with_state_mut(session_id, |state| {
             let from_node_id = share.from_id;
             if state
-                .messages
+                .pending
                 .pending_shares_waiting_for_commitment
                 .contains_key(&from_node_id)
             {
                 return false;
             }
-            state.messages.pending_shares_waiting_for_commitment.insert(
+            state.pending.pending_shares_waiting_for_commitment.insert(
                 from_node_id,
                 PendingDkgShare {
                     share,
@@ -1263,7 +1855,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         from_node_id: u32,
     ) -> Option<PendingDkgShare<D::ShareValue>> {
         self.with_state_mut(session_id, |s| {
-            s.messages
+            s.pending
                 .pending_shares_waiting_for_commitment
                 .remove(&from_node_id)
         })
@@ -1390,13 +1982,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
             if state
-                .messages
+                .pending
                 .pending_commitments_waiting_for_hash
                 .contains_key(&from_node_id)
             {
                 return false;
             }
-            state.messages.pending_commitments_waiting_for_hash.insert(
+            state.pending.pending_commitments_waiting_for_hash.insert(
                 from_node_id,
                 PendingDkgCommitment {
                     commitment,
@@ -1415,7 +2007,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<PendingDkgCommitment> {
         self.with_state_mut(session_id, |state| {
             state
-                .messages
+                .pending
                 .pending_commitments_waiting_for_hash
                 .remove(&from_node_id)
         })
@@ -1451,67 +2043,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .await;
     }
 
-    /// Get the cached outbound stream to a peer for this session, if one exists.
-    pub async fn get_peer_stream(
-        &self,
-        session_id: &u128,
-        peer_id: &str,
-    ) -> Option<Arc<dyn Connection>> {
-        self.with_state(session_id, |s| {
-            s.transport.peer_streams.get(peer_id).cloned()
-        })
-        .await
-        .flatten()
-    }
-
-    /// Cache an outbound stream to a peer for this session.
-    pub async fn store_peer_stream(
-        &self,
-        session_id: &u128,
-        peer_id: String,
-        stream: Arc<dyn Connection>,
-    ) {
-        self.with_state_mut(session_id, |s| {
-            s.transport.peer_streams.insert(peer_id, stream);
-        })
-        .await;
-    }
-
-    /// Remove the cached outbound stream to a peer for this session, if any.
-    pub async fn remove_peer_stream(&self, session_id: &u128, peer_id: &str) {
-        self.with_state_mut(session_id, |s| {
-            s.transport.peer_streams.remove(peer_id);
-        })
-        .await;
-    }
-
-    /// Get or create the per-peer outbound send lock for this session.
-    pub async fn get_or_create_peer_send_lock(
-        &self,
-        session_id: &u128,
-        peer_id: &str,
-    ) -> Option<(Arc<Mutex<()>>, u64)> {
-        self.with_state_mut(session_id, |state| {
-            let lock = state
-                .transport
-                .peer_send_locks
-                .entry(peer_id.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone();
-            (lock, state.generation)
-        })
-        .await
-    }
-
     /// Remove a session and free its memory.
     ///
     /// Called after DKG Phase 4 completes. The session data is no longer needed
     /// since the private share is stored in local storage and ring info is on
     /// the bulletin.
     ///
-    /// Per-session streams in `peer_streams` are dropped here (FIN sent on drop).
-    /// Per-peer QUIC connections in `peer_connections` are NOT closed — they remain
-    /// open in the pool for future sessions.
+    /// Listener-owned topic and acknowledgement tasks are cancelled here. Pair
+    /// streams are ceremony-scoped and close after their delivery contract is
+    /// acknowledged; bounded pooled peer connections remain available.
     pub async fn remove_session(&self, session_id: &u128) {
         self.remove_session_with_outcome(session_id, false).await;
     }
@@ -1573,45 +2113,12 @@ impl<D: Dkg> Drop for SessionStateManager<D> {
 
 #[cfg(test)]
 impl<D: Dkg + 'static> SessionStateManager<D> {
-    pub async fn get_session_generation(&self, session_id: &u128) -> Option<u64> {
-        self.with_state(session_id, |s| s.generation).await
-    }
-
     pub async fn session_count(&self) -> usize {
         self.states.read().await.len()
     }
 
     pub async fn set_session_kind(&self, session_id: &u128, kind: SessionKind) {
         self.with_state_mut(session_id, |s| s.kind = kind).await;
-    }
-
-    pub async fn is_message_processed(
-        &self,
-        session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-    ) -> bool {
-        self.with_state(session_id, |s| {
-            s.messages
-                .processed
-                .contains(&(*session_id, from_node_id, message_type))
-        })
-        .await
-        .unwrap_or(false)
-    }
-
-    pub async fn mark_message_processed(
-        &self,
-        session_id: &u128,
-        from_node_id: u32,
-        message_type: DkgMessageType,
-    ) {
-        self.with_state_mut(session_id, |s| {
-            s.messages
-                .processed
-                .insert((*session_id, from_node_id, message_type));
-        })
-        .await;
     }
 }
 
@@ -1874,65 +2381,6 @@ mod tests {
 
         let got = mgr.get_peer_ids(&1).await;
         assert_eq!(got, Some(peers));
-    }
-
-    // =========================================================================
-    // Message deduplication
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_message_dedup() {
-        let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(1, make_node(1), 3, |_| {}).await;
-
-        // Not yet processed
-        assert!(
-            !mgr.is_message_processed(&1, 2, DkgMessageType::Commitment)
-                .await
-        );
-
-        mgr.mark_message_processed(&1, 2, DkgMessageType::Commitment)
-            .await;
-
-        // Now processed
-        assert!(
-            mgr.is_message_processed(&1, 2, DkgMessageType::Commitment)
-                .await
-        );
-
-        // Different type from same node — not processed
-        assert!(!mgr.is_message_processed(&1, 2, DkgMessageType::Share).await);
-
-        // Same type, different node — not processed
-        assert!(
-            !mgr.is_message_processed(&1, 3, DkgMessageType::Commitment)
-                .await
-        );
-    }
-
-    #[tokio::test]
-    async fn test_message_processing_claim_blocks_concurrent_duplicate() {
-        let mgr = SessionStateManager::<DkgImpl>::new();
-        mgr.create_session(2, make_node(1), 3, |_| {}).await;
-
-        assert_eq!(
-            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
-                .await,
-            MessageProcessingClaim::Claimed
-        );
-        assert_eq!(
-            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
-                .await,
-            MessageProcessingClaim::AlreadyProcessing
-        );
-
-        mgr.finish_message_processing(&2, 3, DkgMessageType::Share, true)
-            .await;
-        assert_eq!(
-            mgr.try_claim_message_processing(&2, 3, DkgMessageType::Share)
-                .await,
-            MessageProcessingClaim::AlreadyProcessed
-        );
     }
 
     #[tokio::test]
@@ -2342,61 +2790,19 @@ mod tests {
     }
 
     // =========================================================================
-    // Cleanup guard (RAII)
-    // =========================================================================
-
-    #[tokio::test]
-    async fn test_cleanup_guard_removes_session_on_drop() {
-        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(10, make_node(1), 3, |_| {}).await;
-        assert!(mgr.session_exists(&10).await);
-
-        {
-            let _guard = mgr.cleanup_guard(10);
-            // guard dropped here without defuse — queues cleanup
-        }
-
-        // Yield to let the cleanup worker receive from the channel and remove the session
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-
-        assert!(
-            !mgr.session_exists(&10).await,
-            "session should be removed after guard drop"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_guard_defuse_prevents_cleanup() {
-        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-        mgr.create_session(11, make_node(1), 3, |_| {}).await;
-
-        let guard = mgr.cleanup_guard(11);
-        guard.defuse(); // signals success — no cleanup should happen
-
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-
-        assert!(
-            mgr.session_exists(&11).await,
-            "session should still exist after defused guard"
-        );
-    }
-
-    // =========================================================================
+    // Expiration worker    // =========================================================================
     // Expiration worker
     // =========================================================================
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_worker_removes_sessions_past_ttl() {
+    async fn test_expiration_worker_removes_sessions_at_hard_deadline() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(20, make_node(1), 3, |_| {}).await;
 
-        // Backdate created_at past SESSION_TTL (std::time::Instant, not tokio time)
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&20) {
-                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+                s.transport.hard_deadline = Some(Instant::now());
             }
         }
 
@@ -2407,22 +2813,214 @@ mod tests {
 
         assert!(
             !mgr.session_exists(&20).await,
-            "session past SESSION_TTL should be removed by the expiration worker"
+            "session at its hard deadline should be removed by the expiration worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn private_retransmission_keeps_exact_cached_bytes() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(21, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([7; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            let state = states.get_mut(&21).expect("session");
+            state.transport.attempt_id = Some(attempt);
+        }
+        let message_id = MessageId([9; 32]);
+        let exact = vec![1, 2, 3, 4, 5];
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, exact.clone())
+                .await,
+            Some(true)
+        );
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, exact.clone())
+                .await,
+            Some(true),
+            "an identical reconnect must reuse the retained bytes"
+        );
+        assert_eq!(
+            mgr.cache_private_message(&21, message_id, vec![5, 4, 3, 2, 1])
+                .await,
+            Some(false),
+            "the same message ID must reject regenerated or conflicting bytes"
+        );
+        assert_eq!(mgr.private_message(&21, message_id).await, Some(exact));
+    }
+
+    #[tokio::test]
+    async fn public_duplicates_are_idempotent_and_conflicts_are_rejected() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(22, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([7; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states.get_mut(&22).expect("session").transport.attempt_id = Some(attempt);
+        }
+        let phase = PublicPhase::Commitments;
+        let origin = ParticipantRef::current(2);
+        let exact = network::SignedPayload {
+            origin: vec![1; 32],
+            signature: vec![2; 64],
+            data: vec![3; 16],
+        };
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, origin, exact.clone())
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, origin, exact.clone())
+                .await,
+            PublicContributionRecordOutcome::DuplicateSame
+        );
+        let mut conflicting = exact.clone();
+        conflicting.data[0] ^= 1;
+        assert_eq!(
+            mgr.record_public_contribution(&22, attempt, phase, origin, conflicting)
+                .await,
+            PublicContributionRecordOutcome::ConflictingDuplicate
+        );
+        assert_eq!(
+            mgr.public_contributions(&22, attempt, phase)
+                .await
+                .expect("attempt")
+                .get(&origin),
+            Some(&exact)
+        );
+        assert_eq!(
+            mgr.record_public_contribution(
+                &22,
+                AttemptId([8; 32]),
+                phase,
+                ParticipantRef::current(3),
+                exact,
+            )
+            .await,
+            PublicContributionRecordOutcome::StaleAttempt,
+            "a stale attempt cannot populate the active attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn topology_acknowledgements_are_scoped_and_idempotent() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(23, make_node(1), 3, |_| {}).await;
+        let ceremony = CeremonyId(23);
+        let attempt = AttemptId([7; 32]);
+        let nonce = [9; 32];
+        {
+            let mut states = mgr.states.write().await;
+            let transport = &mut states.get_mut(&23).expect("session").transport;
+            transport.ceremony_id = Some(ceremony);
+            transport.attempt_id = Some(attempt);
+        }
+
+        mgr.begin_topology_probe(&23, attempt, nonce, "leader".into())
+            .await
+            .expect("probe state");
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, nonce, "peer-a".into())
+                .await,
+            TopologyAckRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, nonce, "peer-a".into())
+                .await,
+            TopologyAckRecordOutcome::Duplicate
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, attempt, [8; 32], "peer-b".into())
+                .await,
+            TopologyAckRecordOutcome::WrongNonce
+        );
+        assert_eq!(
+            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-b".into(),)
+                .await,
+            TopologyAckRecordOutcome::StaleAttempt
+        );
+        assert_eq!(
+            mgr.topology_probe_acknowledgements(&23, attempt, nonce)
+                .await
+                .expect("ack set"),
+            BTreeSet::from(["leader".to_string(), "peer-a".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn activation_and_begin_are_idempotent_and_gate_stall_repair() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(24, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([4; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states.get_mut(&24).expect("session").transport.attempt_id = Some(attempt);
+        }
+
+        assert!(
+            !mgr.transport_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
+        );
+        assert_eq!(
+            mgr.begin_transport(&24, attempt, [8; 32]).await,
+            TransportBeginOutcome::NotActivated
+        );
+        assert_eq!(
+            mgr.activate_transport(&24, attempt, [8; 32], Vec::new())
+                .await,
+            TransportActivationOutcome::Activated
+        );
+        assert_eq!(
+            mgr.activate_transport(&24, attempt, [8; 32], Vec::new())
+                .await,
+            TransportActivationOutcome::AlreadyActivated
+        );
+        assert_eq!(
+            mgr.begin_transport(&24, attempt, [9; 32]).await,
+            TransportBeginOutcome::StaleAttempt
+        );
+        assert_eq!(
+            mgr.begin_transport(&24, attempt, [8; 32]).await,
+            TransportBeginOutcome::Begun
+        );
+        assert_eq!(
+            mgr.begin_transport(&24, attempt, [8; 32]).await,
+            TransportBeginOutcome::AlreadyBegun
+        );
+        assert_eq!(
+            mgr.begin_transport(&24, AttemptId([5; 32]), [8; 32],).await,
+            TransportBeginOutcome::StaleAttempt
+        );
+        assert!(
+            !mgr.transport_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
+        );
+
+        {
+            let mut states = mgr.states.write().await;
+            states
+                .get_mut(&24)
+                .expect("session")
+                .transport
+                .last_progress_at = Instant::now() - crate::constants::DKG_REPAIR_STALL_INTERVAL;
+        }
+        assert!(
+            mgr.transport_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
+                .await
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_worker_removes_stalled_phase() {
+    async fn test_expiration_worker_removes_attempt_at_hard_deadline() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(30, make_node(1), 3, |_| {}).await;
 
-        // Move to Phase1Commitments and backdate phase_started_at past DKG_PHASE_TIMEOUT
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&30) {
                 s.phase = DkgPhase::Phase1Commitments;
-                s.phase_started_at =
-                    Instant::now() - (DKG_PHASE_TIMEOUT + std::time::Duration::from_secs(10));
+                s.transport.hard_deadline = Some(Instant::now());
             }
         }
 
@@ -2432,25 +3030,23 @@ mod tests {
 
         assert!(
             !mgr.session_exists(&30).await,
-            "session stalled past DKG_PHASE_TIMEOUT should be removed"
+            "session at the attempt hard deadline should be removed"
         );
     }
 
-    /// Regression test for bug where `Initializing` sessions were exempt from
-    /// `DKG_PHASE_TIMEOUT` and could hold a `rings_pss` lock for up to SESSION_TTL
-    /// (30 min) instead of DKG_PHASE_TIMEOUT (2 min).
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_worker_removes_stalled_initializing_session() {
+    async fn test_expiration_worker_preserves_attempt_before_hard_deadline() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(31, make_node(1), 3, |_| {}).await;
 
-        // Session stays in Initializing; backdate phase_started_at past DKG_PHASE_TIMEOUT.
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&31) {
                 assert_eq!(s.phase, DkgPhase::Initializing);
-                s.phase_started_at =
-                    Instant::now() - (DKG_PHASE_TIMEOUT + std::time::Duration::from_secs(10));
+                s.phase_started_at = Instant::now()
+                    - (crate::constants::DKG_PREPARATION_TIMEOUT
+                        + std::time::Duration::from_secs(10));
+                s.transport.hard_deadline = Some(Instant::now() + DKG_ATTEMPT_TIMEOUT);
             }
         }
 
@@ -2459,8 +3055,8 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(
-            !mgr.session_exists(&31).await,
-            "Initializing session stalled past DKG_PHASE_TIMEOUT should be removed"
+            mgr.session_exists(&31).await,
+            "phase age must not override the attempt hard deadline"
         );
     }
 
@@ -2545,7 +3141,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_expiration_worker_removes_stalled_phase4_completing_session() {
+    async fn test_expiration_worker_removes_phase4_at_attempt_hard_deadline() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
         mgr.create_session(41, make_node(1), 3, |_| {}).await;
 
@@ -2553,9 +3149,7 @@ mod tests {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&41) {
                 s.phase = DkgPhase::Phase4Completing;
-                s.phase_started_at = Instant::now()
-                    - (crate::constants::DKG_PHASE4_COMPLETION_TIMEOUT
-                        + std::time::Duration::from_secs(10));
+                s.transport.hard_deadline = Some(Instant::now());
             }
         }
 
@@ -2565,7 +3159,7 @@ mod tests {
 
         assert!(
             !mgr.session_exists(&41).await,
-            "stalled Phase4Completing sessions should be removed by the expiration worker"
+            "Phase4Completing sessions must not outlive the attempt hard deadline"
         );
     }
 
@@ -2636,45 +3230,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_cleanup_guard_clears_ring_pss_flag() {
-        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
-
-        // Create a refresh session and mark the ring as in-progress (PSS).
-        mgr.create_session(50, make_node(1), 3, |_| {}).await;
-        mgr.set_session_kind(
-            &50,
-            SessionKind::Refresh {
-                ring_pk_hex: "ring_cleanup".to_string(),
-            },
-        )
-        .await;
-        assert_eq!(
-            mgr.claim_ring_pss_session("ring_cleanup", 50).await,
-            RingPssClaimOutcome::Claimed,
-            "ring should be claimable before any cleanup"
-        );
-        assert_eq!(
-            mgr.claim_ring_pss_session("ring_cleanup", 50).await,
-            RingPssClaimOutcome::AlreadyClaimedBySameSession,
-            "same session should remain idempotent while in progress"
-        );
-
-        // Drop a cleanup guard without defusing — worker removes session + flag.
-        {
-            let _guard = mgr.cleanup_guard(50);
-        }
-
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-
-        assert_eq!(
-            mgr.claim_ring_pss_session("ring_cleanup", 51).await,
-            RingPssClaimOutcome::Claimed,
-            "rings_pss claim should be cleared after cleanup guard fires"
-        );
-    }
-
     #[tokio::test(start_paused = true)]
     async fn test_expiration_clears_ring_pss_flag() {
         let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
@@ -2693,11 +3248,10 @@ mod tests {
             RingPssClaimOutcome::Claimed
         );
 
-        // Backdate created_at past SESSION_TTL so the expiration worker evicts it.
         {
             let mut states = mgr.states.write().await;
             if let Some(s) = states.get_mut(&60) {
-                s.created_at = Instant::now() - (SESSION_TTL + std::time::Duration::from_secs(10));
+                s.transport.hard_deadline = Some(Instant::now());
             }
         }
 
@@ -2713,6 +3267,76 @@ mod tests {
             mgr.claim_ring_pss_session("ring_expire", 61).await,
             RingPssClaimOutcome::Claimed,
             "rings_pss claim should be cleared after session expiration"
+        );
+    }
+
+    // =========================================================================
+    // TransportMessageClaimGuard
+    // =========================================================================
+
+    #[tokio::test]
+    async fn transport_claim_guard_finish_marks_processed() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let session_id = 100u128;
+        mgr.create_session(session_id, make_node(1), 3, |_| {})
+            .await;
+        let message_id = MessageId([1u8; 32]);
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::Claimed
+        );
+        let guard = TransportMessageClaimGuard::new(mgr.clone(), session_id, message_id);
+        guard.finish(true).await;
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::AlreadyProcessed,
+            "finish(true) should mark the message processed, not just release the claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_claim_guard_releases_claim_when_dropped_without_finish() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let session_id = 101u128;
+        mgr.create_session(session_id, make_node(1), 3, |_| {})
+            .await;
+        let message_id = MessageId([2u8; 32]);
+
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::Claimed
+        );
+        // A concurrent retry of the exact same message sees it as in-flight.
+        assert_eq!(
+            mgr.claim_transport_message(&session_id, message_id).await,
+            MessageProcessingClaim::AlreadyProcessing
+        );
+
+        // Simulate the future driving processing being cancelled (e.g. by an
+        // outer `tokio::time::timeout`) after the claim succeeded but before
+        // `finish` ran: build the guard and drop it without calling `finish`.
+        let guard = TransportMessageClaimGuard::new(mgr.clone(), session_id, message_id);
+        drop(guard);
+
+        // `Drop` releases the claim via a spawned task rather than
+        // synchronously; poll until it lands instead of assuming one yield
+        // is enough.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if mgr.claim_transport_message(&session_id, message_id).await
+                    == MessageProcessingClaim::Claimed
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect(
+            "a dropped guard must release the claim as failed, not leave the message \
+             stuck in AlreadyProcessing for the rest of the attempt",
         );
     }
 }

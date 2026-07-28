@@ -1,4 +1,4 @@
-use crate::compose::{node_service, SOURCEHUB_SERVICE};
+use crate::compose::{node_service, sourcehub_service_name, SOURCEHUB_SERVICE};
 use crate::config::{NetworkProfile, NetworkProfileKind};
 use crate::results::ResourceSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -46,6 +46,7 @@ impl DockerCompose {
 
     fn command(&self) -> Command {
         let mut command = Command::new("docker");
+        command.kill_on_drop(true);
         command
             .arg("compose")
             .arg("--project-name")
@@ -101,34 +102,20 @@ impl DockerCompose {
             .await
     }
 
-    pub async fn up_sourcehub(&self) -> Result<()> {
-        self.status(&["up", "--detach", "--wait", SOURCEHUB_SERVICE])
-            .await
-    }
-
-    pub async fn up_nodes(&self) -> Result<()> {
-        self.status(&["up", "--detach", "--no-build"]).await
-    }
-
-    pub async fn stop_nodes(&self, node_count: usize) -> Result<()> {
-        let services: Vec<String> = (1..=node_count).map(node_service).collect();
-        let mut args = vec!["stop".to_string()];
+    pub async fn up_sourcehub(&self, replicas: usize) -> Result<()> {
+        let services: Vec<String> = (0..replicas).map(sourcehub_service_name).collect();
+        let mut args = vec![
+            "up".to_string(),
+            "--detach".to_string(),
+            "--wait".to_string(),
+        ];
         args.extend(services);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.status(&refs).await
     }
 
-    pub async fn recreate_sourcehub(&self) -> Result<()> {
-        self.status(&["rm", "--stop", "--force", SOURCEHUB_SERVICE])
-            .await?;
-        self.status(&[
-            "up",
-            "--detach",
-            "--force-recreate",
-            "--wait",
-            SOURCEHUB_SERVICE,
-        ])
-        .await
+    pub async fn up_nodes(&self) -> Result<()> {
+        self.status(&["up", "--detach", "--no-build"]).await
     }
 
     pub async fn down(&self) -> Result<()> {
@@ -279,7 +266,9 @@ impl DockerCompose {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let output = Command::new("docker")
+        let mut command = Command::new("docker");
+        command.kill_on_drop(true);
+        let output = command
             .arg("stats")
             .arg("--no-stream")
             .arg("--format")
@@ -305,10 +294,9 @@ impl DockerCompose {
         let ids = self.output(&["ps", "--all", "--quiet"]).await?;
         let mut failures = Vec::new();
         for id in ids.lines().filter(|line| !line.is_empty()) {
-            let output = Command::new("docker")
-                .args(["inspect", id])
-                .output()
-                .await?;
+            let mut command = Command::new("docker");
+            command.kill_on_drop(true);
+            let output = command.args(["inspect", id]).output().await?;
             if !output.status.success() {
                 continue;
             }
@@ -530,7 +518,9 @@ pub async fn doctor(runtime_image: Option<&str>) -> Result<DoctorReport> {
     }
 
     let net_admin_probe = if let Some(image) = runtime_image {
-        let output = Command::new("docker")
+        let mut command = Command::new("docker");
+        command.kill_on_drop(true);
+        let output = command
             .args([
                 "run",
                 "--rm",
@@ -579,11 +569,9 @@ pub async fn image_digest(image: &str) -> Result<String> {
 }
 
 async fn command_text(program: &str, args: &[&str]) -> Result<String> {
-    let output = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .await?;
+    let mut command = Command::new(program);
+    command.kill_on_drop(true);
+    let output = command.args(args).stdin(Stdio::null()).output().await?;
     if !output.status.success() {
         bail!(
             "{} {} failed: {}",

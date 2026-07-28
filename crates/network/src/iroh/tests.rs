@@ -7,6 +7,7 @@ use super::IrohNetwork;
 use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
 use crate::{PeerId, Result, SecretKey};
+use crate::{PubSubEvent, TopicId};
 use async_trait::async_trait;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
@@ -30,7 +31,7 @@ fn peer_addr(network: &IrohNetwork) -> PeerId {
 async fn new_test_network() -> IrohNetwork {
     IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network")
@@ -106,6 +107,184 @@ async fn iroh_concurrent_connections() {
     let net2 = new_test_network().await;
     let net3 = new_test_network().await;
     trait_tests::test_concurrent_connections(&net1, &net2, &net3).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_authenticated_pubsub_roundtrip() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn first gossip router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn second gossip router");
+
+    let topic_id = TopicId::new([7u8; 32]);
+    let topic1 = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open topic");
+    let topic2 = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic");
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::NeighborUp(_) = topic1.recv().await.expect("topic event") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("publisher should see the subscriber as a neighbor");
+
+    for _ in 0..2 {
+        topic1
+            .broadcast(bytes::Bytes::from_static(b"signed payload"))
+            .await
+            .expect("broadcast identical semantic bytes");
+    }
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            if let PubSubEvent::Received(message) = topic2.recv().await.expect("topic event") {
+                received.push(message);
+            }
+        }
+        received
+    })
+    .await
+    .expect("receive both authenticated retransmissions");
+    assert_eq!(received.len(), 2);
+    for message in received {
+        assert_eq!(message.origin, net1.local_peer_id());
+        assert_eq!(&message.data[..], b"signed payload");
+    }
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_pubsub_sign_and_verify_roundtrip() {
+    let net1 = new_test_network().await;
+    let pubsub = net1.pubsub().expect("pubsub enabled");
+
+    let domain = b"test-sign-verify-domain";
+    let data = bytes::Bytes::from_static(b"authenticated payload");
+    let payload = pubsub
+        .sign(domain, data.clone())
+        .await
+        .expect("sign with local endpoint identity");
+
+    let authenticated = pubsub
+        .verify(domain, &payload)
+        .await
+        .expect("verify a correctly signed payload");
+    assert_eq!(authenticated.origin, net1.local_peer_id());
+    assert_eq!(authenticated.delivered_from, net1.local_peer_id());
+    assert_eq!(&authenticated.data[..], &data[..]);
+
+    // Wrong domain must be rejected — the signature binds the domain.
+    assert!(pubsub.verify(b"wrong-domain", &payload).await.is_err());
+
+    // Tampering with the signed data must be rejected too.
+    let mut tampered = payload.clone();
+    tampered.data[0] ^= 1;
+    assert!(pubsub.verify(domain, &tampered).await.is_err());
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_gossip_fans_out_to_multiple_subscribers() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let net3 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn first gossip router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn second gossip router");
+    let router3 = net3
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn third gossip router");
+
+    let topic_id = TopicId::new([9u8; 32]);
+    let topic1 = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open topic");
+    let topic2 = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic from net2");
+    let topic3 = net3
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic from net3");
+
+    // Wait for both subscribers to become neighbors of the publisher before
+    // broadcasting, so the single broadcast below isn't lost to mesh churn.
+    for topic in [&topic2, &topic3] {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let PubSubEvent::NeighborUp(_) = topic.recv().await.expect("topic event") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("subscriber should see the publisher as a neighbor");
+    }
+
+    topic1
+        .broadcast(bytes::Bytes::from_static(b"fan-out payload"))
+        .await
+        .expect("broadcast to all subscribers");
+
+    for topic in [&topic2, &topic3] {
+        let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let PubSubEvent::Received(message) = topic.recv().await.expect("topic event") {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("each subscriber should receive the fan-out broadcast");
+        assert_eq!(received.origin, net1.local_peer_id());
+        assert_eq!(&received.data[..], b"fan-out payload");
+    }
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+    router3.shutdown().await.unwrap();
 }
 
 #[test]
@@ -229,14 +408,14 @@ async fn iroh_router_builder_max_message_size() {
     let large_size = 2 * 1024 * 1024; // 2MB
     let net1 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .max_message_size(large_size)
         .build()
         .await
         .expect("Should create network 1");
     let net2 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network 2");

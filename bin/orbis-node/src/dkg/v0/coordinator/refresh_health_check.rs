@@ -8,11 +8,11 @@ use sha2::{Digest, Sha256};
 use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_RETRY_DELAY};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
-use crate::dkg::v0::messages::DkgMessage;
+use crate::dkg::v0::network::submit_public_contribution;
 use crate::dkg::v0::session_state::{
     DkgPhase, PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate,
 };
-use crate::helpers::identity::is_self_peer_id;
+use crate::dkg::v0::transport::DkgPublicPayload;
 use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
@@ -26,9 +26,6 @@ use crate::sign::v0::messages::{
 
 use super::types::{CoordinatorDkg, CoordinatorReportSigner};
 use super::DkgCoordinator;
-
-const REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS: usize = 3;
-const REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 pub async fn run_selector<D>(
     coord: &DkgCoordinator<D>,
@@ -142,15 +139,7 @@ where
         })
         .ok();
 
-    if let Err(e) = broadcast_result(
-        coord,
-        session_id,
-        &candidate.peer_ids,
-        &statement,
-        signature.clone(),
-    )
-    .await
-    {
+    if let Err(e) = broadcast_result(coord, session_id, &statement, signature.clone()).await {
         tracing::warn!(
             session_id = session_id,
             error = %e,
@@ -167,59 +156,21 @@ where
 async fn broadcast_result<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
-    peer_ids: &[String],
     statement: &RefreshHealthCheckStatement,
     signature: Option<String>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    for peer_id in peer_ids {
-        if is_self_peer_id(&coord.app_state.network, peer_id) {
-            continue;
-        }
-
-        let mut last_error = None;
-        for attempt in 1..=REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS {
-            let msg = DkgMessage::RefreshHealthCheckResult {
-                session_id,
-                from_node_id: 1,
-                statement: statement.clone(),
-                signature: signature.clone(),
-            };
-            match coord
-                .send_message_to_peer(peer_id, msg, Some(session_id))
-                .await
-            {
-                Ok(()) => {
-                    last_error = None;
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                    tracing::warn!(
-                        session_id = session_id,
-                        peer_id = %peer_id,
-                        attempt = attempt,
-                        error = %e,
-                        "Refresh health check: failed to deliver result"
-                    );
-                    if attempt < REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS {
-                        tokio::time::sleep(REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY).await;
-                    }
-                }
-            }
-        }
-
-        if let Some(error) = last_error {
-            return Err(DkgError::NetworkCommunication(format!(
-                "Refresh health check: failed to deliver result to {}: {}",
-                peer_id, error
-            )));
-        }
-    }
-
-    Ok(())
+    submit_public_contribution(
+        coord,
+        session_id,
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement: statement.clone(),
+            signature,
+        },
+    )
+    .await
 }
 
 fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
@@ -235,12 +186,12 @@ pub async fn handle_result<D>(
     from_node_id: u32,
     statement: RefreshHealthCheckStatement,
     signature: Option<String>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
     apply_result(coord, session_id, from_node_id, statement, signature).await?;
-    Ok(None)
+    Ok(())
 }
 
 pub async fn apply_pending_result_if_present<D>(

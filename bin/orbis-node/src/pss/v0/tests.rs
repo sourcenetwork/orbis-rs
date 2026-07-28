@@ -1,6 +1,5 @@
 use crate::dkg::v0::error::DkgError;
 use crate::helpers::auth::current_unix_time;
-use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_with_bulletin, test_db_path};
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use bulletin::{
@@ -177,10 +176,10 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     cleanup_db(&db_path);
 }
 
-/// When the ring's peer list does not include this node at all, `pss_ring`
-/// should reject the refresh/reshare attempt instead of silently standing down.
+/// When SourceHub has finalized a committee that excludes this node, the PSS
+/// scan must securely remove the stale bundle and ring-index entry.
 #[tokio::test]
-async fn test_refresh_ring_rejects_non_member() {
+async fn test_refresh_ring_reconciles_finalized_removed_member() {
     let db_name = "pss_non_member";
 
     // Two fake peer IDs that sort before any real random peer ID.
@@ -205,33 +204,96 @@ async fn test_refresh_ring_rejects_non_member() {
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
 
-    // Our real peer ID is not one of the fake committee members.
-    let our_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
-    let our_node_part = extract_node_part(&our_hex);
-
-    // Confirm our peer is absent from the committee (test precondition).
+    // Confirm our SourceHub signing identity is absent from the finalized
+    // committee, then seed stale secret material left by an offline rotation.
     assert!(
         !ring_payload
             .peer_node_keys
             .iter()
-            .any(|peer_id| extract_node_part(peer_id) == our_node_part),
+            .any(|node_key| node_key == &app_state.node_key),
         "Test setup: our node must not be in the committee for this test to be meaningful"
     );
+    RingShareBundle {
+        share_bytes: vec![1, 2, 3].into(),
+        public_polynomial: "stale-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed stale finalized ring bundle");
 
     let state_arc = Arc::new(app_state);
     let result = super::pss_ring(&state_arc, &entry).await;
 
     assert!(
-        matches!(result, Err(DkgError::Unauthorized(_))),
-        "Non-member should be rejected explicitly: {:?}",
-        result
+        result.is_ok(),
+        "removed-member reconciliation failed: {result:?}"
     );
     assert_eq!(
         state_arc.dkg_session_state.session_count().await,
         0,
-        "No session should be created when this node is not in the committee"
+        "reconciliation must not create a DKG session"
+    );
+    assert!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &entry.ring_pk_str).is_err(),
+        "finalized removal must delete stale secret material"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == entry.ring_pk_str),
+        "finalized removal must delete the stale ring-index entry"
     );
 
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_removed_member_reconciliation_preserves_an_active_ring() {
+    let db_name = "pss_non_member_active";
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "active_fake_pk".to_string(),
+        peer_node_keys: vec!["non-member-node-key".to_string()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: None,
+        reporting: Default::default(),
+    };
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![1, 2, 3].into(),
+        public_polynomial: "active-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed active ring bundle");
+    app_state
+        .dkg_session_state
+        .claim_ring_pss_session(&entry.ring_pk_str, 7)
+        .await;
+    let state = Arc::new(app_state);
+
+    super::pss_ring(&state, &entry).await.unwrap();
+
+    assert!(
+        RingShareBundle::load_by_ring_key(&state.local_storage, &entry.ring_pk_str).is_ok(),
+        "active PSS material must not be reconciled as stale"
+    );
+    assert!(
+        ring_index_entries(&state)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == entry.ring_pk_str),
+        "active PSS ring-index entry must be preserved"
+    );
+    state
+        .dkg_session_state
+        .unmark_ring_pss(&entry.ring_pk_str)
+        .await;
+
+    drop(state);
     cleanup_db(&db_path);
 }
 
@@ -257,12 +319,22 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "malformed-route-test-poly".to_string(),
+        last_pss: 0,
+    }
+    .save_by_ring_key(&app_state.local_storage, ring_pk)
+    .expect("store due refresh bundle");
     let state_arc = Arc::new(app_state);
 
     let result = super::pss_ring(&state_arc, &entry).await;
     assert!(
-        matches!(result, Err(DkgError::InvalidInput(_))),
-        "Expected InvalidInput for unresolved node route, got: {:?}",
+        matches!(
+            result,
+            Err(DkgError::InvalidInput(_)) | Err(DkgError::Unauthorized(_))
+        ),
+        "Expected a route-resolution error for the unresolved node, got: {:?}",
         result
     );
     assert_eq!(
@@ -277,6 +349,40 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
             .await,
         "Refresh setup failure must not leave the ring claimed as in-progress"
     );
+
+    cleanup_db(&db_path);
+}
+
+/// Followers can decide that the canonical leader owns a refresh using the
+/// authenticated ring payload alone. They must not resolve the entire committee's
+/// NodeInfo on every scheduler tick, which becomes quadratic SourceHub load for a
+/// large committee and a short benchmark check interval.
+#[tokio::test]
+async fn test_refresh_follower_skips_committee_route_resolution() {
+    let db_name = "pss_follower_skips_route_resolution";
+    let (app_state, our_node_key, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_follower_route_ring".to_string(),
+        peer_node_keys: vec!["00-missing-canonical-leader".to_string(), our_node_key],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        reporting: Default::default(),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    let state = Arc::new(app_state);
+
+    let result = super::pss_ring(&state, &entry).await;
+    assert!(
+        result.is_ok(),
+        "a follower should stand down without resolving the missing leader route: {result:?}"
+    );
+    assert_eq!(state.dkg_session_state.session_count().await, 0);
 
     cleanup_db(&db_path);
 }
@@ -726,6 +832,28 @@ async fn post_ring_and_seed_index(
     .await
 }
 
+fn seed_routable_node_info(
+    bulletin: &DummyBulletin,
+    node_key: &str,
+    peer_byte: u8,
+    allow_test_policy: bool,
+) {
+    bulletin
+        .set_node_info(
+            node_key.to_string(),
+            NodeInfo {
+                peer_id: hex::encode([peer_byte; 32]),
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: allow_test_policy
+                    .then(|| "test-policy".to_string())
+                    .into_iter()
+                    .collect(),
+                whitelisted_ring_ids: vec![],
+            },
+        )
+        .expect("seed routable test NodeInfo");
+}
+
 async fn post_ring_and_seed_index_with_local_key(
     app_state: &crate::app_state::AppState<DkgImpl>,
     bulletin: &DummyBulletin,
@@ -770,12 +898,14 @@ fn ring_index_entries(app_state: &crate::app_state::AppState<DkgImpl>) -> Vec<Ri
 async fn test_pss_ring_reshare_bypasses_interval() {
     let db_name = "pss_reshare_bypasses_interval";
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+    let new_member = "zzzz-reshare-bypass-member".to_string();
+    seed_routable_node_info(&bulletin, &new_member, 0x91, true);
 
     let ring_payload = RingPayload {
         upgrade_info: Default::default(),
         ring_pk: "pss_reshare_bypass_pk".to_string(),
         peer_node_keys: vec![our_hex.clone()],
-        new_peer_node_keys: Some(vec![our_hex.clone()]),
+        new_peer_node_keys: Some(vec![our_hex.clone(), new_member]),
         new_threshold: None,
         threshold: 1,
         pss_interval: u64::MAX, // interval far out — refresh would skip, but reshare must not
@@ -814,12 +944,14 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
             },
         )
         .expect("override self NodeInfo without allowlist");
+    let new_member = "zzzz-unauthorized-reshare-member".to_string();
+    seed_routable_node_info(&bulletin, &new_member, 0x92, true);
 
     let ring_payload = RingPayload {
         upgrade_info: Default::default(),
         ring_pk: "pss_reshare_unauthorized_pk".to_string(),
         peer_node_keys: vec![our_node_key.clone()],
-        new_peer_node_keys: Some(vec![our_node_key]),
+        new_peer_node_keys: Some(vec![our_node_key, new_member]),
         new_threshold: Some(1),
         threshold: 1,
         pss_interval: 86400,
@@ -854,13 +986,15 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
 async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
     let db_name = "pss_new_threshold_triggers_reshare";
     let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+    let old_member = "zzzz-threshold-change-member".to_string();
+    seed_routable_node_info(&bulletin, &old_member, 0x93, true);
 
     let ring_payload = RingPayload {
         upgrade_info: Default::default(),
         ring_pk: "pss_new_threshold_pk".to_string(),
-        peer_node_keys: vec![our_hex.clone()],
+        peer_node_keys: vec![our_hex.clone(), old_member],
         new_peer_node_keys: None, // only threshold change, no new members
-        new_threshold: Some(1),
+        new_threshold: Some(2),
         threshold: 1,
         pss_interval: 86400,
         block_number_nonce: 0,

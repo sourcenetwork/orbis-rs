@@ -116,6 +116,7 @@ pub fn retain_benchmark_metrics(snapshot: &mut MetricSnapshot) {
             "pss_",
             "pre_",
             "sign_",
+            "p2p_",
             "network_messages_",
             "network_bytes_",
             "grpc_requests_",
@@ -152,5 +153,19 @@ plain_total 9
         let before = BTreeMap::from([("requests_total".to_string(), 10.0)]);
         let after = BTreeMap::from([("requests_total".to_string(), 14.0)]);
         assert_eq!(delta(&before, &after)["requests_total"], 4.0);
+    }
+
+    #[test]
+    fn retains_dkg_p2p_metrics_for_reports() {
+        let mut snapshot = BTreeMap::from([
+            (
+                "p2p_bytes_sent_total{protocol=\"gossip\"}".to_string(),
+                42.0,
+            ),
+            ("unrelated_runtime_metric".to_string(), 7.0),
+        ]);
+        retain_benchmark_metrics(&mut snapshot);
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot.contains_key("p2p_bytes_sent_total{protocol=\"gossip\"}"));
     }
 }

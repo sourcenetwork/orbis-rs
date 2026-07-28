@@ -7,7 +7,7 @@ use crate::dkg::v0::coordinator::evidence::{
     queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
     queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
 };
-use crate::dkg::v0::coordinator::network::report_abandoned_pss_session;
+use crate::dkg::v0::coordinator::reporting::report_abandoned_pss_session;
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
@@ -342,14 +342,24 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             Status::failed_precondition("unsafe PSS stall injection requires app state")
         })?;
 
-        // Drive the real drain-worker path: a genuinely-abandoned refresh session whose only
-        // silent dealer is `peer_id`. The accused must be stopped so the co-signer reachability
-        // probe passes and the resulting node_offline report is accepted.
+        // Drive the real drain-worker path: a genuinely-abandoned refresh or reshare session
+        // whose only silent dealer is `peer_id`. The accused must be stopped so the co-signer
+        // reachability probe passes and the resulting node_offline report is accepted.
+        let kind = if request.new_peer_node_keys.is_empty() {
+            SessionKind::Refresh {
+                ring_pk_hex: request.ring_pk_hex,
+            }
+        } else {
+            SessionKind::Reshare {
+                ring_pk_hex: request.ring_pk_hex,
+                new_peer_node_keys: request.new_peer_node_keys,
+                new_threshold: request.new_threshold,
+                bulletin_post_id: request.bulletin_post_id,
+            }
+        };
         let event = AbandonedPssSession {
             session_id,
-            kind: SessionKind::Refresh {
-                ring_pk_hex: request.ring_pk_hex,
-            },
+            kind,
             ring_id: request.ring_id,
             protocol_version: network::V0.version,
             missing_peer_ids: vec![request.peer_id],

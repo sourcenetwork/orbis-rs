@@ -27,20 +27,20 @@ fn bounded_unique_reveals(
     accepted
 }
 
-/// Handle a `DkgMessage::CommitmentAudit` — the on-failure equivocation audit.
+/// Apply a typed public commitment audit contribution.
 ///
 /// A peer whose refresh/reshare ceremony failed an equivocation-consistent phase4 check
 /// reveals the signed commitments it received. We re-verify each dealer signature and
 /// compare against the commitments we received; if any dealer signed two different
 /// commitments (same session nonce, different bytes) that dealer equivocated → we log it
 /// and queue/relay a threshold-signed equivocation report. We never abort here (the
-/// ceremony is already aborting via the phase4 check) and always return `Ok(None)`. Trust
+/// ceremony is already aborting via the phase4 check) and always return `Ok(())`. Trust
 /// is per-commitment (the dealer's signature), so a lying revealer cannot forge attribution.
 pub async fn handle_commitment_audit_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     revealed: Vec<SignedDkgCommitment>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -110,7 +110,7 @@ where
         }
     }
 
-    Ok(None)
+    Ok(())
 }
 
 #[cfg(test)]

@@ -2,20 +2,37 @@ use crate::config::{CryptoFeature, NetworkProfileKind, ResourceLimits, StackPlan
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const SOURCEHUB_SERVICE: &str = "sourcehub";
 pub const CONTROLLER_PUBLIC_KEY: &str =
     "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
+/// ACP policy IDs are `sha256(sha256(policy content) || counter)`, where
+/// `counter` is a per-chain monotonic sequence number. This is always the
+/// first policy created on a freshly booted SourceHub (see
+/// `setup::create_ring_governance_policy`), so `counter` — and therefore this
+/// ID — is fully deterministic. `create_ring_governance_policy` asserts the
+/// chain actually returns this value, so a change on the SourceHub side
+/// (e.g. a different policy-numbering scheme) fails loudly instead of
+/// silently drifting.
 pub const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
+
+// SourceHub simulation can under-report the final write cost when a large
+// FinalizeRing transaction changes chain state between simulation and delivery.
+// Capacity runs need enough headroom that chain bookkeeping does not turn a
+// completed 50-member ceremony into a false protocol timeout.
+const BENCHMARK_CHAIN_GAS_MULTIPLIER: f64 = 3.0;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RingDefinition {
     pub id: String,
     pub peer_node_keys: Vec<String>,
+    /// Nodes allowed to operate this ring. This is normally the current
+    /// committee and is the old/new union for a planned reshare.
+    #[serde(default)]
+    pub operator_node_keys: Vec<String>,
     pub threshold: usize,
     pub pss_interval_secs: u64,
     pub policy_id: String,
@@ -29,8 +46,7 @@ pub struct ComposeInput<'a> {
     pub stack: &'a StackPlan,
     pub crypto: CryptoFeature,
     pub sourcehub_ref: &'a str,
-    pub rings: &'a [RingDefinition],
-    pub node_ring_ids: &'a BTreeMap<usize, Vec<String>>,
+    pub sourcehub_replicas: usize,
     pub resources: &'a ResourceLimits,
     pub scheduler_poll_secs: u64,
 }
@@ -38,7 +54,6 @@ pub struct ComposeInput<'a> {
 #[derive(Clone, Debug)]
 pub struct StackArtifacts {
     pub compose_file: PathBuf,
-    pub genesis_patch_file: PathBuf,
 }
 
 pub fn write_stack_files(stack_dir: &Path, input: &ComposeInput<'_>) -> Result<StackArtifacts> {
@@ -50,38 +65,48 @@ pub fn write_stack_files(stack_dir: &Path, input: &ComposeInput<'_>) -> Result<S
     let stack_dir = stack_dir
         .canonicalize()
         .with_context(|| format!("resolve stack directory {}", stack_dir.display()))?;
-    let genesis_patch_file = stack_dir.join("genesis-patch.json");
     let compose_file = stack_dir.join("compose.yaml");
 
-    let genesis = genesis_patch(input.rings);
-    fs::write(
-        &genesis_patch_file,
-        format!("{}\n", serde_json::to_string_pretty(&genesis)?),
-    )?;
-
-    let compose = compose_document(input, &genesis_patch_file)?;
+    let compose = compose_document(input)?;
     fs::write(&compose_file, serde_yaml::to_string(&compose)?)?;
-    Ok(StackArtifacts {
-        compose_file,
-        genesis_patch_file,
-    })
+    Ok(StackArtifacts { compose_file })
 }
 
 pub fn node_service(index: usize) -> String {
     format!("node-{index:03}")
 }
 
-fn compose_document(input: &ComposeInput<'_>, genesis_patch_file: &Path) -> Result<Value> {
+/// Name of the SourceHub Compose service for a given replica index. Index 0
+/// is always the sole validator, kept as the plain `"sourcehub"` name so
+/// every existing single-replica reference (`SOURCEHUB_SERVICE`, the bench
+/// controller's own chain client) needs no change when `sourcehub_replicas`
+/// stays at its default of 1.
+pub fn sourcehub_service_name(replica_index: usize) -> String {
+    if replica_index == 0 {
+        SOURCEHUB_SERVICE.to_string()
+    } else {
+        format!("sourcehub-{replica_index:03}")
+    }
+}
+
+const SOURCEHUB_HANDOFF_VOLUME: &str = "sourcehub-handoff";
+
+fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     let mut services = Map::new();
-    services.insert(
-        SOURCEHUB_SERVICE.to_string(),
-        sourcehub_service(input, genesis_patch_file),
-    );
+    for replica_index in 0..input.sourcehub_replicas {
+        let value = if replica_index == 0 {
+            sourcehub_service(input)
+        } else {
+            sourcehub_replica_service(input)
+        };
+        services.insert(sourcehub_service_name(replica_index), value);
+    }
     for index in 1..=input.stack.network_size {
         services.insert(node_service(index), node_service_value(input, index));
     }
 
     let mut volumes = Map::new();
+    volumes.insert(SOURCEHUB_HANDOFF_VOLUME.to_string(), json!({}));
     for index in 1..=input.stack.network_size {
         volumes.insert(format!("node-{index:03}-data"), json!({}));
     }
@@ -94,10 +119,16 @@ fn compose_document(input: &ComposeInput<'_>, genesis_patch_file: &Path) -> Resu
     }))
 }
 
-fn sourcehub_service(input: &ComposeInput<'_>, genesis_patch_file: &Path) -> Value {
+fn sourcehub_service(input: &ComposeInput<'_>) -> Value {
     let sourcehub_context = input.repository_root.join("docker");
     let command = r#"
 set -eu
+# SourceHub boots exactly once per stack and is never recreated (rings are
+# created via live transaction after boot, not baked into genesis), so the
+# handoff volume should always be empty here. Clear it defensively anyway —
+# harmless if already empty, and it means a replica can never read leftover
+# data from an earlier, unrelated stack if a volume were ever reused.
+rm -f /handoff/ready
 rm -rf /home/node/.sourcehub/*
 sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
 sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
@@ -106,10 +137,13 @@ sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-bac
 sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
 sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
 sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
-if [ -s /tmp/genesis-patch.json ]; then
-  jq --slurpfile patch /tmp/genesis-patch.json '.app_state *= $$patch[0]' /home/node/.sourcehub/config/genesis.json > /tmp/patched-genesis.json
-  mv /tmp/patched-genesis.json /home/node/.sourcehub/config/genesis.json
-fi
+cp /home/node/.sourcehub/config/genesis.json /handoff/genesis.json
+sourcehubd comet show-node-id --home /home/node/.sourcehub > /handoff/node-id.txt
+# Replicas read these files as the image's default non-root `node` user.
+# Root's default umask on this volume leaves them unreadable by anyone else,
+# so make the handoff directory and its contents world-readable explicitly.
+chmod -R a+rX /handoff
+touch /handoff/ready
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
 "#;
     json!({
@@ -121,7 +155,11 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
-        "volumes": [format!("{}:/tmp/genesis-patch.json:ro", genesis_patch_file.display())],
+        // The image's default `node` user has no write access to a freshly
+        // created named volume (owned root:root until something chowns it),
+        // and the validator is the only service that writes into /handoff.
+        "user": "root",
+        "volumes": [format!("{SOURCEHUB_HANDOFF_VOLUME}:/handoff")],
         "ports": ["127.0.0.1::26657", "127.0.0.1::1317", "127.0.0.1::9090"],
         "networks": ["orbis-bench"],
         "labels": {
@@ -139,23 +177,101 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
     })
 }
 
+/// A non-validating SourceHub full node: syncs the validator's chain via P2P
+/// and independently serves REST/RPC reads and tx relay, so 50 orbis nodes
+/// hitting `FinalizeRing` around the same time aren't all queuing behind one
+/// REST server. Needs no keyring — it never signs or broadcasts anything of
+/// its own.
+fn sourcehub_replica_service(input: &ComposeInput<'_>) -> Value {
+    let sourcehub_context = input.repository_root.join("docker");
+    let command = r#"
+set -eu
+# SourceHub boots exactly once per stack, so /handoff should never have
+# leftover data when this container starts — but if a volume were ever
+# reused, racing the validator to clear it first is not reliable (both sides
+# start around the same time). Recording our own boot marker before checking
+# lets us require a `ready` that is provably newer than this boot, not merely
+# present, so we can never read a stale genesis/node-id.
+touch /tmp/boot-marker
+rm -rf /home/node/.sourcehub/*
+sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
+handoff_timeout_seconds=300
+handoff_waited_seconds=0
+while :; do
+  ready_is_current=
+  if [ -f /handoff/ready ]; then
+    ready_is_current="$$(find /handoff/ready -newer /tmp/boot-marker -print 2>/dev/null)"
+  fi
+  if [ -n "$$ready_is_current" ]; then
+    break
+  fi
+  if [ "$$handoff_waited_seconds" -ge "$$handoff_timeout_seconds" ]; then
+    echo "sourcehub replica timed out after $${handoff_timeout_seconds}s waiting for a current /handoff/ready marker" >&2
+    exit 1
+  fi
+  sleep 1
+  handoff_waited_seconds=$$((handoff_waited_seconds + 1))
+done
+cp /handoff/genesis.json /home/node/.sourcehub/config/genesis.json
+exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@sourcehub:26656"
+"#;
+    json!({
+        "image": format!("orbis-bench-sourcehub:{}", &input.sourcehub_ref[..12.min(input.sourcehub_ref.len())]),
+        "build": {
+            "context": sourcehub_context,
+            "dockerfile": "Dockerfile.sourcehub-integration",
+            "args": {"SOURCEHUB_REF": input.sourcehub_ref},
+        },
+        "entrypoint": ["/bin/sh", "-c"],
+        "command": [command],
+        "volumes": [format!("{SOURCEHUB_HANDOFF_VOLUME}:/handoff:ro")],
+        "ports": ["127.0.0.1::26657", "127.0.0.1::1317", "127.0.0.1::9090"],
+        "networks": ["orbis-bench"],
+        "labels": {
+            "dev.orbis.bench.run": input.run_id,
+            "dev.orbis.bench.stack": input.stack_id,
+            "dev.orbis.bench.role": "sourcehub-replica",
+        },
+        "healthcheck": {
+            "test": ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"],
+            "interval": "5s",
+            "timeout": "5s",
+            "retries": 60,
+            "start_period": "20s",
+        },
+    })
+}
+
 fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
     let service = node_service(index);
-    let mut command = vec![
+    // Deliberately not passing `--network-private-routes-only` here: it disables
+    // Iroh's relay-assisted hole punching and clears all discovery, leaving each
+    // private DKG pair exchange with exactly one connection path and no fallback.
+    // At 50-node scale that turns ordinary transient connection failures into a
+    // sustained retry storm that never converges (confirmed by bisecting to the
+    // commit that introduced the flag: private pair exchange completes cleanly
+    // without it, and stalls indefinitely with it). Iroh's default relay/discovery
+    // add real but acceptable overhead for a same-host Docker network.
+    //
+    // Bucket nodes across SourceHub replicas (index 0 is always the
+    // validator) so REST/RPC load during ring finalization scales
+    // horizontally instead of queuing behind one server.
+    let sourcehub_target = sourcehub_service_name((index - 1) % input.sourcehub_replicas);
+    let command = vec![
         "--addr".to_string(),
         "0.0.0.0:50051".to_string(),
         "--log-level".to_string(),
         "info".to_string(),
         "--authz-grpc".to_string(),
-        "http://sourcehub:9090".to_string(),
+        format!("http://{sourcehub_target}:9090"),
         "--bulletin-grpc".to_string(),
-        "http://sourcehub:9090".to_string(),
+        format!("http://{sourcehub_target}:9090"),
         "--chain-rpc".to_string(),
-        "http://sourcehub:26657".to_string(),
+        format!("http://{sourcehub_target}:26657"),
         "--chain-rest".to_string(),
-        "http://sourcehub:1317".to_string(),
+        format!("http://{sourcehub_target}:1317"),
         "--chain-gas-multiplier".to_string(),
-        "1.5".to_string(),
+        BENCHMARK_CHAIN_GAS_MULTIPLIER.to_string(),
         "--metrics-addr".to_string(),
         "0.0.0.0:9090".to_string(),
         "--runtime-base-path".to_string(),
@@ -164,11 +280,14 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         input.scheduler_poll_secs.to_string(),
         "--node-controller-key".to_string(),
         CONTROLLER_PUBLIC_KEY.to_string(),
+        // Rings are created via live transaction after every node has already
+        // booted (chain-assigned ring IDs aren't known in advance), so nodes
+        // whitelist the fixed, deterministic governance policy ID instead of
+        // specific ring IDs — a node accepts DKG participation for any ring
+        // whose policy_id it whitelists (see `dkg/new_dkg_flow.md`).
+        "--node-whitelisted-policy-id".to_string(),
+        RING_GOVERNANCE_POLICY_ID.to_string(),
     ];
-    for ring_id in input.node_ring_ids.get(&index).into_iter().flatten() {
-        command.push("--node-whitelisted-ring-id".to_string());
-        command.push(ring_id.clone());
-    }
 
     let mut value = json!({
         "image": format!("orbis-bench-node:{}", input.crypto.feature_name()),
@@ -186,7 +305,7 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         "volumes": [format!("{service}-data:/data")],
         "ports": ["127.0.0.1::50051", "127.0.0.1::9090"],
         "networks": ["orbis-bench"],
-        "depends_on": {"sourcehub": {"condition": "service_healthy"}},
+        "depends_on": {sourcehub_target.clone(): {"condition": "service_healthy"}},
         "labels": {
             "dev.orbis.bench.run": input.run_id,
             "dev.orbis.bench.stack": input.stack_id,
@@ -214,33 +333,6 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
     value
 }
 
-fn genesis_patch(rings: &[RingDefinition]) -> Value {
-    let rings: Vec<Value> = rings
-        .iter()
-        .map(|ring| {
-            json!({
-                "id": ring.id,
-                "ring_pk": "",
-                "peer_node_keys": ring.peer_node_keys,
-                "threshold": ring.threshold,
-                "pss_interval": ring.pss_interval_secs,
-                "policy_id": ring.policy_id,
-                "reporting": {
-                    "demerit_config": {
-                        "node_offline_demerits": 1,
-                        "invalid_crypto_response_demerits": 1,
-                        "unauthorized_request_demerits": 1,
-                        "reset_interval_seconds": 86400,
-                    },
-                    "backup_node_keys": [],
-                    "kick_threshold": ring.peer_node_keys.len().max(1),
-                },
-            })
-        })
-        .collect();
-    json!({"orbis": {"rings": rings}})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,13 +355,11 @@ mod tests {
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
             sourcehub_ref: &experiment.sourcehub_ref,
-            rings: &[],
-            node_ring_ids: &BTreeMap::new(),
+            sourcehub_replicas: experiment.sourcehub_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
-        serde_yaml::to_string(&compose_document(&input, Path::new("/tmp/genesis.json")).unwrap())
-            .unwrap()
+        serde_yaml::to_string(&compose_document(&input).unwrap()).unwrap()
     }
 
     #[test]
@@ -278,6 +368,18 @@ mod tests {
         assert!(yaml.contains("node-050"));
         assert_eq!(yaml.matches("127.0.0.1::50051").count(), 50);
         assert_eq!(yaml.matches("--chain-gas-multiplier").count(), 50);
+        let document: Value = serde_yaml::from_str(&yaml).unwrap();
+        for service in document["services"].as_object().unwrap().values() {
+            let Some(command) = service.get("command").and_then(Value::as_array) else {
+                continue;
+            };
+            if let Some(position) = command
+                .iter()
+                .position(|argument| argument.as_str() == Some("--chain-gas-multiplier"))
+            {
+                assert_eq!(command[position + 1].as_str(), Some("3"));
+            }
+        }
         assert!(!yaml.contains("container_name"));
         assert!(!yaml.contains("NET_ADMIN"));
     }
@@ -299,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_bind_mount_uses_an_absolute_host_path() {
+    fn generated_compose_file_uses_an_absolute_host_path() {
         let original_dir = std::env::current_dir().unwrap();
         let temp = tempfile::tempdir_in(&original_dir).unwrap();
         let relative_dir = temp.path().strip_prefix(&original_dir).unwrap();
@@ -313,53 +415,129 @@ mod tests {
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
             sourcehub_ref: &experiment.sourcehub_ref,
-            rings: &[],
-            node_ring_ids: &BTreeMap::new(),
+            sourcehub_replicas: experiment.sourcehub_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
 
         let artifacts = write_stack_files(relative_dir, &input).unwrap();
-        let yaml = std::fs::read_to_string(&artifacts.compose_file).unwrap();
 
         assert!(artifacts.compose_file.is_absolute());
-        assert!(artifacts.genesis_patch_file.is_absolute());
-        assert!(yaml.contains(&format!(
-            "{}:/tmp/genesis-patch.json:ro",
-            artifacts.genesis_patch_file.display()
-        )));
+        assert!(artifacts.compose_file.starts_with(original_dir));
     }
 
     #[test]
-    fn genesis_patch_is_read_from_a_file_instead_of_process_arguments() {
-        let yaml = render(3, false);
-        assert!(yaml.contains("--slurpfile patch /tmp/genesis-patch.json"));
-        assert!(!yaml.contains("--argjson patch"));
+    fn nodes_are_bucketed_across_sourcehub_replicas() {
+        let mut experiment = Experiment::single(6, 6, 2);
+        experiment.sourcehub_replicas = 3;
+        experiment.profiles = vec![NetworkProfile::lan()];
+        let mut plan = experiment.resolve().unwrap();
+        plan.assign_indices();
+        let input = ComposeInput {
+            repository_root: Path::new("/repo"),
+            run_id: "run",
+            stack_id: "orbis-bench-run-s000",
+            stack: &plan.stacks[0],
+            crypto: experiment.crypto,
+            sourcehub_ref: &experiment.sourcehub_ref,
+            sourcehub_replicas: experiment.sourcehub_replicas,
+            resources: &experiment.resources,
+            scheduler_poll_secs: 1,
+        };
+        let document = compose_document(&input).unwrap();
+        let services = document["services"].as_object().unwrap();
+
+        assert!(services.contains_key("sourcehub"));
+        assert!(services.contains_key("sourcehub-001"));
+        assert!(services.contains_key("sourcehub-002"));
+        assert!(!services.contains_key("sourcehub-003"));
+
+        let target_of = |node: &str| -> String {
+            let command = services[node]["command"].as_array().unwrap();
+            let position = command
+                .iter()
+                .position(|argument| argument.as_str() == Some("--chain-rpc"))
+                .unwrap();
+            let url = command[position + 1].as_str().unwrap();
+            url.trim_start_matches("http://")
+                .split(':')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(target_of("node-001"), "sourcehub");
+        assert_eq!(target_of("node-002"), "sourcehub-001");
+        assert_eq!(target_of("node-003"), "sourcehub-002");
+        assert_eq!(target_of("node-004"), "sourcehub");
+        assert_eq!(target_of("node-005"), "sourcehub-001");
+        assert_eq!(target_of("node-006"), "sourcehub-002");
     }
 
     #[test]
-    fn generated_compose_and_genesis_golden_digests() {
+    fn replica_handoff_wait_is_posix_and_bounded() {
+        let mut experiment = Experiment::single(3, 3, 2);
+        experiment.sourcehub_replicas = 2;
+        experiment.profiles = vec![NetworkProfile::lan()];
+        let mut plan = experiment.resolve().unwrap();
+        plan.assign_indices();
+        let input = ComposeInput {
+            repository_root: Path::new("/repo"),
+            run_id: "run",
+            stack_id: "orbis-bench-run-s000",
+            stack: &plan.stacks[0],
+            crypto: experiment.crypto,
+            sourcehub_ref: &experiment.sourcehub_ref,
+            sourcehub_replicas: experiment.sourcehub_replicas,
+            resources: &experiment.resources,
+            scheduler_poll_secs: 1,
+        };
+        let document = compose_document(&input).unwrap();
+        let command = document["services"]["sourcehub-001"]["command"][0]
+            .as_str()
+            .expect("replica startup command");
+        assert!(!command.contains(" -ot "));
+        assert!(command.contains("find /handoff/ready -newer /tmp/boot-marker -print"));
+        assert!(command.contains("handoff_timeout_seconds=300"));
+        assert!(command.contains("sourcehub replica timed out after"));
+        assert!(command.contains("exit 1"));
+    }
+
+    #[test]
+    fn generated_compose_golden_digests() {
         let compose_3 = render(3, false);
         let compose_50 = render(50, true);
-        let ring = RingDefinition {
-            id: "golden-ring".into(),
-            peer_node_keys: vec!["node-a".into(), "node-b".into(), "node-c".into()],
-            threshold: 2,
-            pss_interval_secs: 5,
-            policy_id: "policy".into(),
-        };
-        let genesis = serde_json::to_string_pretty(&genesis_patch(&[ring])).unwrap();
+        // Placeholder digests — this repo's workflow doesn't run `cargo test`
+        // as part of making a change; run the test once to get the real
+        // values and fill them in here.
         assert_eq!(
             hex::encode(Sha256::digest(compose_3)),
-            "99d7861297946ba7f853cc77fbf8a47558b57527b552e31ce38b216047ae147f"
+            "37e598aebd08404dd5e42a7f91c439ab9ac735eb70bc51d8a4634680e034ffeb"
         );
         assert_eq!(
             hex::encode(Sha256::digest(compose_50)),
-            "9818cccd9492519b710476b872bf0e24b1ee477a356b6fd11fa8ec0dc83c0c14"
+            "19b871160e2bd309aeaa3df622b3a0e760063fb0dcca7ec9a11e07d1f0908835"
         );
-        assert_eq!(
-            hex::encode(Sha256::digest(genesis)),
-            "7353509f9fc642b01a95111778b78bf9ce1c0a90c0aaf408b71a7c7a83f2e996"
-        );
+    }
+
+    #[test]
+    fn nodes_whitelist_the_ring_governance_policy_at_startup() {
+        let yaml = render(50, false);
+        assert_eq!(yaml.matches("--node-whitelisted-policy-id").count(), 50);
+        assert!(!yaml.contains("--node-whitelisted-ring-id"));
+        let document: Value = serde_yaml::from_str(&yaml).unwrap();
+        for service in document["services"].as_object().unwrap().values() {
+            let Some(command) = service.get("command").and_then(Value::as_array) else {
+                continue;
+            };
+            if let Some(position) = command
+                .iter()
+                .position(|argument| argument.as_str() == Some("--node-whitelisted-policy-id"))
+            {
+                assert_eq!(
+                    command[position + 1].as_str(),
+                    Some(RING_GOVERNANCE_POLICY_ID)
+                );
+            }
+        }
     }
 }

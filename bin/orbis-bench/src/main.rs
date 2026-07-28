@@ -4,7 +4,7 @@ use orbis_bench::config::{Experiment, NetworkGroup, RingCase};
 use orbis_bench::docker::{doctor, DockerCompose};
 use orbis_bench::report::generate_report;
 use orbis_bench::results::RunManifest;
-use orbis_bench::runner::{BenchmarkRunner, RunOptions};
+use orbis_bench::runner::{BenchmarkInterrupted, BenchmarkRunner, RunOptions};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -114,31 +114,27 @@ async fn main() -> Result<()> {
             } else {
                 resolve_experiment(&args.experiment)?
             };
-            let output = BenchmarkRunner::new(
+            run_benchmark(BenchmarkRunner::new(
                 experiment,
                 RunOptions {
                     resume: args.resume,
                     keep_network: args.keep_network,
                     stop_after_two_non_viable_sizes: false,
                 },
-            )?
-            .run()
+            )?)
             .await?;
-            println!("benchmark evidence: {}", output.display());
         }
         Command::Sweep(args) => {
             let experiment = resolve_sweep(&args)?;
-            let output = BenchmarkRunner::new(
+            run_benchmark(BenchmarkRunner::new(
                 experiment,
                 RunOptions {
                     resume: args.resume,
                     keep_network: args.keep_network,
                     stop_after_two_non_viable_sizes: true,
                 },
-            )?
-            .run()
+            )?)
             .await?;
-            println!("benchmark evidence: {}", output.display());
         }
         Command::Report { run_dir } => {
             generate_report(&run_dir)?;
@@ -147,6 +143,20 @@ async fn main() -> Result<()> {
         Command::Cleanup { run_dir } => cleanup(&run_dir).await?,
     }
     Ok(())
+}
+
+async fn run_benchmark(runner: BenchmarkRunner) -> Result<()> {
+    match runner.run().await {
+        Ok(output) => {
+            println!("benchmark evidence: {}", output.display());
+            Ok(())
+        }
+        Err(error) if error.downcast_ref::<BenchmarkInterrupted>().is_some() => {
+            eprintln!("{error}");
+            std::process::exit(130);
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn resolve_experiment(args: &ExperimentArgs) -> Result<Experiment> {

@@ -1,10 +1,9 @@
 use super::*;
 use crate::dkg::v0::coordinator::evidence::{
-    build_and_store_commitment_evidence, queue_invalid_refresh_commitment_report,
-    verify_commitment_evidence,
+    queue_invalid_refresh_commitment_report, verify_commitment_evidence,
 };
 use crypto::SignImpl;
-/// Handle a `DkgMessage::Commitment`.
+/// Apply a typed public commitment contribution.
 ///
 /// Deserializes and stores the commitment, optionally triggers polynomial generation
 /// for this node (if this is the first commitment received and we haven't yet
@@ -15,7 +14,7 @@ pub async fn handle_commitment_message<D>(
     from_node_id: u32,
     commitment: Vec<u8>,
     report_evidence: Option<SignedDkgCommitment>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -114,7 +113,7 @@ where
                     inserted = inserted,
                     "DKG Coordinator: Fresh commitment arrived before hash; queued for replay"
                 );
-                return Ok(None);
+                return Ok(());
             }
         }
     }
@@ -252,96 +251,9 @@ where
             .get_peer_ids(&session_id)
             .await
         {
-            let (commitment_bytes, node_id, is_reshare, role) = coord
-                .app_state
-                .dkg_session_state
-                .with_state(&session_id, |state| {
-                    let bytes =
-                        serialize_commitment_coefficients(&state.node.commitment().coefficients)?;
-                    Ok::<_, DkgError>((
-                        bytes,
-                        state.node.node_id(),
-                        matches!(state.kind, SessionKind::Reshare { .. }),
-                        state.node.role(),
-                    ))
-                })
-                .await
-                .ok_or_else(|| session_not_found(session_id))??;
-            let report_evidence = build_and_store_commitment_evidence(
-                coord,
-                session_id,
-                node_id,
-                commitment_bytes.clone(),
-            )
-            .await?;
-
-            let mut sent_count = 0;
-            let mut expected_count = 0;
-            for peer_id_str in &peer_ids {
-                if is_self_peer_id(&coord.app_state.network, peer_id_str) {
-                    continue;
-                }
-                expected_count += 1;
-
-                let commitment_msg = DkgMessage::Commitment {
-                    session_id,
-                    from_node_id: node_id,
-                    commitment: commitment_bytes.clone(),
-                    report_evidence: report_evidence.clone(),
-                };
-
-                if coord
-                    .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
-                    .await
-                    .inspect_err(|error| {
-                        tracing::error!(
-                            peer_id = %peer_id_str,
-                            error = %error,
-                            "Failed to send commitment to peer"
-                        );
-                    })
-                    .is_ok()
-                {
-                    sent_count += 1;
-                }
-            }
-
-            tracing::info!(
-                sent = sent_count,
-                expected = expected_count,
-                "DKG Coordinator: Sent our commitment to peers"
-            );
-
-            if sent_count < expected_count && !is_reshare {
-                tracing::error!(
-                    sent = sent_count,
-                    expected = expected_count,
-                    session_id = session_id,
-                    "DKG Coordinator: Could not send commitment to all peers - failing DKG to preserve expected redundancy"
-                );
-                coord.remove_session(session_id).await;
-                tracing::debug!(
-                    session_id = session_id,
-                    "Cleaned up session after commitment send failure"
-                );
-                return Err(DkgError::NetworkCommunication(format!(
-                    "Failed to send commitment to all peers: sent to {} of {}",
-                    sent_count, expected_count
-                )));
-            }
-
-            if sent_count < expected_count {
-                tracing::warn!(
-                    sent = sent_count,
-                    expected = expected_count,
-                    session_id = session_id,
-                    "Reshare: commitment broadcast did not reach every new-committee peer; continuing until threshold selection or timeout"
-                );
-            }
-
-            if is_reshare && role != DkgRole::Receiver {
-                coord.initiate_phase2_shares(session_id, &peer_ids).await?;
-            }
+            coord
+                .initiate_phase1_commitments(session_id, &peer_ids)
+                .await?;
         }
     }
 
@@ -400,5 +312,5 @@ where
         });
     }
 
-    Ok(None)
+    Ok(())
 }

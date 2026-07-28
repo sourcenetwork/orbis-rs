@@ -3,7 +3,7 @@
 //! This module defines the message types used for threshold BLS signing
 //! protocol communication between nodes over the network.
 
-use crate::reporting::v0::types::ReportSigningContext;
+use crate::reporting::v0::types::{RelayRequestStatement, ReportSigningContext};
 use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
@@ -30,7 +30,7 @@ pub struct PolicyContext {
     /// The relayer's signed record of this request, so a peer whose ACP re-check fails can attribute
     /// the relaying node via an `unauthorized_request` report. Always set on the live relay path;
     /// `None` only in unit tests that construct the context directly.
-    pub relay_statement: Option<crate::reporting::v0::types::RelayRequestStatement>,
+    pub relay_statement: Option<RelayRequestStatement>,
     pub relay_signature: Vec<u8>,
 }
 
@@ -65,7 +65,7 @@ pub struct RingReshareUpdateContext {
 ///
 /// This signature is never posted or persisted. It exists only to prove that at
 /// least a threshold subset can sign using the refreshed active public polynomial.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RefreshHealthCheckStatement {
     /// Domain separator, must equal [`REFRESH_HEALTH_CHECK_DOMAIN`].
     pub domain: String,

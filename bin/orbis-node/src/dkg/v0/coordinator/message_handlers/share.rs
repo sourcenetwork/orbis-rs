@@ -5,11 +5,12 @@ use crate::dkg::v0::coordinator::evidence::{
 use crypto::error::CryptoError;
 use crypto::SignImpl;
 
-/// Handle a `DkgMessage::Share`.
+/// Apply a typed private share delivery.
 ///
 /// Validates the share is addressed to this node, deserializes it, passes it to the
 /// crypto layer for verification against the sender's commitment, then checks whether
 /// Phase 2 is complete.
+#[cfg(test)]
 pub async fn handle_share_message<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -18,7 +19,43 @@ pub async fn handle_share_message<D>(
     share_value: Vec<u8>,
     nonce: [u8; 16],
     report_evidence: Option<SignedDkgShare>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if accept_share_message(
+        coord,
+        session_id,
+        from_node_id,
+        to_node_id,
+        share_value,
+        nonce,
+        report_evidence,
+    )
+    .await?
+    {
+        drive_accepted_share(coord, session_id, from_node_id).await?;
+    }
+
+    Ok(())
+}
+
+/// Validate and durably record a private share without advancing the ceremony.
+///
+/// The private pair transport uses this before emitting its digest ACK. Phase
+/// advancement is deliberately separate because the final share can enter
+/// phase 4 and wait on SourceHub; transport acknowledgement must only cover
+/// crypto validation and local state acceptance, not the rest of the ceremony.
+pub(crate) async fn accept_share_message<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    from_node_id: u32,
+    to_node_id: u32,
+    share_value: Vec<u8>,
+    nonce: [u8; 16],
+    report_evidence: Option<SignedDkgShare>,
+) -> Result<bool>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -86,7 +123,7 @@ where
             from_node_id = from_node_id,
             "Reshare: ignoring straggler share from unselected dealer"
         );
-        return Ok(None);
+        return Ok(false);
     }
 
     let share_val = match <D::ShareValue>::from_bytes(share_value.as_slice()) {
@@ -116,7 +153,7 @@ where
                         error = %e,
                         "DKG Coordinator: queued invalid_crypto_response report for undeserializable DKG share"
                     );
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
             return Err(DkgError::Deserialization(format!(
@@ -143,9 +180,10 @@ where
     )
     .await?;
 
-    match try_receive_share(coord, session_id, share.clone()).await? {
+    let accepted = match try_receive_share(coord, session_id, share.clone()).await? {
         Ok(()) => {
-            record_accepted_share(coord, session_id, from_node_id, to_node_id).await?;
+            record_accepted_share_state(coord, session_id, from_node_id, to_node_id).await?;
+            true
         }
         Err(CryptoError::CommitmentMissing(missing_node_id)) if missing_node_id == from_node_id => {
             let inserted = coord
@@ -162,6 +200,7 @@ where
                 inserted = inserted,
                 "DKG Coordinator: Share arrived before commitment; queued for replay"
             );
+            false
         }
         Err(e) => {
             if let Some(report_evidence) = report_evidence {
@@ -174,7 +213,7 @@ where
                         error = %e,
                         "DKG Coordinator: queued invalid_crypto_response report for bad DKG share"
                     );
-                    return Ok(None);
+                    return Ok(false);
                 }
             }
             return Err(DkgError::ShareVerificationFailed(format!(
@@ -182,9 +221,9 @@ where
                 e
             )));
         }
-    }
+    };
 
-    Ok(None)
+    Ok(accepted)
 }
 
 pub(super) async fn receive_and_record_share<D>(
@@ -249,6 +288,19 @@ async fn record_accepted_share<D>(
 where
     D: CoordinatorDkg,
 {
+    record_accepted_share_state(coord, session_id, from_node_id, to_node_id).await?;
+    drive_accepted_share(coord, session_id, from_node_id).await
+}
+
+async fn record_accepted_share_state<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    from_node_id: u32,
+    to_node_id: u32,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
     tracing::debug!(
         from_node_id = from_node_id,
         to_node_id = to_node_id,
@@ -262,13 +314,22 @@ where
         .record_received_share(&session_id, from_node_id)
         .await;
 
+    Ok(())
+}
+
+pub(crate) async fn drive_accepted_share<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    from_node_id: u32,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
     phases::drive_event(
         coord,
         session_id,
         DkgEvent::ShareRecorded { from_node_id },
         None,
     )
-    .await?;
-
-    Ok(())
+    .await
 }

@@ -414,6 +414,7 @@ where
             ring_key,
             session_id,
             bulletin_post_id,
+            false,
         );
         return Ok(());
     }
@@ -470,61 +471,10 @@ where
         return Ok(());
     }
 
-    // Revealer identity + target receiver set depend on the ceremony kind: reshare
-    // receivers are the new committee (keyed by new-committee node id); refresh receivers
-    // are the current committee.
-    let resolved = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            if matches!(state.kind, SessionKind::Reshare { .. }) {
-                let params = state.reshare.params.as_ref().ok_or_else(|| {
-                    DkgError::InvalidState(
-                        "Reshare commitment audit missing reshare params".to_string(),
-                    )
-                })?;
-                let revealer = params.new_node_id.ok_or_else(|| {
-                    DkgError::InvalidState(
-                        "Reshare commitment audit missing new committee node id".to_string(),
-                    )
-                })?;
-                let targets: Vec<String> = state
-                    .routing
-                    .reshare_new_node_id_to_peer_id
-                    .values()
-                    .cloned()
-                    .collect();
-                Ok::<_, DkgError>((revealer, targets))
-            } else {
-                Ok::<_, DkgError>((state.node.node_id(), state.routing.peer_ids.clone()))
-            }
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))??;
-
-    let (revealer_node_id, target_peers) = resolved;
-
-    let message = DkgMessage::CommitmentAudit {
+    submit_public_contribution(
+        coord,
         session_id,
-        revealer_node_id,
-        revealed,
-    };
-
-    for peer in target_peers {
-        if is_self_peer_id(&coord.app_state.network, &peer) {
-            continue;
-        }
-        if let Err(error) = coord
-            .send_message_to_peer(&peer, message.clone(), Some(session_id))
-            .await
-        {
-            tracing::debug!(
-                peer_id = %peer,
-                error = %error,
-                "DKG Coordinator: failed to send commitment-audit reveal"
-            );
-        }
-    }
-
-    Ok(())
+        DkgPublicPayload::CommitmentAudit { revealed },
+    )
+    .await
 }

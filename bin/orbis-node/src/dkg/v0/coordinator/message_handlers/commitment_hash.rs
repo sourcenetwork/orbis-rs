@@ -7,7 +7,7 @@ pub async fn handle_commitment_hash_message<D>(
     session_id: u128,
     from_node_id: u32,
     commitment_hash: [u8; 32],
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -99,5 +99,5 @@ where
     )
     .await?;
 
-    Ok(None)
+    Ok(())
 }

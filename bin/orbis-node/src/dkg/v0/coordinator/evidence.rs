@@ -10,7 +10,8 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{deserialize_wire_commitment, session_not_found};
-use crate::dkg::v0::messages::{DkgMessage, SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::network::relay_invalid_commitment_evidence;
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::node_key_for_canonical_node_id;
@@ -310,7 +311,7 @@ pub async fn handle_invalid_share_evidence_relay<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
     report_evidence: SignedDkgShare,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -354,7 +355,7 @@ where
     }
 
     queue_invalid_share_report(coord.app_state.clone(), coord.routes, verified).await?;
-    Ok(None)
+    Ok(())
 }
 
 /// Two commitments are equivocation iff the same dealer signed both for the same session
@@ -405,55 +406,7 @@ async fn relay_equivocation_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    let current_peer_ids = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            state
-                .routing
-                .node_id_to_peer_id
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-    if current_peer_ids.is_empty() {
-        return Err(DkgError::InvalidState(
-            "cannot relay DKG equivocation evidence without current committee routes".to_string(),
-        ));
-    }
-
-    let mut sent = 0usize;
-    for peer_id in current_peer_ids {
-        let msg = DkgMessage::DkgInvalidCommitmentEvidence {
-            session_id,
-            commitment_a: commitment_a.clone(),
-            commitment_b: commitment_b.clone(),
-        };
-        if coord
-            .send_message_to_peer(&peer_id, msg, Some(session_id))
-            .await
-            .inspect_err(|error| {
-                tracing::warn!(
-                    session_id = session_id,
-                    peer_id = %peer_id,
-                    error = %error,
-                    "Failed to relay DKG equivocation evidence to current committee peer"
-                );
-            })
-            .is_ok()
-        {
-            sent += 1;
-        }
-    }
-
-    if sent == 0 {
-        return Err(DkgError::NetworkCommunication(
-            "failed to relay DKG equivocation evidence to any current committee peer".to_string(),
-        ));
-    }
-    Ok(())
+    relay_invalid_commitment_evidence(coord, session_id, commitment_a, commitment_b).await
 }
 
 pub async fn handle_invalid_commitment_evidence_relay<D>(
@@ -461,7 +414,7 @@ pub async fn handle_invalid_commitment_evidence_relay<D>(
     session_id: u128,
     commitment_a: SignedDkgCommitment,
     commitment_b: SignedDkgCommitment,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -519,7 +472,7 @@ where
         verified_b,
     )
     .await?;
-    Ok(None)
+    Ok(())
 }
 
 async fn evidence_binding<D>(
@@ -878,55 +831,7 @@ async fn relay_invalid_share_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    let current_peer_ids = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            state
-                .routing
-                .node_id_to_peer_id
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
-    if current_peer_ids.is_empty() {
-        return Err(DkgError::InvalidState(
-            "cannot relay DKG bad-share evidence without current committee routes".to_string(),
-        ));
-    }
-
-    let mut sent = 0usize;
-    for peer_id in current_peer_ids {
-        let msg = DkgMessage::DkgInvalidShareEvidence {
-            session_id,
-            receiver_node_id: evidence.statement.to_node_id,
-            report_evidence: evidence.clone(),
-        };
-        if coord
-            .send_message_to_peer(&peer_id, msg, Some(session_id))
-            .await
-            .inspect_err(|error| {
-                tracing::warn!(
-                    session_id = session_id,
-                    peer_id = %peer_id,
-                    error = %error,
-                    "Failed to relay DKG bad-share evidence to current committee peer"
-                );
-            })
-            .is_ok()
-        {
-            sent += 1;
-        }
-    }
-
-    if sent == 0 {
-        return Err(DkgError::NetworkCommunication(
-            "failed to relay DKG bad-share evidence to any current committee peer".to_string(),
-        ));
-    }
-    Ok(())
+    crate::dkg::v0::network::relay_invalid_share_evidence(coord, session_id, evidence).await
 }
 
 async fn local_node_is_current_route_member<D>(

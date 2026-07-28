@@ -7,7 +7,7 @@ use common::blockchain::{
         Relationship, SetRelationshipCmd, Subject, SubjectKind,
     },
     bank::{Coin, MsgSend},
-    orbis::MsgUpdateNodePeerId,
+    orbis::{DemeritConfig, MsgUpdateNodePeerId, ReportingConfig},
     SourceHubClient,
 };
 use cosmrs::Any;
@@ -192,11 +192,64 @@ pub async fn update_peer_addresses(
     broadcast_bounded(client, messages, maximum_batch_size).await
 }
 
-pub async fn create_ring_governance(
+/// Create every planned ring on-chain via `MsgCreateRing`, writing the
+/// chain-assigned ring ID back into each `RingDefinition`. Rings are created
+/// one transaction at a time (each needs its own decoded response to learn
+/// its ID, so unlike `fund_nodes`/`update_peer_addresses` these can't be
+/// folded into `broadcast_bounded`'s batching).
+pub async fn create_rings_on_chain<'a>(
     client: &SourceHubClient,
-    rings: &[RingDefinition],
-    maximum_batch_size: usize,
-) -> Result<BatchOutcome> {
+    rings: impl Iterator<Item = &'a mut RingDefinition>,
+    protocol_version: u64,
+) -> Result<()> {
+    for ring in rings {
+        let reporting = ReportingConfig {
+            demerit_config: Some(DemeritConfig {
+                node_offline_demerits: 1,
+                invalid_crypto_response_demerits: 1,
+                unauthorized_request_demerits: 1,
+                reset_interval_seconds: 86400,
+            }),
+            backup_node_keys: Vec::new(),
+            kick_threshold: ring.peer_node_keys.len().max(1) as u64,
+        };
+        // A ring's chain identity is derived from creator + these parameters
+        // + nonce. When ring_size == network_size, every trial's ring has
+        // identical members/threshold/pss_interval/policy_id, so a constant
+        // nonce (e.g. always None) collides as "ring already exists" from
+        // the second otherwise-identical ring onward. A fresh UUID per ring
+        // keeps every creation unique regardless of how many trials share
+        // the same membership.
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let (_, ring_id) = client
+            .orbis_create_ring_get_id(
+                ring.peer_node_keys.clone(),
+                ring.threshold as u32,
+                ring.pss_interval_secs,
+                &ring.policy_id,
+                Some(nonce),
+                protocol_version,
+                Some(reporting),
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "create ring on-chain (threshold {}, {} members)",
+                    ring.threshold,
+                    ring.peer_node_keys.len()
+                )
+            })?;
+        ring.id = ring_id;
+    }
+    Ok(())
+}
+
+/// Create the ACP governance policy that rings are tied to. Must run before
+/// any `MsgCreateRing` — the chain rejects a ring whose `policy_id` doesn't
+/// already exist. Returns the chain-assigned policy ID, which is expected to
+/// equal `RING_GOVERNANCE_POLICY_ID` since this is always the first policy
+/// created on a fresh chain (see that constant's doc comment).
+pub async fn create_ring_governance_policy(client: &SourceHubClient) -> Result<String> {
     let existing: HashSet<String> = client
         .acp_list_policy_ids()
         .await?
@@ -226,18 +279,44 @@ pub async fn create_ring_governance(
         .signer()
         .ok_or_else(|| anyhow!("governance client has no signer"))?
         .address();
+    let message = register_object_message(&creator, &policy_id, "ring_policy", &policy_id);
+    let result = broadcast_bounded(client, vec![message], 1).await?;
+    if !result.failed_attempts.is_empty() {
+        bail!(
+            "register ring_policy ACP object failed: {:?}",
+            result.failed_attempts
+        );
+    }
+    Ok(policy_id)
+}
+
+/// Grant each ring's committee `operator` so ring-governance transactions
+/// (reshare, pss interval changes, etc.) are authorized. Does *not* register
+/// the ring as an ACP object — `MsgCreateRing`'s chain-side handler already
+/// does that itself as part of ring creation
+/// (`Keeper.registerRingACPObject` in SourceHub's `x/orbis/keeper/msg_server.go`);
+/// registering it again here fails with "object already registered". Rings
+/// must already exist on-chain (via `create_rings_on_chain`) and the
+/// governance policy must already exist (via
+/// `create_ring_governance_policy`) before calling this.
+pub async fn register_ring_governance(
+    client: &SourceHubClient,
+    rings: &[RingDefinition],
+    maximum_batch_size: usize,
+) -> Result<BatchOutcome> {
+    let creator = client
+        .signer()
+        .ok_or_else(|| anyhow!("governance client has no signer"))?
+        .address();
+    let policy_id = RING_GOVERNANCE_POLICY_ID.to_string();
     let mut messages = Vec::new();
-    messages.push(register_object_message(
-        &creator,
-        &policy_id,
-        "ring_policy",
-        &policy_id,
-    ));
     for ring in rings {
-        messages.push(register_object_message(
-            &creator, &policy_id, "ring", &ring.id,
-        ));
-        for node_key in &ring.peer_node_keys {
+        let operator_node_keys = if ring.operator_node_keys.is_empty() {
+            &ring.peer_node_keys
+        } else {
+            &ring.operator_node_keys
+        };
+        for node_key in operator_node_keys {
             let relationship = Relationship {
                 object: Some(Object {
                     resource: "ring".to_string(),

@@ -15,6 +15,7 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
+use crate::iroh::pubsub::IrohPubSub;
 use crate::iroh::router::IrohRouterBuilder;
 use crate::metrics;
 use crate::r#trait::{
@@ -43,6 +44,8 @@ pub struct IrohNetwork {
     local_peer_id: PeerId,
     config: IrohNetworkConfig,
     handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
+    gossip: iroh_gossip::net::Gossip,
+    pubsub: Arc<IrohPubSub>,
 }
 
 impl IrohNetwork {
@@ -76,8 +79,9 @@ pub struct IrohNetworkBuilder {
     config: IrohNetworkConfig,
     secret_key: Option<SecretKey>,
     bind_addr_v4: Option<SocketAddrV4>,
-    no_relay: bool,
+    private_routes_only: bool,
     idle_timeout_ms: Option<u32>,
+    keep_alive_interval_ms: Option<u64>,
 }
 
 impl IrohNetworkBuilder {
@@ -106,10 +110,28 @@ impl IrohNetworkBuilder {
         self
     }
 
-    /// Disable the relay (DERP) server. Useful for in-process tests where all
-    /// nodes are on the same machine and a relay would only add latency.
-    pub fn no_relay(mut self) -> Self {
-        self.no_relay = true;
+    /// Disable public relays, NAT hole-punch assistance, and the default
+    /// public discovery services.
+    ///
+    /// This does more than skip peer *discovery* — `RelayMode::Disabled` also
+    /// removes Iroh's relay-assisted NAT traversal and the relayed fallback
+    /// data path used when a direct UDP connection can never be established.
+    /// Knowing a peer's address (e.g. from SourceHub `NodeInfo`) is not the
+    /// same as that address being directly dialable: orbis-node publishes its
+    /// own local bind socket with no public-IP/NAT detection, so on any
+    /// topology where direct reachability isn't already guaranteed out of
+    /// band, relay is the only connectivity fallback.
+    ///
+    /// Use this only when every peer has an authoritative *and directly
+    /// UDP-reachable* route with no NAT/firewall in the path — such as an
+    /// isolated Docker network or an in-process test network. Do not enable
+    /// this for production deployments where committee members run on
+    /// independent infrastructure (different clouds, home/office networks,
+    /// etc.), since a single unreachable member permanently fails the DKG
+    /// (fresh DKG has no qualified-subset fallback). The Orbis static Gossip
+    /// provider remains available for explicitly supplied peer routes.
+    pub fn private_routes_only(mut self) -> Self {
+        self.private_routes_only = true;
         self
     }
 
@@ -121,6 +143,12 @@ impl IrohNetworkBuilder {
     /// block callers.
     pub fn idle_timeout_ms(mut self, ms: u32) -> Self {
         self.idle_timeout_ms = Some(ms);
+        self
+    }
+
+    /// Send QUIC keep-alives while ceremony connections are active.
+    pub fn keep_alive_interval_ms(mut self, ms: u64) -> Self {
+        self.keep_alive_interval_ms = Some(ms);
         self
     }
 
@@ -136,13 +164,20 @@ impl IrohNetworkBuilder {
             builder = builder.bind_addr_v4(addr);
         }
 
-        if self.no_relay {
-            builder = builder.relay_mode(iroh::RelayMode::Disabled);
+        if self.private_routes_only {
+            builder = builder
+                .relay_mode(iroh::RelayMode::Disabled)
+                .clear_discovery();
         }
 
-        if let Some(ms) = self.idle_timeout_ms {
+        if self.idle_timeout_ms.is_some() || self.keep_alive_interval_ms.is_some() {
             let mut transport = TransportConfig::default();
-            transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+            if let Some(ms) = self.idle_timeout_ms {
+                transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+            }
+            if let Some(ms) = self.keep_alive_interval_ms {
+                transport.keep_alive_interval(Some(std::time::Duration::from_millis(ms)));
+            }
             builder = builder.transport_config(transport);
         }
 
@@ -154,11 +189,24 @@ impl IrohNetworkBuilder {
         let node_id = endpoint.id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
 
+        let static_provider = iroh::discovery::static_provider::StaticProvider::new();
+        endpoint.discovery().add(static_provider.clone());
+        let gossip = iroh_gossip::net::Gossip::builder()
+            .max_message_size(self.config.max_message_size)
+            .spawn(endpoint.clone());
+        let pubsub = Arc::new(IrohPubSub::new(
+            endpoint.clone(),
+            gossip.clone(),
+            static_provider,
+        ));
+
         Ok(IrohNetwork {
             endpoint,
             local_peer_id: peer_id,
             config: self.config,
             handlers: Arc::new(RwLock::new(HashMap::new())),
+            gossip,
+            pubsub,
         })
     }
 }
@@ -262,8 +310,15 @@ impl Network for IrohNetwork {
         self.endpoint.bound_sockets()
     }
 
+    fn pubsub(&self) -> Option<Arc<dyn crate::pubsub::PubSub>> {
+        Some(self.pubsub.clone())
+    }
+
     fn create_router_builder(&self) -> Result<Box<dyn RouterBuilderTrait>> {
-        Ok(Box::new(IrohRouterBuilder::new(self.endpoint.clone())))
+        Ok(Box::new(IrohRouterBuilder::new(
+            self.endpoint.clone(),
+            Some(self.gossip.clone()),
+        )))
     }
 }
 
