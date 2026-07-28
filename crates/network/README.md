@@ -93,7 +93,7 @@ relayed DKG contribution.
 | `Network` | `IrohNetwork` | Connect, listen, build router, inspect bound addresses |
 | `PeerConnection` | `IrohPeerConnection` | Open independent streams and close a peer connection |
 | `Connection` | `IrohStreamWrapper` | Send and receive framed direct messages |
-| `AuthenticatedPubSub` | Iroh pub-sub implementation | Join, broadcast, receive verified-origin events |
+| `PubSub` | Iroh pub-sub implementation | Join, broadcast, receive verified-origin events |
 | `RouterBuilder` | `IrohRouterBuilder` | Register ALPN handlers and ingress limits |
 | `Router` | `IrohRouterWrapper` | Own and shut down the endpoint router |
 

@@ -315,6 +315,13 @@ async fn reconcile_finalized_removed_member<D>(
 where
     D: Dkg + Clone + 'static,
 {
+    if app_state
+        .dkg_session_state
+        .is_ring_pss_active(&entry.ring_pk_str)
+        .await
+    {
+        return Ok(());
+    }
     let _guard = app_state.ring_index_lock.lock().await;
     app_state
         .local_storage

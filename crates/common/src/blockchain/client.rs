@@ -226,6 +226,7 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let _guard = self.tx_lock.lock().await;
         let account_info = self.get_account(&signer.address()).await?;
         signer.set_account_number(account_info.account_number);
         signer.set_nonce(account_info.sequence);
@@ -890,7 +891,7 @@ struct GasInfo {
 #[cfg(test)]
 mod tests {
     use super::{SourceHubClient, RPC_POOL_IDLE_TIMEOUT};
-    use crate::blockchain::ChainConfig;
+    use crate::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
     use serde_json::Value;
     use std::io;
     use std::sync::Arc;
@@ -1011,5 +1012,64 @@ mod tests {
 
         shutdown.notify_one();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resync_account_holds_the_transaction_lock_during_query_and_update() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let config = ChainConfig::builder()
+            .rpc_url(Some(endpoint.clone()))
+            .rest_url(Some(endpoint))
+            .build();
+        let mut client = SourceHubClient::new(config.clone()).await.unwrap();
+        client.signer = Some(TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).unwrap());
+        let client = Arc::new(client);
+        let tx_guard = client.tx_lock.lock().await;
+        let resync_client = client.clone();
+        let resync = tokio::spawn(async move { resync_client.resync_account().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "account query must wait for an in-flight transaction"
+        );
+        drop(tx_guard);
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("account query should start after transaction unlock")
+            .unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let count = stream.read(&mut chunk).await.unwrap();
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let address = client.signer().unwrap().address();
+        let body = serde_json::json!({
+            "account": {
+                "@type": "/cosmos.auth.v1beta1.BaseAccount",
+                "address": address,
+                "account_number": "42",
+                "sequence": "7"
+            }
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        assert_eq!(resync.await.unwrap().unwrap(), (42, 7));
+        let signer = client.signer().unwrap();
+        assert_eq!(signer.account_number(), 42);
+        assert_eq!(signer.nonce(), 7);
     }
 }

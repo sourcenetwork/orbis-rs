@@ -288,6 +288,7 @@ pub(crate) enum PublicContributionRecordOutcome {
     Recorded,
     DuplicateSame,
     ConflictingDuplicate,
+    StaleAttempt,
     MissingSession,
 }
 
@@ -1461,7 +1462,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> PublicContributionRecordOutcome {
         self.with_state_mut(session_id, |state| {
             if state.transport.attempt_id != Some(attempt_id) {
-                return PublicContributionRecordOutcome::ConflictingDuplicate;
+                return PublicContributionRecordOutcome::StaleAttempt;
             }
             let transport = &mut state.transport;
             match transport
@@ -2897,7 +2898,7 @@ mod tests {
                 exact,
             )
             .await,
-            PublicContributionRecordOutcome::ConflictingDuplicate,
+            PublicContributionRecordOutcome::StaleAttempt,
             "a stale attempt cannot populate the active attempt"
         );
     }

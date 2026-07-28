@@ -247,6 +247,56 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
     cleanup_db(&db_path);
 }
 
+#[tokio::test]
+async fn test_removed_member_reconciliation_preserves_an_active_ring() {
+    let db_name = "pss_non_member_active";
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "active_fake_pk".to_string(),
+        peer_node_keys: vec!["non-member-node-key".to_string()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: None,
+        reporting: Default::default(),
+    };
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![1, 2, 3].into(),
+        public_polynomial: "active-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed active ring bundle");
+    app_state
+        .dkg_session_state
+        .claim_ring_pss_session(&entry.ring_pk_str, 7)
+        .await;
+    let state = Arc::new(app_state);
+
+    super::pss_ring(&state, &entry).await.unwrap();
+
+    assert!(
+        RingShareBundle::load_by_ring_key(&state.local_storage, &entry.ring_pk_str).is_ok(),
+        "active PSS material must not be reconciled as stale"
+    );
+    assert!(
+        ring_index_entries(&state)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == entry.ring_pk_str),
+        "active PSS ring-index entry must be preserved"
+    );
+    state
+        .dkg_session_state
+        .unmark_ring_pss(&entry.ring_pk_str)
+        .await;
+
+    drop(state);
+    cleanup_db(&db_path);
+}
+
 /// A malformed peer list must not leave the ring marked as in-progress when
 /// refresh setup fails before any session is created.
 #[tokio::test]

@@ -274,6 +274,23 @@ fn peer_matches_route(peer: &PeerId, route: &str) -> bool {
     hex::encode(peer.as_bytes()) == extract_node_part(route).to_lowercase()
 }
 
+fn leader_bootstrap(
+    local_node_key: &str,
+    leader_node_key: &str,
+    leader_route: &str,
+) -> Result<Vec<PeerId>> {
+    if local_node_key == leader_node_key {
+        return Ok(Vec::new());
+    }
+    let leader_node_id = extract_node_part(leader_route);
+    let leader_bytes = hex::decode(&leader_node_id).map_err(|error| {
+        DkgError::InvalidInput(format!(
+            "leader route contains an invalid hex node ID: {error}"
+        ))
+    })?;
+    Ok(vec![PeerId::from_bytes(&leader_bytes)])
+}
+
 struct CeremonyStartGuard {
     ceremony_id: u128,
     lock: Weak<tokio::sync::Mutex<()>>,
@@ -1997,6 +2014,26 @@ where
 
 const RESHARE_DEALER_INCLUSION_GRACE: Duration = Duration::from_secs(3);
 
+#[derive(Debug, Eq, PartialEq)]
+enum ResharePreparationErrorAction {
+    Retry,
+    ExcludeOld,
+    Fail,
+}
+
+fn reshare_preparation_error_action(
+    is_next_member: bool,
+    error: &DkgError,
+) -> ResharePreparationErrorAction {
+    if retryable_control_error(error) {
+        ResharePreparationErrorAction::Retry
+    } else if is_next_member {
+        ResharePreparationErrorAction::Fail
+    } else {
+        ResharePreparationErrorAction::ExcludeOld
+    }
+}
+
 async fn prepare_transport_participants<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -2078,6 +2115,7 @@ where
         .filter(|route| is_self_peer_id(&state.network, route))
         .map(|route| normalize(route))
         .collect();
+    let mut excluded_old = BTreeSet::new();
     let mut grace_started = None;
 
     loop {
@@ -2108,11 +2146,10 @@ where
             )));
         }
 
-        let request_timeout =
-            DKG_TOPOLOGY_PROBE_INTERVAL.min(deadline.saturating_duration_since(now));
+        let request_timeout = PEER_RESPONSE_TIMEOUT.min(deadline.saturating_duration_since(now));
         let mut round = JoinSet::new();
         for (route_id, peer) in &route_by_id {
-            if prepared.contains(route_id) {
+            if prepared.contains(route_id) || excluded_old.contains(route_id) {
                 continue;
             }
             let state = state.clone();
@@ -2131,17 +2168,36 @@ where
         while let Some(result) = round.join_next().await {
             let (route_id, peer, response) =
                 result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            let response =
+                response.and_then(|response| validate_prepared_response(prepare, &peer, response));
             match response {
-                Ok(response) => {
-                    validate_prepared_response(prepare, &peer, response)?;
+                Ok(()) => {
                     prepared.insert(route_id);
                 }
-                Err(error) if retryable_control_error(&error) => {
-                    crate::metrics::record_dkg_transport_event("control", "preparation_retry");
+                Err(error) => {
+                    match reshare_preparation_error_action(next_routes.contains(&route_id), &error)
+                    {
+                        ResharePreparationErrorAction::Retry => {
+                            crate::metrics::record_dkg_transport_event(
+                                "control",
+                                "preparation_retry",
+                            );
+                        }
+                        ResharePreparationErrorAction::ExcludeOld => {
+                            tracing::warn!(
+                                peer = %extract_node_part(&peer),
+                                %error,
+                                "excluding unprepared old dealer from reshare"
+                            );
+                            excluded_old.insert(route_id);
+                        }
+                        ResharePreparationErrorAction::Fail => return Err(error),
+                    }
                 }
-                Err(error) => return Err(error),
             }
         }
+        sleep(DKG_TOPOLOGY_PROBE_INTERVAL.min(deadline.saturating_duration_since(Instant::now())))
+            .await;
     }
 
     let mut active_dealers: Vec<_> = current_routes
@@ -2622,11 +2678,7 @@ where
     // The leader creates the topic without waiting for peers. Followers join
     // through the already-subscribed leader, avoiding a circular join barrier
     // during preparation.
-    let bootstrap = if state.node_key == prepare.leader_node_key {
-        Vec::new()
-    } else {
-        vec![PeerId::from_bytes(leader_route.as_bytes())]
-    };
+    let bootstrap = leader_bootstrap(&state.node_key, &prepare.leader_node_key, leader_route)?;
     let topic_id = network::TopicId::new(prepare.topic_id);
     let topic = pubsub
         .subscribe(topic_id, bootstrap)
@@ -3087,11 +3139,7 @@ where
     let pubsub = state.network.pubsub().ok_or_else(|| {
         DkgError::InvalidState("network backend does not provide authenticated pub-sub".into())
     })?;
-    let bootstrap = if state.node_key == prepare.leader_node_key {
-        Vec::new()
-    } else {
-        vec![PeerId::from_bytes(leader_route.as_bytes())]
-    };
+    let bootstrap = leader_bootstrap(&state.node_key, &prepare.leader_node_key, leader_route)?;
     let topic = pubsub
         .subscribe(network::TopicId::new(prepare.topic_id), bootstrap)
         .await
@@ -3496,6 +3544,11 @@ where
     match outcome {
         PublicContributionRecordOutcome::DuplicateSame => return Ok(false),
         PublicContributionRecordOutcome::Recorded => {}
+        PublicContributionRecordOutcome::StaleAttempt => {
+            return Err(DkgError::ProtocolError(
+                "public contribution targets a stale attempt".into(),
+            ))
+        }
         PublicContributionRecordOutcome::ConflictingDuplicate => {
             return Err(DkgError::ProtocolError(
                 "conflicting duplicate public contribution".into(),
@@ -4387,10 +4440,7 @@ where
 {
     async fn handle(&self, connection: Box<dyn Connection>) -> network::Result<()> {
         let peer = connection.peer_id().clone();
-        let peer_prefix: String = String::from_utf8_lossy(peer.as_bytes())
-            .chars()
-            .take(12)
-            .collect();
+        let peer_prefix: String = hex::encode(peer.as_bytes()).chars().take(12).collect();
         let first = timeout(PEER_RESPONSE_TIMEOUT, recv_private(&*connection))
             .await
             .map_err(|_| {
@@ -5644,6 +5694,52 @@ mod stability_tests {
     }
 
     #[test]
+    fn reshare_preparation_only_fails_for_nonretryable_next_member_errors() {
+        let retryable = DkgError::NetworkCommunication("timed out".into());
+        let nonretryable = DkgError::Unauthorized("configuration mismatch".into());
+
+        assert_eq!(
+            reshare_preparation_error_action(false, &retryable),
+            ResharePreparationErrorAction::Retry
+        );
+        assert_eq!(
+            reshare_preparation_error_action(false, &nonretryable),
+            ResharePreparationErrorAction::ExcludeOld
+        );
+        assert_eq!(
+            reshare_preparation_error_action(true, &nonretryable),
+            ResharePreparationErrorAction::Fail
+        );
+    }
+
+    #[test]
+    fn follower_bootstrap_decodes_only_the_leader_node_id() {
+        let leader_bytes = [7u8; 32];
+        let route = format!("{}@127.0.0.1:9000", hex::encode(leader_bytes));
+
+        let bootstrap = leader_bootstrap("follower-key", "leader-key", &route).unwrap();
+
+        assert_eq!(bootstrap.len(), 1);
+        assert_eq!(bootstrap[0].as_bytes(), leader_bytes);
+    }
+
+    #[test]
+    fn follower_bootstrap_rejects_malformed_leader_node_id() {
+        let error = leader_bootstrap("follower-key", "leader-key", "not-hex@127.0.0.1:9000")
+            .expect_err("malformed leader node IDs must be rejected before Gossip subscribe");
+
+        assert!(matches!(error, DkgError::InvalidInput(_)));
+        assert!(error.to_string().contains("invalid hex node ID"));
+    }
+
+    #[test]
+    fn leader_does_not_bootstrap_through_its_own_route() {
+        assert!(leader_bootstrap("leader-key", "leader-key", "not-needed")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
     fn missing_topology_members_are_exact_and_prefixes_are_bounded() {
         let expected = BTreeSet::from([
             "aaaaaaaaaaaaaaaa".to_string(),
@@ -5918,6 +6014,44 @@ mod stability_tests {
             .sign(PUBLIC_CONTRIBUTION_SIGNING_DOMAIN, encoded.into())
             .await
             .expect("sign contribution with local endpoint identity")
+    }
+
+    #[tokio::test]
+    async fn recording_a_stale_public_contribution_is_not_equivocation() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, active_attempt, committee_digest) = contribution_test_state(
+            "record_stale_public_contribution",
+            4241,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let stale_attempt = AttemptId([active_attempt.0[0].wrapping_add(1); 32]);
+        let contribution = DkgPublicContribution::new(
+            ceremony_id,
+            stale_attempt,
+            "test-ring-post".to_string(),
+            committee_digest,
+            origin,
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [1; 32],
+            },
+        )
+        .unwrap();
+        let signed = SignedPayload {
+            origin: vec![1; 32],
+            signature: vec![2; 64],
+            data: vec![3; 16],
+        };
+
+        let error = record_public_contribution(&state, signed, &contribution)
+            .await
+            .expect_err("stale contribution must be rejected");
+
+        assert!(
+            matches!(error, DkgError::ProtocolError(ref message) if message.contains("stale attempt"))
+        );
     }
 
     #[tokio::test]

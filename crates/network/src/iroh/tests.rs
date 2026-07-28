@@ -139,6 +139,16 @@ async fn iroh_authenticated_pubsub_roundtrip() {
         .await
         .expect("join topic");
 
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::NeighborUp(_) = topic1.recv().await.expect("topic event") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("publisher should see the subscriber as a neighbor");
+
     for _ in 0..2 {
         topic1
             .broadcast(bytes::Bytes::from_static(b"signed payload"))

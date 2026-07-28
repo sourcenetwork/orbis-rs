@@ -79,6 +79,9 @@ impl RouterBuilderTrait for IrohRouterBuilder {
     fn spawn(self: Box<Self>) -> Result<Box<dyn RouterTrait>> {
         let mut builder = IrohRouter::builder(self.endpoint.clone());
         if let Some(gossip) = self.gossip.clone() {
+            // Native Gossip intentionally bypasses IrohProtocolHandlerWrapper.
+            // The limits configured in create_routers.rs therefore apply only
+            // to wrapped ALPN handlers, not this raw Gossip handler.
             builder = builder.accept(iroh_gossip::ALPN, gossip);
         }
         let max_message_size = self.max_message_size;
