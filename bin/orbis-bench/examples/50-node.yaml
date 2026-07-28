@@ -5,6 +5,8 @@ crypto: bls12-381
 networks:
   - network_size: 20
     cases:
+      - { ring_size: 3, threshold: 2 }
+      - { ring_size: 10, threshold: 7 }
       - { ring_size: 20, threshold: 15 }
 
 operations: [dkg, pre, sign]

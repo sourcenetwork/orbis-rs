@@ -1,3 +1,4 @@
+use crate::config::Operation;
 use crate::results::{read_trials, summarize, RunManifest, SummaryRow, TrialRecord};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
@@ -175,24 +176,73 @@ fn render_report(
     );
     html.push_str("</section>");
 
+    html.push_str("<section><h2>Ceremony duration by scale</h2><p>Time on the X axis, scale on the Y axis, one line per network profile connecting the median at each size. Range bars show min/max, the filled dot is the median, faint dots are individual measured trials. DKG needs every ring member, so it scales with ring size; PRE and Sign only need a threshold of shares, so they scale with threshold.</p>");
+    html.push_str("<h3>DKG</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Dkg,
+        "Ring size",
+        false,
+        |row| row.ring_size,
+    ));
+    html.push_str("<h3>PRE</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pre,
+        "Threshold",
+        false,
+        |row| row.threshold,
+    ));
+    html.push_str("<h3>Sign</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Sign,
+        "Threshold",
+        false,
+        |row| row.threshold,
+    ));
+    html.push_str("</section>");
+
+    html.push_str("<section><h2>Closed-loop latency by concurrency</h2><p>Same layout, but the range bar spans p50\u{2192}p95 latency (tooltip has p50/p95/p99/throughput) instead of min/max duration, since a load trial measures a fixed window of many requests rather than one ceremony.</p>");
+    html.push_str("<h3>PRE</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pre,
+        "Concurrency",
+        true,
+        |row| row.concurrency.unwrap_or(0),
+    ));
+    html.push_str("<h3>Sign</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Sign,
+        "Concurrency",
+        true,
+        |row| row.concurrency.unwrap_or(0),
+    ));
+    html.push_str("</section>");
+
     html.push_str("<section><h2>Capacity result</h2><p>The largest ring below is the largest <em>all-pass ring observed</em> under that exact profile and operation.</p><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Operation</th><th>Largest viable ring</th><th>Network</th><th>Threshold</th></tr></thead><tbody>");
     for capacity in largest_viable(rows, manifest.experiment.operations.len()) {
         write!(html, "<tr><td>{}</td><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>", escape(&capacity.profile), escape(&capacity.operation), capacity.ring_size, capacity.network_size, capacity.threshold).ok();
     }
     html.push_str("</tbody></table></div></section>");
 
-    html.push_str("<section><h2>Ceremony latency</h2><p>Median line, individual measured points, and min/max whiskers. Timeouts remain failures and are shown separately below.</p>");
-    html.push_str(&latency_chart(trials, &ceremony_rows));
-    html.push_str("<div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Primary median ms</th><th>Client total median ms</th><th>Decrypt/verify median ms</th><th>Acknowledgement median ms</th><th>Scheduler delay median ms</th></tr></thead><tbody>");
+    html.push_str("<section><h2>Ceremony detail</h2><p>Exact per-case medians. Timeouts remain failures and are shown separately below.</p><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Primary median (s)</th><th>Client total median (s)</th><th>Decrypt/verify median (s)</th><th>Acknowledgement median (s)</th><th>Scheduler delay median (s)</th></tr></thead><tbody>");
     for row in &ceremony_rows {
-        write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, fmt(row.median_ms), fmt(row.client_total_median_ms), fmt(row.verification_median_ms), fmt(row.acknowledgement_median_ms), fmt(row.scheduler_delay_median_ms)).ok();
+        write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, fmt_seconds(row.median_ms), fmt_seconds(row.client_total_median_ms), fmt_seconds(row.verification_median_ms), fmt_seconds(row.acknowledgement_median_ms), fmt_seconds(row.scheduler_delay_median_ms)).ok();
     }
     html.push_str("</tbody></table></div>");
     html.push_str("</section>");
 
-    html.push_str("<section><h2>PRE and SIGN closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 ms</th><th>p95 ms</th><th>p99 ms</th><th>All pass</th></tr></thead><tbody>");
+    html.push_str("<section><h2>PRE and SIGN closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>All pass</th></tr></thead><tbody>");
     for row in load_rows {
-        write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, row.concurrency.unwrap_or(0), fmt(row.throughput_per_sec), fmt(row.p50_ms), fmt(row.p95_ms), fmt(row.p99_ms), pass_badge(row.viable)).ok();
+        write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, row.concurrency.unwrap_or(0), fmt(row.throughput_per_sec), fmt_seconds(row.p50_ms), fmt_seconds(row.p95_ms), fmt_seconds(row.p99_ms), pass_badge(row.viable)).ok();
     }
     html.push_str("</tbody></table></div></section>");
 
@@ -201,9 +251,10 @@ fn render_report(
     html.push_str("</section>");
 
     let metric_totals = aggregate_metric_deltas(trials);
-    html.push_str("<section><h2>DKG and PSS phase breakdown</h2><div class=\"table-wrap\"><table><thead><tr><th>Ceremony</th><th>Phase</th><th>Node observations</th><th>Average node phase ms</th><th>Aggregate node-time ms</th></tr></thead><tbody>");
+    html.push_str("<details><summary>Advanced / raw evidence</summary>");
+    html.push_str("<section><h2>DKG and PSS phase breakdown</h2><div class=\"table-wrap\"><table><thead><tr><th>Ceremony</th><th>Phase</th><th>Node observations</th><th>Average node phase (s)</th><th>Aggregate node-time (s)</th></tr></thead><tbody>");
     for phase in phase_breakdown(&metric_totals) {
-        write!(html, "<tr><td>{}</td><td>{}</td><td class=\"num\">{:.0}</td><td class=\"num\">{:.2}</td><td class=\"num\">{:.2}</td></tr>", escape(&phase.kind), escape(&phase.phase), phase.count, phase.average_ms, phase.total_ms).ok();
+        write!(html, "<tr><td>{}</td><td>{}</td><td class=\"num\">{:.0}</td><td class=\"num\">{:.3}</td><td class=\"num\">{:.3}</td></tr>", escape(&phase.kind), escape(&phase.phase), phase.count, phase.average_ms / 1000.0, phase.total_ms / 1000.0).ok();
     }
     html.push_str("</tbody></table></div></section>");
 
@@ -315,68 +366,258 @@ fn render_report(
         ),
     );
     html.push_str("</dl></div></div></section>");
+    html.push_str("</details>");
 
     html.push_str("<section class=\"warnings\"><h2>Interpretation warnings</h2><ul>");
     warnings.sort();
     warnings.dedup();
     for warning in warnings {
-        write!(html, "<li>{}</li>", escape(&warning)).ok();
+        write!(html, "<li>{}</li>", escape(&truncate_error(&warning))).ok();
     }
     html.push_str("</ul></section>");
     html.push_str("<footer>Raw evidence: manifest.json · trials.jsonl · setup-failures.jsonl · summary.csv · resource-samples.csv · resolved Compose/genesis · failure logs</footer></main></body></html>");
     html
 }
 
-fn latency_chart(trials: &[TrialRecord], rows: &[&SummaryRow]) -> String {
-    if rows.is_empty() {
-        return "<p class=\"empty\">No ceremony trials recorded.</p>".into();
+/// A resolved (min, median, max) triple in milliseconds for one chart row,
+/// plus an optional list of individual-trial x-positions (in seconds) to
+/// scatter near the row. Ceremony rows plot real min/median/max durations
+/// with every measured trial as a point; load rows have no single
+/// "duration" (they run a fixed measurement window), so they plot
+/// p50→p95 as the range with p50 as the marker, and skip the scatter.
+struct RowMetrics {
+    min_ms: f64,
+    median_ms: f64,
+    max_ms: f64,
+    detail: String,
+    scatter_seconds: Vec<f64>,
+}
+
+fn ceremony_metrics(row: &SummaryRow, trials: &[TrialRecord]) -> Option<RowMetrics> {
+    let (min_ms, median_ms, max_ms) = (row.min_ms?, row.median_ms?, row.max_ms?);
+    Some(RowMetrics {
+        min_ms,
+        median_ms,
+        max_ms,
+        detail: format!("median {:.2}s (min {:.2}s, max {:.2}s)", median_ms / 1000.0, min_ms / 1000.0, max_ms / 1000.0),
+        scatter_seconds: trials
+            .iter()
+            .filter(|trial| trial_matches_row(trial, row))
+            .map(|trial| trial.duration_ms / 1000.0)
+            .collect(),
+    })
+}
+
+fn load_metrics(row: &SummaryRow, _trials: &[TrialRecord]) -> Option<RowMetrics> {
+    let p50 = row.p50_ms?;
+    let p95 = row.p95_ms.unwrap_or(p50);
+    Some(RowMetrics {
+        min_ms: p50,
+        median_ms: p50,
+        max_ms: p95,
+        detail: format!(
+            "p50 {:.2}s, p95 {:.2}s, p99 {:.2}s, {} req/s",
+            p50 / 1000.0,
+            p95 / 1000.0,
+            row.p99_ms.unwrap_or(p95) / 1000.0,
+            fmt(row.throughput_per_sec)
+        ),
+        scatter_seconds: Vec::new(),
+    })
+}
+
+/// Renders a duration-by-scale chart: time (seconds) on the X axis, a
+/// caller-chosen scale metric (ring size, threshold, concurrency, ...) on
+/// the Y axis as discrete rows, one color-coded series per network profile.
+/// A line connects each series' median across rows, with a min/max range
+/// and individual trial points layered on top where available.
+fn scale_chart(
+    trials: &[TrialRecord],
+    rows: &[SummaryRow],
+    operation: Operation,
+    y_axis_label: &str,
+    is_load: bool,
+    y_value: impl Fn(&SummaryRow) -> usize,
+) -> String {
+    let filtered: Vec<&SummaryRow> = rows
+        .iter()
+        .filter(|row| row.operation == operation && row.concurrency.is_some() == is_load)
+        .collect();
+    if filtered.is_empty() {
+        return format!(
+            "<p class=\"empty\">No {:?} {} recorded.</p>",
+            operation,
+            if is_load { "load trials" } else { "trials" }
+        );
     }
-    let width = 1040.0;
-    let height = 460.0;
-    let left = 70.0;
-    let top = 25.0;
-    let bottom = 65.0;
-    let right = 25.0;
-    let max_ring = rows.iter().map(|row| row.ring_size).max().unwrap_or(1) as f64;
-    let max_ms = rows.iter().filter_map(|row| row.max_ms).fold(1.0, f64::max);
-    let x = |ring: usize| left + (ring as f64 / max_ring) * (width - left - right);
-    let y = |ms: f64| top + (1.0 - ms / max_ms) * (height - top - bottom);
-    let mut svg = format!("<div class=\"chart\"><svg viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"Latency by ring size\"><line class=\"axis\" x1=\"{left}\" y1=\"{}\" x2=\"{}\" y2=\"{}\"/><line class=\"axis\" x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{}\"/>", height-bottom, width-right, height-bottom, height-bottom);
-    for tick in 0..=5 {
-        let value = max_ms * tick as f64 / 5.0;
-        let yy = y(value);
-        write!(svg,"<line class=\"grid\" x1=\"{left}\" y1=\"{yy}\" x2=\"{}\" y2=\"{yy}\"/><text class=\"tick\" x=\"{}\" y=\"{}\">{:.0}</text>",width-right,left-8.0,yy+4.0,value).ok();
-    }
+    let metrics_for = |row: &SummaryRow| {
+        if is_load {
+            load_metrics(row, trials)
+        } else {
+            ceremony_metrics(row, trials)
+        }
+    };
+
+    let mut y_values: Vec<usize> = filtered.iter().map(|row| y_value(row)).collect();
+    y_values.sort_unstable();
+    y_values.dedup();
+
+    let mut profiles: Vec<String> = filtered.iter().map(|row| row.profile.clone()).collect();
+    profiles.sort();
+    profiles.dedup();
+
     let colors = [
         "#4de3a6", "#ffb454", "#7fb7ff", "#ff7b8b", "#b69cff", "#54d8e8",
     ];
-    for (index, row) in rows.iter().enumerate() {
+
+    let width = 1040.0;
+    let left = 90.0;
+    let right = 30.0;
+    let top = 20.0;
+    let bottom = 46.0;
+    let row_height = 46.0;
+    let height = top + bottom + y_values.len() as f64 * row_height;
+
+    let max_seconds = (filtered
+        .iter()
+        .filter_map(|row| metrics_for(row))
+        .map(|metrics| metrics.max_ms)
+        .fold(0.0_f64, f64::max)
+        / 1000.0)
+        .max(1.0);
+    let axis_y = height - bottom;
+    let x = |seconds: f64| left + (seconds / max_seconds) * (width - left - right);
+    let row_y = |value: usize| {
+        let index = y_values.iter().position(|v| *v == value).unwrap_or(0);
+        top + index as f64 * row_height + row_height / 2.0
+    };
+    let profile_offset = |profile: &str| {
+        let index = profiles.iter().position(|p| p == profile).unwrap_or(0) as f64;
+        let n = profiles.len().max(1) as f64;
+        (index - (n - 1.0) / 2.0) * (row_height / (n + 1.0))
+    };
+
+    let mut svg = String::new();
+    write!(
+        svg,
+        "<line class=\"axis\" x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{axis_y}\"/><line class=\"axis\" x1=\"{left}\" y1=\"{axis_y}\" x2=\"{}\" y2=\"{axis_y}\"/>",
+        width - right
+    )
+    .ok();
+    for &value in &y_values {
+        let yy = row_y(value);
+        write!(
+            svg,
+            "<line class=\"grid\" x1=\"{left}\" y1=\"{yy}\" x2=\"{}\" y2=\"{yy}\"/><text class=\"tick\" x=\"{}\" y=\"{}\" text-anchor=\"end\">{value}</text>",
+            width - right,
+            left - 10.0,
+            yy + 4.0
+        )
+        .ok();
+    }
+    for tick in 0..=5 {
+        let seconds = max_seconds * tick as f64 / 5.0;
+        let xx = x(seconds);
+        write!(
+            svg,
+            "<line class=\"grid\" x1=\"{xx}\" y1=\"{top}\" x2=\"{xx}\" y2=\"{axis_y}\"/><text class=\"tick\" x=\"{xx}\" y=\"{}\" text-anchor=\"middle\">{:.1}s</text>",
+            axis_y + 18.0,
+            seconds
+        )
+        .ok();
+    }
+
+    // Connecting line per profile, drawn first so markers sit on top of it.
+    for (index, profile) in profiles.iter().enumerate() {
         let color = colors[index % colors.len()];
-        let xx = x(row.ring_size);
-        if let (Some(min), Some(median), Some(max)) = (row.min_ms, row.median_ms, row.max_ms) {
-            write!(svg,"<line x1=\"{xx}\" y1=\"{}\" x2=\"{xx}\" y2=\"{}\" stroke=\"{color}\" stroke-width=\"2\"/><line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{color}\"/><line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{color}\"/><circle cx=\"{xx}\" cy=\"{}\" r=\"5\" fill=\"{color}\"><title>{:?} {} network {} ring {} threshold {} median {:.1} ms</title></circle>",y(max),y(min),xx-5.0,y(max),xx+5.0,y(max),xx-5.0,y(min),xx+5.0,y(min),y(median),row.operation,escape(&row.profile),row.network_size,row.ring_size,row.threshold,median).ok();
-            for trial in trials.iter().filter(|trial| {
-                !trial.warmup
-                    && trial.concurrency.is_none()
-                    && trial.success
-                    && trial.operation == row.operation
-                    && trial.profile == row.profile
-                    && trial.case.ring_size == row.ring_size
-                    && trial.case.threshold == row.threshold
-                    && trial.network_size == row.network_size
-            }) {
-                write!(
-                    svg,
-                    "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"{color}\" opacity=\".55\"/>",
-                    xx + (trial.trial_index as f64 - 2.0) * 2.2,
-                    y(trial.duration_ms)
-                )
-                .ok();
-            }
+        let mut points: Vec<(f64, f64)> = filtered
+            .iter()
+            .filter(|row| &row.profile == profile)
+            .filter_map(|row| {
+                let metrics = metrics_for(row)?;
+                Some((
+                    row_y(y_value(row)) + profile_offset(profile),
+                    x(metrics.median_ms / 1000.0),
+                ))
+            })
+            .collect();
+        points.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if points.len() >= 2 {
+            let path: String = points
+                .iter()
+                .map(|(yy, xx)| format!("{xx:.1},{yy:.1}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            write!(
+                svg,
+                "<polyline points=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" opacity=\".65\"/>"
+            )
+            .ok();
         }
     }
-    write!(svg,"<text class=\"label\" x=\"{}\" y=\"{}\">Ring size</text><text class=\"label\" transform=\"translate(16,{}) rotate(-90)\">Latency (ms)</text></svg></div>",width/2.0,height-12.0,height/2.0).ok();
-    svg
+
+    for row in &filtered {
+        let color_index = profiles.iter().position(|p| *p == row.profile).unwrap_or(0);
+        let color = colors[color_index % colors.len()];
+        let yy = row_y(y_value(row)) + profile_offset(&row.profile);
+        let Some(metrics) = metrics_for(row) else {
+            continue;
+        };
+        let (min_s, median_s, max_s) = (
+            metrics.min_ms / 1000.0,
+            metrics.median_ms / 1000.0,
+            metrics.max_ms / 1000.0,
+        );
+        write!(
+            svg,
+            "<line x1=\"{}\" y1=\"{yy}\" x2=\"{}\" y2=\"{yy}\" stroke=\"{color}\" stroke-width=\"2\"/><circle cx=\"{}\" cy=\"{yy}\" r=\"5\" fill=\"{color}\"><title>{} {:?} network {} ring {} threshold {} {}</title></circle>",
+            x(min_s),
+            x(max_s),
+            x(median_s),
+            escape(&row.profile),
+            row.operation,
+            row.network_size,
+            row.ring_size,
+            row.threshold,
+            escape(&metrics.detail)
+        )
+        .ok();
+        for (index, seconds) in metrics.scatter_seconds.iter().enumerate() {
+            write!(
+                svg,
+                "<circle cx=\"{}\" cy=\"{}\" r=\"2.5\" fill=\"{color}\" opacity=\".55\"/>",
+                x(*seconds),
+                yy + (index as f64 - 2.0) * 1.6
+            )
+            .ok();
+        }
+    }
+    write!(
+        svg,
+        "<text class=\"label\" x=\"{}\" y=\"{}\">Time (s)</text><text class=\"label\" transform=\"translate(20,{}) rotate(-90)\">{}</text>",
+        width / 2.0,
+        height - 6.0,
+        height / 2.0,
+        escape(y_axis_label)
+    )
+    .ok();
+
+    let mut legend = String::from("<div class=\"legend\">");
+    for (index, profile) in profiles.iter().enumerate() {
+        write!(
+            legend,
+            "<span class=\"legend-item\"><i style=\"background:{}\"></i>{}</span>",
+            colors[index % colors.len()],
+            escape(profile)
+        )
+        .ok();
+    }
+    legend.push_str("</div>");
+
+    format!(
+        "<div class=\"chart\"><svg viewBox=\"0 0 {width} {height}\" role=\"img\" aria-label=\"{:?} duration by {}\">{svg}</svg>{legend}</div>",
+        operation, y_axis_label
+    )
 }
 
 fn success_chart(rows: &[SummaryRow], trials: &[TrialRecord]) -> String {
@@ -689,6 +930,22 @@ fn fmt(value: Option<f64>) -> String {
         .map(|value| format!("{value:.2}"))
         .unwrap_or_else(|| "—".into())
 }
+/// Formats a millisecond duration as seconds, matching the report-wide
+/// convention of tracking everything in seconds rather than milliseconds.
+fn fmt_seconds(ms: Option<f64>) -> String {
+    ms.map(|ms| format!("{:.3}", ms / 1000.0))
+        .unwrap_or_else(|| "—".into())
+}
+/// Keeps only the first paragraph of an error (before a "Caused by"/traceback
+/// continuation), so warnings stay scannable instead of dumping a full
+/// multi-line error chain inline. The complete error remains available in
+/// setup-failures.jsonl and trials.jsonl.
+fn truncate_error(message: &str) -> String {
+    match message.split_once("\n\n") {
+        Some((first, _)) => format!("{first} (see setup-failures.jsonl/trials.jsonl for detail)"),
+        None => message.to_string(),
+    }
+}
 fn pass_badge(pass: bool) -> &'static str {
     if pass {
         "<span class=\"pass\">PASS</span>"
@@ -713,7 +970,7 @@ fn escape(value: &str) -> String {
 }
 
 const CSS: &str = r#"
-:root{color-scheme:dark;--bg:#09101c;--panel:#111b2b;--line:#26354b;--text:#edf4ff;--muted:#91a4be;--accent:#4de3a6;--warn:#ffb454;--bad:#ff7b8b}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,#183054 0,transparent 32%),var(--bg);color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{max-width:1180px;margin:auto;padding:54px 28px 80px}header{border-bottom:1px solid var(--line);padding-bottom:30px}.eyebrow{letter-spacing:.2em;color:var(--accent);font-weight:700;font-size:12px}h1{font-size:clamp(36px,6vw,68px);line-height:1;margin:.2em 0}.lead{font-size:19px;color:var(--muted)}.meta{display:flex;gap:10px;flex-wrap:wrap}.meta span{background:#162338;border:1px solid var(--line);border-radius:99px;padding:5px 11px;color:#c6d4e8}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.cards article{background:linear-gradient(145deg,#152238,#0f1828);border:1px solid var(--line);border-radius:14px;padding:18px}.cards span,.cards small{display:block;color:var(--muted)}.cards strong{display:block;font-size:28px;margin:5px 0}section{margin-top:42px}h2{font-size:26px;margin-bottom:6px}h3{color:#dbe8fa}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel)}table{border-collapse:collapse;width:100%}th,td{padding:10px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}td.num{text-align:right;font-variant-numeric:tabular-nums}.pass,.fail{font-size:11px;font-weight:800;padding:3px 7px;border-radius:99px}.pass{color:var(--accent);background:#12392d}.fail{color:var(--bad);background:#40202a}.chart{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;overflow:auto}.chart svg{min-width:760px}.axis{stroke:#71849e}.grid{stroke:#26354b}.tick,.row-label{fill:#91a4be;font-size:11px}.row-label{font-size:10px}.label{fill:#cdd9e9;font-size:13px}.split{display:grid;grid-template-columns:1.25fr .75fr;gap:18px}.compact code{font-size:11px}dl{display:grid;grid-template-columns:150px 1fr;gap:9px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}.warnings{border:1px solid #604424;background:#211b14;border-radius:14px;padding:4px 22px 18px}.warnings li{margin:7px 0;color:#f2d4aa}footer{margin-top:40px;color:var(--muted);border-top:1px solid var(--line);padding-top:18px}.empty{color:var(--muted)}@media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}main{padding:32px 16px}}
+:root{color-scheme:dark;--bg:#09101c;--panel:#111b2b;--line:#26354b;--text:#edf4ff;--muted:#91a4be;--accent:#4de3a6;--warn:#ffb454;--bad:#ff7b8b}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 85% 0,#183054 0,transparent 32%),var(--bg);color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif}main{max-width:1180px;margin:auto;padding:54px 28px 80px}header{border-bottom:1px solid var(--line);padding-bottom:30px}.eyebrow{letter-spacing:.2em;color:var(--accent);font-weight:700;font-size:12px}h1{font-size:clamp(36px,6vw,68px);line-height:1;margin:.2em 0}.lead{font-size:19px;color:var(--muted)}.meta{display:flex;gap:10px;flex-wrap:wrap}.meta span{background:#162338;border:1px solid var(--line);border-radius:99px;padding:5px 11px;color:#c6d4e8}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.cards article{background:linear-gradient(145deg,#152238,#0f1828);border:1px solid var(--line);border-radius:14px;padding:18px}.cards span,.cards small{display:block;color:var(--muted)}.cards strong{display:block;font-size:28px;margin:5px 0}section{margin-top:42px}h2{font-size:26px;margin-bottom:6px}h3{color:#dbe8fa}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--panel)}table{border-collapse:collapse;width:100%}th,td{padding:10px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}td.num{text-align:right;font-variant-numeric:tabular-nums}.pass,.fail{font-size:11px;font-weight:800;padding:3px 7px;border-radius:99px}.pass{color:var(--accent);background:#12392d}.fail{color:var(--bad);background:#40202a}.chart{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px;overflow:auto}.chart svg{min-width:760px}.axis{stroke:#71849e}.grid{stroke:#26354b}.tick,.row-label{fill:#91a4be;font-size:11px}.row-label{font-size:10px}.label{fill:#cdd9e9;font-size:13px}.split{display:grid;grid-template-columns:1.25fr .75fr;gap:18px}.compact code{font-size:11px}dl{display:grid;grid-template-columns:150px 1fr;gap:9px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}.warnings{border:1px solid #604424;background:#211b14;border-radius:14px;padding:4px 22px 18px}.warnings li{margin:7px 0;color:#f2d4aa}footer{margin-top:40px;color:var(--muted);border-top:1px solid var(--line);padding-top:18px}.empty{color:var(--muted)}.legend{display:flex;gap:16px;flex-wrap:wrap;padding:8px 6px 2px}.legend-item{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px}.legend-item i{display:inline-block;width:10px;height:10px;border-radius:3px}details{border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:16px 20px;margin-top:42px}details summary{cursor:pointer;font-weight:700;font-size:18px;color:#dbe8fa;list-style:none}details summary::-webkit-details-marker{display:none}details summary::before{content:"▸ ";color:var(--accent)}details[open] summary::before{content:"▾ "}details section{margin-top:26px}@media(max-width:800px){.cards{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}main{padding:32px 16px}}
 "#;
 
 #[cfg(test)]
@@ -764,7 +1021,11 @@ mod tests {
     }
     #[test]
     fn empty_charts_remain_offline_and_valid() {
-        assert!(latency_chart(&[], &[]).contains("No ceremony"));
+        assert!(
+            scale_chart(&[], &[], Operation::Dkg, "Ring size", false, |row| row
+                .ring_size)
+                .contains("No Dkg")
+        );
     }
 
     #[test]
