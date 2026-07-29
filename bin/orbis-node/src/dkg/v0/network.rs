@@ -19,8 +19,8 @@ use crate::app_state::AppState;
 use crate::constants::{
     DKG_ATTEMPT_TIMEOUT, DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
     DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
-    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, PEER_RESPONSE_TIMEOUT,
-    PSS_GRACE_PERIOD_SECS,
+    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE,
+    PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
@@ -66,6 +66,8 @@ use bulletin::r#trait::RingPayload;
 use crypto::SignImpl;
 
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
+/// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
+const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
 const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
@@ -800,6 +802,108 @@ fn control_timeout_message(
         ceremony_id.map_or_else(|| "-".into(), |id| id.0.to_string()),
         attempt_id.map_or_else(|| "-".into(), |id| hex::encode(&id.0[..6])),
     )
+}
+
+fn public_phase_response_page(
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    retained: &BTreeMap<ParticipantRef, SignedPayload>,
+    after: Option<ParticipantRef>,
+) -> Result<DkgControlMessage> {
+    let entries: Vec<_> = retained
+        .iter()
+        .filter(|(origin, _)| after.is_none_or(|cursor| **origin > cursor))
+        .collect();
+    if entries.is_empty() {
+        return Ok(DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase,
+            contributions: Vec::new(),
+            next_cursor: None,
+        });
+    }
+
+    let mut contributions = Vec::new();
+    let mut last_origin = None;
+    for (position, (origin, signed)) in entries.iter().enumerate() {
+        contributions.push((*signed).clone());
+        let has_more = position + 1 < entries.len();
+        let candidate = DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase,
+            contributions: contributions.clone(),
+            next_cursor: has_more.then_some(**origin),
+        };
+        let encoded_len = transport::encode(&candidate)
+            .map_err(DkgError::Serialization)?
+            .len();
+        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+            contributions.pop();
+            let Some(cursor) = last_origin else {
+                crate::metrics::record_dkg_transport_event(
+                    "public",
+                    "repair_contribution_oversize",
+                );
+                return Err(DkgError::ProtocolError(format!(
+                    "one signed public contribution exceeds the {}-byte repair page limit",
+                    MAX_PUBLIC_REPAIR_PAGE_BYTES
+                )));
+            };
+            return Ok(DkgControlMessage::PublicPhaseResponse {
+                ceremony_id,
+                attempt_id,
+                phase,
+                contributions,
+                next_cursor: Some(cursor),
+            });
+        }
+        last_origin = Some(**origin);
+        if !has_more {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("a non-empty retained page returns from the loop")
+}
+
+fn validate_public_repair_page_progress(
+    after: Option<ParticipantRef>,
+    origins: &[ParticipantRef],
+    next_cursor: Option<ParticipantRef>,
+    seen: &BTreeSet<ParticipantRef>,
+) -> Result<()> {
+    if origins.is_empty() {
+        if next_cursor.is_some() {
+            return Err(DkgError::ProtocolError(
+                "empty public repair page supplied a continuation cursor".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if after.is_some_and(|cursor| origins[0] <= cursor) {
+        return Err(DkgError::ProtocolError(
+            "public repair page did not advance beyond its requested cursor".into(),
+        ));
+    }
+    if origins.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(DkgError::ProtocolError(
+            "public repair page origins are not in strict canonical order".into(),
+        ));
+    }
+    if origins.iter().any(|origin| seen.contains(origin)) {
+        return Err(DkgError::ProtocolError(
+            "public repair response repeated an origin across pages".into(),
+        ));
+    }
+    if next_cursor.is_some_and(|cursor| Some(&cursor) != origins.last()) {
+        return Err(DkgError::ProtocolError(
+            "public repair continuation cursor does not name the page's final origin".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPhase] {
@@ -1714,22 +1818,50 @@ where
             ceremony_id,
             attempt_id,
             phase,
+            after,
         } => {
             validate_leader_local(&state, ceremony_id.0).await?;
             canonical_committee_peer(&state, ceremony_id.0, sender).await?;
-            let contributions = state
+            if state
+                .dkg_session_state
+                .transport_attempt(&ceremony_id.0)
+                .await
+                != Some(attempt_id)
+            {
+                return Err(DkgError::ProtocolError(
+                    "public phase repair targets a stale attempt".into(),
+                ));
+            }
+            let retained = state
                 .dkg_session_state
                 .public_contributions(&ceremony_id.0, attempt_id, phase)
                 .await
-                .unwrap_or_default()
-                .into_values()
-                .collect();
-            Ok(DkgControlMessage::PublicPhaseResponse {
-                ceremony_id,
-                attempt_id,
-                phase,
-                contributions,
-            })
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let response =
+                public_phase_response_page(ceremony_id, attempt_id, phase, &retained, after)?;
+            let encoded_len = transport::encode(&response)
+                .map_err(DkgError::Serialization)?
+                .len();
+            let (contribution_count, next_cursor) = match &response {
+                DkgControlMessage::PublicPhaseResponse {
+                    contributions,
+                    next_cursor,
+                    ..
+                } => (contributions.len(), *next_cursor),
+                _ => unreachable!("public repair page builder returned a different message"),
+            };
+            crate::metrics::record_dkg_transport_event("public", "repair_page_served");
+            tracing::debug!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                phase = ?phase,
+                after = ?after,
+                next_cursor = ?next_cursor,
+                contribution_count,
+                encoded_len,
+                "served byte-bounded public DKG repair page"
+            );
+            Ok(response)
         }
         DkgControlMessage::Abort {
             ceremony_id,
@@ -4143,57 +4275,114 @@ where
     let leader_peer = prepare
         .leader_route()
         .ok_or_else(|| DkgError::InvalidState("leader repair route is missing".into()))?;
-    let response = control_request_with_timeout(
-        &state,
-        routes,
-        leader_peer,
-        DkgControlMessage::GetPublicPhase {
-            ceremony_id: prepare.ceremony_id,
-            attempt_id: prepare.attempt_id,
-            phase,
-        },
-        PEER_RESPONSE_TIMEOUT,
-    )
-    .await?;
-    let DkgControlMessage::PublicPhaseResponse {
-        ceremony_id,
-        attempt_id,
-        phase: response_phase,
-        contributions,
-    } = response
-    else {
-        return Err(DkgError::ProtocolError(
-            "leader returned invalid public repair response".into(),
-        ));
-    };
-    if ceremony_id != prepare.ceremony_id
-        || attempt_id != prepare.attempt_id
-        || response_phase != phase
-    {
-        return Err(DkgError::Unauthorized(
-            "public repair response scope mismatch".into(),
-        ));
+    if expected > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidState(format!(
+            "public repair expected {expected} origins, maximum is {MAX_DKG_COMMITTEE_SIZE}"
+        )));
     }
-    // Some public phases are conditional (for example commitment audit on a
-    // failed refresh) or have not started yet. An empty authenticated leader
-    // response is not an omission claim; the periodic repair tick will ask
-    // again if that phase later becomes active. Partial responses below still
-    // trigger direct authenticated-origin repair for every missing item.
-    if contributions.is_empty() {
-        return Ok(());
-    }
-    for signed in contributions {
-        let contribution = verify_signed_contribution(&state, &signed).await?;
-        if contribution.payload.phase() != phase {
+    let max_pages = expected.max(1);
+    let mut after = None;
+    let mut seen_origins = BTreeSet::new();
+    let mut received_from_leader = false;
+    let mut page_count = 0usize;
+    loop {
+        if page_count >= max_pages {
+            return Err(DkgError::ProtocolError(format!(
+                "public repair exceeded its maximum {max_pages} pages"
+            )));
+        }
+        let response = control_request_with_timeout(
+            &state,
+            routes,
+            leader_peer,
+            DkgControlMessage::GetPublicPhase {
+                ceremony_id: prepare.ceremony_id,
+                attempt_id: prepare.attempt_id,
+                phase,
+                after,
+            },
+            PEER_RESPONSE_TIMEOUT,
+        )
+        .await?;
+        let encoded_len = transport::encode(&response)
+            .map_err(DkgError::Serialization)?
+            .len();
+        let DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase: response_phase,
+            contributions,
+            next_cursor,
+        } = response
+        else {
+            return Err(DkgError::ProtocolError(
+                "leader returned invalid public repair response".into(),
+            ));
+        };
+        if ceremony_id != prepare.ceremony_id
+            || attempt_id != prepare.attempt_id
+            || response_phase != phase
+        {
             return Err(DkgError::Unauthorized(
-                "public repair returned wrong-phase contribution".into(),
+                "public repair response scope mismatch".into(),
             ));
         }
-        if phase == PublicPhase::RefreshHealthCheck {
-            record_public_contribution(&state, signed, &contribution).await?;
-        } else {
-            apply_public_contribution(state.clone(), routes, signed, contribution).await?;
+
+        let mut verified_page = Vec::with_capacity(contributions.len());
+        let mut page_origins = Vec::with_capacity(contributions.len());
+        for signed in contributions {
+            let contribution = verify_signed_contribution(&state, &signed).await?;
+            if contribution.payload.phase() != phase {
+                return Err(DkgError::Unauthorized(
+                    "public repair returned wrong-phase contribution".into(),
+                ));
+            }
+            if !expected_origins.contains(&contribution.origin) {
+                return Err(DkgError::Unauthorized(
+                    "public repair returned a contribution outside the expected phase origins"
+                        .into(),
+                ));
+            }
+            page_origins.push(contribution.origin);
+            verified_page.push((signed, contribution));
         }
+        validate_public_repair_page_progress(after, &page_origins, next_cursor, &seen_origins)?;
+        seen_origins.extend(page_origins.iter().copied());
+
+        for (signed, contribution) in verified_page {
+            if phase == PublicPhase::RefreshHealthCheck {
+                record_public_contribution(&state, signed, &contribution).await?;
+            } else {
+                apply_public_contribution(state.clone(), routes, signed, contribution).await?;
+            }
+        }
+
+        page_count += 1;
+        received_from_leader |= !page_origins.is_empty();
+        crate::metrics::record_dkg_transport_event("public", "repair_page_received");
+        tracing::debug!(
+            session_id = prepare.ceremony_id.0,
+            attempt_id = %hex::encode(prepare.attempt_id.0),
+            phase = ?phase,
+            page_count,
+            after = ?after,
+            next_cursor = ?next_cursor,
+            contribution_count = page_origins.len(),
+            encoded_len,
+            "received public DKG repair page"
+        );
+
+        let Some(cursor) = next_cursor else {
+            break;
+        };
+        after = Some(cursor);
+    }
+
+    // Some public phases are conditional or have not started yet. Preserve the
+    // existing behavior for a completely empty local and leader view; a later
+    // repair tick will retry if the phase becomes active.
+    if !received_from_leader && present == 0 {
+        return Ok(());
     }
     if phase == PublicPhase::CommitmentAudit {
         crate::metrics::record_dkg_transport_event("public", "repair");
@@ -7548,5 +7737,146 @@ mod stability_tests {
             )
             .expect_err("pending manifest entries must remain committee-bounded");
         assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+    }
+
+    fn retained_repair_contribution(node_id: u8, data_len: usize) -> SignedPayload {
+        SignedPayload {
+            origin: vec![node_id; 32],
+            signature: vec![node_id; 64],
+            data: vec![255; data_len],
+        }
+    }
+
+    #[test]
+    fn public_phase_repair_pages_are_bounded_complete_and_canonical() {
+        let retained: BTreeMap<_, _> = (1u8..=MAX_DKG_COMMITTEE_SIZE as u8)
+            .rev()
+            .map(|node_id| {
+                (
+                    ParticipantRef::current(node_id as u32),
+                    retained_repair_contribution(node_id, 30_000),
+                )
+            })
+            .collect();
+        let ceremony_id = CeremonyId(777);
+        let attempt_id = AttemptId([8; 32]);
+        let mut after = None;
+        let mut received = Vec::new();
+        let mut page_count = 0;
+
+        loop {
+            let response = public_phase_response_page(
+                ceremony_id,
+                attempt_id,
+                PublicPhase::Commitments,
+                &retained,
+                after,
+            )
+            .unwrap();
+            assert!(transport::encode(&response).unwrap().len() <= MAX_PUBLIC_REPAIR_PAGE_BYTES);
+            let DkgControlMessage::PublicPhaseResponse {
+                contributions,
+                next_cursor,
+                ..
+            } = response
+            else {
+                panic!("repair helper returned the wrong response type");
+            };
+            page_count += 1;
+            received.extend(contributions.into_iter().map(|signed| signed.origin[0]));
+            let Some(cursor) = next_cursor else {
+                break;
+            };
+            assert!(after.is_none_or(|previous| cursor > previous));
+            after = Some(cursor);
+        }
+
+        assert!(page_count > 1);
+        assert!(page_count <= MAX_DKG_COMMITTEE_SIZE);
+        assert_eq!(
+            received,
+            (1u8..=MAX_DKG_COMMITTEE_SIZE as u8).collect::<Vec<_>>()
+        );
+
+        let terminal = public_phase_response_page(
+            ceremony_id,
+            attempt_id,
+            PublicPhase::Commitments,
+            &retained,
+            Some(ParticipantRef::current(MAX_DKG_COMMITTEE_SIZE as u32)),
+        )
+        .unwrap();
+        assert!(matches!(
+            terminal,
+            DkgControlMessage::PublicPhaseResponse {
+                contributions,
+                next_cursor: None,
+                ..
+            } if contributions.is_empty()
+        ));
+    }
+
+    #[test]
+    fn public_phase_repair_rejects_one_oversized_contribution() {
+        let retained = BTreeMap::from([(
+            ParticipantRef::current(1),
+            retained_repair_contribution(1, MAX_PUBLIC_REPAIR_PAGE_BYTES / 2),
+        )]);
+        let error = public_phase_response_page(
+            CeremonyId(778),
+            AttemptId([9; 32]),
+            PublicPhase::Commitments,
+            &retained,
+            None,
+        )
+        .expect_err("one contribution cannot exceed the repair page limit");
+        assert!(matches!(error, DkgError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn public_repair_page_progress_rejects_cursor_and_origin_contradictions() {
+        let empty = BTreeSet::new();
+        assert!(validate_public_repair_page_progress(
+            Some(ParticipantRef::current(1)),
+            &[ParticipantRef::current(2), ParticipantRef::current(3)],
+            Some(ParticipantRef::current(3)),
+            &empty,
+        )
+        .is_ok());
+        assert!(validate_public_repair_page_progress(
+            None,
+            &[],
+            Some(ParticipantRef::current(1)),
+            &empty,
+        )
+        .is_err());
+        assert!(validate_public_repair_page_progress(
+            Some(ParticipantRef::current(2)),
+            &[ParticipantRef::current(2)],
+            None,
+            &empty,
+        )
+        .is_err());
+        assert!(validate_public_repair_page_progress(
+            None,
+            &[ParticipantRef::current(2), ParticipantRef::current(1)],
+            None,
+            &empty,
+        )
+        .is_err());
+        assert!(validate_public_repair_page_progress(
+            None,
+            &[ParticipantRef::current(1), ParticipantRef::current(2)],
+            Some(ParticipantRef::current(1)),
+            &empty,
+        )
+        .is_err());
+        assert!(validate_public_repair_page_progress(
+            Some(ParticipantRef::current(1)),
+            &[ParticipantRef::current(2)],
+            None,
+            &BTreeSet::from([ParticipantRef::current(2)]),
+        )
+        .is_err());
     }
 }

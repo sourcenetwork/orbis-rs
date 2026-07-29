@@ -7,6 +7,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::constants::MAX_DKG_COMMITTEE_SIZE;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 
@@ -130,6 +131,12 @@ impl CommitteeConfig {
     pub fn validate(&self, label: &str) -> Result<(), String> {
         if self.node_keys.is_empty() {
             return Err(format!("{label} committee is empty"));
+        }
+        if self.node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+            return Err(format!(
+                "{label} committee has {} members, maximum is {MAX_DKG_COMMITTEE_SIZE}",
+                self.node_keys.len()
+            ));
         }
         if self.node_keys.len() != self.peer_routes.len()
             || self.node_keys.len() != self.node_id_assignments.len()
@@ -692,12 +699,14 @@ pub enum DkgControlMessage {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         phase: PublicPhase,
+        after: Option<ParticipantRef>,
     },
     PublicPhaseResponse {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         phase: PublicPhase,
         contributions: Vec<network::SignedPayload>,
+        next_cursor: Option<ParticipantRef>,
     },
     Error {
         ceremony_id: Option<CeremonyId>,
@@ -1172,6 +1181,70 @@ mod tests {
         let decoded: PrepareSession = decode(&wire, wire.len()).unwrap();
 
         assert_eq!(config_digest(&decoded).unwrap(), prepare.config_digest);
+    }
+
+    #[test]
+    fn committee_configuration_rejects_more_than_fifty_members_on_either_side() {
+        let node_keys: Vec<_> = (1..=51).map(|node_id| format!("node-{node_id}")).collect();
+        let oversized = CommitteeConfig {
+            peer_routes: (1..=51).map(|node_id| format!("peer-{node_id}")).collect(),
+            node_id_assignments: node_keys
+                .iter()
+                .enumerate()
+                .map(|(index, key)| (key.clone(), index as u32 + 1))
+                .collect(),
+            node_keys,
+            threshold: 34,
+        };
+        let valid = committee(&[("node-a", "peer-a", 1)], 1);
+
+        let error = CeremonyConfig {
+            current: oversized.clone(),
+            next: None,
+        }
+        .validate()
+        .expect_err("the current committee must be capped");
+        assert!(error.contains("current committee has 51 members"));
+
+        let error = CeremonyConfig {
+            current: valid,
+            next: Some(oversized),
+        }
+        .validate()
+        .expect_err("the next committee must be capped");
+        assert!(error.contains("next committee has 51 members"));
+    }
+
+    #[test]
+    fn public_repair_cursor_fields_round_trip() {
+        let request = DkgControlMessage::GetPublicPhase {
+            ceremony_id: CeremonyId(4),
+            attempt_id: AttemptId([5; 32]),
+            phase: PublicPhase::Commitments,
+            after: Some(ParticipantRef::current(7)),
+        };
+        let encoded = encode(&request).unwrap();
+        assert_eq!(
+            decode::<DkgControlMessage>(&encoded, encoded.len()).unwrap(),
+            request
+        );
+
+        let response = DkgControlMessage::PublicPhaseResponse {
+            ceremony_id: CeremonyId(4),
+            attempt_id: AttemptId([5; 32]),
+            phase: PublicPhase::Commitments,
+            contributions: vec![network::SignedPayload {
+                origin: vec![1; 32],
+                signature: vec![2; 64],
+                data: vec![3; 128],
+            }],
+            next_cursor: Some(ParticipantRef::current(8)),
+        };
+        let encoded = encode(&response).unwrap();
+        assert_eq!(
+            decode::<DkgControlMessage>(&encoded, encoded.len()).unwrap(),
+            response
+        );
     }
 
     #[test]

@@ -498,13 +498,20 @@ Gossip is the efficient dissemination path, not the sole source of truth. Every
 origin and the leader retain exact signed contributions for repair.
 
 After activation, repair becomes eligible only when no session progress has
-occurred for ten seconds. A receiver first requests the retained public phase
-from the leader over control QUIC. If an expected origin is still absent, it
-requests that exact contribution directly from the authenticated origin.
+occurred for ten seconds. A receiver first walks the leader's retained public
+phase in canonical, cursor-based pages. Every encoded page is capped at 512 KiB,
+and the receiver rejects duplicate origins, regressing cursors, or pages that do
+not make progress. After the terminal page, if an expected origin is still
+absent, the receiver requests that exact contribution directly from the
+authenticated origin.
 Direct repair is not manifest-gated: it verifies each retained origin signature,
 message ID, attempt, and SourceHub endpoint binding before dispatch. This keeps
 the independently authenticated origins as the recovery source when a Gossip
 manifest or chunk was lost.
+
+Each current or next DKG committee is limited to 50 members. Besides bounding
+ceremony and pairwise transport state, this also bounds a repair walk to at most
+50 non-empty pages.
 
 For reshare commitments, direct repair expects the frozen dealer set and fetches
 missing retained contributions from the leader first, then from each scoped

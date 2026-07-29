@@ -71,6 +71,13 @@ pub const MAX_COMMITMENT_COEFFICIENTS: usize = 256;
 // DKG Session Management Constants
 // ============================================================================
 
+/// Maximum supported members in either side of a DKG committee.
+///
+/// This bounds ceremony state, pairwise networking, and the number of pages
+/// required to repair a public phase. Reshare may have up to this many members
+/// in each of its current and next committees.
+pub const MAX_DKG_COMMITTEE_SIZE: usize = 50;
+
 /// Maximum number of concurrent DKG sessions allowed per node
 ///
 /// This limit prevents unbounded memory growth and resource exhaustion. Each

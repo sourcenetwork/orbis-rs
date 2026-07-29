@@ -1,4 +1,4 @@
-use crate::constants::PSS_GRACE_PERIOD_SECS;
+use crate::constants::{MAX_DKG_COMMITTEE_SIZE, PSS_GRACE_PERIOD_SECS};
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareParams;
@@ -239,6 +239,13 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
             "Reshare new_peer_node_keys cannot be empty".to_string(),
         ));
     }
+    if proposed_new_peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Reshare new committee has {} nodes, maximum is {}",
+            proposed_new_peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
     if proposed_new_threshold < 1
         || proposed_new_threshold as usize > proposed_new_peer_node_keys.len()
     {
@@ -264,6 +271,13 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
     let ring_payload =
         load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin, protocol_version)
             .await?;
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Reshare current committee has {} nodes, maximum is {}",
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
 
     // 3. Sender membership in the old committee is verified by the caller (session_init
     // handler) after resolving NodeInfo routes: it needs the resolved peer→node-key map
@@ -399,6 +413,14 @@ pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload
         return Err(DkgError::InvalidInput(format!(
             "Fresh DKG target ring {} has no peer_node_keys",
             ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh DKG target ring {} has {} participants, maximum is {}",
+            ring_id,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
         )));
     }
     if ring_payload.threshold == 0
@@ -1230,6 +1252,19 @@ mod tests {
     fn test_validate_fresh_dkg_ring_payload_rejects_empty_committee() {
         let mut payload = make_valid_ring_payload("node-key");
         payload.peer_node_keys = vec![];
+        assert!(matches!(
+            validate_fresh_dkg_ring_payload("ring-1", &payload),
+            Err(DkgError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn test_validate_fresh_dkg_ring_payload_rejects_more_than_fifty_members() {
+        let mut payload = make_valid_ring_payload("node-key");
+        payload.peer_node_keys = (1..=MAX_DKG_COMMITTEE_SIZE + 1)
+            .map(|node_id| format!("node-{node_id}"))
+            .collect();
+        payload.threshold = MAX_DKG_COMMITTEE_SIZE as u32;
         assert!(matches!(
             validate_fresh_dkg_ring_payload("ring-1", &payload),
             Err(DkgError::InvalidInput(_))
