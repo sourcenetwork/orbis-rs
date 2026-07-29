@@ -38,24 +38,25 @@ fn bounded_unique_reveals(
 /// is per-commitment (the dealer's signature), so a lying revealer cannot forge attribution.
 pub async fn handle_commitment_audit_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     revealed: Vec<SignedDkgCommitment>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    let session_id = attempt.session_id();
     let (is_fresh, committee_size) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             (
                 matches!(state.kind, SessionKind::Fresh),
                 state.node.total_nodes(),
             )
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     if is_fresh {
         return Err(DkgError::ProtocolError(
@@ -70,8 +71,7 @@ where
     for reveal in bounded_reveals {
         let dealer_id = reveal.statement.from_node_id;
         let commitment = reveal.statement.commitment.clone();
-        match verify_commitment_evidence(coord, session_id, dealer_id, &commitment, Some(reveal))
-            .await
+        match verify_commitment_evidence(coord, attempt, dealer_id, &commitment, Some(reveal)).await
         {
             Ok(Some(evidence)) => verified.push(evidence),
             Ok(None) => {}
@@ -89,8 +89,9 @@ where
     if let Some((dealer_node_id, ours, reveal)) = coord
         .app_state
         .dkg_session_state
-        .find_conflicting_commitment_pair(&session_id, &verified)
+        .find_conflicting_commitment_pair_for_attempt(attempt, &verified)
         .await
+        .map_err(|error| attempt_state_error(attempt, error))?
     {
         tracing::error!(
             session_id = session_id,
@@ -100,7 +101,7 @@ where
         );
         // Report it on-chain (threshold-signed). `ours` (locally received) anchors the
         // envelope. Best-effort: log-not-propagate so the ceremony's abort is unchanged.
-        if let Err(error) = queue_or_relay_equivocation(coord, session_id, ours, reveal).await {
+        if let Err(error) = queue_or_relay_equivocation(coord, attempt, ours, reveal).await {
             tracing::warn!(
                 session_id = session_id,
                 dealer_node_id = dealer_node_id,

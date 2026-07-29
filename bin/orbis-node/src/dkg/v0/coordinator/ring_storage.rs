@@ -7,6 +7,7 @@ use crate::constants::{
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::DkgPhase;
+use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingIndexEntry;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, RingFinalizationPayload};
@@ -15,20 +16,21 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
 use tokio::time::{sleep, Instant};
 
-use super::{types::CoordinatorDkg, DkgCoordinator};
+use super::{attempt_state_error, types::CoordinatorDkg, DkgCoordinator};
 
 pub async fn cleanup_departing_dealer<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     ring_key: Option<String>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let bulletin_post_id = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             state
                 .reshare
                 .params
@@ -41,17 +43,19 @@ where
                     _ => None,
                 })
         })
-        .await;
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
     coord
         .app_state
         .dkg_session_state
-        .update_phase(&session_id, DkgPhase::Phase4Complete)
-        .await;
+        .update_phase_for_attempt(attempt, DkgPhase::Phase4Complete)
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
     super::reshare::cleanup::spawn_bulletin_finalized_cleanup(
         coord.app_state.clone(),
         ring_key,
-        session_id,
-        bulletin_post_id.flatten(),
+        attempt,
+        bulletin_post_id,
         true,
     );
     tracing::info!(

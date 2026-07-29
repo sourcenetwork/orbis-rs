@@ -22,6 +22,36 @@ pub struct CeremonyId(pub u128);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AttemptId(pub [u8; 32]);
 
+/// Internal identity for one concrete execution of a deterministic ceremony.
+///
+/// `CeremonyId` is intentionally reusable across retries, so active protocol
+/// work must carry both fields whenever it reads, mutates, or removes session
+/// state. This type is not serialized on the wire; messages continue to encode
+/// the two existing fields independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct AttemptKey {
+    pub ceremony_id: CeremonyId,
+    pub attempt_id: AttemptId,
+}
+
+impl AttemptKey {
+    pub(crate) const fn new(ceremony_id: CeremonyId, attempt_id: AttemptId) -> Self {
+        Self {
+            ceremony_id,
+            attempt_id,
+        }
+    }
+
+    pub(crate) const fn session_id(self) -> u128 {
+        self.ceremony_id.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn test(session_id: u128) -> Self {
+        Self::new(CeremonyId(session_id), AttemptId([0xA5; 32]))
+    }
+}
+
 impl AttemptId {
     pub fn random() -> Self {
         Self(rand::random())

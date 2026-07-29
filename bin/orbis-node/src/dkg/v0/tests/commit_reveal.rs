@@ -7,6 +7,7 @@ use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::{fresh_commitment_hash, serialize_commitment_coefficients};
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment};
 use crate::dkg::v0::session_state::DkgPhase;
+use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
 use crypto::r#trait::{Dkg, DkgMode, DkgRole};
 use crypto::DkgImpl;
@@ -29,7 +30,14 @@ async fn fresh_fixture(db_name: &str) -> FreshFixture {
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
 
     coordinator
-        .create_session(SESSION_ID, 1, 2, 3, DkgRole::Standard, |_| {})
+        .create_session(
+            AttemptKey::test(SESSION_ID),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |_| {},
+        )
         .await
         .expect("create session");
     app_state
@@ -96,12 +104,17 @@ async fn hash_before_commitment_accepts_matching_reveal() {
     let db_path = test_db_path(db_name);
     let fixture = fresh_fixture(db_name).await;
 
-    handle_commitment_hash_message(&fixture.coordinator, SESSION_ID, 2, fixture.commitment_hash)
-        .await
-        .expect("hash accepted");
+    handle_commitment_hash_message(
+        &fixture.coordinator,
+        AttemptKey::test(SESSION_ID),
+        2,
+        fixture.commitment_hash,
+    )
+    .await
+    .expect("hash accepted");
     handle_commitment_message(
         &fixture.coordinator,
-        SESSION_ID,
+        AttemptKey::test(SESSION_ID),
         2,
         fixture.commitment.clone(),
         None,
@@ -128,7 +141,7 @@ async fn commitment_before_hash_is_buffered_and_replayed() {
 
     handle_commitment_message(
         &fixture.coordinator,
-        SESSION_ID,
+        AttemptKey::test(SESSION_ID),
         2,
         fixture.commitment.clone(),
         None,
@@ -144,9 +157,14 @@ async fn commitment_before_hash_is_buffered_and_replayed() {
         .expect("session exists");
     assert_eq!(commitments_before_hash, 0);
 
-    handle_commitment_hash_message(&fixture.coordinator, SESSION_ID, 2, fixture.commitment_hash)
-        .await
-        .expect("hash accepted and commitment replayed");
+    handle_commitment_hash_message(
+        &fixture.coordinator,
+        AttemptKey::test(SESSION_ID),
+        2,
+        fixture.commitment_hash,
+    )
+    .await
+    .expect("hash accepted and commitment replayed");
 
     let commitments_after_hash = fixture
         .app_state
@@ -165,12 +183,17 @@ async fn reveal_that_does_not_match_hash_is_rejected() {
     let db_path = test_db_path(db_name);
     let fixture = fresh_fixture(db_name).await;
 
-    handle_commitment_hash_message(&fixture.coordinator, SESSION_ID, 2, [9; 32])
-        .await
-        .expect("hash accepted");
+    handle_commitment_hash_message(
+        &fixture.coordinator,
+        AttemptKey::test(SESSION_ID),
+        2,
+        [9; 32],
+    )
+    .await
+    .expect("hash accepted");
     let result = handle_commitment_message(
         &fixture.coordinator,
-        SESSION_ID,
+        AttemptKey::test(SESSION_ID),
         2,
         fixture.commitment.clone(),
         None,
@@ -189,12 +212,19 @@ async fn commitment_hash_is_rejected_for_non_fresh_session() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
-        .create_session(SESSION_ID, 1, 2, 3, DkgRole::Standard, |state| {
-            state.kind = SessionKind::Refresh {
-                ring_pk_hex: "ring".to_string(),
-            };
-            state.phase = DkgPhase::Phase1Commitments;
-        })
+        .create_session(
+            AttemptKey::test(SESSION_ID),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |state| {
+                state.kind = SessionKind::Refresh {
+                    ring_pk_hex: "ring".to_string(),
+                };
+                state.phase = DkgPhase::Phase1Commitments;
+            },
+        )
         .await
         .expect("create refresh session");
     app_state
@@ -208,7 +238,9 @@ async fn commitment_hash_is_rejected_for_non_fresh_session() {
         )
         .await;
 
-    let result = handle_commitment_hash_message(&coordinator, SESSION_ID, 2, [1; 32]).await;
+    let result =
+        handle_commitment_hash_message(&coordinator, AttemptKey::test(SESSION_ID), 2, [1; 32])
+            .await;
 
     assert!(result.is_err(), "non-Fresh CommitmentHash should fail");
     assert!(matches!(result, Err(DkgError::ProtocolError(_))));
@@ -249,7 +281,9 @@ async fn commitment_audit_is_rejected_for_fresh_session() {
     let db_path = test_db_path(db_name);
     let fixture = fresh_fixture(db_name).await;
 
-    let result = handle_commitment_audit_message(&fixture.coordinator, SESSION_ID, vec![]).await;
+    let result =
+        handle_commitment_audit_message(&fixture.coordinator, AttemptKey::test(SESSION_ID), vec![])
+            .await;
 
     assert!(
         result.is_err(),
@@ -270,18 +304,25 @@ async fn commitment_audit_skips_unverifiable_reveals() {
     let app_state = Arc::new(create_test_app_state_default(db_name).await);
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
-        .create_session(SESSION_ID, 1, 2, 3, DkgRole::Standard, |state| {
-            state.kind = SessionKind::Refresh {
-                ring_pk_hex: "ring".to_string(),
-            };
-            state.phase = DkgPhase::Phase1Commitments;
-        })
+        .create_session(
+            AttemptKey::test(SESSION_ID),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |state| {
+                state.kind = SessionKind::Refresh {
+                    ring_pk_hex: "ring".to_string(),
+                };
+                state.phase = DkgPhase::Phase1Commitments;
+            },
+        )
         .await
         .expect("create refresh session");
 
     let result = handle_commitment_audit_message(
         &coordinator,
-        SESSION_ID,
+        AttemptKey::test(SESSION_ID),
         vec![bogus_signed_commitment(2, vec![1, 2, 3])],
     )
     .await;

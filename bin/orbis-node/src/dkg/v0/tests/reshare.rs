@@ -6,7 +6,7 @@ use crate::dkg::v0::{
     messages::SessionKind,
     network::{start_reshare, ReshareStartOutcome},
     session_state::{RingPssClaimOutcome, SessionStateManager},
-    transport::canonical_leader,
+    transport::{canonical_leader, AttemptKey},
 };
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
@@ -53,7 +53,7 @@ async fn invoke_session_init(
 ) -> Result<()> {
     handle_session_init(
         coordinator,
-        init.session_id,
+        AttemptKey::test(init.session_id),
         init.threshold,
         init.total_participants,
         &init.peer_ids,
@@ -615,7 +615,14 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
     // Create a session where this node acts as a pure Dealer.
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
-        .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
+        .create_session(
+            AttemptKey::test(session_id),
+            1,
+            1,
+            3,
+            DkgRole::Dealer,
+            |_| {},
+        )
         .await
         .expect("create_session should succeed");
 
@@ -634,7 +641,7 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
 
     // Trigger Phase 4 directly — the Dealer path cleans up without any crypto.
     coordinator
-        .initiate_phase4_completion(session_id)
+        .initiate_phase4_completion(AttemptKey::test(session_id))
         .await
         .expect("phase4 should succeed for Dealer");
 
@@ -739,7 +746,14 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
 
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
-        .create_session(session_id, 1, 1, 3, DkgRole::Dealer, |_| {})
+        .create_session(
+            AttemptKey::test(session_id),
+            1,
+            1,
+            3,
+            DkgRole::Dealer,
+            |_| {},
+        )
         .await
         .expect("create_session should succeed");
 
@@ -757,17 +771,18 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
         .await;
 
     // Mark the ring as having an active PSS ceremony.
+    let attempt = AttemptKey::test(session_id);
     assert_eq!(
         app_state
             .dkg_session_state
-            .claim_ring_pss_session(ring_pk, session_id)
+            .claim_ring_pss_attempt(ring_pk, attempt)
             .await,
         RingPssClaimOutcome::Claimed,
         "PSS claim should be markable before Phase 4"
     );
 
     coordinator
-        .initiate_phase4_completion(session_id)
+        .initiate_phase4_completion(attempt)
         .await
         .expect("phase4 should succeed for Dealer");
 
@@ -2018,7 +2033,7 @@ async fn test_reshare_one_old_dealer_offline_completes() {
         canonical_leader(&old_peer_node_keys).expect("old committee has a canonical dealer");
     let offline_index = old_peer_node_keys
         .iter()
-        .position(|node_key| node_key == &leader_key)
+        .position(|node_key| node_key == leader_key)
         .expect("canonical old dealer is present");
     let mut sorted_new = old_peer_node_keys
         .iter()

@@ -5,11 +5,13 @@ use crypto::r#trait::Dkg;
 
 use crate::app_state::AppState;
 use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_CONFIRM_TIMEOUT};
+use crate::dkg::v0::session_state::TopicTaskDisposition;
+use crate::dkg::v0::transport::AttemptKey;
 
 pub fn spawn_bulletin_finalized_cleanup<D>(
     app_state: Arc<AppState<D>>,
     ring_key: Option<String>,
-    session_id: u128,
+    attempt: AttemptKey,
     bulletin_post_id: Option<String>,
     delete_departed_material: bool,
 ) where
@@ -19,7 +21,7 @@ pub fn spawn_bulletin_finalized_cleanup<D>(
         wait_for_reshare_bulletin_finalized(
             app_state,
             ring_key,
-            session_id,
+            attempt,
             bulletin_post_id,
             delete_departed_material,
         )
@@ -32,16 +34,25 @@ pub fn spawn_bulletin_finalized_cleanup<D>(
 async fn wait_for_reshare_bulletin_finalized<D>(
     app_state: Arc<AppState<D>>,
     ring_key: Option<String>,
-    session_id: u128,
+    attempt: AttemptKey,
     bulletin_post_id: Option<String>,
     delete_departed_material: bool,
 ) where
     D: Dkg + Clone + Send + Sync + 'static,
 {
+    let session_id = attempt.session_id();
     let mut finalized_payload = None;
     if let Some(post_id) = bulletin_post_id {
         let deadline = tokio::time::Instant::now() + RESHARE_BULLETIN_CONFIRM_TIMEOUT;
         loop {
+            if app_state
+                .dkg_session_state
+                .with_attempt_state(attempt, |_| ())
+                .await
+                .is_err()
+            {
+                return;
+            }
             if tokio::time::Instant::now() >= deadline {
                 tracing::warn!(
                     session_id = session_id,
@@ -87,6 +98,14 @@ async fn wait_for_reshare_bulletin_finalized<D>(
     }
 
     if let Some(key) = ring_key {
+        if app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |_| ())
+            .await
+            .is_err()
+        {
+            return;
+        }
         if delete_departed_material {
             let finalized_exclusion = finalized_payload.as_ref().is_some_and(|payload| {
                 !payload
@@ -115,10 +134,13 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 );
             }
         }
-        app_state.dkg_session_state.unmark_ring_pss(&key).await;
+        app_state
+            .dkg_session_state
+            .unmark_ring_pss_for_attempt(&key, attempt)
+            .await;
     }
     app_state
         .dkg_session_state
-        .complete_session(&session_id)
+        .complete_transport_attempt(attempt, TopicTaskDisposition::DetachCurrent)
         .await;
 }

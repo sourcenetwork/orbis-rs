@@ -387,7 +387,7 @@ where
 /// Returns `Ok(())` — the caller should return this directly from `handle_message`.
 pub async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     threshold: u32,
     total_participants: u32,
     peer_ids: &[String],
@@ -403,6 +403,7 @@ pub async fn handle_session_init<D>(
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
 
     let resolved = match kind {
@@ -501,7 +502,7 @@ where
         match coord
             .app_state
             .dkg_session_state
-            .claim_ring_pss_session(ring_key, session_id)
+            .claim_ring_pss_attempt(ring_key, attempt)
             .await
         {
             RingPssClaimOutcome::Claimed => {
@@ -575,12 +576,14 @@ where
     {
         match coord
             .create_session(
-                session_id,
+                attempt,
                 assigned_node_id,
                 threshold as usize,
                 total_participants as usize,
                 dkg_role,
                 move |state| {
+                    state.transport.ceremony_id = Some(attempt.ceremony_id);
+                    state.transport.attempt_id = Some(attempt.attempt_id);
                     state.kind = init_kind;
                     state.policy_id = init_policy_id;
                     state.pss_interval = pss_interval;
@@ -614,7 +617,7 @@ where
                     coord
                         .app_state
                         .dkg_session_state
-                        .unmark_ring_pss_if_matches(ring_key, session_id)
+                        .unmark_ring_pss_for_attempt(ring_key, attempt)
                         .await;
                     tracing::warn!(
                         session_id = session_id,
@@ -629,7 +632,7 @@ where
                     coord
                         .app_state
                         .dkg_session_state
-                        .unmark_ring_pss_if_matches(ring_key, session_id)
+                        .unmark_ring_pss_for_attempt(ring_key, attempt)
                         .await;
                 }
                 return Err(e);

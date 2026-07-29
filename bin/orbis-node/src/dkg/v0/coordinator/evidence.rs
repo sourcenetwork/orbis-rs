@@ -9,10 +9,11 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
-use crate::dkg::v0::helpers::{deserialize_wire_commitment, session_not_found};
+use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::network::relay_invalid_commitment_evidence;
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
+use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::node_key_for_canonical_node_id;
 use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
@@ -23,6 +24,7 @@ use crate::reporting::v0::types::{
 };
 
 use super::{
+    attempt_state_error,
     types::{CoordinatorDkg, CoordinatorReportSigner},
     DkgCoordinator,
 };
@@ -35,21 +37,21 @@ pub(crate) struct DkgEvidenceBuildContext {
 
 pub(crate) async fn evidence_build_context<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
 ) -> Result<Option<DkgEvidenceBuildContext>>
 where
     D: CoordinatorDkg,
 {
-    let Some(binding) = evidence_binding(coord, session_id).await? else {
+    let Some(binding) = evidence_binding(coord, attempt).await? else {
         return Ok(None);
     };
     let signing_key_hex = read_node_signing_key_hex(&coord.app_state)?;
     let session_nonce = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| state.session_nonce)
+        .with_attempt_state(attempt, |state| state.session_nonce)
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
     Ok(Some(DkgEvidenceBuildContext {
         binding,
         signing_key_hex,
@@ -96,19 +98,19 @@ where
 
 pub async fn build_and_store_commitment_evidence<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     commitment: Vec<u8>,
 ) -> Result<Option<SignedDkgCommitment>>
 where
     D: CoordinatorDkg,
 {
-    let Some(context) = evidence_build_context(coord, session_id).await? else {
+    let Some(context) = evidence_build_context(coord, attempt).await? else {
         return Ok(None);
     };
     let report_evidence = build_and_store_commitment_evidence_with_context(
         coord,
-        session_id,
+        attempt,
         &context,
         from_node_id,
         commitment,
@@ -119,7 +121,7 @@ where
 
 pub(crate) async fn build_and_store_commitment_evidence_with_context<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     context: &DkgEvidenceBuildContext,
     from_node_id: u32,
     commitment: Vec<u8>,
@@ -132,11 +134,11 @@ where
     coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             state.local_signed_commitment = Some(report_evidence.clone());
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
     Ok(report_evidence)
 }
 
@@ -197,7 +199,7 @@ where
 
 pub async fn verify_commitment_evidence<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     commitment: &[u8],
     evidence: Option<SignedDkgCommitment>,
@@ -205,7 +207,7 @@ pub async fn verify_commitment_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    let Some(binding) = evidence_binding(coord, session_id).await? else {
+    let Some(binding) = evidence_binding(coord, attempt).await? else {
         return Ok(None);
     };
     let evidence = evidence.ok_or_else(|| {
@@ -227,7 +229,7 @@ where
 
 pub async fn verify_share_evidence<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     to_node_id: u32,
     share_value: &[u8],
@@ -237,7 +239,7 @@ pub async fn verify_share_evidence<D>(
 where
     D: CoordinatorDkg,
 {
-    let Some(binding) = evidence_binding(coord, session_id).await? else {
+    let Some(binding) = evidence_binding(coord, attempt).await? else {
         return Ok(None);
     };
     let evidence = evidence.ok_or_else(|| {
@@ -289,17 +291,17 @@ pub fn share_evidence_proves_failure(evidence: &SignedDkgShare) -> bool {
 
 pub async fn queue_or_relay_invalid_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     evidence: SignedDkgShare,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if local_node_is_current_route_member(coord, session_id).await? {
+    if local_node_is_current_route_member(coord, attempt).await? {
         queue_invalid_share_report(coord.app_state.clone(), coord.routes, evidence).await
     } else if evidence.statement.origin_protocol == "pss_reshare" {
-        relay_invalid_share_evidence(coord, session_id, evidence).await
+        relay_invalid_share_evidence(coord, attempt, evidence).await
     } else {
         Err(DkgError::Unauthorized(
             "local node is not in the report signing committee".to_string(),
@@ -309,7 +311,7 @@ where
 
 pub async fn handle_invalid_share_evidence_relay<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     report_evidence: SignedDkgShare,
 ) -> Result<()>
 where
@@ -321,7 +323,7 @@ where
             "DKG bad-share evidence relay is only valid for reshare".to_string(),
         ));
     }
-    verify_relay_is_current_signer(coord, session_id).await?;
+    verify_relay_is_current_signer(coord, attempt).await?;
 
     // A relayed report is otherwise unauthenticated network input, so re-run the
     // same checks the direct receiver path runs before spending a report attempt
@@ -335,7 +337,7 @@ where
     let nonce = report_evidence.statement.nonce;
     let verified = verify_share_evidence(
         coord,
-        session_id,
+        attempt,
         from_node_id,
         to_node_id,
         &share_value,
@@ -372,7 +374,7 @@ pub(crate) fn commitments_prove_equivocation(
 
 pub async fn queue_or_relay_equivocation<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     commitment_a: SignedDkgCommitment,
     commitment_b: SignedDkgCommitment,
 ) -> Result<()>
@@ -380,7 +382,7 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if local_node_is_current_route_member(coord, session_id).await? {
+    if local_node_is_current_route_member(coord, attempt).await? {
         queue_equivocation_report(
             coord.app_state.clone(),
             coord.routes,
@@ -389,7 +391,7 @@ where
         )
         .await
     } else if commitment_a.statement.origin_protocol == "pss_reshare" {
-        relay_equivocation_evidence(coord, session_id, commitment_a, commitment_b).await
+        relay_equivocation_evidence(coord, attempt, commitment_a, commitment_b).await
     } else {
         Err(DkgError::Unauthorized(
             "local node is not in the report signing committee".to_string(),
@@ -399,19 +401,19 @@ where
 
 async fn relay_equivocation_evidence<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     commitment_a: SignedDkgCommitment,
     commitment_b: SignedDkgCommitment,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    relay_invalid_commitment_evidence(coord, session_id, commitment_a, commitment_b).await
+    relay_invalid_commitment_evidence(coord, attempt, commitment_a, commitment_b).await
 }
 
 pub async fn handle_invalid_commitment_evidence_relay<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     commitment_a: SignedDkgCommitment,
     commitment_b: SignedDkgCommitment,
 ) -> Result<()>
@@ -424,7 +426,7 @@ where
             "DKG equivocation evidence relay is only valid for reshare".to_string(),
         ));
     }
-    verify_relay_is_current_signer(coord, session_id).await?;
+    verify_relay_is_current_signer(coord, attempt).await?;
 
     // Relayed evidence is otherwise unauthenticated input: re-authenticate both commitments
     // against this session (ring binding + the dealer's signature) and re-confirm they
@@ -433,7 +435,7 @@ where
     let commitment_bytes_a = commitment_a.statement.commitment.clone();
     let verified_a = verify_commitment_evidence(
         coord,
-        session_id,
+        attempt,
         from_node_id_a,
         &commitment_bytes_a,
         Some(commitment_a),
@@ -448,7 +450,7 @@ where
     let commitment_bytes_b = commitment_b.statement.commitment.clone();
     let verified_b = verify_commitment_evidence(
         coord,
-        session_id,
+        attempt,
         from_node_id_b,
         &commitment_bytes_b,
         Some(commitment_b),
@@ -477,25 +479,26 @@ where
 
 async fn evidence_binding<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
 ) -> Result<Option<DkgReportEvidenceBinding>>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     if let Some(cached) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| state.report_evidence_binding.clone())
+        .with_attempt_state(attempt, |state| state.report_evidence_binding.clone())
         .await
-        .ok_or_else(|| session_not_found(session_id))?
+        .map_err(|error| attempt_state_error(attempt, error))?
     {
         return Ok(Some(cached));
     }
 
-    let Some((kind, stored_ring_id, protocol_version, receiver_node_keys)) = coord
+    let (kind, stored_ring_id, protocol_version, receiver_node_keys) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             let receiver_node_keys = match &state.kind {
                 SessionKind::Fresh => Vec::new(),
                 SessionKind::Refresh { .. } => state.routing.peer_node_keys.clone(),
@@ -511,9 +514,7 @@ where
             )
         })
         .await
-    else {
-        return Err(session_not_found(session_id));
-    };
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     let (origin_protocol, ring_id) = match kind {
         SessionKind::Fresh => return Ok(None),
@@ -559,14 +560,14 @@ where
     let binding = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             if state.report_evidence_binding.is_none() {
                 state.report_evidence_binding = Some(binding.clone());
             }
             state.report_evidence_binding.clone()
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?
+        .map_err(|error| attempt_state_error(attempt, error))?
         .ok_or_else(|| {
             DkgError::InvalidState("failed to cache DKG report evidence binding".to_string())
         })?;
@@ -825,18 +826,18 @@ where
 
 async fn relay_invalid_share_evidence<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     evidence: SignedDkgShare,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    crate::dkg::v0::network::relay_invalid_share_evidence(coord, session_id, evidence).await
+    crate::dkg::v0::network::relay_invalid_share_evidence(coord, attempt, evidence).await
 }
 
 async fn local_node_is_current_route_member<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
 ) -> Result<bool>
 where
     D: CoordinatorDkg,
@@ -845,7 +846,7 @@ where
     coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             state
                 .routing
                 .node_id_to_peer_id
@@ -853,17 +854,17 @@ where
                 .any(|peer_id| extract_node_part(peer_id) == local_peer_hex)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))
+        .map_err(|error| attempt_state_error(attempt, error))
 }
 
 async fn verify_relay_is_current_signer<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    if local_node_is_current_route_member(coord, session_id).await? {
+    if local_node_is_current_route_member(coord, attempt).await? {
         Ok(())
     } else {
         Err(DkgError::Unauthorized(
@@ -1064,27 +1065,36 @@ mod tests {
         let session_id = 7;
 
         coordinator
-            .create_session(session_id, 1, 2, 3, DkgRole::Dealer, |state| {
-                state.kind = SessionKind::Reshare {
-                    ring_pk_hex: "ring-pk".to_string(),
-                    new_peer_node_keys: vec!["new-a".to_string(), "new-b".to_string()],
-                    new_threshold: 2,
-                    bulletin_post_id: "ring-id".to_string(),
-                };
-                // During reshare this field is the receiver/new committee; it must
-                // not be used to decide whether this node can sign current reports.
-                state.routing.peer_node_keys = vec!["new-a".to_string(), "new-b".to_string()];
-                state
-                    .routing
-                    .node_id_to_peer_id
-                    .insert(1, format!("{local_peer_hex}@127.0.0.1:1234"));
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                2,
+                3,
+                DkgRole::Dealer,
+                |state| {
+                    state.kind = SessionKind::Reshare {
+                        ring_pk_hex: "ring-pk".to_string(),
+                        new_peer_node_keys: vec!["new-a".to_string(), "new-b".to_string()],
+                        new_threshold: 2,
+                        bulletin_post_id: "ring-id".to_string(),
+                    };
+                    // During reshare this field is the receiver/new committee; it must
+                    // not be used to decide whether this node can sign current reports.
+                    state.routing.peer_node_keys = vec!["new-a".to_string(), "new-b".to_string()];
+                    state
+                        .routing
+                        .node_id_to_peer_id
+                        .insert(1, format!("{local_peer_hex}@127.0.0.1:1234"));
+                },
+            )
             .await
             .expect("create reshare dealer session");
 
-        assert!(local_node_is_current_route_member(&coordinator, session_id)
-            .await
-            .expect("membership check"));
+        assert!(
+            local_node_is_current_route_member(&coordinator, AttemptKey::test(session_id))
+                .await
+                .expect("membership check")
+        );
         cleanup_db(&db_path);
     }
 
@@ -1100,27 +1110,34 @@ mod tests {
         let session_id = 8;
 
         coordinator
-            .create_session(session_id, 1, 1, 1, DkgRole::Receiver, |state| {
-                state.kind = SessionKind::Reshare {
-                    ring_pk_hex: "ring-pk".to_string(),
-                    new_peer_node_keys: vec![local_node_key.clone()],
-                    new_threshold: 1,
-                    bulletin_post_id: "ring-id".to_string(),
-                };
-                // This simulates the pure-new receiver case that used to be
-                // misclassified because `peer_node_keys` names the new committee.
-                state.routing.peer_node_keys = vec![local_node_key];
-                state.routing.node_id_to_peer_id.insert(1, "a".repeat(64));
-                state
-                    .routing
-                    .reshare_new_node_id_to_peer_id
-                    .insert(1, local_peer_hex);
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                1,
+                1,
+                DkgRole::Receiver,
+                |state| {
+                    state.kind = SessionKind::Reshare {
+                        ring_pk_hex: "ring-pk".to_string(),
+                        new_peer_node_keys: vec![local_node_key.clone()],
+                        new_threshold: 1,
+                        bulletin_post_id: "ring-id".to_string(),
+                    };
+                    // This simulates the pure-new receiver case that used to be
+                    // misclassified because `peer_node_keys` names the new committee.
+                    state.routing.peer_node_keys = vec![local_node_key];
+                    state.routing.node_id_to_peer_id.insert(1, "a".repeat(64));
+                    state
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .insert(1, local_peer_hex);
+                },
+            )
             .await
             .expect("create reshare receiver session");
 
         assert!(
-            !local_node_is_current_route_member(&coordinator, session_id)
+            !local_node_is_current_route_member(&coordinator, AttemptKey::test(session_id))
                 .await
                 .expect("membership check")
         );
@@ -1140,7 +1157,7 @@ mod tests {
 
         let error = handle_invalid_share_evidence_relay(
             &coordinator,
-            1,
+            AttemptKey::test(1),
             signed_share_with_origin("pss_refresh"),
         )
         .await
@@ -1162,7 +1179,7 @@ mod tests {
 
         let error = handle_invalid_share_evidence_relay(
             &coordinator,
-            999,
+            AttemptKey::test(999),
             signed_share_with_origin("pss_reshare"),
         )
         .await
@@ -1172,7 +1189,9 @@ mod tests {
         // No such session exists, so the current-signer check fails before queuing.
         assert!(matches!(
             error,
-            DkgError::SessionNotFound(_) | DkgError::Unauthorized(_)
+            DkgError::SessionNotFound(_)
+                | DkgError::StaleAttempt { .. }
+                | DkgError::Unauthorized(_)
         ));
     }
 }

@@ -35,9 +35,10 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::SignedDkgShare;
 use crate::dkg::v0::session_state::{
-    CreateSessionOutcome, DkgSessionState, MessageProcessingClaim, TransportMessageClaimGuard,
+    AttemptStateError, CreateSessionOutcome, DkgSessionState, MessageProcessingClaim,
+    TopicTaskDisposition, TransportMessageClaimGuard,
 };
-use crate::dkg::v0::transport::MessageId;
+use crate::dkg::v0::transport::{AttemptKey, MessageId};
 use crypto::r#trait::{Dkg, DkgRole};
 use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
@@ -86,7 +87,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn accept_transport_share(
         &self,
-        session_id: u128,
+        attempt: AttemptKey,
         message_id: MessageId,
         from_node_id: u32,
         to_node_id: u32,
@@ -97,17 +98,18 @@ where
     where
         SignImpl: CoordinatorReportSigner<D>,
     {
+        let session_id = attempt.session_id();
         let guard = loop {
             match self
                 .app_state
                 .dkg_session_state
-                .claim_transport_message(&session_id, message_id)
+                .claim_transport_message(attempt, message_id)
                 .await
             {
                 MessageProcessingClaim::Claimed => {
                     break TransportMessageClaimGuard::new(
                         self.app_state.dkg_session_state.clone(),
-                        session_id,
+                        attempt,
                         message_id,
                     );
                 }
@@ -115,14 +117,14 @@ where
                     return self
                         .app_state
                         .dkg_session_state
-                        .with_state(&session_id, |state| {
+                        .with_attempt_state(attempt, |state| {
                             state
                                 .commitment_audit
                                 .received_shares
                                 .contains(&from_node_id)
                         })
                         .await
-                        .ok_or_else(|| session_not_found(session_id));
+                        .map_err(|error| attempt_state_error(attempt, error));
                 }
                 MessageProcessingClaim::AlreadyProcessing => {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -130,11 +132,16 @@ where
                 MessageProcessingClaim::MissingSession => {
                     return Err(session_not_found(session_id));
                 }
+                MessageProcessingClaim::StaleAttempt => {
+                    return Err(DkgError::StaleAttempt {
+                        ceremony_id: session_id,
+                    });
+                }
             }
         };
         let result = message_handlers::accept_share_message(
             self,
-            session_id,
+            attempt,
             from_node_id,
             to_node_id,
             share_value,
@@ -156,7 +163,7 @@ where
     /// it. Pass `|_| {}` when no extra initialization is needed.
     pub async fn create_session<F>(
         &self,
-        session_id: u128,
+        attempt: AttemptKey,
         node_id: u32,
         threshold: usize,
         total_nodes: usize,
@@ -166,6 +173,7 @@ where
     where
         F: FnOnce(&mut DkgSessionState<D>),
     {
+        let session_id = attempt.session_id();
         if total_nodes == 0 {
             return Err(DkgError::InvalidParticipantCount(total_nodes));
         }
@@ -178,6 +186,8 @@ where
             .dkg_session_state
             .create_session(session_id, *dkg_node, total_nodes, move |state| {
                 state.protocol_version = protocol_version;
+                state.transport.ceremony_id = Some(attempt.ceremony_id);
+                state.transport.attempt_id = Some(attempt.attempt_id);
                 init_fn(state);
             })
             .await
@@ -193,21 +203,21 @@ where
         Ok(())
     }
 
-    /// Remove a DKG session from state.
-    pub async fn remove_session(&self, session_id: u128) {
+    /// Abort one exact DKG attempt.
+    pub(crate) async fn abort_attempt(&self, attempt: AttemptKey) {
         self.app_state
             .dkg_session_state
-            .remove_session(&session_id)
+            .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
             .await;
     }
 
     /// Fresh DKG Phase 0: generate polynomial and broadcast commitment hash to all peers.
     pub async fn initiate_phase0_commitment_hashes(
         &self,
-        session_id: u128,
+        attempt: AttemptKey,
         peer_ids: &[String],
     ) -> Result<()> {
-        phases::initiate_phase0_commitment_hashes(self, session_id, peer_ids).await
+        phases::initiate_phase0_commitment_hashes(self, attempt, peer_ids).await
     }
 
     /// Phase 1: Generate polynomial and broadcast commitment to all peers.
@@ -215,10 +225,10 @@ where
     /// Called by the initiator after `StartDkg`, or by the PSS scheduler.
     pub async fn initiate_phase1_commitments(
         &self,
-        session_id: u128,
+        attempt: AttemptKey,
         peer_ids: &[String],
     ) -> Result<()> {
-        phases::initiate_phase1_commitments(self, session_id, peer_ids).await
+        phases::initiate_phase1_commitments(self, attempt, peer_ids).await
     }
 
     /// Check if Phase 1 is complete and trigger Phase 2 if so.
@@ -226,24 +236,33 @@ where
     /// Called after each incoming commitment message.
     pub async fn check_and_trigger_phase2(
         &self,
-        session_id: u128,
+        attempt: AttemptKey,
         peer_ids: &[String],
     ) -> Result<()> {
-        phases::check_and_trigger_phase2(self, session_id, peer_ids).await
+        phases::check_and_trigger_phase2(self, attempt, peer_ids).await
     }
 
     /// Check if Phase 2 is complete (all shares received) and trigger Phase 4 if so.
     ///
     /// Called after each incoming share message.
-    pub async fn check_and_trigger_phase4(&self, session_id: u128) -> Result<()> {
-        phases::check_and_trigger_phase4(self, session_id).await
+    pub async fn check_and_trigger_phase4(&self, attempt: AttemptKey) -> Result<()> {
+        phases::check_and_trigger_phase4(self, attempt).await
     }
 
     /// Phase 4: Compute final secret share and aggregate public key.
     ///
     /// If this node is node_id == 1, also posts the `RingPayload` to the bulletin.
     #[cfg(test)]
-    pub async fn initiate_phase4_completion(&self, session_id: u128) -> Result<()> {
-        phases::initiate_phase4_completion(self, session_id).await
+    pub async fn initiate_phase4_completion(&self, attempt: AttemptKey) -> Result<()> {
+        phases::initiate_phase4_completion(self, attempt).await
+    }
+}
+
+pub(crate) fn attempt_state_error(attempt: AttemptKey, error: AttemptStateError) -> DkgError {
+    match error {
+        AttemptStateError::MissingSession => session_not_found(attempt.session_id()),
+        AttemptStateError::StaleAttempt => DkgError::StaleAttempt {
+            ceremony_id: attempt.session_id(),
+        },
     }
 }

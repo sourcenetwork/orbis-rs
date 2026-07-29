@@ -4,7 +4,7 @@ use crypto::SignImpl;
 
 pub async fn handle_commitment_hash_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     commitment_hash: [u8; 32],
 ) -> Result<()>
@@ -12,28 +12,38 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let is_fresh = coord
+    let session_id = attempt.session_id();
+    let outcome = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
-            matches!(state.kind, SessionKind::Fresh)
+        .with_attempt_state_mut(attempt, |state| {
+            if !matches!(state.kind, SessionKind::Fresh) {
+                return Err(DkgError::ProtocolError(
+                    "CommitmentHash is only valid for Fresh DKG sessions".to_string(),
+                ));
+            }
+            Ok(
+                match state.commit_reveal.received_hashes.get(&from_node_id) {
+                    Some(existing) if existing == &commitment_hash => {
+                        CommitmentHashRecordOutcome::DuplicateSame
+                    }
+                    Some(existing) => CommitmentHashRecordOutcome::Mismatch {
+                        existing: *existing,
+                    },
+                    None => {
+                        state
+                            .commit_reveal
+                            .received_hashes
+                            .insert(from_node_id, commitment_hash);
+                        CommitmentHashRecordOutcome::Recorded
+                    }
+                },
+            )
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
-    if !is_fresh {
-        return Err(DkgError::ProtocolError(
-            "CommitmentHash is only valid for Fresh DKG sessions".to_string(),
-        ));
-    }
-
-    match coord
-        .app_state
-        .dkg_session_state
-        .record_commitment_hash(&session_id, from_node_id, commitment_hash)
-        .await
-        .ok_or_else(|| session_not_found(session_id))?
-    {
+    match outcome {
         CommitmentHashRecordOutcome::Recorded => {
             tracing::debug!(
                 session_id = session_id,
@@ -64,12 +74,18 @@ where
         }
     }
 
-    if let Some(pending) = coord
+    let pending = coord
         .app_state
         .dkg_session_state
-        .take_pending_commitment_waiting_for_hash(&session_id, from_node_id)
+        .with_attempt_state_mut(attempt, |state| {
+            state
+                .pending
+                .pending_commitments_waiting_for_hash
+                .remove(&from_node_id)
+        })
         .await
-    {
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if let Some(pending) = pending {
         tracing::debug!(
             session_id = session_id,
             from_node_id = from_node_id,
@@ -77,7 +93,7 @@ where
         );
         handle_commitment_message(
             coord,
-            session_id,
+            attempt,
             from_node_id,
             pending.commitment,
             pending.report_evidence,
@@ -88,12 +104,12 @@ where
     let peer_ids = coord
         .app_state
         .dkg_session_state
-        .get_peer_ids(&session_id)
+        .with_attempt_state(attempt, |state| state.routing.peer_ids.clone())
         .await
-        .unwrap_or_default();
+        .map_err(|error| attempt_state_error(attempt, error))?;
     phases::drive_event(
         coord,
-        session_id,
+        attempt,
         DkgEvent::CommitmentHashRecorded,
         Some(&peer_ids),
     )

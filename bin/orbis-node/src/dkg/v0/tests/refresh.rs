@@ -14,6 +14,7 @@ use crate::dkg::v0::{
     messages::SessionKind,
     network::{start_refresh, RefreshStartOutcome},
     session_state::{DkgPhase, RingPssClaimOutcome},
+    transport::AttemptKey,
 };
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
@@ -58,7 +59,7 @@ async fn invoke_session_init(
 ) -> Result<()> {
     handle_session_init(
         coordinator,
-        init.session_id,
+        AttemptKey::test(init.session_id),
         init.threshold,
         init.total_participants,
         &init.peer_ids,
@@ -578,7 +579,14 @@ async fn test_share_before_commitment_waits_for_commitment() {
 
     let session_id: u128 = 77_777;
     coordinator
-        .create_session(session_id, 1, 2, 3, DkgRole::Standard, |_| {})
+        .create_session(
+            AttemptKey::test(session_id),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |_| {},
+        )
         .await
         .expect("create session");
 
@@ -633,15 +641,20 @@ async fn test_share_before_commitment_waits_for_commitment() {
         .expect("share for node 1");
     let share_value = CryptoSerialize::to_bytes(&share.value).expect("serialize share");
 
-    handle_commitment_hash_message(&coordinator, session_id, 2, commitment_hash)
-        .await
-        .expect("commitment hash should be accepted");
+    handle_commitment_hash_message(
+        &coordinator,
+        AttemptKey::test(session_id),
+        2,
+        commitment_hash,
+    )
+    .await
+    .expect("commitment hash should be accepted");
 
     let share_coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let share_task = tokio::spawn(async move {
         handle_share_message(
             &share_coordinator,
-            session_id,
+            AttemptKey::test(session_id),
             2,
             1,
             share_value,
@@ -652,9 +665,15 @@ async fn test_share_before_commitment_waits_for_commitment() {
     });
 
     sleep(Duration::from_millis(50)).await;
-    handle_commitment_message(&coordinator, session_id, 2, commitment, None)
-        .await
-        .expect("commitment should be accepted");
+    handle_commitment_message(
+        &coordinator,
+        AttemptKey::test(session_id),
+        2,
+        commitment,
+        None,
+    )
+    .await
+    .expect("commitment should be accepted");
 
     let result = share_task.await.expect("share task join");
     assert!(
@@ -698,7 +717,14 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // Create the refresh session.
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     coordinator
-        .create_session(refresh_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
+        .create_session(
+            AttemptKey::test(refresh_session_id),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |_| {},
+        )
         .await
         .expect("refresh session creation should succeed");
     app_state
@@ -715,7 +741,14 @@ async fn test_concurrent_fresh_dkg_and_refresh_same_ring() {
     // rings_refreshing has no effect on create_session for a new DKG.
     let fresh_dkg_session_id: u128 = 200;
     coordinator
-        .create_session(fresh_dkg_session_id, 1, 2, 3, DkgRole::Standard, |_| {})
+        .create_session(
+            AttemptKey::test(fresh_dkg_session_id),
+            1,
+            2,
+            3,
+            DkgRole::Standard,
+            |_| {},
+        )
         .await
         .expect("fresh DKG session creation must not be blocked by rings_refreshing");
 

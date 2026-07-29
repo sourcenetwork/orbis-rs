@@ -1,19 +1,23 @@
 use super::*;
 
-pub async fn check_and_trigger_phase4<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
+pub async fn check_and_trigger_phase4<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    drive_event(coord, session_id, DkgEvent::ReadinessChanged, None).await
+    drive_event(coord, attempt, DkgEvent::ReadinessChanged, None).await
 }
 pub async fn initiate_phase4_completion<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
 ) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    let session_id = attempt.session_id();
     tracing::info!(
         session_id = session_id,
         "DKG Coordinator: Starting Phase 4 completion"
@@ -22,7 +26,7 @@ where
     let (kind, dkg_role, reshare_new_peer_node_keys, reshare_bulletin_post_id) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             (
                 state.kind.clone(),
                 state.node.role(),
@@ -39,14 +43,14 @@ where
             )
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     // Pure Dealer nodes don't compute a secret share — they just clean up.
     // Because they are leaving the ring, delete the local secret share and
     // remove the ring from the index so the PSS scheduler ignores it.
     if dkg_role == DkgRole::Dealer {
         let ring_key = kind.ring_key().map(|k| k.to_string());
-        return ring_storage::cleanup_departing_dealer(coord, session_id, ring_key).await;
+        return ring_storage::cleanup_departing_dealer(coord, attempt, ring_key).await;
     }
 
     let is_fresh = matches!(kind, SessionKind::Fresh);
@@ -64,7 +68,7 @@ where
     let (node_id, aggregate_pk, final_share_bytes, threshold, pub_poly_bytes) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             tracing::debug!(
                 node_id = state.node.node_id(),
                 "DKG Coordinator: Computing secret share"
@@ -109,7 +113,7 @@ where
             ))
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     // Compute storage_key — the canonical local-storage key used by sign/pre for share lookup.
     // For Refresh and Reshare this is the ORIGINAL ring's key (unchanged secret → same pk).
@@ -123,7 +127,7 @@ where
     {
         // Equivocation-consistent failure: reveal our received commitments so peers can
         // attribute an equivocating dealer (diagnostic; the ceremony aborts regardless).
-        if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+        if let Err(error) = broadcast_commitment_audit(coord, attempt).await {
             tracing::debug!(
                 session_id = session_id,
                 error = %error,
@@ -142,20 +146,19 @@ where
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
     }
     let fresh_ring_id = if is_fresh {
-        Some(
-            coord
-                .app_state
-                .dkg_session_state
-                .ring_id_for_session(&session_id)
-                .await
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| {
-                    DkgError::Bulletin(format!(
-                        "Fresh DKG session {} is missing ring_id",
-                        session_id
-                    ))
-                })?,
-        )
+        let ring_id = coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |state| state.routing.ring_id.clone())
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        if ring_id.is_empty() {
+            return Err(DkgError::Bulletin(format!(
+                "Fresh DKG session {} is missing ring_id",
+                session_id
+            )));
+        }
+        Some(ring_id)
     } else {
         None
     };
@@ -201,7 +204,7 @@ where
         let staged_pk = staged_pub_poly.eval(0);
         if !public_key_matches_storage_key(&staged_pk, &storage_key) {
             // Equivocation-consistent failure: reveal received commitments for attribution.
-            if let Err(error) = broadcast_commitment_audit(coord, session_id).await {
+            if let Err(error) = broadcast_commitment_audit(coord, attempt).await {
                 tracing::debug!(
                     session_id = session_id,
                     error = %error,
@@ -223,20 +226,15 @@ where
         let peer_ids = coord
             .app_state
             .dkg_session_state
-            .get_peer_ids(&session_id)
+            .with_attempt_state(attempt, |state| state.routing.peer_ids.clone())
             .await
-            .unwrap_or_default();
+            .map_err(|error| attempt_state_error(attempt, error))?;
         let peer_node_keys = coord
             .app_state
             .dkg_session_state
-            .get_peer_node_keys(&session_id)
+            .with_attempt_state(attempt, |state| state.routing.peer_node_keys.clone())
             .await
-            .ok_or_else(|| {
-                DkgError::InvalidState(format!(
-                    "Refresh Phase 4 session {} is missing peer_node_keys",
-                    session_id
-                ))
-            })?;
+            .map_err(|error| attempt_state_error(attempt, error))?;
         if peer_node_keys.is_empty() {
             return Err(DkgError::InvalidState(format!(
                 "Refresh Phase 4 session {} has empty peer_node_keys",
@@ -254,26 +252,36 @@ where
         coord
             .app_state
             .dkg_session_state
-            .set_refresh_health_check_candidate(&session_id, candidate.clone())
-            .await;
+            .with_attempt_state_mut(attempt, |state| {
+                state.refresh.candidate = Some(candidate.clone())
+            })
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
         tracing::info!(
             session_id = session_id,
             ring_key = %storage_key,
             "Refresh: staged RingShareBundle pending health-check result"
         );
-        refresh_health_check::apply_pending_result_if_present(coord, session_id).await?;
+        refresh_health_check::apply_pending_result_if_present(coord, attempt).await?;
         Some(candidate)
     } else {
-        persist_ring_bundle(
-            &coord.app_state.local_storage,
-            &kind,
-            &final_share_bytes,
-            &pub_poly_bytes,
-            &aggregate_pk,
-            now_secs,
-            session_id,
-            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
-        )?;
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |_| {
+                persist_ring_bundle(
+                    &coord.app_state.local_storage,
+                    &kind,
+                    &final_share_bytes,
+                    &pub_poly_bytes,
+                    &aggregate_pk,
+                    now_secs,
+                    session_id,
+                    |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+                )
+            })
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))??;
 
         tracing::debug!(
             session_id = session_id,
@@ -346,16 +354,15 @@ where
 
     if let Some(candidate) = refresh_candidate {
         if node_id == 1 {
-            let _ =
-                refresh_health_check::run_selector(coord, session_id, &ring_pk_bytes, &candidate)
-                    .await
-                    .inspect_err(|error| {
-                        tracing::warn!(
-                            session_id = session_id,
-                            error = %error,
-                            "Refresh health check selector failed"
-                        );
-                    });
+            let _ = refresh_health_check::run_selector(coord, attempt, &ring_pk_bytes, &candidate)
+                .await
+                .inspect_err(|error| {
+                    tracing::warn!(
+                        session_id = session_id,
+                        error = %error,
+                        "Refresh health check selector failed"
+                    );
+                });
         } else {
             tracing::info!(
                 session_id = session_id,
@@ -374,7 +381,7 @@ where
             coord
                 .app_state
                 .dkg_session_state
-                .unmark_ring_pss(ring_key)
+                .unmark_ring_pss_for_attempt(ring_key, attempt)
                 .await;
         }
     }
@@ -383,7 +390,7 @@ where
     // new peer_ids and new threshold. The ring_pk remains the same (same secret).
     reshare::bulletin_update::update_bulletin_if_selector(
         coord,
-        session_id,
+        attempt,
         &kind,
         dkg_role,
         &storage_key,
@@ -397,8 +404,9 @@ where
     coord
         .app_state
         .dkg_session_state
-        .update_phase(&session_id, DkgPhase::Phase4Complete)
-        .await;
+        .update_phase_for_attempt(attempt, DkgPhase::Phase4Complete)
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     // All new-committee Reshare nodes defer cleanup to a background task that
     // polls the bulletin until new_peer_node_keys is cleared, then releases the PSS
@@ -412,7 +420,7 @@ where
         reshare::cleanup::spawn_bulletin_finalized_cleanup(
             coord.app_state.clone(),
             ring_key,
-            session_id,
+            attempt,
             bulletin_post_id,
             false,
         );
@@ -422,7 +430,7 @@ where
     coord
         .app_state
         .dkg_session_state
-        .complete_session(&session_id)
+        .complete_transport_attempt(attempt, TopicTaskDisposition::DetachCurrent)
         .await;
 
     tracing::info!(
@@ -457,23 +465,30 @@ fn cleanup_new_ring_bundle_after_index_failure(
 /// commitments this node received to the other receivers, who compare them against
 /// their own to attribute an equivocating dealer. Diagnostic only — never changes the
 /// abort outcome, and send failures are ignored.
-async fn broadcast_commitment_audit<D>(coord: &DkgCoordinator<D>, session_id: u128) -> Result<()>
+async fn broadcast_commitment_audit<D>(coord: &DkgCoordinator<D>, attempt: AttemptKey) -> Result<()>
 where
     D: CoordinatorDkg + Send + Sync,
 {
     let revealed = coord
         .app_state
         .dkg_session_state
-        .received_commitments_snapshot(&session_id)
+        .with_attempt_state(attempt, |state| {
+            state
+                .commitment_audit
+                .received_commitments
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+        })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
     if revealed.is_empty() {
         return Ok(());
     }
 
     submit_public_contribution(
         coord,
-        session_id,
+        attempt,
         DkgPublicPayload::CommitmentAudit { revealed },
     )
     .await

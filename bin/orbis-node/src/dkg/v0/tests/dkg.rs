@@ -5,6 +5,7 @@ use crate::dkg::v0::{
     error::{DkgError, Result},
     messages::SessionKind,
     session_state::{CreateSessionOutcome, SessionStateManager},
+    transport::AttemptKey,
 };
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
@@ -46,7 +47,7 @@ async fn invoke_session_init(
 ) -> Result<()> {
     handle_session_init(
         coordinator,
-        init.session_id,
+        AttemptKey::test(init.session_id),
         init.threshold,
         init.total_participants,
         &init.peer_ids,

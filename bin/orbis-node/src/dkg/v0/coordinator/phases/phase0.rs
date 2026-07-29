@@ -2,16 +2,17 @@ use super::*;
 
 pub async fn initiate_phase0_commitment_hashes<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let commitment_hash = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             if !matches!(state.kind, SessionKind::Fresh) {
                 return Err(DkgError::ProtocolError(
                     "Commitment hash pre-round is only valid for Fresh DKG".to_string(),
@@ -35,54 +36,32 @@ where
             ))
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     coord
         .app_state
         .dkg_session_state
-        .update_phase(&session_id, DkgPhase::Phase0CommitmentHashes)
-        .await;
+        .update_phase_for_attempt(attempt, DkgPhase::Phase0CommitmentHashes)
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
-    if coord
+    submit_public_contribution(
+        coord,
+        attempt,
+        DkgPublicPayload::CommitmentHash { commitment_hash },
+    )
+    .await?;
+    coord
         .app_state
         .dkg_session_state
-        .transport_attempt(&session_id)
+        .mark_commitment_hash_broadcast_complete_for_attempt(attempt)
         .await
-        .is_none()
-    {
-        return Err(DkgError::InvalidState(
-            "fresh DKG session has no typed transport attempt".into(),
-        ));
-    }
-
-    if coord
-        .app_state
-        .dkg_session_state
-        .transport_attempt(&session_id)
-        .await
-        .is_some()
-    {
-        submit_public_contribution(
-            coord,
-            session_id,
-            DkgPublicPayload::CommitmentHash { commitment_hash },
-        )
-        .await?;
-        coord
-            .app_state
-            .dkg_session_state
-            .mark_commitment_hash_broadcast_complete(&session_id)
-            .await;
-        return drive_event(
-            coord,
-            session_id,
-            DkgEvent::CommitmentHashRecorded,
-            Some(peer_ids),
-        )
-        .await;
-    }
-
-    Err(DkgError::InvalidState(
-        "typed commitment-hash submission returned without completing".into(),
-    ))
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    drive_event(
+        coord,
+        attempt,
+        DkgEvent::CommitmentHashRecorded,
+        Some(peer_ids),
+    )
+    .await
 }

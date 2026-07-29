@@ -178,6 +178,12 @@ The logical ceremony ID prevents concurrent duplicate starts from creating two
 sessions. A new random attempt ID ensures that delayed Gossip, direct responses,
 or acknowledgements from an earlier failed attempt are rejected.
 
+The ceremony and attempt IDs remain paired as one attempt key through
+cryptographic mutation, asynchronous phase work, PSS ownership, and teardown.
+If a retry replaces an attempt under the same deterministic ceremony ID, work
+from the old attempt receives a stale-attempt result and cannot mutate or remove
+the replacement.
+
 ## Starting a ceremony
 
 `DkgService::StartDkg` is a synchronous **readiness** call, not a synchronous
@@ -842,7 +848,9 @@ to five minutes so a lost final response can be acknowledged idempotently.
 
 When leader preparation fails, it sends best-effort `Abort` messages and removes
 its local session. Completion or abort tears down transient topic state and
-listener-owned tasks.
+listener-owned tasks. Attempt abort also signals independently spawned work to
+stop; every cleanup operation compares both ceremony and attempt before
+releasing session or PSS state.
 
 ## Security boundaries
 

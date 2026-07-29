@@ -10,7 +10,7 @@ use crypto::SignImpl;
 /// generated ours), then checks whether Phase 1 is complete.
 pub async fn handle_commitment_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     commitment: Vec<u8>,
     report_evidence: Option<SignedDkgCommitment>,
@@ -19,6 +19,7 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    let session_id = attempt.session_id();
     tracing::debug!(
         from_node_id = from_node_id,
         session_id = session_id,
@@ -52,18 +53,24 @@ where
     // Get expected commitment size from session (= new_threshold for Reshare,
     // = old threshold for Fresh/Refresh), plus the session kind we need for
     // kind-specific commitment validation below.
-    let (expected_coeff_count, is_refresh, is_fresh) = coord
+    let (expected_coeff_count, is_refresh, is_fresh, is_reshare, expected_hash) = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             (
                 state.expected_commitment_size(),
                 matches!(state.kind, SessionKind::Refresh { .. }),
                 matches!(state.kind, SessionKind::Fresh),
+                matches!(state.kind, SessionKind::Reshare { .. }),
+                state
+                    .commit_reveal
+                    .received_hashes
+                    .get(&from_node_id)
+                    .copied(),
             )
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     if num_coefficients != expected_coeff_count {
         return Err(DkgError::CommitmentVerificationFailed(format!(
@@ -73,12 +80,7 @@ where
     }
 
     if is_fresh {
-        match coord
-            .app_state
-            .dkg_session_state
-            .get_commitment_hash(&session_id, from_node_id)
-            .await
-        {
+        match expected_hash {
             Some(expected_hash) => {
                 let actual_hash = fresh_commitment_hash(session_id, from_node_id, &commitment);
                 if actual_hash != expected_hash {
@@ -99,14 +101,25 @@ where
                 let inserted = coord
                     .app_state
                     .dkg_session_state
-                    .store_pending_commitment_waiting_for_hash(
-                        &session_id,
-                        from_node_id,
-                        commitment,
-                        report_evidence,
-                    )
+                    .with_attempt_state_mut(attempt, |state| {
+                        if state
+                            .pending
+                            .pending_commitments_waiting_for_hash
+                            .contains_key(&from_node_id)
+                        {
+                            return false;
+                        }
+                        state.pending.pending_commitments_waiting_for_hash.insert(
+                            from_node_id,
+                            crate::dkg::v0::session_state::PendingDkgCommitment {
+                                commitment,
+                                report_evidence,
+                            },
+                        );
+                        true
+                    })
                     .await
-                    .ok_or_else(|| session_not_found(session_id))?;
+                    .map_err(|error| attempt_state_error(attempt, error))?;
                 tracing::debug!(
                     session_id = session_id,
                     from_node_id = from_node_id,
@@ -120,14 +133,9 @@ where
 
     // For refresh/reshare this returns the verified signed commitment (None for fresh);
     // we retain it below so it can be revealed for the on-failure equivocation audit.
-    let verified_evidence = verify_commitment_evidence(
-        coord,
-        session_id,
-        from_node_id,
-        &commitment,
-        report_evidence,
-    )
-    .await?;
+    let verified_evidence =
+        verify_commitment_evidence(coord, attempt, from_node_id, &commitment, report_evidence)
+            .await?;
 
     let mut commitment_coeffs = Vec::with_capacity(num_coefficients);
     for i in 0..num_coefficients {
@@ -180,7 +188,7 @@ where
     let need_to_generate_polynomial = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             let generates_polynomial = state.node.role() != DkgRole::Receiver;
             let local_commitment_empty = state.node.commitment().coefficients.is_empty();
             if is_fresh && generates_polynomial && local_commitment_empty {
@@ -194,31 +202,20 @@ where
                 .node
                 .receive_commitment(from_node_id, polynomial_commitment)
                 .map_err(|e| DkgError::Crypto(format!("Failed to receive commitment: {}", e)))?;
+            state.commitments_received += 1;
+            if let Some(evidence) = verified_evidence {
+                state
+                    .commitment_audit
+                    .received_commitments
+                    .insert(from_node_id, evidence);
+            }
 
             // Receiver nodes never generate a polynomial — they only accumulate
             // commitments to verify the shares they will receive.
             Ok::<_, DkgError>(!is_fresh && generates_polynomial && local_commitment_empty)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
-
-    coord
-        .app_state
-        .dkg_session_state
-        .increment_commitments(&session_id)
-        .await;
-
-    // Refresh/reshare: retain the dealer's signed commitment so that if this ceremony
-    // later fails an equivocation-consistent phase4 check, we can reveal it to peers who
-    // compare it against theirs to name the equivocating dealer. Store-only — no wire
-    // traffic on the happy path.
-    if let Some(evidence) = verified_evidence {
-        coord
-            .app_state
-            .dkg_session_state
-            .store_received_commitment(&session_id, from_node_id, evidence)
-            .await;
-    }
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     // If this is the first commitment received and we haven't yet generated our
     // polynomial, generate it now and broadcast our commitment.
@@ -230,7 +227,7 @@ where
         let generated_polynomial = coord
             .app_state
             .dkg_session_state
-            .with_state_mut(&session_id, |state| {
+            .with_attempt_state_mut(attempt, |state| {
                 if !state.node.commitment().coefficients.is_empty() {
                     return Ok::<_, DkgError>(false);
                 }
@@ -238,56 +235,48 @@ where
                 Ok(true)
             })
             .await
-            .ok_or_else(|| session_not_found(session_id))??;
+            .map_err(|error| attempt_state_error(attempt, error))??;
 
         if !generated_polynomial {
             tracing::debug!(
                 session_id = session_id,
                 "Polynomial was already generated by a concurrent first-commitment path"
             );
-        } else if let Some(peer_ids) = coord
-            .app_state
-            .dkg_session_state
-            .get_peer_ids(&session_id)
-            .await
-        {
+        } else {
+            let peer_ids = coord
+                .app_state
+                .dkg_session_state
+                .with_attempt_state(attempt, |state| state.routing.peer_ids.clone())
+                .await
+                .map_err(|error| attempt_state_error(attempt, error))?;
             coord
-                .initiate_phase1_commitments(session_id, &peer_ids)
+                .initiate_phase1_commitments(attempt, &peer_ids)
                 .await?;
         }
     }
 
-    if let Some(peer_ids) = coord
+    let peer_ids = coord
         .app_state
         .dkg_session_state
-        .get_peer_ids(&session_id)
+        .with_attempt_state(attempt, |state| state.routing.peer_ids.clone())
         .await
-    {
-        coord
-            .check_and_trigger_phase2(session_id, &peer_ids)
-            .await?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if !peer_ids.is_empty() {
+        coord.check_and_trigger_phase2(attempt, &peer_ids).await?;
     }
-
-    let is_reshare = coord
-        .app_state
-        .dkg_session_state
-        .with_state(&session_id, |state| {
-            matches!(state.kind, SessionKind::Reshare { .. })
-        })
-        .await
-        .ok_or_else(|| session_not_found(session_id))?;
 
     if is_reshare {
         // A selected dealer's commitment can arrive after the participant set;
         // retry Phase 4 because the public polynomial/aggregate key may now be unblocked.
-        coord.check_and_trigger_phase4(session_id).await?;
+        coord.check_and_trigger_phase4(attempt).await?;
     }
 
     if let Some(pending_share) = coord
         .app_state
         .dkg_session_state
-        .take_pending_share_waiting_for_commitment(&session_id, from_node_id)
+        .take_pending_share_for_attempt(attempt, from_node_id)
         .await
+        .map_err(|error| attempt_state_error(attempt, error))?
     {
         tracing::debug!(
             from_node_id = from_node_id,
@@ -297,7 +286,7 @@ where
         );
         let _ = super::share::receive_and_record_share(
             coord,
-            session_id,
+            attempt,
             pending_share.share,
             pending_share.report_evidence,
         )

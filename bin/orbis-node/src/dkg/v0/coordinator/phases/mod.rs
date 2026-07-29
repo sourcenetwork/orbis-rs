@@ -1,13 +1,14 @@
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     build_refresh_ring_bundle, fresh_commitment_hash, persist_ring_bundle,
-    public_key_matches_storage_key, serialize_commitment_coefficients, session_not_found,
+    public_key_matches_storage_key, serialize_commitment_coefficients,
 };
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::network::{exchange_private_shares, submit_public_contribution};
-use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate};
+use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate, TopicTaskDisposition};
 use crate::dkg::v0::transport::{
-    derive_private_message_id, encode, DkgPrivateMessage, DkgPublicPayload, ParticipantRef,
+    derive_private_message_id, encode, AttemptKey, DkgPrivateMessage, DkgPublicPayload,
+    ParticipantRef,
 };
 use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
@@ -18,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::reshare::selection::record_and_ack_valid_reshare_share;
 use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};
 use super::types::{CoordinatorDkg, CoordinatorReportSigner};
-use super::{refresh_health_check, reshare, ring_storage, DkgCoordinator};
+use super::{attempt_state_error, refresh_health_check, reshare, ring_storage, DkgCoordinator};
 
 mod phase0;
 mod phase1;
@@ -32,34 +33,36 @@ pub use phase4::{check_and_trigger_phase4, initiate_phase4_completion};
 
 pub async fn drive_event<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     event: DkgEvent,
     peer_ids: Option<&[String]>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    let (snapshot, transition) = claim_transition(coord, session_id, event).await?;
+    let session_id = attempt.session_id();
+    let (snapshot, transition) = claim_transition(coord, attempt, event).await?;
     log_transition_wait(session_id, event, &snapshot, &transition);
-    execute_commands(coord, session_id, transition.commands, peer_ids).await
+    execute_commands(coord, attempt, transition.commands, peer_ids).await
 }
 
 pub async fn drive_post_phase2_event<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     event: DkgEvent,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    let (snapshot, transition) = claim_transition(coord, session_id, event).await?;
+    let session_id = attempt.session_id();
+    let (snapshot, transition) = claim_transition(coord, attempt, event).await?;
     log_transition_wait(session_id, event, &snapshot, &transition);
-    execute_post_phase2_commands(coord, session_id, transition.commands).await
+    execute_post_phase2_commands(coord, attempt, transition.commands).await
 }
 
 async fn claim_transition<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     event: DkgEvent,
 ) -> Result<(SessionSnapshot, state_machine::Transition)>
 where
@@ -68,7 +71,7 @@ where
     coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             let evaluates_phase4 = event.evaluates_phase4();
             let snapshot = SessionSnapshot {
                 kind: state.kind.clone(),
@@ -95,18 +98,19 @@ where
             (snapshot, transition)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))
+        .map_err(|error| attempt_state_error(attempt, error))
 }
 
 async fn execute_commands<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     commands: Vec<DkgCommand>,
     peer_ids: Option<&[String]>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     for command in commands {
         match command {
             DkgCommand::RevealCommitment => {
@@ -115,8 +119,8 @@ where
                         "State machine requested commitment reveal without peer IDs".to_string(),
                     )
                 })?;
-                Box::pin(initiate_phase1_commitments(coord, session_id, peer_ids)).await?;
-                Box::pin(check_and_trigger_phase2(coord, session_id, peer_ids)).await?;
+                Box::pin(initiate_phase1_commitments(coord, attempt, peer_ids)).await?;
+                Box::pin(check_and_trigger_phase2(coord, attempt, peer_ids)).await?;
             }
             DkgCommand::InitiatePhase2Shares => {
                 let peer_ids = peer_ids.ok_or_else(|| {
@@ -124,11 +128,11 @@ where
                         "State machine requested Phase 2 without peer IDs".to_string(),
                     )
                 })?;
-                Box::pin(initiate_phase2_shares(coord, session_id, peer_ids)).await?;
+                Box::pin(initiate_phase2_shares(coord, attempt, peer_ids)).await?;
             }
             DkgCommand::AckValidReshareShare { dealer_id } => {
                 Box::pin(record_and_ack_valid_reshare_share(
-                    coord, session_id, dealer_id,
+                    coord, attempt, dealer_id,
                 ))
                 .await?;
             }
@@ -137,8 +141,8 @@ where
                     session_id = session_id,
                     "DKG Coordinator: State machine selected Phase 4 completion"
                 );
-                if let Err(e) = initiate_phase4_completion(coord, session_id).await {
-                    coord.remove_session(session_id).await;
+                if let Err(e) = initiate_phase4_completion(coord, attempt).await {
+                    coord.abort_attempt(attempt).await;
                     return Err(e);
                 }
             }
@@ -150,17 +154,18 @@ where
 
 async fn execute_post_phase2_commands<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     commands: Vec<DkgCommand>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     for command in commands {
         match command {
             DkgCommand::AckValidReshareShare { dealer_id } => {
                 Box::pin(record_and_ack_valid_reshare_share(
-                    coord, session_id, dealer_id,
+                    coord, attempt, dealer_id,
                 ))
                 .await?;
             }
@@ -169,8 +174,8 @@ where
                     session_id = session_id,
                     "DKG Coordinator: State machine selected Phase 4 completion"
                 );
-                if let Err(e) = initiate_phase4_completion(coord, session_id).await {
-                    coord.remove_session(session_id).await;
+                if let Err(e) = initiate_phase4_completion(coord, attempt).await {
+                    coord.abort_attempt(attempt).await;
                     return Err(e);
                 }
             }

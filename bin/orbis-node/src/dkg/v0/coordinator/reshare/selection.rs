@@ -2,7 +2,7 @@ use super::*;
 
 pub async fn record_and_ack_valid_reshare_share<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     dealer_id: u32,
 ) -> Result<()>
 where
@@ -11,7 +11,7 @@ where
     let ack = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             if !matches!(state.kind, SessionKind::Reshare { .. })
                 || !matches!(
                     state.node.role(),
@@ -49,18 +49,18 @@ where
             Ok(Some((receiver_node_id, selector_peer_id)))
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     let Some((receiver_node_id, selector_peer_id)) = ack else {
         return Ok(());
     };
 
     if is_self_peer_id(&coord.app_state.network, &selector_peer_id) {
-        handle_reshare_share_ack(coord, session_id, receiver_node_id, dealer_id).await?;
+        handle_reshare_share_ack(coord, attempt, receiver_node_id, dealer_id).await?;
     } else {
         spawn_reshare_share_ack_delivery(
             coord,
-            session_id,
+            attempt,
             receiver_node_id,
             dealer_id,
             selector_peer_id,
@@ -72,7 +72,7 @@ where
 
 fn spawn_reshare_share_ack_delivery<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer_id: String,
@@ -83,7 +83,7 @@ fn spawn_reshare_share_ack_delivery<D>(
     tokio::spawn(async move {
         deliver_reshare_share_ack_until_done(
             coord,
-            session_id,
+            attempt,
             receiver_node_id,
             dealer_id,
             selector_peer_id,
@@ -94,23 +94,24 @@ fn spawn_reshare_share_ack_delivery<D>(
 
 async fn deliver_reshare_share_ack_until_done<D>(
     coord: DkgCoordinator<D>,
-    session_id: u128,
+    attempt_key: AttemptKey,
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer_id: String,
 ) where
     D: CoordinatorDkg,
 {
-    let mut attempt = 0usize;
+    let session_id = attempt_key.session_id();
+    let mut delivery_attempt = 0usize;
     loop {
-        if !reshare_share_ack_still_needed(&coord, session_id).await {
+        if !reshare_share_ack_still_needed(&coord, attempt_key).await {
             return;
         }
 
-        attempt += 1;
+        delivery_attempt += 1;
         match send_reshare_share_ack(
             &coord,
-            session_id,
+            attempt_key,
             receiver_node_id,
             dealer_id,
             &selector_peer_id,
@@ -123,7 +124,7 @@ async fn deliver_reshare_share_ack_until_done<D>(
                     receiver_node_id = receiver_node_id,
                     dealer_id = dealer_id,
                     selector_peer_id = %selector_peer_id,
-                    attempt = attempt,
+                    attempt = delivery_attempt,
                     "Reshare: delivered valid-share acknowledgement to selector"
                 );
                 return;
@@ -134,7 +135,7 @@ async fn deliver_reshare_share_ack_until_done<D>(
                     receiver_node_id = receiver_node_id,
                     dealer_id = dealer_id,
                     selector_peer_id = %selector_peer_id,
-                    attempt = attempt,
+                    attempt = delivery_attempt,
                     error = %e,
                     "Reshare: failed to deliver valid-share acknowledgement to selector, retrying"
                 );
@@ -145,14 +146,14 @@ async fn deliver_reshare_share_ack_until_done<D>(
     }
 }
 
-async fn reshare_share_ack_still_needed<D>(coord: &DkgCoordinator<D>, session_id: u128) -> bool
+async fn reshare_share_ack_still_needed<D>(coord: &DkgCoordinator<D>, attempt: AttemptKey) -> bool
 where
     D: CoordinatorDkg,
 {
     coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             matches!(state.kind, SessionKind::Reshare { .. })
                 && state.reshare.selected_dealers.is_none()
         })
@@ -162,17 +163,18 @@ where
 
 pub async fn handle_reshare_share_ack<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     receiver_node_id: u32,
     dealer_id: u32,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let selection = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             let (new_route_peer_ids, new_committee_size, local_new_node_id) = {
                 let params = state.reshare.params.as_ref().ok_or_else(|| {
                     DkgError::Generic(
@@ -275,7 +277,7 @@ where
             Ok(None)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     if let Some((selected_dealer_ids, new_route_peer_ids, newly_frozen)) = selection {
         if newly_frozen {
@@ -294,7 +296,7 @@ where
 
         broadcast_reshare_participant_set(
             coord,
-            session_id,
+            attempt,
             &selected_dealer_ids,
             &new_route_peer_ids,
         )
@@ -302,7 +304,7 @@ where
 
         phases::drive_event(
             coord,
-            session_id,
+            attempt,
             DkgEvent::ReshareParticipantSetAccepted,
             None,
         )
@@ -314,7 +316,7 @@ where
 
 async fn broadcast_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     selected_dealer_ids: &[u32],
     _new_route_peer_ids: &[String],
 ) -> Result<()>
@@ -323,7 +325,7 @@ where
 {
     submit_public_contribution(
         coord,
-        session_id,
+        attempt,
         DkgPublicPayload::ReshareParticipantSet {
             selected_dealers: selected_dealer_ids
                 .iter()
@@ -337,17 +339,18 @@ where
 
 pub async fn handle_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     selected_dealer_ids: Vec<u32>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let accepted = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             if from_node_id != 1 {
                 return Err(DkgError::Unauthorized(format!(
                     "ReshareParticipantSet must come from new committee node 1, got {}",
@@ -428,7 +431,7 @@ where
             Ok(true)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     if accepted {
         tracing::info!(
@@ -438,7 +441,7 @@ where
         );
         phases::drive_event(
             coord,
-            session_id,
+            attempt,
             DkgEvent::ReshareParticipantSetAccepted,
             None,
         )
@@ -484,6 +487,9 @@ mod tests {
             let session = states
                 .get_mut(&session_id)
                 .expect("session was just created");
+            let attempt = AttemptKey::test(session_id);
+            session.transport.ceremony_id = Some(attempt.ceremony_id);
+            session.transport.attempt_id = Some(attempt.attempt_id);
             session.kind = SessionKind::Reshare {
                 ring_pk_hex: "test-ring".to_string(),
                 new_peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
@@ -509,7 +515,7 @@ mod tests {
         )
         .await;
 
-        let error = handle_reshare_participant_set(&coord, 1001, 1, vec![1])
+        let error = handle_reshare_participant_set(&coord, AttemptKey::test(1001), 1, vec![1])
             .await
             .expect_err("a dealer outside active_dealers must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
@@ -526,7 +532,8 @@ mod tests {
         )
         .await;
 
-        let error = handle_reshare_participant_set(&coord, 1002, 1, vec![1])
+        let error =
+            handle_reshare_participant_set(&coord, AttemptKey::test(1002), 1, vec![1])
             .await
             .expect_err(
                 "a dealer this receiver never independently validated a share from must be rejected",
@@ -548,7 +555,7 @@ mod tests {
         // Only new-committee node 1 may send ReshareParticipantSet; this must
         // be rejected before the active_dealers/valid_share_dealers checks
         // are even reached.
-        let error = handle_reshare_participant_set(&coord, 1003, 2, vec![1])
+        let error = handle_reshare_participant_set(&coord, AttemptKey::test(1003), 2, vec![1])
             .await
             .expect_err("a non-leader sender must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
@@ -564,7 +571,7 @@ mod tests {
         )
         .await;
 
-        handle_reshare_participant_set(&coord, 1004, 1, vec![1])
+        handle_reshare_participant_set(&coord, AttemptKey::test(1004), 1, vec![1])
             .await
             .expect("a dealer that is both active and share-validated must be accepted");
     }
