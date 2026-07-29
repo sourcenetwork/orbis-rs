@@ -367,8 +367,15 @@ impl PhaseManifest {
                 "public phase manifest origins do not match committee: expected {expected_origins:?}, got {actual_origins:?}"
             ));
         }
-        if self.chunk_count == 0 && !self.contribution_ids.is_empty() {
-            return Err("non-empty public phase manifest has no chunks".to_string());
+        if self.chunk_count == 0 {
+            return Err("public phase manifest has no chunks".to_string());
+        }
+        if self.chunk_count as usize > self.contribution_ids.len() {
+            return Err(format!(
+                "public phase manifest has {} chunks for only {} contributions",
+                self.chunk_count,
+                self.contribution_ids.len()
+            ));
         }
         let expected_root = phase_root(
             self.ceremony_id,
@@ -1409,6 +1416,17 @@ mod tests {
             .insert(ParticipantRef::current(2), MessageId([2; 32]));
         manifest.phase_root = [99; 32];
         assert!(manifest.validate(&committee).is_err());
+        manifest.phase_root = phase_root(
+            ceremony,
+            attempt,
+            PublicPhase::Commitments,
+            &manifest.contribution_ids,
+        );
+        manifest.chunk_count = 3;
+        assert!(
+            manifest.validate(&committee).is_err(),
+            "a non-empty chunk cannot outnumber committed contributions"
+        );
     }
 
     #[test]

@@ -480,10 +480,17 @@ commitment and share.
 Receivers accept Gossip DKG messages only when the authenticated publisher is
 the canonical leader — except for refresh, where any current-committee member
 may be the leader for a given attempt (see [PSS refresh](#pss-refresh)).
-Receivers validate the manifest's exact origin set and root, then
-independently verify every embedded origin signature and SourceHub membership
-before dispatching the contribution into the local DKG state machine. The
-leader is a relay and ordering point, not a substitute signer.
+Receivers buffer chunks by phase root, validate the manifest's exact origin set,
+chunk indexes, canonical ordering, and root, then independently verify every
+embedded origin signature and SourceHub membership before dispatching any
+contribution from that batch into the local DKG state machine. Identical
+retransmissions are idempotent. An authenticated contradiction — such as
+conflicting complete roots, conflicting chunk contents, a manifest/content
+mismatch, or two different origin-signed contributions for one phase — fails
+the local attempt immediately. Missing manifests or chunks are availability
+failures instead: they enter repair and eventually time out rather than being
+treated as proof of malicious behavior. The leader is a relay and ordering
+point, not a substitute signer.
 
 ### Completeness repair
 
@@ -494,6 +501,10 @@ After activation, repair becomes eligible only when no session progress has
 occurred for ten seconds. A receiver first requests the retained public phase
 from the leader over control QUIC. If an expected origin is still absent, it
 requests that exact contribution directly from the authenticated origin.
+Direct repair is not manifest-gated: it verifies each retained origin signature,
+message ID, attempt, and SourceHub endpoint binding before dispatch. This keeps
+the independently authenticated origins as the recovery source when a Gossip
+manifest or chunk was lost.
 
 For reshare commitments, direct repair expects the frozen dealer set and fetches
 missing retained contributions from the leader first, then from each scoped

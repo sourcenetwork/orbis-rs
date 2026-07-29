@@ -292,6 +292,21 @@ pub(crate) enum PublicContributionRecordOutcome {
     MissingSession,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicBatchRecordOutcome {
+    Recorded,
+    DuplicateSame,
+    ConflictingDuplicate { origin: ParticipantRef },
+    StaleAttempt,
+    MissingSession,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopicTaskDisposition {
+    Abort,
+    DetachCurrent,
+}
+
 #[derive(Default)]
 pub(crate) struct CommitRevealState {
     pub received_hashes: HashMap<u32, [u8; 32]>,
@@ -1493,6 +1508,55 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .unwrap_or(PublicContributionRecordOutcome::MissingSession)
     }
 
+    /// Atomically retain a manifest-validated public batch.
+    ///
+    /// Every existing contribution is checked before any new item is inserted,
+    /// so an equivocating origin cannot leave a partially recorded batch behind.
+    pub(crate) async fn record_public_batch(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+        contributions: BTreeMap<ParticipantRef, network::SignedPayload>,
+    ) -> PublicBatchRecordOutcome {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return PublicBatchRecordOutcome::StaleAttempt;
+            }
+
+            let retained = transport.public_contributions.entry(phase).or_default();
+            for (origin, contribution) in &contributions {
+                if retained
+                    .get(origin)
+                    .is_some_and(|existing| existing != contribution)
+                {
+                    return PublicBatchRecordOutcome::ConflictingDuplicate { origin: *origin };
+                }
+            }
+
+            let mut recorded = false;
+            for (origin, contribution) in contributions {
+                if let std::collections::btree_map::Entry::Vacant(entry) = retained.entry(origin) {
+                    entry.insert(contribution);
+                    recorded = true;
+                }
+            }
+            if recorded {
+                transport
+                    .public_phase_started_at
+                    .entry(phase)
+                    .or_insert_with(Instant::now);
+                transport.last_progress_at = Instant::now();
+                PublicBatchRecordOutcome::Recorded
+            } else {
+                PublicBatchRecordOutcome::DuplicateSame
+            }
+        })
+        .await
+        .unwrap_or(PublicBatchRecordOutcome::MissingSession)
+    }
+
     pub(crate) async fn public_contributions(
         &self,
         session_id: &u128,
@@ -2061,26 +2125,72 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.remove_session_with_outcome(session_id, true).await;
     }
 
-    async fn remove_session_with_outcome(&self, session_id: &u128, completed: bool) {
-        let ring_key_to_clear = {
+    /// Abort one exact transport attempt.
+    ///
+    /// A topic listener must detach its own abort handle before returning; other
+    /// callers abort the listener immediately. The session is removed while the
+    /// state lock is held, so no later protocol message can advance it.
+    pub(crate) async fn abort_transport_attempt(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        topic_task: TopicTaskDisposition,
+    ) -> bool {
+        let mut state = {
             let mut states = self.states.write().await;
-            if let Some(mut state) = states.remove(session_id) {
-                if let Some(guard) = state.metrics_guard.take() {
-                    if completed {
-                        guard.complete();
-                    } else {
-                        guard.abandon();
-                    }
-                }
-                tracing::debug!(
-                    session_id = session_id,
-                    "SessionStateManager: Removed session"
-                );
-                state.kind.ring_key().map(|k| k.to_string())
-            } else {
-                return;
+            if states
+                .get(session_id)
+                .and_then(|state| state.transport.attempt_id)
+                != Some(attempt_id)
+            {
+                return false;
             }
+            states
+                .remove(session_id)
+                .expect("the matching transport session was checked above")
         };
+        if let Some(task) = state.transport.topic_task.take() {
+            if topic_task == TopicTaskDisposition::Abort {
+                task.abort();
+            }
+        }
+        self.finish_removed_session(session_id, state, false).await;
+        true
+    }
+
+    async fn remove_session_with_outcome(&self, session_id: &u128, completed: bool) {
+        let mut state = {
+            let mut states = self.states.write().await;
+            let Some(state) = states.remove(session_id) else {
+                return;
+            };
+            state
+        };
+        if let Some(task) = state.transport.topic_task.take() {
+            task.abort();
+        }
+        self.finish_removed_session(session_id, state, completed)
+            .await;
+    }
+
+    async fn finish_removed_session(
+        &self,
+        session_id: &u128,
+        mut state: DkgSessionState<D>,
+        completed: bool,
+    ) {
+        if let Some(guard) = state.metrics_guard.take() {
+            if completed {
+                guard.complete();
+            } else {
+                guard.abandon();
+            }
+        }
+        tracing::debug!(
+            session_id = session_id,
+            "SessionStateManager: Removed session"
+        );
+        let ring_key_to_clear = state.kind.ring_key().map(str::to_string);
 
         // Clear the in-progress PSS claim so future ceremonies can proceed.
         if let Some(key) = ring_key_to_clear {
@@ -3338,5 +3448,117 @@ mod tests {
             "a dropped guard must release the claim as failed, not leave the message \
              stuck in AlreadyProcessing for the rest of the attempt",
         );
+    }
+
+    fn test_signed_public(byte: u8) -> network::SignedPayload {
+        network::SignedPayload {
+            origin: vec![byte; 32],
+            signature: vec![byte; 64],
+            data: vec![byte; 8],
+        }
+    }
+
+    #[tokio::test]
+    async fn public_batch_recording_is_atomic_on_conflict() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let session_id = 102u128;
+        let attempt = AttemptId([3; 32]);
+        mgr.create_session(session_id, make_node(1), 3, |state| {
+            state.transport.attempt_id = Some(attempt);
+        })
+        .await;
+        let phase = PublicPhase::Commitments;
+        let first = test_signed_public(1);
+        assert_eq!(
+            mgr.record_public_contribution(
+                &session_id,
+                attempt,
+                phase,
+                ParticipantRef::current(1),
+                first.clone(),
+            )
+            .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        let conflicting = BTreeMap::from([
+            (ParticipantRef::current(1), test_signed_public(9)),
+            (ParticipantRef::current(2), test_signed_public(2)),
+        ]);
+        assert_eq!(
+            mgr.record_public_batch(&session_id, attempt, phase, conflicting)
+                .await,
+            PublicBatchRecordOutcome::ConflictingDuplicate {
+                origin: ParticipantRef::current(1)
+            }
+        );
+        let retained = mgr
+            .public_contributions(&session_id, attempt, phase)
+            .await
+            .expect("active attempt");
+        assert_eq!(retained.len(), 1, "the second origin must not be inserted");
+        assert_eq!(retained.get(&ParticipantRef::current(1)), Some(&first));
+
+        let valid = BTreeMap::from([
+            (ParticipantRef::current(1), first),
+            (ParticipantRef::current(2), test_signed_public(2)),
+        ]);
+        assert_eq!(
+            mgr.record_public_batch(&session_id, attempt, phase, valid)
+                .await,
+            PublicBatchRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.public_contributions(&session_id, attempt, phase)
+                .await
+                .expect("active attempt")
+                .len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn attempt_scoped_abort_detaches_listener_and_clears_pss_claim() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let session_id = 103u128;
+        let attempt = AttemptId([4; 32]);
+        let ring_key = "abort-test-ring";
+        assert_eq!(
+            mgr.claim_ring_pss_session(ring_key, session_id).await,
+            RingPssClaimOutcome::Claimed
+        );
+        let listener = tokio::spawn(std::future::pending::<()>());
+        let listener_abort = listener.abort_handle();
+        mgr.create_session(session_id, make_node(1), 3, |state| {
+            state.kind = SessionKind::Refresh {
+                ring_pk_hex: ring_key.to_string(),
+            };
+            state.transport.attempt_id = Some(attempt);
+            state.transport.topic_task = Some(listener_abort);
+        })
+        .await;
+
+        assert!(
+            !mgr.abort_transport_attempt(
+                &session_id,
+                AttemptId([5; 32]),
+                TopicTaskDisposition::DetachCurrent,
+            )
+            .await,
+            "a stale violation must not remove the active attempt"
+        );
+        assert!(mgr.session_exists(&session_id).await);
+
+        assert!(
+            mgr.abort_transport_attempt(&session_id, attempt, TopicTaskDisposition::DetachCurrent,)
+                .await
+        );
+        assert!(!mgr.session_exists(&session_id).await);
+        assert_eq!(mgr.active_ring_pss_session(ring_key).await, None);
+        assert!(
+            !listener.is_finished(),
+            "the listener must be allowed to return after detaching its own handle"
+        );
+        listener.abort();
     }
 }

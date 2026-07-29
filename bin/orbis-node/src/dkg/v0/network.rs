@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{stream::FuturesUnordered, StreamExt};
 use network::{Connection, Message, PeerId, ProtocolHandler, PubSubEvent, SignedPayload, Topic};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Weak};
 use tokio::task::JoinSet;
@@ -41,8 +42,9 @@ use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare}
 #[cfg(test)]
 use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
-    MessageProcessingClaim, PublicContributionRecordOutcome, TopologyAckRecordOutcome,
-    TransportActivationOutcome, TransportBeginOutcome, TransportConfigureOutcome,
+    MessageProcessingClaim, PublicBatchRecordOutcome, PublicContributionRecordOutcome,
+    TopicTaskDisposition, TopologyAckRecordOutcome, TransportActivationOutcome,
+    TransportBeginOutcome, TransportConfigureOutcome,
 };
 use crate::dkg::v0::transport::{
     self, AttemptId, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
@@ -113,6 +115,563 @@ impl GossipNeighborTracker {
     fn neighbor_count(&self) -> usize {
         self.neighbors.len()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicBatchMode {
+    Complete,
+    Incremental,
+}
+
+fn public_batch_mode(kind: &SessionKind, phase: PublicPhase) -> Option<PublicBatchMode> {
+    match (kind, phase) {
+        (SessionKind::Fresh, PublicPhase::CommitmentHashes | PublicPhase::Commitments)
+        | (
+            SessionKind::Refresh { .. },
+            PublicPhase::Commitments | PublicPhase::RefreshHealthCheck,
+        )
+        | (SessionKind::Reshare { .. }, PublicPhase::ReshareParticipantSet) => {
+            Some(PublicBatchMode::Complete)
+        }
+        (
+            SessionKind::Refresh { .. } | SessionKind::Reshare { .. },
+            PublicPhase::CommitmentAudit,
+        )
+        | (SessionKind::Reshare { .. }, PublicPhase::Commitments) => {
+            Some(PublicBatchMode::Incremental)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicViolationAccused {
+    Leader,
+    Origin(ParticipantRef),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicProtocolViolationKind {
+    MalformedLeaderMessage,
+    InvalidManifest,
+    ConflictingManifest,
+    InvalidChunk,
+    ConflictingChunk,
+    InvalidContribution,
+    BatchMismatch,
+    OriginEquivocation,
+    BufferLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicProtocolViolation {
+    kind: PublicProtocolViolationKind,
+    accused: PublicViolationAccused,
+    phase: Option<PublicPhase>,
+    root: Option<[u8; 32]>,
+    message_ids: Vec<MessageId>,
+    detail: String,
+}
+
+impl PublicProtocolViolation {
+    fn leader(
+        kind: PublicProtocolViolationKind,
+        phase: Option<PublicPhase>,
+        root: Option<[u8; 32]>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            accused: PublicViolationAccused::Leader,
+            phase,
+            root,
+            message_ids: Vec::new(),
+            detail: detail.into(),
+        }
+    }
+
+    fn origin(
+        phase: PublicPhase,
+        root: Option<[u8; 32]>,
+        origin: ParticipantRef,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: PublicProtocolViolationKind::OriginEquivocation,
+            accused: PublicViolationAccused::Origin(origin),
+            phase: Some(phase),
+            root,
+            message_ids: Vec::new(),
+            detail: detail.into(),
+        }
+    }
+
+    fn with_message_ids(mut self, first: MessageId, second: MessageId) -> Self {
+        self.message_ids = vec![first, second];
+        self
+    }
+
+    fn with_message_id(mut self, message_id: MessageId) -> Self {
+        self.message_ids = vec![message_id];
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct VerifiedPublicContribution {
+    signed: SignedPayload,
+    contribution: DkgPublicContribution,
+}
+
+#[derive(Default)]
+struct PendingPublicBatch {
+    manifest: Option<ReceivedPublicManifest>,
+    chunks: BTreeMap<u32, ReceivedPublicChunk>,
+}
+
+struct ReceivedPublicManifest {
+    manifest: PhaseManifest,
+    event_digest: [u8; 32],
+}
+
+struct ReceivedPublicChunk {
+    contributions: Vec<VerifiedPublicContribution>,
+    event_digest: [u8; 32],
+}
+
+struct CompletedPublicBatch {
+    manifest_event_digest: [u8; 32],
+    chunk_digests: BTreeMap<u32, [u8; 32]>,
+}
+
+#[derive(Debug)]
+enum PublicBatchAssembly {
+    Pending {
+        manifest_added: bool,
+    },
+    Duplicate,
+    Complete {
+        phase: PublicPhase,
+        root: [u8; 32],
+        contributions: Vec<VerifiedPublicContribution>,
+    },
+}
+
+#[derive(Default)]
+struct PublicBatchAssembler {
+    pending: HashMap<(PublicPhase, [u8; 32]), PendingPublicBatch>,
+    completed: HashMap<(PublicPhase, [u8; 32]), CompletedPublicBatch>,
+    complete_phase_roots: HashMap<PublicPhase, [u8; 32]>,
+    observed_origins: HashMap<(PublicPhase, ParticipantRef), (MessageId, [u8; 32])>,
+}
+
+impl PublicBatchAssembler {
+    fn insert_manifest(
+        &mut self,
+        mode: PublicBatchMode,
+        manifest: PhaseManifest,
+        event_digest: [u8; 32],
+        expected_origins: &BTreeSet<ParticipantRef>,
+    ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
+        let phase = manifest.phase;
+        let root = manifest.phase_root;
+        manifest.validate(expected_origins).map_err(|detail| {
+            PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::InvalidManifest,
+                Some(phase),
+                Some(root),
+                detail,
+            )
+        })?;
+        let expected_complete = mode == PublicBatchMode::Complete;
+        if manifest.complete != expected_complete {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::InvalidManifest,
+                Some(phase),
+                Some(root),
+                format!(
+                    "manifest complete={} does not match {mode:?} phase publication",
+                    manifest.complete
+                ),
+            ));
+        }
+
+        let key = (phase, root);
+        if let Some(completed) = self.completed.get(&key) {
+            return if completed.manifest_event_digest == event_digest {
+                Ok(PublicBatchAssembly::Duplicate)
+            } else {
+                Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::ConflictingManifest,
+                    Some(phase),
+                    Some(root),
+                    "manifest metadata conflicts with a completed batch",
+                ))
+            };
+        }
+        if let Some(existing) = self
+            .pending
+            .get(&key)
+            .and_then(|batch| batch.manifest.as_ref())
+        {
+            return if existing.manifest == manifest && existing.event_digest == event_digest {
+                Ok(PublicBatchAssembly::Duplicate)
+            } else {
+                Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::ConflictingManifest,
+                    Some(phase),
+                    Some(root),
+                    "manifest metadata conflicts for the same phase root",
+                ))
+            };
+        }
+
+        self.claim_phase_root(mode, phase, root, expected_origins.len())?;
+        let buffered_manifest_entries: usize = self
+            .pending
+            .iter()
+            .filter(|((candidate_phase, _), _)| *candidate_phase == phase)
+            .filter_map(|(_, batch)| batch.manifest.as_ref())
+            .map(|received| received.manifest.contribution_ids.len())
+            .sum();
+        if buffered_manifest_entries.saturating_add(manifest.contribution_ids.len())
+            > expected_origins.len()
+        {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BufferLimit,
+                Some(phase),
+                Some(root),
+                format!(
+                    "pending manifest entries exceed the expected origin count {}",
+                    expected_origins.len()
+                ),
+            ));
+        }
+        self.pending.entry(key).or_default().manifest = Some(ReceivedPublicManifest {
+            manifest,
+            event_digest,
+        });
+        self.try_complete(key, true)
+    }
+
+    fn insert_chunk(
+        &mut self,
+        mode: PublicBatchMode,
+        phase: PublicPhase,
+        root: [u8; 32],
+        index: u32,
+        contributions: Vec<VerifiedPublicContribution>,
+        event_digest: [u8; 32],
+        expected_origin_count: usize,
+    ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
+        if contributions.is_empty() {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::InvalidChunk,
+                Some(phase),
+                Some(root),
+                "public batch chunk is empty",
+            ));
+        }
+        if index as usize >= expected_origin_count {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BufferLimit,
+                Some(phase),
+                Some(root),
+                format!(
+                    "chunk index {index} exceeds the maximum {} chunks for this phase",
+                    expected_origin_count
+                ),
+            ));
+        }
+
+        let key = (phase, root);
+        if let Some(completed) = self.completed.get(&key) {
+            return match completed.chunk_digests.get(&index) {
+                Some(existing) if existing == &event_digest => Ok(PublicBatchAssembly::Duplicate),
+                Some(_) => Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::ConflictingChunk,
+                    Some(phase),
+                    Some(root),
+                    format!("chunk {index} conflicts with the completed batch"),
+                )),
+                None => Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::InvalidChunk,
+                    Some(phase),
+                    Some(root),
+                    format!("extra chunk {index} follows the completed batch"),
+                )),
+            };
+        }
+        // For incremental publications, attribute a proven origin contradiction
+        // before enforcing the root-count bound. For complete publications, claim
+        // the single allowed root first so a second root remains an attributable
+        // leader contradiction even when it contains an origin equivocation.
+        if mode == PublicBatchMode::Incremental {
+            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
+        }
+        self.claim_phase_root(mode, phase, root, expected_origin_count)?;
+        if mode == PublicBatchMode::Complete {
+            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
+        }
+
+        if let Some(existing) = self
+            .pending
+            .get(&key)
+            .and_then(|batch| batch.chunks.get(&index))
+        {
+            return if existing.event_digest == event_digest
+                && existing.contributions == contributions
+            {
+                Ok(PublicBatchAssembly::Duplicate)
+            } else {
+                Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::ConflictingChunk,
+                    Some(phase),
+                    Some(root),
+                    format!("leader published different contents for chunk {index}"),
+                ))
+            };
+        }
+        let buffered_for_root: usize = self
+            .pending
+            .get(&key)
+            .into_iter()
+            .flat_map(|batch| batch.chunks.values())
+            .map(|chunk| chunk.contributions.len())
+            .sum();
+        if buffered_for_root.saturating_add(contributions.len()) > expected_origin_count {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BufferLimit,
+                Some(phase),
+                Some(root),
+                format!(
+                    "buffered contributions exceed the expected origin count {expected_origin_count}"
+                ),
+            ));
+        }
+        let buffered_for_phase: usize = self
+            .pending
+            .iter()
+            .filter(|((candidate_phase, _), _)| *candidate_phase == phase)
+            .flat_map(|(_, batch)| batch.chunks.values())
+            .map(|chunk| chunk.contributions.len())
+            .sum();
+        if buffered_for_phase.saturating_add(contributions.len()) > expected_origin_count {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BufferLimit,
+                Some(phase),
+                Some(root),
+                format!(
+                    "pending contributions exceed the expected origin count {expected_origin_count}"
+                ),
+            ));
+        }
+        for verified in &contributions {
+            let contribution = &verified.contribution;
+            self.observed_origins
+                .entry((phase, contribution.origin))
+                .or_insert((contribution.message_id, root));
+        }
+        self.pending.entry(key).or_default().chunks.insert(
+            index,
+            ReceivedPublicChunk {
+                contributions,
+                event_digest,
+            },
+        );
+        self.try_complete(key, false)
+    }
+
+    fn ensure_no_origin_equivocation(
+        &self,
+        phase: PublicPhase,
+        root: [u8; 32],
+        contributions: &[VerifiedPublicContribution],
+    ) -> std::result::Result<(), PublicProtocolViolation> {
+        for verified in contributions {
+            let contribution = &verified.contribution;
+            let origin_key = (phase, contribution.origin);
+            if let Some((existing_id, existing_root)) = self.observed_origins.get(&origin_key) {
+                if existing_id != &contribution.message_id {
+                    return Err(PublicProtocolViolation::origin(
+                        phase,
+                        Some(root),
+                        contribution.origin,
+                        "origin signed different messages for the same attempt and phase",
+                    )
+                    .with_message_ids(*existing_id, contribution.message_id));
+                }
+                if existing_root != &root {
+                    return Err(PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::BatchMismatch,
+                        Some(phase),
+                        Some(root),
+                        format!(
+                            "origin {:?} was repeated across incremental batch roots",
+                            contribution.origin
+                        ),
+                    )
+                    .with_message_id(contribution.message_id));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn claim_phase_root(
+        &mut self,
+        mode: PublicBatchMode,
+        phase: PublicPhase,
+        root: [u8; 32],
+        expected_origin_count: usize,
+    ) -> std::result::Result<(), PublicProtocolViolation> {
+        if mode == PublicBatchMode::Complete {
+            if let Some(existing) = self.complete_phase_roots.get(&phase) {
+                if existing != &root {
+                    return Err(PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::ConflictingManifest,
+                        Some(phase),
+                        Some(root),
+                        format!(
+                            "complete phase already committed to root {}",
+                            hex::encode(existing)
+                        ),
+                    ));
+                }
+            } else {
+                self.complete_phase_roots.insert(phase, root);
+            }
+            return Ok(());
+        }
+
+        let root_known = self.pending.contains_key(&(phase, root))
+            || self.completed.contains_key(&(phase, root));
+        if !root_known {
+            let roots = self
+                .pending
+                .keys()
+                .chain(self.completed.keys())
+                .filter(|(candidate_phase, _)| *candidate_phase == phase)
+                .count();
+            if roots >= expected_origin_count {
+                return Err(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::BufferLimit,
+                    Some(phase),
+                    Some(root),
+                    format!(
+                        "incremental phase exceeds its maximum {expected_origin_count} batch roots"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn try_complete(
+        &mut self,
+        key: (PublicPhase, [u8; 32]),
+        manifest_added: bool,
+    ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
+        let Some(batch) = self.pending.get(&key) else {
+            return Ok(PublicBatchAssembly::Pending { manifest_added });
+        };
+        let Some(received_manifest) = batch.manifest.as_ref() else {
+            return Ok(PublicBatchAssembly::Pending { manifest_added });
+        };
+        let manifest = &received_manifest.manifest;
+        let chunk_count = manifest.chunk_count;
+        if let Some(index) = batch
+            .chunks
+            .keys()
+            .find(|index| **index >= chunk_count)
+            .copied()
+        {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::InvalidChunk,
+                Some(key.0),
+                Some(key.1),
+                format!("chunk index {index} is outside manifest chunk count {chunk_count}"),
+            ));
+        }
+        if batch.chunks.len() < chunk_count as usize {
+            return Ok(PublicBatchAssembly::Pending { manifest_added });
+        }
+
+        let batch = self
+            .pending
+            .remove(&key)
+            .expect("the complete pending batch was checked above");
+        let received_manifest = batch
+            .manifest
+            .expect("the complete pending batch has a manifest");
+        let manifest = received_manifest.manifest;
+        let mut contributions = Vec::new();
+        let mut chunk_digests = BTreeMap::new();
+        for index in 0..manifest.chunk_count {
+            let chunk = batch.chunks.get(&index).ok_or_else(|| {
+                PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::InvalidChunk,
+                    Some(key.0),
+                    Some(key.1),
+                    format!("manifest batch is missing chunk {index}"),
+                )
+            })?;
+            chunk_digests.insert(index, chunk.event_digest);
+            contributions.extend(chunk.contributions.iter().cloned());
+        }
+
+        let canonical_origins: Vec<_> = manifest.contribution_ids.keys().copied().collect();
+        let actual_origins: Vec<_> = contributions
+            .iter()
+            .map(|verified| verified.contribution.origin)
+            .collect();
+        if actual_origins != canonical_origins {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BatchMismatch,
+                Some(key.0),
+                Some(key.1),
+                "chunk contributions are not in the manifest's canonical origin order",
+            ));
+        }
+        let actual_ids: BTreeMap<_, _> = contributions
+            .iter()
+            .map(|verified| {
+                (
+                    verified.contribution.origin,
+                    verified.contribution.message_id,
+                )
+            })
+            .collect();
+        if actual_ids.len() != contributions.len() || actual_ids != manifest.contribution_ids {
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::BatchMismatch,
+                Some(key.0),
+                Some(key.1),
+                "chunk contribution IDs do not match the manifest",
+            ));
+        }
+
+        self.completed.insert(
+            key,
+            CompletedPublicBatch {
+                manifest_event_digest: received_manifest.event_digest,
+                chunk_digests,
+            },
+        );
+        Ok(PublicBatchAssembly::Complete {
+            phase: key.0,
+            root: key.1,
+            contributions,
+        })
+    }
+}
+
+fn authenticated_public_event_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"orbis-dkg-authenticated-public-event-v1");
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    hasher.finalize().into()
 }
 
 fn missing_topology_peers(
@@ -747,7 +1306,8 @@ where
                 "leader received signed public DKG contribution"
             );
             validate_leader_local(&state, contribution.ceremony_id.0).await?;
-            record_public_contribution(&state, signed.clone(), &contribution).await?;
+            record_public_contribution_at_leader(&state, routes, signed.clone(), &contribution)
+                .await?;
             publish_phase_if_complete(
                 state.clone(),
                 routes,
@@ -2553,17 +3113,34 @@ async fn abort_prepared_attempt<D>(
 ) where
     D: CoordinatorDkg,
 {
+    broadcast_attempt_abort(
+        state,
+        routes,
+        prepare.participant_routes(),
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        reason,
+    )
+    .await;
+}
+
+async fn broadcast_attempt_abort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    participant_routes: Vec<String>,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    reason: String,
+) where
+    D: CoordinatorDkg,
+{
     let mut aborts = JoinSet::new();
-    for peer in prepare
-        .participant_routes()
-        .iter()
+    for peer in participant_routes
+        .into_iter()
         .filter(|peer| !is_self_peer_id(&state.network, peer))
     {
         let state = state.clone();
-        let peer = peer.clone();
         let reason = reason.clone();
-        let ceremony_id = prepare.ceremony_id;
-        let attempt_id = prepare.attempt_id;
         aborts.spawn(async move {
             timeout(
                 Duration::from_secs(2),
@@ -2810,6 +3387,139 @@ where
     }
 }
 
+async fn abort_public_protocol_violation_from_listener<D>(
+    state: &Arc<AppState<D>>,
+    prepare: &PrepareSession,
+    violation: &PublicProtocolViolation,
+) where
+    D: CoordinatorDkg,
+{
+    let root = violation.root.map(hex::encode);
+    let message_ids: Vec<_> = violation
+        .message_ids
+        .iter()
+        .map(|message_id| hex::encode(message_id.0))
+        .collect();
+    tracing::error!(
+        session_id = prepare.ceremony_id.0,
+        attempt_id = %hex::encode(prepare.attempt_id.0),
+        phase = ?violation.phase,
+        root = ?root,
+        message_ids = ?message_ids,
+        accused = ?violation.accused,
+        violation = ?violation.kind,
+        detail = %violation.detail,
+        "aborting DKG attempt after authenticated public protocol violation"
+    );
+    crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
+    // TODO(reporting): preserve the authenticated leader delivery or both
+    // origin-signed envelopes and submit the appropriate DKG equivocation
+    // report. Reporting evidence/schema work is intentionally deferred.
+    state
+        .dkg_session_state
+        .abort_transport_attempt(
+            &prepare.ceremony_id.0,
+            prepare.attempt_id,
+            TopicTaskDisposition::DetachCurrent,
+        )
+        .await;
+}
+
+async fn apply_validated_public_batch<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+    root: [u8; 32],
+    contributions: Vec<VerifiedPublicContribution>,
+) -> std::result::Result<bool, PublicProtocolViolation>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let retained: BTreeMap<_, _> = contributions
+        .iter()
+        .map(|verified| (verified.contribution.origin, verified.signed.clone()))
+        .collect();
+    match state
+        .dkg_session_state
+        .record_public_batch(&prepare.ceremony_id.0, prepare.attempt_id, phase, retained)
+        .await
+    {
+        PublicBatchRecordOutcome::Recorded => {}
+        PublicBatchRecordOutcome::DuplicateSame => {
+            crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
+        }
+        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+            return Err(PublicProtocolViolation::origin(
+                phase,
+                Some(root),
+                origin,
+                "manifest-validated batch conflicts with a retained signed contribution",
+            ));
+        }
+        PublicBatchRecordOutcome::StaleAttempt | PublicBatchRecordOutcome::MissingSession => {
+            return Ok(false);
+        }
+    }
+
+    // A refresh result uses a two-step control barrier. Gossip reception retains
+    // the exact validated result, but only CommitRefreshResult promotes it.
+    if phase != PublicPhase::RefreshHealthCheck {
+        for verified in contributions {
+            let message_id = verified.contribution.message_id;
+            if let Err(error) = dispatch_public_contribution(
+                state.clone(),
+                routes,
+                verified.signed,
+                verified.contribution,
+            )
+            .await
+            {
+                if state
+                    .dkg_session_state
+                    .transport_attempt(&prepare.ceremony_id.0)
+                    .await
+                    != Some(prepare.attempt_id)
+                {
+                    return Ok(false);
+                }
+                if matches!(
+                    &error,
+                    DkgError::Unauthorized(_)
+                        | DkgError::Deserialization(_)
+                        | DkgError::InvalidInput(_)
+                        | DkgError::CommitmentVerificationFailed(_)
+                ) {
+                    return Err(PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::InvalidContribution,
+                        Some(phase),
+                        Some(root),
+                        format!("validated contribution failed protocol application: {error}"),
+                    )
+                    .with_message_id(message_id));
+                }
+                tracing::warn!(
+                    %error,
+                    phase = ?phase,
+                    root = %hex::encode(root),
+                    "failed to dispatch manifest-validated public DKG contribution"
+                );
+            }
+        }
+    }
+
+    crate::metrics::record_dkg_transport_event("public", "batch_validated");
+    tracing::info!(
+        session_id = prepare.ceremony_id.0,
+        attempt_id = %hex::encode(prepare.attempt_id.0),
+        phase = ?phase,
+        root = %hex::encode(root),
+        "validated and applied public DKG Gossip batch"
+    );
+    Ok(true)
+}
+
 async fn topic_listener<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -2830,7 +3540,8 @@ async fn topic_listener<D>(
     let mut acknowledgement_tasks = JoinSet::new();
     let mut acknowledgement_in_flight = false;
     let mut acknowledged_nonce: Option<[u8; 32]> = None;
-    loop {
+    let mut public_batches = PublicBatchAssembler::default();
+    'listener: loop {
         if state
             .dkg_session_state
             .transport_attempt(&prepare.ceremony_id.0)
@@ -2911,11 +3622,23 @@ async fn topic_listener<D>(
                     tracing::warn!("discarding DKG Gossip message not published by leader");
                     continue;
                 }
-                let Ok(public) =
-                    transport::decode::<DkgPublicMessage>(&message.data, MAX_CONTROL_MESSAGE_BYTES)
-                else {
-                    tracing::warn!("discarding malformed DKG Gossip message");
-                    continue;
+                let event_digest = authenticated_public_event_digest(&message.data);
+                let public = match transport::decode::<DkgPublicMessage>(
+                    &message.data,
+                    MAX_CONTROL_MESSAGE_BYTES,
+                ) {
+                    Ok(public) => public,
+                    Err(error) => {
+                        let violation = PublicProtocolViolation::leader(
+                            PublicProtocolViolationKind::MalformedLeaderMessage,
+                            None,
+                            None,
+                            error,
+                        );
+                        abort_public_protocol_violation_from_listener(&state, &prepare, &violation)
+                            .await;
+                        break 'listener;
+                    }
                 };
                 match public {
                     DkgPublicMessage::TopologyProbe {
@@ -2954,9 +3677,41 @@ async fn topic_listener<D>(
                         attempt_id,
                         phase,
                         phase_root,
+                        index,
                         contributions,
-                        ..
                     } if ceremony_id == prepare.ceremony_id && attempt_id == prepare.attempt_id => {
+                        let Some(mode) = public_batch_mode(&prepare.kind, phase) else {
+                            let violation = PublicProtocolViolation::leader(
+                                PublicProtocolViolationKind::InvalidChunk,
+                                Some(phase),
+                                Some(phase_root),
+                                "public chunk is not allowed for this ceremony kind",
+                            );
+                            abort_public_protocol_violation_from_listener(
+                                &state, &prepare, &violation,
+                            )
+                            .await;
+                            break 'listener;
+                        };
+                        if message.data.len() > transport::MAX_PUBLIC_CHUNK_BYTES {
+                            let violation = PublicProtocolViolation::leader(
+                                PublicProtocolViolationKind::BufferLimit,
+                                Some(phase),
+                                Some(phase_root),
+                                format!(
+                                    "encoded chunk is {} bytes, exceeding the {}-byte limit",
+                                    message.data.len(),
+                                    transport::MAX_PUBLIC_CHUNK_BYTES
+                                ),
+                            );
+                            abort_public_protocol_violation_from_listener(
+                                &state, &prepare, &violation,
+                            )
+                            .await;
+                            break 'listener;
+                        }
+
+                        let mut verified = Vec::with_capacity(contributions.len());
                         for signed in contributions {
                             match verify_signed_contribution(&state, &signed).await {
                                 Ok(contribution)
@@ -2964,73 +3719,107 @@ async fn topic_listener<D>(
                                         && contribution.ceremony_id == ceremony_id
                                         && contribution.attempt_id == attempt_id =>
                                 {
-                                    // A refresh result uses a two-step control
-                                    // barrier. Gossip reception retains the exact
-                                    // signed result, but only the leader's Commit
-                                    // message promotes the staged share. This
-                                    // prevents subscriber timing from creating a
-                                    // split refresh before every node is ready.
-                                    let applied = if phase == PublicPhase::RefreshHealthCheck {
-                                        record_public_contribution(&state, signed, &contribution)
-                                            .await
-                                            .map(|_| ())
-                                    } else {
-                                        apply_public_contribution(
-                                            state.clone(),
-                                            routes,
-                                            signed,
-                                            contribution,
-                                        )
-                                        .await
-                                    };
-                                    if let Err(error) = applied {
-                                        tracing::warn!(%error, "failed to apply public DKG contribution");
-                                    }
+                                    verified.push(VerifiedPublicContribution {
+                                        signed,
+                                        contribution,
+                                    });
                                 }
-                                Ok(_) => tracing::warn!(
-                                    "discarding contribution from wrong public phase"
-                                ),
+                                Ok(contribution) => {
+                                    let violation = PublicProtocolViolation::leader(
+                                        PublicProtocolViolationKind::InvalidContribution,
+                                        Some(phase),
+                                        Some(phase_root),
+                                        format!(
+                                            "chunk contribution {:?} has the wrong public scope",
+                                            contribution.origin
+                                        ),
+                                    );
+                                    abort_public_protocol_violation_from_listener(
+                                        &state, &prepare, &violation,
+                                    )
+                                    .await;
+                                    break 'listener;
+                                }
                                 Err(error) => {
-                                    tracing::warn!(%error, "discarding invalid signed contribution")
+                                    if state
+                                        .dkg_session_state
+                                        .transport_attempt(&ceremony_id.0)
+                                        .await
+                                        != Some(attempt_id)
+                                    {
+                                        break 'listener;
+                                    }
+                                    let violation = PublicProtocolViolation::leader(
+                                        PublicProtocolViolationKind::InvalidContribution,
+                                        Some(phase),
+                                        Some(phase_root),
+                                        error.to_string(),
+                                    );
+                                    abort_public_protocol_violation_from_listener(
+                                        &state, &prepare, &violation,
+                                    )
+                                    .await;
+                                    break 'listener;
                                 }
                             }
                         }
-                        tracing::info!(
-                            session_id = ceremony_id.0,
-                            phase = ?phase,
-                            "processed public DKG Gossip chunk"
+
+                        let expected_origins =
+                            expected_public_origins(&state, &prepare, phase).await;
+                        let assembly = public_batches.insert_chunk(
+                            mode,
+                            phase,
+                            phase_root,
+                            index,
+                            verified,
+                            event_digest,
+                            expected_origins.len(),
                         );
-                        if let Some(items) = state
-                            .dkg_session_state
-                            .public_contributions(&ceremony_id.0, attempt_id, phase)
-                            .await
-                        {
-                            let expected = if matches!(
+                        match assembly {
+                            Ok(PublicBatchAssembly::Pending { .. }) => {
+                                crate::metrics::record_dkg_transport_event(
+                                    "public",
+                                    "batch_buffered",
+                                );
+                            }
+                            Ok(PublicBatchAssembly::Duplicate) => {
+                                crate::metrics::record_dkg_transport_event(
+                                    "public",
+                                    "batch_duplicate",
+                                );
+                            }
+                            Ok(PublicBatchAssembly::Complete {
                                 phase,
-                                PublicPhase::RefreshHealthCheck
-                                    | PublicPhase::ReshareParticipantSet
-                            ) {
-                                1
-                            } else {
-                                prepare.committees.current.len()
-                            };
-                            let incremental = phase == PublicPhase::CommitmentAudit
-                                || (phase == PublicPhase::Commitments
-                                    && matches!(prepare.kind, SessionKind::Reshare { .. }));
-                            if !incremental && items.len() == expected {
-                                let ids = contribution_ids(&items);
-                                if transport::phase_root(ceremony_id, attempt_id, phase, &ids)
-                                    != phase_root
+                                root,
+                                contributions,
+                            }) => {
+                                match apply_validated_public_batch(
+                                    &state,
+                                    routes,
+                                    &prepare,
+                                    phase,
+                                    root,
+                                    contributions,
+                                )
+                                .await
                                 {
-                                    // TODO: this only logs today. Each contribution is
-                                    // independently signature-verified, so this isn't an
-                                    // integrity hole, but a leader that equivocates on the
-                                    // aggregate root gets no automated consequence. Needs a
-                                    // new evidence/report kind (leader-equivocation on a
-                                    // phase root) fed through the existing reporting
-                                    // pipeline — out of scope for this PR.
-                                    tracing::error!("public DKG phase root mismatch");
+                                    Ok(true) => {}
+                                    Ok(false) => break 'listener,
+                                    Err(violation) => {
+                                        abort_public_protocol_violation_from_listener(
+                                            &state, &prepare, &violation,
+                                        )
+                                        .await;
+                                        break 'listener;
+                                    }
                                 }
+                            }
+                            Err(violation) => {
+                                abort_public_protocol_violation_from_listener(
+                                    &state, &prepare, &violation,
+                                )
+                                .await;
+                                break 'listener;
                             }
                         }
                     }
@@ -3040,24 +3829,89 @@ async fn topic_listener<D>(
                     {
                         let expected_origins =
                             expected_public_origins(&state, &prepare, manifest.phase).await;
-                        if let Err(error) = manifest.validate(&expected_origins) {
-                            tracing::warn!(%error, phase = ?manifest.phase,
-                                "discarding invalid public DKG manifest");
-                            continue;
-                        }
-                        tracing::debug!(phase = ?manifest.phase, chunks = manifest.chunk_count,
-                            "received public DKG manifest");
-                        let state = state.clone();
-                        let prepare = prepare.clone();
-                        tokio::spawn(async move {
-                            sleep(DKG_REPAIR_STALL_INTERVAL).await;
-                            if let Err(error) =
-                                repair_public_phase(state, routes, prepare, manifest.phase, false)
-                                    .await
-                            {
-                                tracing::warn!(%error, "public DKG completeness repair failed");
+                        let phase = manifest.phase;
+                        let Some(mode) = public_batch_mode(&prepare.kind, phase) else {
+                            let violation = PublicProtocolViolation::leader(
+                                PublicProtocolViolationKind::InvalidManifest,
+                                Some(phase),
+                                Some(manifest.phase_root),
+                                "public manifest is not allowed for this ceremony kind",
+                            );
+                            abort_public_protocol_violation_from_listener(
+                                &state, &prepare, &violation,
+                            )
+                            .await;
+                            break 'listener;
+                        };
+                        match public_batches.insert_manifest(
+                            mode,
+                            manifest,
+                            event_digest,
+                            &expected_origins,
+                        ) {
+                            Ok(PublicBatchAssembly::Pending {
+                                manifest_added: true,
+                            }) => {
+                                tracing::debug!(phase = ?phase,
+                                    "received public DKG manifest; awaiting chunks");
+                                let state = state.clone();
+                                let prepare = prepare.clone();
+                                tokio::spawn(async move {
+                                    sleep(DKG_REPAIR_STALL_INTERVAL).await;
+                                    if let Err(error) =
+                                        repair_public_phase(state, routes, prepare, phase, false)
+                                            .await
+                                    {
+                                        tracing::warn!(
+                                            %error,
+                                            "public DKG completeness repair failed"
+                                        );
+                                    }
+                                });
                             }
-                        });
+                            Ok(PublicBatchAssembly::Pending {
+                                manifest_added: false,
+                            }) => {}
+                            Ok(PublicBatchAssembly::Duplicate) => {
+                                crate::metrics::record_dkg_transport_event(
+                                    "public",
+                                    "batch_duplicate",
+                                );
+                            }
+                            Ok(PublicBatchAssembly::Complete {
+                                phase,
+                                root,
+                                contributions,
+                            }) => {
+                                match apply_validated_public_batch(
+                                    &state,
+                                    routes,
+                                    &prepare,
+                                    phase,
+                                    root,
+                                    contributions,
+                                )
+                                .await
+                                {
+                                    Ok(true) => {}
+                                    Ok(false) => break 'listener,
+                                    Err(violation) => {
+                                        abort_public_protocol_violation_from_listener(
+                                            &state, &prepare, &violation,
+                                        )
+                                        .await;
+                                        break 'listener;
+                                    }
+                                }
+                            }
+                            Err(violation) => {
+                                abort_public_protocol_violation_from_listener(
+                                    &state, &prepare, &violation,
+                                )
+                                .await;
+                                break 'listener;
+                            }
+                        }
                     }
                     _ => tracing::debug!("discarding stale DKG Gossip message"),
                 }
@@ -3454,6 +4308,16 @@ where
             "stale or foreign public contribution".into(),
         ));
     }
+    let expected_ring_id = state
+        .dkg_session_state
+        .ring_id_for_session(&contribution.ceremony_id.0)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("session ring ID is missing".into()))?;
+    if contribution.ring_id != expected_ring_id {
+        return Err(DkgError::Unauthorized(
+            "public contribution ring ID does not match the active session".into(),
+        ));
+    }
     let expected_peer = state
         .dkg_session_state
         .peer_id_for_participant(&contribution.ceremony_id.0, contribution.origin)
@@ -3523,6 +4387,81 @@ where
     dispatch_public_contribution(state, routes, signed, contribution).await
 }
 
+async fn record_public_contribution_at_leader<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    signed: SignedPayload,
+    contribution: &DkgPublicContribution,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+{
+    let outcome = state
+        .dkg_session_state
+        .record_public_contribution(
+            &contribution.ceremony_id.0,
+            contribution.attempt_id,
+            contribution.payload.phase(),
+            contribution.origin,
+            signed,
+        )
+        .await;
+    match outcome {
+        PublicContributionRecordOutcome::Recorded => {
+            crate::metrics::record_dkg_transport_event("public", "contribution");
+            Ok(true)
+        }
+        PublicContributionRecordOutcome::DuplicateSame => Ok(false),
+        PublicContributionRecordOutcome::ConflictingDuplicate => {
+            let reason = format!(
+                "origin {:?} equivocated in public phase {:?}",
+                contribution.origin,
+                contribution.payload.phase()
+            );
+            tracing::error!(
+                session_id = contribution.ceremony_id.0,
+                attempt_id = %hex::encode(contribution.attempt_id.0),
+                phase = ?contribution.payload.phase(),
+                origin = ?contribution.origin,
+                message_id = %hex::encode(contribution.message_id.0),
+                "leader aborting DKG attempt after signed origin equivocation"
+            );
+            crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
+            // TODO(reporting): submit both origin-signed contribution envelopes
+            // as DKG equivocation evidence before removing the attempt.
+            let participant_routes = state
+                .dkg_session_state
+                .transport_participant_routes(&contribution.ceremony_id.0)
+                .await
+                .unwrap_or_default();
+            state
+                .dkg_session_state
+                .abort_transport_attempt(
+                    &contribution.ceremony_id.0,
+                    contribution.attempt_id,
+                    TopicTaskDisposition::Abort,
+                )
+                .await;
+            broadcast_attempt_abort(
+                state,
+                routes,
+                participant_routes,
+                contribution.ceremony_id,
+                contribution.attempt_id,
+                reason.clone(),
+            )
+            .await;
+            Err(DkgError::ProtocolError(reason))
+        }
+        PublicContributionRecordOutcome::StaleAttempt => Err(DkgError::ProtocolError(
+            "public contribution targets a stale attempt".into(),
+        )),
+        PublicContributionRecordOutcome::MissingSession => Err(DkgError::SessionNotFound(
+            contribution.ceremony_id.0.to_string(),
+        )),
+    }
+}
+
 async fn record_public_contribution<D>(
     state: &Arc<AppState<D>>,
     signed: SignedPayload,
@@ -3550,9 +4489,28 @@ where
             ))
         }
         PublicContributionRecordOutcome::ConflictingDuplicate => {
+            tracing::error!(
+                session_id = contribution.ceremony_id.0,
+                attempt_id = %hex::encode(contribution.attempt_id.0),
+                phase = ?contribution.payload.phase(),
+                origin = ?contribution.origin,
+                message_id = %hex::encode(contribution.message_id.0),
+                "aborting DKG attempt after signed origin equivocation"
+            );
+            crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
+            // TODO(reporting): submit both origin-signed contribution envelopes
+            // as DKG equivocation evidence before removing the attempt.
+            state
+                .dkg_session_state
+                .abort_transport_attempt(
+                    &contribution.ceremony_id.0,
+                    contribution.attempt_id,
+                    TopicTaskDisposition::Abort,
+                )
+                .await;
             return Err(DkgError::ProtocolError(
                 "conflicting duplicate public contribution".into(),
-            ))
+            ));
         }
         PublicContributionRecordOutcome::MissingSession => {
             return Err(DkgError::SessionNotFound(
@@ -3715,16 +4673,17 @@ async fn publish_phase_if_complete<D>(
 where
     D: CoordinatorDkg,
 {
-    let is_incremental = phase == PublicPhase::CommitmentAudit
-        || (phase == PublicPhase::Commitments
-            && state
-                .dkg_session_state
-                .with_state(&session_id, |session| {
-                    matches!(session.kind, SessionKind::Reshare { .. })
-                })
-                .await
-                .unwrap_or(false));
-    if is_incremental {
+    let kind = state
+        .dkg_session_state
+        .with_state(&session_id, |session| session.kind.clone())
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    let mode = public_batch_mode(&kind, phase).ok_or_else(|| {
+        DkgError::ProtocolError(format!(
+            "public phase {phase:?} is not valid for ceremony kind {kind:?}"
+        ))
+    })?;
+    if mode == PublicBatchMode::Incremental {
         return publish_incremental_public_contributions(state, session_id, attempt_id, phase)
             .await;
     }
@@ -5976,6 +6935,7 @@ mod stability_tests {
             session.transport.committee_digest = Some(committee_digest);
             session.transport.leader_node_key = Some("test-leader".to_string());
             session.transport.active_dealers = active_dealers;
+            session.routing.ring_id = "test-ring-post".to_string();
             session
                 .routing
                 .node_id_to_peer_id
@@ -6128,6 +7088,45 @@ mod stability_tests {
     }
 
     #[tokio::test]
+    async fn verify_signed_contribution_rejects_foreign_ring_id() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "verify_signed_contribution_rejects_foreign_ring",
+            4245,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let contribution = DkgPublicContribution::new(
+            ceremony_id,
+            attempt_id,
+            "different-ring".to_string(),
+            committee_digest,
+            origin,
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [7; 32],
+            },
+        )
+        .unwrap();
+        let signed = state
+            .network
+            .pubsub()
+            .expect("pubsub enabled")
+            .sign(
+                PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
+                transport::encode(&contribution).unwrap().into(),
+            )
+            .await
+            .unwrap();
+
+        let error = verify_signed_contribution(&state, &signed)
+            .await
+            .expect_err("the signed contribution must be bound to the active ring");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
     async fn verify_signed_contribution_rejects_next_scope_origin_during_refresh() {
         // Refresh has no "next" committee at all — a contribution whose origin
         // claims `CommitteeScope::Next` must be rejected regardless of phase.
@@ -6160,5 +7159,394 @@ mod stability_tests {
             .await
             .expect_err("a Next-scope origin must never be accepted during a Refresh ceremony");
         assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    fn assembled_contribution(
+        origin: ParticipantRef,
+        message_byte: u8,
+    ) -> VerifiedPublicContribution {
+        let message_id = MessageId([message_byte; 32]);
+        let contribution = DkgPublicContribution {
+            ceremony_id: CeremonyId(900),
+            attempt_id: AttemptId([9; 32]),
+            ring_id: "batch-test-ring".into(),
+            committee_digest: [8; 32],
+            origin,
+            message_id,
+            payload: DkgPublicPayload::Commitment {
+                commitment: vec![message_byte],
+                report_evidence: None,
+            },
+        };
+        VerifiedPublicContribution {
+            signed: SignedPayload {
+                origin: vec![origin.node_id as u8; 32],
+                signature: vec![message_byte; 64],
+                data: vec![message_byte; 8],
+            },
+            contribution,
+        }
+    }
+
+    fn assembled_manifest(
+        contributions: &[VerifiedPublicContribution],
+        chunk_count: u32,
+        complete: bool,
+    ) -> PhaseManifest {
+        let ids = contributions
+            .iter()
+            .map(|verified| {
+                (
+                    verified.contribution.origin,
+                    verified.contribution.message_id,
+                )
+            })
+            .collect();
+        PhaseManifest {
+            ceremony_id: CeremonyId(900),
+            attempt_id: AttemptId([9; 32]),
+            phase: PublicPhase::Commitments,
+            phase_root: transport::phase_root(
+                CeremonyId(900),
+                AttemptId([9; 32]),
+                PublicPhase::Commitments,
+                &ids,
+            ),
+            contribution_ids: ids,
+            chunk_count,
+            complete,
+        }
+    }
+
+    #[test]
+    fn public_batch_waits_for_manifest_and_every_chunk() {
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let second = assembled_contribution(ParticipantRef::current(2), 2);
+        let manifest = assembled_manifest(&[first.clone(), second.clone()], 2, true);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+
+        assert!(matches!(
+            assembler
+                .insert_chunk(
+                    PublicBatchMode::Complete,
+                    PublicPhase::Commitments,
+                    manifest.phase_root,
+                    1,
+                    vec![second],
+                    [2; 32],
+                    expected.len(),
+                )
+                .unwrap(),
+            PublicBatchAssembly::Pending { .. }
+        ));
+        assert!(matches!(
+            assembler
+                .insert_manifest(
+                    PublicBatchMode::Complete,
+                    manifest.clone(),
+                    [3; 32],
+                    &expected,
+                )
+                .unwrap(),
+            PublicBatchAssembly::Pending {
+                manifest_added: true
+            }
+        ));
+        let complete = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                manifest.phase_root,
+                0,
+                vec![first],
+                [1; 32],
+                expected.len(),
+            )
+            .unwrap();
+        let PublicBatchAssembly::Complete { contributions, .. } = complete else {
+            panic!("batch must complete only after manifest and both chunks");
+        };
+        assert_eq!(
+            contributions
+                .iter()
+                .map(|verified| verified.contribution.origin)
+                .collect::<Vec<_>>(),
+            vec![ParticipantRef::current(1), ParticipantRef::current(2)]
+        );
+    }
+
+    #[test]
+    fn public_batch_accepts_only_identical_retransmissions() {
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let manifest = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
+        let expected = BTreeSet::from([ParticipantRef::current(1)]);
+        let mut assembler = PublicBatchAssembler::default();
+        assert!(matches!(
+            assembler
+                .insert_manifest(
+                    PublicBatchMode::Complete,
+                    manifest.clone(),
+                    [1; 32],
+                    &expected,
+                )
+                .unwrap(),
+            PublicBatchAssembly::Pending { .. }
+        ));
+        assert!(matches!(
+            assembler
+                .insert_manifest(
+                    PublicBatchMode::Complete,
+                    manifest.clone(),
+                    [1; 32],
+                    &expected,
+                )
+                .unwrap(),
+            PublicBatchAssembly::Duplicate
+        ));
+        let error = assembler
+            .insert_manifest(
+                PublicBatchMode::Complete,
+                manifest.clone(),
+                [9; 32],
+                &expected,
+            )
+            .expect_err("a semantically equal manifest with different bytes must conflict");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+        assert!(matches!(
+            assembler
+                .insert_chunk(
+                    PublicBatchMode::Complete,
+                    PublicPhase::Commitments,
+                    manifest.phase_root,
+                    0,
+                    vec![contribution.clone()],
+                    [2; 32],
+                    expected.len(),
+                )
+                .unwrap(),
+            PublicBatchAssembly::Complete { .. }
+        ));
+        assert!(matches!(
+            assembler
+                .insert_chunk(
+                    PublicBatchMode::Complete,
+                    PublicPhase::Commitments,
+                    manifest.phase_root,
+                    0,
+                    vec![contribution],
+                    [2; 32],
+                    expected.len(),
+                )
+                .unwrap(),
+            PublicBatchAssembly::Duplicate
+        ));
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                manifest.phase_root,
+                0,
+                vec![assembled_contribution(ParticipantRef::current(1), 1)],
+                [8; 32],
+                expected.len(),
+            )
+            .expect_err("a semantically equal chunk with different bytes must conflict");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+    }
+
+    #[test]
+    fn public_batch_rejects_invalid_or_conflicting_complete_roots() {
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let mut invalid = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
+        invalid.phase_root = [99; 32];
+        let expected = BTreeSet::from([ParticipantRef::current(1)]);
+        let mut assembler = PublicBatchAssembler::default();
+        let error = assembler
+            .insert_manifest(PublicBatchMode::Complete, invalid, [1; 32], &expected)
+            .expect_err("an internally invalid root must fail");
+        assert_eq!(error.kind, PublicProtocolViolationKind::InvalidManifest);
+
+        let first_root = [1; 32];
+        let second_root = [2; 32];
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                first_root,
+                0,
+                vec![contribution.clone()],
+                [2; 32],
+                expected.len(),
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                second_root,
+                0,
+                vec![assembled_contribution(ParticipantRef::current(1), 2)],
+                [3; 32],
+                expected.len(),
+            )
+            .expect_err("a complete phase cannot advertise two roots");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+    }
+
+    #[test]
+    fn public_batch_rejects_conflicting_chunks_and_noncanonical_contents() {
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let second = assembled_contribution(ParticipantRef::current(2), 2);
+        let manifest = assembled_manifest(&[first.clone(), second.clone()], 1, true);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+        assembler
+            .insert_manifest(
+                PublicBatchMode::Complete,
+                manifest.clone(),
+                [1; 32],
+                &expected,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                manifest.phase_root,
+                0,
+                vec![second, first],
+                [2; 32],
+                expected.len(),
+            )
+            .expect_err("manifest contents must retain canonical origin order");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+
+        let contribution = assembled_contribution(ParticipantRef::current(1), 3);
+        let mut assembler = PublicBatchAssembler::default();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [3; 32],
+                0,
+                vec![contribution.clone()],
+                [3; 32],
+                2,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [3; 32],
+                0,
+                vec![assembled_contribution(ParticipantRef::current(2), 4)],
+                [4; 32],
+                2,
+            )
+            .expect_err("the same chunk index cannot change contents");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+    }
+
+    #[test]
+    fn incremental_batches_allow_multiple_roots_but_reject_origin_equivocation() {
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let second = assembled_contribution(ParticipantRef::current(2), 2);
+        let first_manifest = assembled_manifest(std::slice::from_ref(&first), 1, false);
+        let second_manifest = assembled_manifest(std::slice::from_ref(&second), 1, false);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+        for (manifest, contribution) in [(first_manifest, first.clone()), (second_manifest, second)]
+        {
+            assembler
+                .insert_manifest(
+                    PublicBatchMode::Incremental,
+                    manifest.clone(),
+                    [contribution.contribution.origin.node_id as u8; 32],
+                    &expected,
+                )
+                .unwrap();
+            assert!(matches!(
+                assembler
+                    .insert_chunk(
+                        PublicBatchMode::Incremental,
+                        PublicPhase::Commitments,
+                        manifest.phase_root,
+                        0,
+                        vec![contribution],
+                        [manifest.contribution_ids.len() as u8; 32],
+                        expected.len(),
+                    )
+                    .unwrap(),
+                PublicBatchAssembly::Complete { .. }
+            ));
+        }
+
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::Commitments,
+                [7; 32],
+                0,
+                vec![assembled_contribution(ParticipantRef::current(1), 9)],
+                [9; 32],
+                expected.len(),
+            )
+            .expect_err("one origin cannot sign two messages for a public phase");
+        assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
+        assert_eq!(
+            error.accused,
+            PublicViolationAccused::Origin(ParticipantRef::current(1))
+        );
+    }
+
+    #[test]
+    fn incremental_batch_buffers_are_origin_bounded() {
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let second = assembled_contribution(ParticipantRef::current(2), 2);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::Commitments,
+                [1; 32],
+                0,
+                vec![first.clone()],
+                [1; 32],
+                expected.len(),
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::Commitments,
+                [2; 32],
+                0,
+                vec![first],
+                [2; 32],
+                expected.len(),
+            )
+            .expect_err("a leader cannot retain one contribution under multiple roots");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+
+        let mut assembler = PublicBatchAssembler::default();
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let one_origin = assembled_manifest(std::slice::from_ref(&first), 1, false);
+        let overlapping = assembled_manifest(&[first, second], 1, false);
+        assembler
+            .insert_manifest(PublicBatchMode::Incremental, one_origin, [3; 32], &expected)
+            .unwrap();
+        let error = assembler
+            .insert_manifest(
+                PublicBatchMode::Incremental,
+                overlapping,
+                [4; 32],
+                &expected,
+            )
+            .expect_err("pending manifest entries must remain committee-bounded");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
     }
 }
