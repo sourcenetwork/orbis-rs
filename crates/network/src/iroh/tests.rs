@@ -179,6 +179,88 @@ async fn iroh_authenticated_pubsub_roundtrip() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn malformed_gossip_frame_does_not_end_the_subscription() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn raw gossip publisher router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn authenticated subscriber router");
+
+    let topic_id = TopicId::new([19u8; 32]);
+    let raw_topic = net1
+        .gossip_for_tests()
+        .subscribe(
+            iroh_gossip::TopicId::from_bytes(*topic_id.as_bytes()),
+            vec![],
+        )
+        .await
+        .expect("open raw Gossip topic");
+    let (raw_sender, _raw_receiver) = raw_topic.split();
+    let authenticated_topic = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join authenticated topic");
+
+    raw_sender
+        .broadcast(bytes::Bytes::from_static(b"malformed outer envelope"))
+        .await
+        .expect("broadcast malformed frame");
+
+    let rejection = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::Rejected {
+                delivered_from,
+                reason,
+            } = authenticated_topic.recv().await.expect("topic event")
+            {
+                return (delivered_from, reason);
+            }
+        }
+    })
+    .await
+    .expect("malformed frame should be surfaced without ending the stream");
+    assert_eq!(rejection.0, net1.local_peer_id());
+    assert_eq!(rejection.1, crate::PubSubRejectReason::MalformedEnvelope);
+
+    let valid_frame = super::pubsub::encode_topic_frame_for_test(
+        net1.endpoint(),
+        topic_id,
+        b"valid frame after rejection",
+    );
+    raw_sender
+        .broadcast(valid_frame.into())
+        .await
+        .expect("broadcast valid frame");
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::Received(message) =
+                authenticated_topic.recv().await.expect("topic event")
+            {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("the same subscription should receive a later valid frame");
+    assert_eq!(received.origin, net1.local_peer_id());
+    assert_eq!(&received.data[..], b"valid frame after rejection");
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn iroh_pubsub_sign_and_verify_roundtrip() {
     let net1 = new_test_network().await;
     let pubsub = net1.pubsub().expect("pubsub enabled");

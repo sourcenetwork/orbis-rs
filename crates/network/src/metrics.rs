@@ -31,6 +31,13 @@ lazy_static! {
     )
     .expect("failed to register p2p_gossip_neighbors");
 
+    pub static ref P2P_GOSSIP_REJECTED_FRAMES_TOTAL: CounterVec = register_counter_vec!(
+        "p2p_gossip_rejected_frames_total",
+        "Gossip frames rejected without terminating the subscription",
+        &["protocol", "reason"]
+    )
+    .expect("failed to register p2p_gossip_rejected_frames_total");
+
     // Message metrics
     pub static ref P2P_MESSAGES_SENT_TOTAL: CounterVec = register_counter_vec!(
         "p2p_messages_sent_total",
@@ -108,6 +115,7 @@ pub fn init() {
     lazy_static::initialize(&P2P_CONNECTIONS_TOTAL);
     lazy_static::initialize(&P2P_ACTIVE_CONNECTIONS);
     lazy_static::initialize(&P2P_GOSSIP_NEIGHBORS);
+    lazy_static::initialize(&P2P_GOSSIP_REJECTED_FRAMES_TOTAL);
     lazy_static::initialize(&P2P_MESSAGES_SENT_TOTAL);
     lazy_static::initialize(&P2P_MESSAGES_RECEIVED_TOTAL);
     lazy_static::initialize(&P2P_BYTES_SENT_TOTAL);
@@ -191,6 +199,15 @@ pub fn record_send_error(protocol: &[u8]) {
 pub fn record_recv_error(protocol: &[u8]) {
     let label = protocol_label(protocol);
     P2P_ERRORS_TOTAL.with_label_values(&[&label, "recv"]).inc();
+}
+
+/// Record a malformed or unauthenticated Gossip frame. `reason` must be a
+/// bounded static label supplied by the pub-sub adapter.
+pub fn record_gossip_frame_rejected(protocol: &[u8], reason: &'static str) {
+    let label = protocol_label(protocol);
+    P2P_GOSSIP_REJECTED_FRAMES_TOTAL
+        .with_label_values(&[&label, reason])
+        .inc();
 }
 
 /// Record an inbound stream dropped by the router before handler execution.

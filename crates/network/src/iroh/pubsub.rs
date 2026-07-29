@@ -18,7 +18,9 @@ use tokio::sync::Mutex;
 
 use crate::error::{NetworkError, Result};
 use crate::metrics;
-use crate::pubsub::{AuthenticatedMessage, PubSub, PubSubEvent, SignedPayload, Topic, TopicId};
+use crate::pubsub::{
+    AuthenticatedMessage, PubSub, PubSubEvent, PubSubRejectReason, SignedPayload, Topic, TopicId,
+};
 use crate::PeerId;
 
 const SIGNING_DOMAIN: &[u8] = b"orbis-authenticated-pubsub-v1";
@@ -58,6 +60,28 @@ fn encode_topic_wire(message: &TopicWireMessage) -> Result<Vec<u8>> {
         .map_err(|error| NetworkError::Serialization(error.to_string()))
 }
 
+#[cfg(test)]
+pub(crate) fn encode_topic_frame_for_test(
+    endpoint: &Endpoint,
+    topic: TopicId,
+    data: &[u8],
+) -> Vec<u8> {
+    let delivery_id = [17; 16];
+    let signature = endpoint.secret_key().sign(&signed_bytes(
+        &topic_delivery_domain(topic, &delivery_id),
+        data,
+    ));
+    encode_topic_wire(&TopicWireMessage {
+        delivery_id,
+        payload: SignedPayload {
+            origin: endpoint.id().as_bytes().to_vec(),
+            signature: signature.to_bytes().to_vec(),
+            data: data.to_vec(),
+        },
+    })
+    .expect("test topic frame must encode")
+}
+
 fn decode_topic_wire(bytes: &[u8]) -> Result<TopicWireMessage> {
     codec()
         .with_limit(bytes.len() as u64)
@@ -86,6 +110,21 @@ fn verify_signed(domain: &[u8], payload: &SignedPayload) -> Result<Authenticated
         delivered_from: PeerId::from_bytes(origin.as_bytes()),
         data: payload.data.clone().into(),
     })
+}
+
+fn authenticate_topic_frame(
+    topic: TopicId,
+    delivered_from: PeerId,
+    bytes: &[u8],
+) -> std::result::Result<AuthenticatedMessage, PubSubRejectReason> {
+    let wire = decode_topic_wire(bytes).map_err(|_| PubSubRejectReason::MalformedEnvelope)?;
+    let mut authenticated = verify_signed(
+        &topic_delivery_domain(topic, &wire.delivery_id),
+        &wire.payload,
+    )
+    .map_err(|_| PubSubRejectReason::InvalidAuthentication)?;
+    authenticated.delivered_from = delivered_from;
+    Ok(authenticated)
 }
 
 fn codec() -> impl Options {
@@ -260,14 +299,17 @@ impl Topic for IrohTopic {
                     message.content.len(),
                     start.elapsed().as_secs_f64(),
                 );
-                let wire = decode_topic_wire(&message.content)?;
-                let mut authenticated = verify_signed(
-                    &topic_delivery_domain(self.id, &wire.delivery_id),
-                    &wire.payload,
-                )?;
-                authenticated.delivered_from =
-                    PeerId::from_bytes(message.delivered_from.as_bytes());
-                Ok(PubSubEvent::Received(authenticated))
+                let delivered_from = PeerId::from_bytes(message.delivered_from.as_bytes());
+                match authenticate_topic_frame(self.id, delivered_from.clone(), &message.content) {
+                    Ok(authenticated) => Ok(PubSubEvent::Received(authenticated)),
+                    Err(reason) => {
+                        metrics::record_gossip_frame_rejected(iroh_gossip::ALPN, reason.as_str());
+                        Ok(PubSubEvent::Rejected {
+                            delivered_from,
+                            reason,
+                        })
+                    }
+                }
             }
         }
     }
@@ -355,5 +397,69 @@ mod tests {
         assert!(verify_signed(b"other-domain", &payload).is_err());
         payload.data[0] ^= 1;
         assert!(verify_signed(domain, &payload).is_err());
+    }
+
+    fn signed_topic_wire(secret: &iroh::SecretKey, topic: TopicId) -> Vec<u8> {
+        let delivery_id = [13; 16];
+        let data = b"authenticated topic payload";
+        let signature = secret.sign(&signed_bytes(
+            &topic_delivery_domain(topic, &delivery_id),
+            data,
+        ));
+        encode_topic_wire(&TopicWireMessage {
+            delivery_id,
+            payload: SignedPayload {
+                origin: secret.public().as_bytes().to_vec(),
+                signature: signature.to_bytes().to_vec(),
+                data: data.to_vec(),
+            },
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn malformed_topic_envelope_is_a_nonfatal_rejection() {
+        let result = authenticate_topic_frame(
+            TopicId::new([3; 32]),
+            PeerId::from_bytes(&[4; 32]),
+            b"not a bincode topic envelope",
+        );
+
+        assert!(matches!(result, Err(PubSubRejectReason::MalformedEnvelope)));
+    }
+
+    #[test]
+    fn invalid_topic_authentication_is_a_nonfatal_rejection() {
+        let topic = TopicId::new([3; 32]);
+        let secret = iroh::SecretKey::from_bytes(&[11; 32]);
+        let mut encoded = signed_topic_wire(&secret, topic);
+        let mut wire = decode_topic_wire(&encoded).unwrap();
+        wire.payload.data[0] ^= 1;
+        encoded = encode_topic_wire(&wire).unwrap();
+
+        let result = authenticate_topic_frame(topic, PeerId::from_bytes(&[4; 32]), &encoded);
+
+        assert!(matches!(
+            result,
+            Err(PubSubRejectReason::InvalidAuthentication)
+        ));
+    }
+
+    #[test]
+    fn valid_topic_frame_preserves_origin_and_immediate_relay() {
+        let topic = TopicId::new([3; 32]);
+        let secret = iroh::SecretKey::from_bytes(&[11; 32]);
+        let delivered_from = PeerId::from_bytes(&[4; 32]);
+        let encoded = signed_topic_wire(&secret, topic);
+
+        let authenticated =
+            authenticate_topic_frame(topic, delivered_from.clone(), &encoded).unwrap();
+
+        assert_eq!(
+            authenticated.origin,
+            PeerId::from_bytes(secret.public().as_bytes())
+        );
+        assert_eq!(authenticated.delivered_from, delivered_from);
+        assert_eq!(&authenticated.data[..], b"authenticated topic payload");
     }
 }

@@ -53,7 +53,7 @@ use crate::dkg::v0::transport::{
     PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::auth::current_unix_time;
-use crate::helpers::identity::{extract_node_part, is_self_peer_id};
+use crate::helpers::identity::{extract_node_part, is_self_peer_id, validate_peer_id};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
 };
@@ -962,13 +962,12 @@ fn leader_bootstrap(
     if local_node_key == leader_node_key {
         return Ok(Vec::new());
     }
-    let leader_node_id = extract_node_part(leader_route);
-    let leader_bytes = hex::decode(&leader_node_id).map_err(|error| {
-        DkgError::InvalidInput(format!(
-            "leader route contains an invalid hex node ID: {error}"
-        ))
-    })?;
-    Ok(vec![PeerId::from_bytes(&leader_bytes)])
+    validate_peer_id(leader_route)
+        .map_err(|error| DkgError::InvalidInput(format!("invalid leader route: {error}")))?;
+    // Preserve the authoritative direct address. The pub-sub adapter pins the
+    // connection to the node ID while registering the address with Iroh's
+    // static provider, which is required when discovery and relays are disabled.
+    Ok(vec![PeerId::from_bytes(leader_route.as_bytes())])
 }
 
 struct CeremonyStartGuard {
@@ -3704,6 +3703,7 @@ async fn topic_listener<D>(
     let mut acknowledgement_in_flight = false;
     let mut acknowledged_nonce: Option<[u8; 32]> = None;
     let mut public_batches = PublicBatchAssembler::default();
+    let mut rejected_gossip_frames = 0u64;
     'listener: loop {
         if state
             .dkg_session_state
@@ -4124,6 +4124,26 @@ async fn topic_listener<D>(
                             tracing::warn!(%error, "public DKG lag repair failed");
                         }
                     });
+                }
+            }
+            Ok(PubSubEvent::Rejected {
+                delivered_from: _,
+                reason,
+            }) => {
+                rejected_gossip_frames = rejected_gossip_frames.saturating_add(1);
+                crate::metrics::record_dkg_transport_event("public", "gossip_frame_rejected");
+                // Invalid outer envelopes are not attributable to their claimed
+                // publisher. `delivered_from` may only be an honest Gossip relay.
+                // Keep the healthy subscription and let the listener service its
+                // normal timers between rejected frames.
+                if rejected_gossip_frames == 1 || rejected_gossip_frames.is_power_of_two() {
+                    tracing::warn!(
+                        session_id = prepare.ceremony_id.0,
+                        attempt_id = %hex::encode(prepare.attempt_id.0),
+                        %reason,
+                        rejected_frames = rejected_gossip_frames,
+                        "discarding unauthenticated DKG Gossip frame"
+                    );
                 }
             }
             Ok(PubSubEvent::NeighborUp(peer)) => {
@@ -7823,23 +7843,143 @@ mod stability_tests {
     }
 
     #[test]
-    fn follower_bootstrap_decodes_only_the_leader_node_id() {
+    fn follower_bootstrap_preserves_the_authoritative_direct_route() {
         let leader_bytes = [7u8; 32];
         let route = format!("{}@127.0.0.1:9000", hex::encode(leader_bytes));
 
         let bootstrap = leader_bootstrap("follower-key", "leader-key", &route).unwrap();
 
         assert_eq!(bootstrap.len(), 1);
-        assert_eq!(bootstrap[0].as_bytes(), leader_bytes);
+        assert_eq!(bootstrap[0].as_bytes(), route.as_bytes());
     }
 
     #[test]
-    fn follower_bootstrap_rejects_malformed_leader_node_id() {
+    fn follower_bootstrap_accepts_an_id_only_discovery_route() {
+        let route = hex::encode([7u8; 32]);
+
+        let bootstrap = leader_bootstrap("follower-key", "leader-key", &route).unwrap();
+
+        assert_eq!(bootstrap.len(), 1);
+        assert_eq!(bootstrap[0].as_bytes(), route.as_bytes());
+    }
+
+    #[test]
+    fn follower_bootstrap_preserves_hostname_and_ipv6_routes() {
+        let node_id = hex::encode([7u8; 32]);
+        for route in [
+            format!("{node_id}@leader.example.com:9000"),
+            format!("{node_id}@[::1]:9000"),
+        ] {
+            let bootstrap = leader_bootstrap("follower-key", "leader-key", &route).unwrap();
+            assert_eq!(bootstrap[0].as_bytes(), route.as_bytes());
+        }
+    }
+
+    #[test]
+    fn follower_bootstrap_rejects_malformed_leader_route() {
         let error = leader_bootstrap("follower-key", "leader-key", "not-hex@127.0.0.1:9000")
             .expect_err("malformed leader node IDs must be rejected before Gossip subscribe");
 
         assert!(matches!(error, DkgError::InvalidInput(_)));
-        assert!(error.to_string().contains("invalid hex node ID"));
+        assert!(error.to_string().contains("invalid leader route"));
+
+        let node_id = hex::encode([7u8; 32]);
+        let error = leader_bootstrap(
+            "follower-key",
+            "leader-key",
+            &format!("{node_id}@not a valid address"),
+        )
+        .expect_err("malformed direct addresses must be rejected before Gossip subscribe");
+
+        assert!(matches!(error, DkgError::InvalidInput(_)));
+        assert!(error.to_string().contains("invalid leader route"));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn follower_bootstrap_joins_gossip_with_discovery_and_relays_disabled() {
+        use network::Network as _;
+
+        let leader = network::NetworkImpl::builder()
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .private_routes_only()
+            .build()
+            .await
+            .expect("build leader network");
+        let follower = network::NetworkImpl::builder()
+            .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+            .private_routes_only()
+            .build()
+            .await
+            .expect("build follower network");
+        let leader_router = leader
+            .create_router_builder()
+            .unwrap()
+            .spawn()
+            .expect("spawn leader Gossip router");
+        let follower_router = follower
+            .create_router_builder()
+            .unwrap()
+            .spawn()
+            .expect("spawn follower Gossip router");
+
+        let topic_id = network::TopicId::new([23; 32]);
+        let leader_topic = leader
+            .pubsub()
+            .expect("leader pub-sub")
+            .subscribe(topic_id, Vec::new())
+            .await
+            .expect("leader creates topic");
+        let leader_route = format!(
+            "{}@{}",
+            hex::encode(leader.local_peer_id().as_bytes()),
+            leader
+                .bound_addresses()
+                .into_iter()
+                .next()
+                .expect("leader bound address")
+        );
+        let bootstrap = leader_bootstrap("follower-key", "leader-key", &leader_route).unwrap();
+        let follower_topic = follower
+            .pubsub()
+            .expect("follower pub-sub")
+            .subscribe(topic_id, bootstrap)
+            .await
+            .expect("follower joins through the direct leader route");
+
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if matches!(
+                    leader_topic.recv().await.expect("leader topic event"),
+                    PubSubEvent::NeighborUp(_)
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("leader and follower should become Gossip neighbors");
+
+        leader_topic
+            .broadcast(Bytes::from_static(b"direct-route-bootstrap"))
+            .await
+            .expect("leader broadcasts after direct join");
+        let received = timeout(Duration::from_secs(10), async {
+            loop {
+                if let PubSubEvent::Received(message) =
+                    follower_topic.recv().await.expect("follower topic event")
+                {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("follower receives over the direct Gossip route");
+        assert_eq!(&received.data[..], b"direct-route-bootstrap");
+        assert_eq!(received.origin, leader.local_peer_id());
+
+        leader_router.shutdown().await.unwrap();
+        follower_router.shutdown().await.unwrap();
     }
 
     #[test]

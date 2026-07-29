@@ -71,6 +71,11 @@ impl IrohNetwork {
     pub fn config(&self) -> &IrohNetworkConfig {
         &self.config
     }
+
+    #[cfg(test)]
+    pub(crate) fn gossip_for_tests(&self) -> iroh_gossip::net::Gossip {
+        self.gossip.clone()
+    }
 }
 
 /// Builder for IrohNetwork

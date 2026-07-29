@@ -59,9 +59,40 @@ pub enum PubSubEvent {
     NeighborUp(PeerId),
     NeighborDown(PeerId),
     Received(AuthenticatedMessage),
+    /// A Gossip frame reached the local subscriber but could not be
+    /// authenticated. The subscription itself remains healthy.
+    ///
+    /// `delivered_from` identifies the immediate Gossip relay, not an
+    /// attributable publisher, and must not be used as protocol evidence.
+    Rejected {
+        delivered_from: PeerId,
+        reason: PubSubRejectReason,
+    },
     /// The local subscriber stopped consuming quickly enough. Protocols must
     /// rejoin and repair their expected-message set before advancing.
     Lagged,
+}
+
+/// Bounded reasons for rejecting an unauthenticated Gossip frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PubSubRejectReason {
+    MalformedEnvelope,
+    InvalidAuthentication,
+}
+
+impl PubSubRejectReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedEnvelope => "malformed_envelope",
+            Self::InvalidAuthentication => "invalid_authentication",
+        }
+    }
+}
+
+impl fmt::Display for PubSubRejectReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A live topic subscription.
@@ -72,7 +103,9 @@ pub trait Topic: Send + Sync {
     /// Sign with the local endpoint identity and broadcast to the topic.
     async fn broadcast(&self, data: Bytes) -> Result<()>;
 
-    /// Receive the next verified topic event.
+    /// Receive the next topic event. An invalid application frame is returned
+    /// as [`PubSubEvent::Rejected`]; only receiver/transport failure returns an
+    /// error.
     async fn recv(&self) -> Result<PubSubEvent>;
 }
 

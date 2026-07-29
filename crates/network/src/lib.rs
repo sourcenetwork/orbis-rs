@@ -15,7 +15,9 @@ pub mod iroh;
 
 pub use error::{NetworkError, Result};
 pub use protocol::{routes_for_version, ProtocolRoutes, SUPPORTED_PROTOCOL_VERSIONS, V0};
-pub use pubsub::{AuthenticatedMessage, PubSub, PubSubEvent, SignedPayload, Topic, TopicId};
+pub use pubsub::{
+    AuthenticatedMessage, PubSub, PubSubEvent, PubSubRejectReason, SignedPayload, Topic, TopicId,
+};
 pub use r#trait::{
     Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler, Router, RouterBuilder,
     RouterIngressLimits,
