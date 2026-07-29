@@ -43,8 +43,8 @@ use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare}
 use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
     MessageProcessingClaim, PublicBatchRecordOutcome, PublicContributionRecordOutcome,
-    TopicTaskDisposition, TopologyAckRecordOutcome, TransportActivationOutcome,
-    TransportBeginOutcome, TransportConfigureOutcome,
+    PublicRepairClaimOutcome, TopicTaskDisposition, TopologyAckRecordOutcome,
+    TransportActivationOutcome, TransportBeginOutcome, TransportConfigureOutcome,
 };
 use crate::dkg::v0::transport::{
     self, AttemptId, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
@@ -155,6 +155,7 @@ enum PublicViolationAccused {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicProtocolViolationKind {
     MalformedLeaderMessage,
+    MalformedOriginMessage,
     InvalidManifest,
     ConflictingManifest,
     InvalidChunk,
@@ -198,8 +199,24 @@ impl PublicProtocolViolation {
         origin: ParticipantRef,
         detail: impl Into<String>,
     ) -> Self {
+        Self::origin_with_kind(
+            PublicProtocolViolationKind::OriginEquivocation,
+            phase,
+            root,
+            origin,
+            detail,
+        )
+    }
+
+    fn origin_with_kind(
+        kind: PublicProtocolViolationKind,
+        phase: PublicPhase,
+        root: Option<[u8; 32]>,
+        origin: ParticipantRef,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
-            kind: PublicProtocolViolationKind::OriginEquivocation,
+            kind,
             accused: PublicViolationAccused::Origin(origin),
             phase: Some(phase),
             root,
@@ -3526,6 +3543,23 @@ async fn abort_public_protocol_violation_from_listener<D>(
 ) where
     D: CoordinatorDkg,
 {
+    abort_public_protocol_violation(
+        state,
+        prepare,
+        violation,
+        TopicTaskDisposition::DetachCurrent,
+    )
+    .await;
+}
+
+async fn abort_public_protocol_violation<D>(
+    state: &Arc<AppState<D>>,
+    prepare: &PrepareSession,
+    violation: &PublicProtocolViolation,
+    topic_task: TopicTaskDisposition,
+) where
+    D: CoordinatorDkg,
+{
     let root = violation.root.map(hex::encode);
     let message_ids: Vec<_> = violation
         .message_ids
@@ -3544,16 +3578,13 @@ async fn abort_public_protocol_violation_from_listener<D>(
         "aborting DKG attempt after authenticated public protocol violation"
     );
     crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-    // TODO(reporting): preserve the authenticated leader delivery or both
-    // origin-signed envelopes and submit the appropriate DKG equivocation
-    // report. Reporting evidence/schema work is intentionally deferred.
+    // TODO(reporting): preserve the authenticated leader/origin delivery or
+    // both origin-signed envelopes and submit the appropriate DKG fault or
+    // equivocation report. Reporting evidence/schema work is intentionally
+    // deferred.
     state
         .dkg_session_state
-        .abort_transport_attempt(
-            &prepare.ceremony_id.0,
-            prepare.attempt_id,
-            TopicTaskDisposition::DetachCurrent,
-        )
+        .abort_transport_attempt(&prepare.ceremony_id.0, prepare.attempt_id, topic_task)
         .await;
 }
 
@@ -3738,7 +3769,12 @@ async fn topic_listener<D>(
                 ).await {
                     for &phase in repairable_public_phases(&prepare.kind) {
                         if let Err(error) = repair_public_phase(
-                            state.clone(), routes, prepare.clone(), phase, false,
+                            state.clone(),
+                            routes,
+                            prepare.clone(),
+                            phase,
+                            false,
+                            TopicTaskDisposition::DetachCurrent,
                         ).await {
                             tracing::debug!(%error, phase = ?phase,
                                 "periodic public DKG completeness repair did not complete");
@@ -3990,9 +4026,15 @@ async fn topic_listener<D>(
                                 let prepare = prepare.clone();
                                 tokio::spawn(async move {
                                     sleep(DKG_REPAIR_STALL_INTERVAL).await;
-                                    if let Err(error) =
-                                        repair_public_phase(state, routes, prepare, phase, false)
-                                            .await
+                                    if let Err(error) = repair_public_phase(
+                                        state,
+                                        routes,
+                                        prepare,
+                                        phase,
+                                        false,
+                                        TopicTaskDisposition::Abort,
+                                    )
+                                    .await
                                     {
                                         tracing::warn!(
                                             %error,
@@ -4069,8 +4111,15 @@ async fn topic_listener<D>(
                     let state = state.clone();
                     let prepare = prepare.clone();
                     tokio::spawn(async move {
-                        if let Err(error) =
-                            repair_public_phase(state, routes, prepare, phase, true).await
+                        if let Err(error) = repair_public_phase(
+                            state,
+                            routes,
+                            prepare,
+                            phase,
+                            true,
+                            TopicTaskDisposition::Abort,
+                        )
+                        .await
                         {
                             tracing::warn!(%error, "public DKG lag repair failed");
                         }
@@ -4196,22 +4245,798 @@ where
     }
 }
 
+#[derive(Debug)]
+enum PublicRepairFailure {
+    Error(DkgError),
+    Violation(PublicProtocolViolation),
+}
+
+impl From<DkgError> for PublicRepairFailure {
+    fn from(error: DkgError) -> Self {
+        Self::Error(error)
+    }
+}
+
+type PublicRepairResult<T> = std::result::Result<T, PublicRepairFailure>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LeaderPublicRepairOutcome {
+    Complete,
+    Incomplete { retained: usize },
+    Unavailable { retained: usize, detail: String },
+}
+
+#[derive(Debug)]
+enum OriginPublicRepairOutcome {
+    Verified(Box<VerifiedPublicContribution>),
+    Missing {
+        origin: ParticipantRef,
+    },
+    Unavailable {
+        origin: ParticipantRef,
+        detail: String,
+    },
+    Violation(PublicProtocolViolation),
+    Error(DkgError),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RepairContributionSource {
+    Leader,
+    Origin,
+}
+
+#[async_trait]
+trait PublicRepairRequester: Send + Sync {
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage>;
+}
+
+struct NetworkPublicRepairRequester<D>
+where
+    D: CoordinatorDkg,
+{
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+}
+
+#[async_trait]
+impl<D> PublicRepairRequester for NetworkPublicRepairRequester<D>
+where
+    D: CoordinatorDkg,
+{
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage> {
+        control_request_with_timeout(
+            &self.state,
+            self.routes,
+            peer,
+            request,
+            PEER_RESPONSE_TIMEOUT,
+        )
+        .await
+    }
+}
+
+async fn public_repair_retained_count<D>(
+    state: &Arc<AppState<D>>,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+) -> usize
+where
+    D: CoordinatorDkg,
+{
+    state
+        .dkg_session_state
+        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
+        .await
+        .map_or(0, |items| items.len())
+}
+
+fn retryable_public_repair_control_error(error: &DkgError) -> bool {
+    matches!(
+        error,
+        DkgError::NetworkConnection(_)
+            | DkgError::NetworkCommunication(_)
+            | DkgError::ProtocolError(_)
+    )
+}
+
+fn repair_contribution_violation(
+    source: RepairContributionSource,
+    phase: PublicPhase,
+    origin: ParticipantRef,
+    detail: impl Into<String>,
+) -> PublicProtocolViolation {
+    match source {
+        RepairContributionSource::Leader => PublicProtocolViolation::leader(
+            PublicProtocolViolationKind::InvalidContribution,
+            Some(phase),
+            None,
+            detail,
+        ),
+        RepairContributionSource::Origin => PublicProtocolViolation::origin_with_kind(
+            PublicProtocolViolationKind::InvalidContribution,
+            phase,
+            None,
+            origin,
+            detail,
+        ),
+    }
+}
+
+async fn apply_repair_contributions<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+    contributions: Vec<VerifiedPublicContribution>,
+    source: RepairContributionSource,
+) -> PublicRepairResult<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if contributions.is_empty() {
+        return Ok(true);
+    }
+    let retained: BTreeMap<_, _> = contributions
+        .iter()
+        .map(|verified| (verified.contribution.origin, verified.signed.clone()))
+        .collect();
+    match state
+        .dkg_session_state
+        .record_public_batch(&prepare.ceremony_id.0, prepare.attempt_id, phase, retained)
+        .await
+    {
+        PublicBatchRecordOutcome::Recorded => {}
+        PublicBatchRecordOutcome::DuplicateSame => {
+            crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
+        }
+        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+            return Err(PublicRepairFailure::Violation(
+                PublicProtocolViolation::origin(
+                    phase,
+                    None,
+                    origin,
+                    "direct repair conflicts with a retained signed contribution",
+                ),
+            ));
+        }
+        PublicBatchRecordOutcome::StaleAttempt | PublicBatchRecordOutcome::MissingSession => {
+            return Ok(false);
+        }
+    }
+
+    if phase == PublicPhase::RefreshHealthCheck {
+        return Ok(true);
+    }
+    for verified in contributions {
+        let origin = verified.contribution.origin;
+        let message_id = verified.contribution.message_id;
+        if let Err(error) = dispatch_public_contribution(
+            state.clone(),
+            routes,
+            verified.signed,
+            verified.contribution,
+        )
+        .await
+        {
+            if state
+                .dkg_session_state
+                .transport_attempt(&prepare.ceremony_id.0)
+                .await
+                != Some(prepare.attempt_id)
+            {
+                return Ok(false);
+            }
+            if matches!(
+                &error,
+                DkgError::Unauthorized(_)
+                    | DkgError::Deserialization(_)
+                    | DkgError::InvalidInput(_)
+                    | DkgError::ProtocolError(_)
+                    | DkgError::CommitmentVerificationFailed(_)
+            ) {
+                return Err(PublicRepairFailure::Violation(
+                    repair_contribution_violation(
+                        source,
+                        phase,
+                        origin,
+                        format!(
+                            "verified repair contribution failed protocol application: {error}"
+                        ),
+                    )
+                    .with_message_id(message_id),
+                ));
+            }
+            tracing::warn!(
+                %error,
+                phase = ?phase,
+                origin = ?origin,
+                "failed to dispatch a verified direct-repair contribution"
+            );
+        }
+    }
+    Ok(true)
+}
+
+async fn dispatch_retained_public_repair<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+) -> PublicRepairResult<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if phase == PublicPhase::RefreshHealthCheck {
+        return Ok(true);
+    }
+    let items = state
+        .dkg_session_state
+        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
+        .await
+        .unwrap_or_default();
+    let mut verified = Vec::with_capacity(items.len());
+    for signed in items.into_values() {
+        let contribution = verify_signed_contribution(state, &signed).await?;
+        verified.push(VerifiedPublicContribution {
+            signed,
+            contribution,
+        });
+    }
+    apply_repair_contributions(
+        state,
+        routes,
+        prepare,
+        phase,
+        verified,
+        RepairContributionSource::Origin,
+    )
+    .await
+}
+
+async fn collect_public_phase_from_leader<D, R>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    requester: &R,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+    expected_origins: &BTreeSet<ParticipantRef>,
+) -> PublicRepairResult<LeaderPublicRepairOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+    R: PublicRepairRequester + ?Sized,
+{
+    let leader_peer = prepare
+        .leader_route()
+        .ok_or_else(|| DkgError::InvalidState("leader repair route is missing".into()))?;
+    let max_pages = expected_origins.len().max(1);
+    let mut after = None;
+    let mut seen_origins = BTreeSet::new();
+    let mut page_count = 0usize;
+
+    loop {
+        if page_count >= max_pages {
+            return Err(PublicRepairFailure::Violation(
+                PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::BatchMismatch,
+                    Some(phase),
+                    None,
+                    format!("public repair exceeded its maximum {max_pages} pages"),
+                ),
+            ));
+        }
+        let response = match requester
+            .request(
+                leader_peer,
+                DkgControlMessage::GetPublicPhase {
+                    ceremony_id: prepare.ceremony_id,
+                    attempt_id: prepare.attempt_id,
+                    phase,
+                    after,
+                },
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if retryable_public_repair_control_error(&error) => {
+                return Ok(LeaderPublicRepairOutcome::Unavailable {
+                    retained: public_repair_retained_count(state, prepare, phase).await,
+                    detail: error.to_string(),
+                });
+            }
+            Err(DkgError::Deserialization(error)) => {
+                return Err(PublicRepairFailure::Violation(
+                    PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::MalformedLeaderMessage,
+                        Some(phase),
+                        None,
+                        error,
+                    ),
+                ));
+            }
+            Err(error) => return Err(PublicRepairFailure::Error(error)),
+        };
+        let encoded_len = transport::encode(&response)
+            .map_err(DkgError::Serialization)?
+            .len();
+        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+            return Err(PublicRepairFailure::Violation(
+                PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::BufferLimit,
+                    Some(phase),
+                    None,
+                    format!(
+                        "encoded public repair page is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                    ),
+                ),
+            ));
+        }
+        let DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase: response_phase,
+            contributions,
+            next_cursor,
+        } = response
+        else {
+            return Err(PublicRepairFailure::Violation(
+                PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::MalformedLeaderMessage,
+                    Some(phase),
+                    None,
+                    "leader returned an unexpected public repair response",
+                ),
+            ));
+        };
+        if ceremony_id != prepare.ceremony_id
+            || attempt_id != prepare.attempt_id
+            || response_phase != phase
+        {
+            return Err(PublicRepairFailure::Violation(
+                PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::BatchMismatch,
+                    Some(phase),
+                    None,
+                    "leader public repair response scope mismatch",
+                ),
+            ));
+        }
+
+        let mut verified_page = Vec::with_capacity(contributions.len());
+        let mut page_origins = Vec::with_capacity(contributions.len());
+        for signed in contributions {
+            let contribution =
+                verify_signed_contribution(state, &signed)
+                    .await
+                    .map_err(|error| {
+                        PublicRepairFailure::Violation(PublicProtocolViolation::leader(
+                            PublicProtocolViolationKind::InvalidContribution,
+                            Some(phase),
+                            None,
+                            error.to_string(),
+                        ))
+                    })?;
+            if contribution.payload.phase() != phase
+                || !expected_origins.contains(&contribution.origin)
+            {
+                return Err(PublicRepairFailure::Violation(
+                    PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::InvalidContribution,
+                        Some(phase),
+                        None,
+                        format!(
+                            "leader repair returned contribution {:?} outside the expected phase scope",
+                            contribution.origin
+                        ),
+                    )
+                    .with_message_id(contribution.message_id),
+                ));
+            }
+            page_origins.push(contribution.origin);
+            verified_page.push(VerifiedPublicContribution {
+                signed,
+                contribution,
+            });
+        }
+        validate_public_repair_page_progress(after, &page_origins, next_cursor, &seen_origins)
+            .map_err(|error| {
+                PublicRepairFailure::Violation(PublicProtocolViolation::leader(
+                    PublicProtocolViolationKind::BatchMismatch,
+                    Some(phase),
+                    None,
+                    error.to_string(),
+                ))
+            })?;
+        seen_origins.extend(page_origins.iter().copied());
+        if !apply_repair_contributions(
+            state,
+            routes,
+            prepare,
+            phase,
+            verified_page,
+            RepairContributionSource::Leader,
+        )
+        .await?
+        {
+            return Err(PublicRepairFailure::Error(DkgError::ProtocolError(
+                "public repair targets an inactive attempt".into(),
+            )));
+        }
+
+        page_count += 1;
+        crate::metrics::record_dkg_transport_event("public", "repair_page_received");
+        tracing::debug!(
+            session_id = prepare.ceremony_id.0,
+            attempt_id = %hex::encode(prepare.attempt_id.0),
+            phase = ?phase,
+            page_count,
+            after = ?after,
+            next_cursor = ?next_cursor,
+            contribution_count = page_origins.len(),
+            encoded_len,
+            "received public DKG repair page"
+        );
+
+        let Some(cursor) = next_cursor else {
+            let retained = public_repair_retained_count(state, prepare, phase).await;
+            return Ok(if retained >= expected_origins.len() {
+                LeaderPublicRepairOutcome::Complete
+            } else {
+                LeaderPublicRepairOutcome::Incomplete { retained }
+            });
+        };
+        after = Some(cursor);
+    }
+}
+
+async fn fetch_public_contribution_from_origin<D, R>(
+    state: Arc<AppState<D>>,
+    requester: &R,
+    prepare: PrepareSession,
+    phase: PublicPhase,
+    origin: ParticipantRef,
+    origin_peer: String,
+) -> OriginPublicRepairOutcome
+where
+    D: CoordinatorDkg,
+    R: PublicRepairRequester + ?Sized,
+{
+    let response = match requester
+        .request(
+            &origin_peer,
+            DkgControlMessage::GetPublicContribution {
+                ceremony_id: prepare.ceremony_id,
+                attempt_id: prepare.attempt_id,
+                phase,
+                origin,
+            },
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(error) if retryable_public_repair_control_error(&error) => {
+            return OriginPublicRepairOutcome::Unavailable {
+                origin,
+                detail: error.to_string(),
+            };
+        }
+        Err(DkgError::Deserialization(error)) => {
+            return OriginPublicRepairOutcome::Violation(
+                PublicProtocolViolation::origin_with_kind(
+                    PublicProtocolViolationKind::MalformedOriginMessage,
+                    phase,
+                    None,
+                    origin,
+                    error,
+                ),
+            );
+        }
+        Err(error) => return OriginPublicRepairOutcome::Error(error),
+    };
+    let encoded_len = match transport::encode(&response) {
+        Ok(encoded) => encoded.len(),
+        Err(error) => {
+            return OriginPublicRepairOutcome::Error(DkgError::Serialization(error));
+        }
+    };
+    if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+        return OriginPublicRepairOutcome::Violation(
+            PublicProtocolViolation::origin_with_kind(
+                PublicProtocolViolationKind::BufferLimit,
+                phase,
+                None,
+                origin,
+                format!(
+                    "encoded origin repair response is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                ),
+            ),
+        );
+    }
+    let DkgControlMessage::PublicContributionResponse {
+        ceremony_id,
+        attempt_id,
+        contribution,
+    } = response
+    else {
+        return OriginPublicRepairOutcome::Violation(PublicProtocolViolation::origin_with_kind(
+            PublicProtocolViolationKind::MalformedOriginMessage,
+            phase,
+            None,
+            origin,
+            "origin returned an unexpected public repair response",
+        ));
+    };
+    if ceremony_id != prepare.ceremony_id || attempt_id != prepare.attempt_id {
+        return OriginPublicRepairOutcome::Violation(PublicProtocolViolation::origin_with_kind(
+            PublicProtocolViolationKind::MalformedOriginMessage,
+            phase,
+            None,
+            origin,
+            "origin public repair response scope mismatch",
+        ));
+    }
+    let Some(signed) = contribution else {
+        return OriginPublicRepairOutcome::Missing { origin };
+    };
+    let contribution = match verify_signed_contribution(&state, &signed).await {
+        Ok(contribution) => contribution,
+        Err(error)
+            if state
+                .dkg_session_state
+                .transport_attempt(&prepare.ceremony_id.0)
+                .await
+                != Some(prepare.attempt_id) =>
+        {
+            return OriginPublicRepairOutcome::Error(error);
+        }
+        Err(error) => {
+            return OriginPublicRepairOutcome::Violation(
+                PublicProtocolViolation::origin_with_kind(
+                    PublicProtocolViolationKind::InvalidContribution,
+                    phase,
+                    None,
+                    origin,
+                    error.to_string(),
+                ),
+            );
+        }
+    };
+    if contribution.origin != origin || contribution.payload.phase() != phase {
+        return OriginPublicRepairOutcome::Violation(
+            PublicProtocolViolation::origin_with_kind(
+                PublicProtocolViolationKind::InvalidContribution,
+                phase,
+                None,
+                origin,
+                "origin public repair returned the wrong contribution",
+            )
+            .with_message_id(contribution.message_id),
+        );
+    }
+    OriginPublicRepairOutcome::Verified(Box::new(VerifiedPublicContribution {
+        signed,
+        contribution,
+    }))
+}
+
+async fn collect_public_phase_from_origins<D, R>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    requester: &R,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+    expected_origins: &BTreeSet<ParticipantRef>,
+) -> PublicRepairResult<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+    R: PublicRepairRequester + ?Sized,
+{
+    let retained = state
+        .dkg_session_state
+        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
+        .await
+        .unwrap_or_default();
+    let retained_origins: BTreeSet<_> = retained.keys().copied().collect();
+    let missing: Vec<_> = expected_origins
+        .difference(&retained_origins)
+        .copied()
+        .collect();
+    let mut requests = FuturesUnordered::new();
+    for origin in missing {
+        let origin_peer = prepare
+            .committees
+            .route(origin)
+            .ok_or_else(|| {
+                DkgError::InvalidState(format!("origin repair route for {origin:?} is missing"))
+            })?
+            .to_owned();
+        requests.push(fetch_public_contribution_from_origin(
+            state.clone(),
+            requester,
+            prepare.clone(),
+            phase,
+            origin,
+            origin_peer,
+        ));
+    }
+
+    let mut verified = BTreeMap::new();
+    while let Some(outcome) = requests.next().await {
+        match outcome {
+            OriginPublicRepairOutcome::Verified(contribution) => {
+                verified.insert(contribution.contribution.origin, *contribution);
+            }
+            OriginPublicRepairOutcome::Missing { origin } => {
+                crate::metrics::record_dkg_transport_event("public", "origin_repair_missing");
+                tracing::debug!(
+                    session_id = prepare.ceremony_id.0,
+                    attempt_id = %hex::encode(prepare.attempt_id.0),
+                    phase = ?phase,
+                    origin = ?origin,
+                    "origin has not retained the requested public contribution"
+                );
+            }
+            OriginPublicRepairOutcome::Unavailable { origin, detail } => {
+                crate::metrics::record_dkg_transport_event("public", "origin_repair_unavailable");
+                tracing::warn!(
+                    session_id = prepare.ceremony_id.0,
+                    attempt_id = %hex::encode(prepare.attempt_id.0),
+                    phase = ?phase,
+                    origin = ?origin,
+                    detail,
+                    "public contribution origin is unavailable during direct repair"
+                );
+            }
+            OriginPublicRepairOutcome::Violation(violation) => {
+                return Err(PublicRepairFailure::Violation(violation));
+            }
+            OriginPublicRepairOutcome::Error(error) => {
+                return Err(PublicRepairFailure::Error(error));
+            }
+        }
+    }
+
+    let verified: Vec<_> = verified.into_values().collect();
+    let repaired_count = verified.len();
+    if !apply_repair_contributions(
+        state,
+        routes,
+        prepare,
+        phase,
+        verified,
+        RepairContributionSource::Origin,
+    )
+    .await?
+    {
+        return Err(PublicRepairFailure::Error(DkgError::ProtocolError(
+            "origin repair targets an inactive attempt".into(),
+        )));
+    }
+    for _ in 0..repaired_count {
+        crate::metrics::record_dkg_transport_event("public", "origin_repair");
+    }
+    Ok(())
+}
+
+async fn repair_public_phase_claimed<D, R>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    requester: &R,
+    prepare: &PrepareSession,
+    phase: PublicPhase,
+) -> PublicRepairResult<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+    R: PublicRepairRequester + ?Sized,
+{
+    let expected_origins = expected_public_origins(state, prepare, phase).await;
+    let expected = expected_origins.len();
+    if expected > MAX_DKG_COMMITTEE_SIZE {
+        return Err(PublicRepairFailure::Error(DkgError::InvalidState(format!(
+            "public repair expected {expected} origins, maximum is {MAX_DKG_COMMITTEE_SIZE}"
+        ))));
+    }
+    let present = public_repair_retained_count(state, prepare, phase).await;
+    if present >= expected {
+        dispatch_retained_public_repair(state, routes, prepare, phase).await?;
+        return Ok(());
+    }
+
+    tracing::info!(
+        session_id = prepare.ceremony_id.0,
+        attempt_id = %hex::encode(prepare.attempt_id.0),
+        phase = ?phase,
+        present,
+        expected,
+        "requesting public DKG completeness repair"
+    );
+    let leader_outcome = collect_public_phase_from_leader(
+        state,
+        routes,
+        requester,
+        prepare,
+        phase,
+        &expected_origins,
+    )
+    .await?;
+    match &leader_outcome {
+        LeaderPublicRepairOutcome::Complete => {}
+        LeaderPublicRepairOutcome::Incomplete { retained } => {
+            crate::metrics::record_dkg_transport_event("public", "leader_repair_fallback");
+            tracing::warn!(
+                session_id = prepare.ceremony_id.0,
+                attempt_id = %hex::encode(prepare.attempt_id.0),
+                phase = ?phase,
+                retained,
+                expected,
+                "leader repair completed without every expected origin; using direct origins"
+            );
+        }
+        LeaderPublicRepairOutcome::Unavailable { retained, detail } => {
+            crate::metrics::record_dkg_transport_event("public", "leader_repair_fallback");
+            tracing::warn!(
+                session_id = prepare.ceremony_id.0,
+                attempt_id = %hex::encode(prepare.attempt_id.0),
+                phase = ?phase,
+                retained,
+                expected,
+                detail,
+                "leader repair is unavailable; using direct origins"
+            );
+        }
+    }
+    if phase == PublicPhase::CommitmentAudit {
+        crate::metrics::record_dkg_transport_event("public", "repair");
+        return Ok(());
+    }
+    if !matches!(leader_outcome, LeaderPublicRepairOutcome::Complete) {
+        collect_public_phase_from_origins(
+            state,
+            routes,
+            requester,
+            prepare,
+            phase,
+            &expected_origins,
+        )
+        .await?;
+    }
+
+    let repaired = public_repair_retained_count(state, prepare, phase).await;
+    if repaired < expected {
+        crate::metrics::record_dkg_transport_event("public", "repair_incomplete");
+        return Err(PublicRepairFailure::Error(DkgError::NetworkCommunication(
+            format!("public phase repair retained {repaired} of {expected} contributions"),
+        )));
+    }
+    dispatch_retained_public_repair(state, routes, prepare, phase).await?;
+    crate::metrics::record_dkg_transport_event("public", "repair");
+    tracing::info!(
+        session_id = prepare.ceremony_id.0,
+        attempt_id = %hex::encode(prepare.attempt_id.0),
+        phase = ?phase,
+        "applied direct public DKG completeness repair"
+    );
+    Ok(())
+}
+
 async fn repair_public_phase<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     prepare: PrepareSession,
     phase: PublicPhase,
     force_after_lag: bool,
+    violation_topic_task: TopicTaskDisposition,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if !state
-        .dkg_session_state
-        .session_exists(&prepare.ceremony_id.0)
-        .await
-    {
+    if prepare.leader_node_key == state.node_key {
         return Ok(());
     }
     let activated = state
@@ -4236,235 +5061,52 @@ where
     {
         return Ok(());
     }
-    let expected_origins = expected_public_origins(&state, &prepare, phase).await;
-    let expected = expected_origins.len();
-    let present = state
+    match state
         .dkg_session_state
-        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
+        .claim_public_phase_repair(&prepare.ceremony_id.0, prepare.attempt_id, phase)
         .await
-        .map_or(0, |items| items.len());
-    if prepare.leader_node_key == state.node_key {
-        return Ok(());
-    }
-    if present >= expected {
-        // Refresh results are promoted only by the explicit Commit control
-        // barrier. Completeness repair may retain their signed bytes but must
-        // never race that barrier by applying them on its own.
-        if phase == PublicPhase::RefreshHealthCheck {
+    {
+        PublicRepairClaimOutcome::Claimed => {}
+        PublicRepairClaimOutcome::InFlight => {
+            crate::metrics::record_dkg_transport_event("public", "repair_coalesced");
             return Ok(());
         }
-        if let Some(items) = state
-            .dkg_session_state
-            .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
-            .await
-        {
-            for signed in items.into_values() {
-                let contribution = verify_signed_contribution(&state, &signed).await?;
-                dispatch_public_contribution(state.clone(), routes, signed, contribution).await?;
-            }
+        PublicRepairClaimOutcome::Backoff | PublicRepairClaimOutcome::StaleAttempt => {
+            return Ok(());
         }
-        return Ok(());
     }
-    tracing::info!(
-        session_id = prepare.ceremony_id.0,
-        phase = ?phase,
-        present,
-        expected,
-        "requesting direct public DKG completeness repair"
-    );
-    let leader_peer = prepare
-        .leader_route()
-        .ok_or_else(|| DkgError::InvalidState("leader repair route is missing".into()))?;
-    if expected > MAX_DKG_COMMITTEE_SIZE {
-        return Err(DkgError::InvalidState(format!(
-            "public repair expected {expected} origins, maximum is {MAX_DKG_COMMITTEE_SIZE}"
+
+    let before = public_repair_retained_count(&state, &prepare, phase).await;
+    let requester = NetworkPublicRepairRequester {
+        state: state.clone(),
+        routes,
+    };
+    let result = repair_public_phase_claimed(&state, routes, &requester, &prepare, phase).await;
+    if let Err(PublicRepairFailure::Violation(violation)) = &result {
+        abort_public_protocol_violation(&state, &prepare, violation, violation_topic_task).await;
+        return Err(DkgError::ProtocolError(format!(
+            "authenticated public repair violation {:?}: {}",
+            violation.kind, violation.detail
         )));
     }
-    let max_pages = expected.max(1);
-    let mut after = None;
-    let mut seen_origins = BTreeSet::new();
-    let mut received_from_leader = false;
-    let mut page_count = 0usize;
-    loop {
-        if page_count >= max_pages {
-            return Err(DkgError::ProtocolError(format!(
-                "public repair exceeded its maximum {max_pages} pages"
-            )));
-        }
-        let response = control_request_with_timeout(
-            &state,
-            routes,
-            leader_peer,
-            DkgControlMessage::GetPublicPhase {
-                ceremony_id: prepare.ceremony_id,
-                attempt_id: prepare.attempt_id,
-                phase,
-                after,
-            },
-            PEER_RESPONSE_TIMEOUT,
-        )
-        .await?;
-        let encoded_len = transport::encode(&response)
-            .map_err(DkgError::Serialization)?
-            .len();
-        let DkgControlMessage::PublicPhaseResponse {
-            ceremony_id,
-            attempt_id,
-            phase: response_phase,
-            contributions,
-            next_cursor,
-        } = response
-        else {
-            return Err(DkgError::ProtocolError(
-                "leader returned invalid public repair response".into(),
-            ));
-        };
-        if ceremony_id != prepare.ceremony_id
-            || attempt_id != prepare.attempt_id
-            || response_phase != phase
-        {
-            return Err(DkgError::Unauthorized(
-                "public repair response scope mismatch".into(),
-            ));
-        }
-
-        let mut verified_page = Vec::with_capacity(contributions.len());
-        let mut page_origins = Vec::with_capacity(contributions.len());
-        for signed in contributions {
-            let contribution = verify_signed_contribution(&state, &signed).await?;
-            if contribution.payload.phase() != phase {
-                return Err(DkgError::Unauthorized(
-                    "public repair returned wrong-phase contribution".into(),
-                ));
-            }
-            if !expected_origins.contains(&contribution.origin) {
-                return Err(DkgError::Unauthorized(
-                    "public repair returned a contribution outside the expected phase origins"
-                        .into(),
-                ));
-            }
-            page_origins.push(contribution.origin);
-            verified_page.push((signed, contribution));
-        }
-        validate_public_repair_page_progress(after, &page_origins, next_cursor, &seen_origins)?;
-        seen_origins.extend(page_origins.iter().copied());
-
-        for (signed, contribution) in verified_page {
-            if phase == PublicPhase::RefreshHealthCheck {
-                record_public_contribution(&state, signed, &contribution).await?;
-            } else {
-                apply_public_contribution(state.clone(), routes, signed, contribution).await?;
-            }
-        }
-
-        page_count += 1;
-        received_from_leader |= !page_origins.is_empty();
-        crate::metrics::record_dkg_transport_event("public", "repair_page_received");
-        tracing::debug!(
-            session_id = prepare.ceremony_id.0,
-            attempt_id = %hex::encode(prepare.attempt_id.0),
-            phase = ?phase,
-            page_count,
-            after = ?after,
-            next_cursor = ?next_cursor,
-            contribution_count = page_origins.len(),
-            encoded_len,
-            "received public DKG repair page"
-        );
-
-        let Some(cursor) = next_cursor else {
-            break;
-        };
-        after = Some(cursor);
-    }
-
-    // Some public phases are conditional or have not started yet. Preserve the
-    // existing behavior for a completely empty local and leader view; a later
-    // repair tick will retry if the phase becomes active.
-    if !received_from_leader && present == 0 {
-        return Ok(());
-    }
-    if phase == PublicPhase::CommitmentAudit {
-        crate::metrics::record_dkg_transport_event("public", "repair");
-        return Ok(());
-    }
-
-    // A correct leader normally returns the complete phase. If it omitted an
-    // item, fetch that exact signed contribution from its authenticated origin
-    // rather than trusting the relay as the sole source of truth.
-    let retained = state
+    let after = public_repair_retained_count(&state, &prepare, phase).await;
+    state
         .dkg_session_state
-        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
-        .await
-        .unwrap_or_default();
-    for origin in expected_origins {
-        if retained.contains_key(&origin) {
-            continue;
-        }
-        let origin_peer = prepare
-            .committees
-            .route(origin)
-            .ok_or_else(|| DkgError::InvalidState("origin repair peer route is missing".into()))?;
-        let response = control_request_with_timeout(
-            &state,
-            routes,
-            origin_peer,
-            DkgControlMessage::GetPublicContribution {
-                ceremony_id: prepare.ceremony_id,
-                attempt_id: prepare.attempt_id,
-                phase,
-                origin,
-            },
-            PEER_RESPONSE_TIMEOUT,
+        .finish_public_phase_repair(
+            &prepare.ceremony_id.0,
+            prepare.attempt_id,
+            phase,
+            after > before,
+            DKG_MAX_REPAIR_BACKOFF,
         )
-        .await?;
-        let DkgControlMessage::PublicContributionResponse {
-            ceremony_id,
-            attempt_id,
-            contribution: Some(signed),
-        } = response
-        else {
-            return Err(DkgError::ProtocolError(format!(
-                "origin {:?} did not return its retained public contribution",
-                origin
-            )));
-        };
-        if ceremony_id != prepare.ceremony_id || attempt_id != prepare.attempt_id {
-            return Err(DkgError::Unauthorized(
-                "public origin repair response scope mismatch".into(),
-            ));
+        .await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(PublicRepairFailure::Error(error)) => Err(error),
+        Err(PublicRepairFailure::Violation(_)) => {
+            unreachable!("public repair violations return after attempt cleanup")
         }
-        let contribution = verify_signed_contribution(&state, &signed).await?;
-        if contribution.origin != origin || contribution.payload.phase() != phase {
-            return Err(DkgError::Unauthorized(
-                "public origin repair returned the wrong contribution".into(),
-            ));
-        }
-        if phase == PublicPhase::RefreshHealthCheck {
-            record_public_contribution(&state, signed, &contribution).await?;
-        } else {
-            apply_public_contribution(state.clone(), routes, signed, contribution).await?;
-        }
-        crate::metrics::record_dkg_transport_event("public", "origin_repair");
     }
-
-    let repaired = state
-        .dkg_session_state
-        .public_contributions(&prepare.ceremony_id.0, prepare.attempt_id, phase)
-        .await
-        .map_or(0, |items| items.len());
-    if repaired < expected {
-        return Err(DkgError::NetworkCommunication(format!(
-            "public phase repair retained {repaired} of {expected} contributions"
-        )));
-    }
-    crate::metrics::record_dkg_transport_event("public", "repair");
-    tracing::info!(
-        session_id = prepare.ceremony_id.0,
-        phase = ?phase,
-        "applied direct public DKG completeness repair"
-    );
-    Ok(())
 }
 
 async fn verify_signed_contribution<D>(
@@ -4560,20 +5202,6 @@ where
         ));
     }
     Ok(contribution)
-}
-
-async fn apply_public_contribution<D>(
-    state: Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    signed: SignedPayload,
-    contribution: DkgPublicContribution,
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    record_public_contribution(&state, signed.clone(), &contribution).await?;
-    dispatch_public_contribution(state, routes, signed, contribution).await
 }
 
 async fn record_public_contribution_at_leader<D>(
@@ -7163,6 +7791,546 @@ mod stability_tests {
             .sign(PUBLIC_CONTRIBUTION_SIGNING_DOMAIN, encoded.into())
             .await
             .expect("sign contribution with local endpoint identity")
+    }
+
+    fn repair_test_prepare(
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        member_count: u32,
+    ) -> PrepareSession {
+        let node_keys: Vec<_> = (1..=member_count)
+            .map(|node_id| format!("repair-node-{node_id}"))
+            .collect();
+        let peer_routes: Vec<_> = (1..=member_count)
+            .map(|node_id| format!("repair-route-{node_id}"))
+            .collect();
+        let node_id_assignments = node_keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| (key.clone(), index as u32 + 1))
+            .collect();
+        PrepareSession {
+            ceremony_id,
+            attempt_id,
+            config_digest: [4; 32],
+            topic_id: [5; 32],
+            leader_node_key: node_keys[0].clone(),
+            committees: CeremonyConfig {
+                current: CommitteeConfig {
+                    node_keys,
+                    peer_routes,
+                    node_id_assignments,
+                    threshold: 1,
+                },
+                next: None,
+            },
+            token_string: String::new(),
+            kind: SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            pss_interval: 0,
+            policy_id: None,
+            ring_id: "test-ring-post".to_string(),
+        }
+    }
+
+    fn refresh_health_payload(session_id: u128) -> DkgPublicPayload {
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement: crate::sign::v0::messages::RefreshHealthCheckStatement {
+                domain: "repair-test".to_string(),
+                session_id,
+                ring_pk: "test-ring".to_string(),
+                public_polynomial_sha256: "00".repeat(32),
+                peer_node_keys_sha256: "11".repeat(32),
+                threshold: 1,
+                total_participants: 2,
+            },
+            signature: None,
+        }
+    }
+
+    async fn bind_test_origin_to_local_peer(
+        state: &Arc<AppState<crypto::DkgImpl>>,
+        session_id: u128,
+        origin: ParticipantRef,
+    ) {
+        let local_peer_hex = hex::encode(state.network.local_peer_id().as_bytes());
+        let mut states = state.dkg_session_state.states.write().await;
+        let session = states.get_mut(&session_id).expect("repair test session");
+        match origin.scope {
+            CommitteeScope::Current => {
+                session
+                    .routing
+                    .node_id_to_peer_id
+                    .insert(origin.node_id, local_peer_hex);
+            }
+            CommitteeScope::Next => {
+                session
+                    .routing
+                    .reshare_new_node_id_to_peer_id
+                    .insert(origin.node_id, local_peer_hex);
+            }
+        }
+    }
+
+    struct ScriptedPublicRepairRequester {
+        responses: tokio::sync::Mutex<
+            HashMap<String, std::collections::VecDeque<Result<DkgControlMessage>>>,
+        >,
+        requests: tokio::sync::Mutex<Vec<(String, &'static str)>>,
+    }
+
+    impl ScriptedPublicRepairRequester {
+        fn new(
+            responses: HashMap<String, std::collections::VecDeque<Result<DkgControlMessage>>>,
+        ) -> Self {
+            Self {
+                responses: tokio::sync::Mutex::new(responses),
+                requests: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PublicRepairRequester for ScriptedPublicRepairRequester {
+        async fn request(
+            &self,
+            peer: &str,
+            request: DkgControlMessage,
+        ) -> Result<DkgControlMessage> {
+            self.requests
+                .lock()
+                .await
+                .push((peer.to_string(), request.metric_label()));
+            self.responses
+                .lock()
+                .await
+                .get_mut(peer)
+                .and_then(std::collections::VecDeque::pop_front)
+                .unwrap_or_else(|| {
+                    Err(DkgError::NetworkConnection(format!(
+                        "script has no response for {peer}"
+                    )))
+                })
+        }
+    }
+
+    #[test]
+    fn public_repair_control_errors_separate_availability_from_malformed_bytes() {
+        assert!(retryable_public_repair_control_error(
+            &DkgError::NetworkConnection("offline".into())
+        ));
+        assert!(retryable_public_repair_control_error(
+            &DkgError::NetworkCommunication("stream reset".into())
+        ));
+        assert!(retryable_public_repair_control_error(
+            &DkgError::ProtocolError("explicit peer error".into())
+        ));
+        assert!(!retryable_public_repair_control_error(
+            &DkgError::Deserialization("malformed peer bytes".into())
+        ));
+        assert!(!retryable_public_repair_control_error(
+            &DkgError::Serialization("local encoding failure".into())
+        ));
+    }
+
+    #[tokio::test]
+    async fn leader_unavailability_enters_direct_origin_repair() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "leader_unavailability_enters_origin_repair",
+            4250,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 1);
+        let signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            refresh_health_payload(ceremony_id.0),
+        )
+        .await;
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([(
+            "repair-route-1".to_string(),
+            std::collections::VecDeque::from([
+                Err(DkgError::NetworkConnection("leader unavailable".into())),
+                Ok(DkgControlMessage::PublicContributionResponse {
+                    ceremony_id,
+                    attempt_id,
+                    contribution: Some(signed),
+                }),
+            ]),
+        )]));
+
+        repair_public_phase_claimed(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+        )
+        .await
+        .expect("origin repair should replace the unavailable leader repair path");
+
+        let retained = state
+            .dkg_session_state
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+            .await
+            .expect("active repair attempt");
+        assert_eq!(retained.keys().copied().collect::<Vec<_>>(), vec![origin]);
+        assert_eq!(
+            requester.requests.lock().await.as_slice(),
+            [
+                ("repair-route-1".to_string(), "get_public_phase"),
+                ("repair-route-1".to_string(), "get_public_contribution"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn commitment_audit_leader_failure_does_not_create_origin_fanout() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+            "commitment_audit_repair_remains_best_effort",
+            4255,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 2);
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([(
+            "repair-route-1".to_string(),
+            std::collections::VecDeque::from([Err(DkgError::ProtocolError(
+                "leader no longer retains diagnostic audits".into(),
+            ))]),
+        )]));
+
+        repair_public_phase_claimed(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::CommitmentAudit,
+        )
+        .await
+        .expect("commitment-audit repair is optional diagnostics");
+
+        assert_eq!(
+            requester.requests.lock().await.as_slice(),
+            [("repair-route-1".to_string(), "get_public_phase")]
+        );
+    }
+
+    #[tokio::test]
+    async fn later_leader_page_failure_preserves_pages_then_uses_origins() {
+        let first = ParticipantRef::current(1);
+        let second = ParticipantRef::current(2);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "later_leader_page_failure_uses_origins",
+            4251,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            first,
+        )
+        .await;
+        bind_test_origin_to_local_peer(&state, ceremony_id.0, second).await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 2);
+        let first_signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            first,
+            refresh_health_payload(ceremony_id.0),
+        )
+        .await;
+        let second_signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            second,
+            refresh_health_payload(ceremony_id.0),
+        )
+        .await;
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([
+            (
+                "repair-route-1".to_string(),
+                std::collections::VecDeque::from([
+                    Ok(DkgControlMessage::PublicPhaseResponse {
+                        ceremony_id,
+                        attempt_id,
+                        phase: PublicPhase::RefreshHealthCheck,
+                        contributions: vec![first_signed],
+                        next_cursor: Some(first),
+                    }),
+                    Err(DkgError::NetworkCommunication(
+                        "leader failed on the second page".into(),
+                    )),
+                ]),
+            ),
+            (
+                "repair-route-2".to_string(),
+                std::collections::VecDeque::from([Ok(
+                    DkgControlMessage::PublicContributionResponse {
+                        ceremony_id,
+                        attempt_id,
+                        contribution: Some(second_signed),
+                    },
+                )]),
+            ),
+        ]));
+        let expected = BTreeSet::from([first, second]);
+
+        let outcome = collect_public_phase_from_leader(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            &expected,
+        )
+        .await
+        .expect("a later leader availability failure must be recoverable");
+        assert!(matches!(
+            outcome,
+            LeaderPublicRepairOutcome::Unavailable { retained: 1, .. }
+        ));
+        collect_public_phase_from_origins(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            &expected,
+        )
+        .await
+        .expect("the missing second origin should complete repair");
+
+        let retained = state
+            .dkg_session_state
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+            .await
+            .expect("active repair attempt");
+        assert_eq!(
+            retained.keys().copied().collect::<Vec<_>>(),
+            vec![first, second]
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_origin_does_not_block_other_origin_responses() {
+        let first = ParticipantRef::current(1);
+        let second = ParticipantRef::current(2);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "unavailable_origin_does_not_block_others",
+            4252,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            first,
+        )
+        .await;
+        bind_test_origin_to_local_peer(&state, ceremony_id.0, second).await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 2);
+        let second_signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            second,
+            refresh_health_payload(ceremony_id.0),
+        )
+        .await;
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([
+            (
+                "repair-route-1".to_string(),
+                std::collections::VecDeque::from([Err(DkgError::NetworkConnection(
+                    "first origin unavailable".into(),
+                ))]),
+            ),
+            (
+                "repair-route-2".to_string(),
+                std::collections::VecDeque::from([Ok(
+                    DkgControlMessage::PublicContributionResponse {
+                        ceremony_id,
+                        attempt_id,
+                        contribution: Some(second_signed),
+                    },
+                )]),
+            ),
+        ]));
+
+        collect_public_phase_from_origins(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            &BTreeSet::from([first, second]),
+        )
+        .await
+        .expect("one unavailable origin must not short-circuit the repair round");
+
+        let retained = state
+            .dkg_session_state
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+            .await
+            .expect("active repair attempt");
+        assert!(!retained.contains_key(&first));
+        assert!(retained.contains_key(&second));
+    }
+
+    #[tokio::test]
+    async fn malformed_origin_response_preflights_before_any_origin_is_applied() {
+        let first = ParticipantRef::current(1);
+        let second = ParticipantRef::current(2);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "malformed_origin_response_is_atomic",
+            4253,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            first,
+        )
+        .await;
+        bind_test_origin_to_local_peer(&state, ceremony_id.0, second).await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 2);
+        let second_signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            second,
+            refresh_health_payload(ceremony_id.0),
+        )
+        .await;
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([
+            (
+                "repair-route-1".to_string(),
+                std::collections::VecDeque::from([Ok(DkgControlMessage::Begun {
+                    ceremony_id,
+                    attempt_id,
+                    activation_digest: [8; 32],
+                })]),
+            ),
+            (
+                "repair-route-2".to_string(),
+                std::collections::VecDeque::from([Ok(
+                    DkgControlMessage::PublicContributionResponse {
+                        ceremony_id,
+                        attempt_id,
+                        contribution: Some(second_signed),
+                    },
+                )]),
+            ),
+        ]));
+
+        let error = collect_public_phase_from_origins(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            &BTreeSet::from([first, second]),
+        )
+        .await
+        .expect_err("an authenticated malformed origin response must fail fast");
+        assert!(matches!(
+            error,
+            PublicRepairFailure::Violation(PublicProtocolViolation {
+                kind: PublicProtocolViolationKind::MalformedOriginMessage,
+                accused: PublicViolationAccused::Origin(origin),
+                ..
+            }) if origin == first
+        ));
+        assert!(
+            state
+                .dkg_session_state
+                .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck,)
+                .await
+                .expect("active repair attempt")
+                .is_empty(),
+            "origin responses must be preflighted before any valid subset is recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_leader_repair_is_attributable_but_stale_abort_is_attempt_scoped() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+            "malformed_leader_repair_is_attempt_scoped",
+            4254,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 1);
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([(
+            "repair-route-1".to_string(),
+            std::collections::VecDeque::from([Ok(DkgControlMessage::Begun {
+                ceremony_id,
+                attempt_id,
+                activation_digest: [7; 32],
+            })]),
+        )]));
+
+        let violation = match collect_public_phase_from_leader(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            &BTreeSet::from([origin]),
+        )
+        .await
+        .expect_err("an authenticated unexpected leader response must be attributable")
+        {
+            PublicRepairFailure::Violation(violation) => violation,
+            other => panic!("expected typed protocol violation, got {other:?}"),
+        };
+        assert_eq!(
+            violation.kind,
+            PublicProtocolViolationKind::MalformedLeaderMessage
+        );
+        assert_eq!(violation.accused, PublicViolationAccused::Leader);
+
+        let newer_attempt = AttemptId([attempt_id.0[0].wrapping_add(1); 32]);
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            states
+                .get_mut(&ceremony_id.0)
+                .expect("repair test session")
+                .transport
+                .attempt_id = Some(newer_attempt);
+        }
+        abort_public_protocol_violation(&state, &prepare, &violation, TopicTaskDisposition::Abort)
+            .await;
+        assert_eq!(
+            state
+                .dkg_session_state
+                .transport_attempt(&ceremony_id.0)
+                .await,
+            Some(newer_attempt),
+            "a stale attributable response must not remove a newer attempt"
+        );
     }
 
     #[tokio::test]

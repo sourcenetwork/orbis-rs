@@ -501,23 +501,31 @@ After activation, repair becomes eligible only when no session progress has
 occurred for ten seconds. A receiver first walks the leader's retained public
 phase in canonical, cursor-based pages. Every encoded page is capped at 512 KiB,
 and the receiver rejects duplicate origins, regressing cursors, or pages that do
-not make progress. After the terminal page, if an expected origin is still
-absent, the receiver requests that exact contribution directly from the
-authenticated origin.
+not make progress. A leader timeout, stream failure, explicit refusal, or
+terminal page that leaves expected origins absent switches immediately to
+direct-origin repair. Missing origins are queried concurrently, bounded by the
+50-member committee limit, and one unavailable origin does not prevent valid
+responses from the others from being retained and applied.
 Direct repair is not manifest-gated: it verifies each retained origin signature,
 message ID, attempt, and SourceHub endpoint binding before dispatch. This keeps
 the independently authenticated origins as the recovery source when a Gossip
-manifest or chunk was lost.
+manifest or chunk was lost or the leader's repair endpoint is unavailable.
+Malformed or contradictory authenticated leader/origin responses fail the exact
+attempt; ordinary absence remains an availability failure.
 
 Each current or next DKG committee is limited to 50 members. Besides bounding
 ceremony and pairwise transport state, this also bounds a repair walk to at most
-50 non-empty pages.
+50 non-empty pages and 50 concurrent origin requests. Repair is single-flight
+per attempt and phase. A round that retains nothing waits the 30-second maximum
+repair backoff before retrying.
 
 For reshare commitments, direct repair expects the frozen dealer set and fetches
 missing retained contributions from the leader first, then from each scoped
-authenticated origin. On subscriber lag, the node rejoins immediately and forces completeness repair.
-Before activation, public repair is disabled; a prepared node cannot generate a
-storm of requests for phases that have not started.
+authenticated origin. Commitment audits remain leader-only best-effort repair
+because they are incremental diagnostics rather than an all-origins completion
+phase. On subscriber lag, the node rejoins immediately and forces completeness
+repair. Before activation, public repair is disabled; a prepared node cannot
+generate a storm of requests for phases that have not started.
 
 ## Private share transport
 
@@ -873,11 +881,13 @@ public publisher API:
 The leader can delay, omit, or reorder dissemination, which can affect
 liveness. It cannot forge another origin's signed contribution. Canonical phase
 roots make the expected ordered contribution set explicit, and direct-origin
-repair removes the leader as the only data source.
+repair removes the leader as the only recovery source for contributions that
+origins have already generated and retained.
 
 This is crash/reliability hardening, not a Byzantine reliable-broadcast proof.
 The all-participants-required protocol still fails if a required participant
-refuses to generate valid cryptographic material.
+including the leader permanently disappears or refuses to generate valid
+cryptographic material.
 
 ## Scaling model
 

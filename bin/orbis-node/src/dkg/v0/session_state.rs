@@ -302,6 +302,20 @@ pub(crate) enum PublicBatchRecordOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicRepairClaimOutcome {
+    Claimed,
+    InFlight,
+    Backoff,
+    StaleAttempt,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PublicRepairState {
+    in_flight: bool,
+    next_allowed_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TopicTaskDisposition {
     Abort,
     DetachCurrent,
@@ -392,6 +406,7 @@ pub(crate) struct DkgSessionTransportState {
     pub public_contributions:
         HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
     pub public_phase_started_at: HashMap<PublicPhase, Instant>,
+    public_repairs: HashMap<PublicPhase, PublicRepairState>,
     pub published_public_phases: HashSet<PublicPhase>,
     pub published_public_messages: HashSet<MessageId>,
     pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
@@ -426,6 +441,7 @@ impl Default for DkgSessionTransportState {
             last_progress_at: Instant::now(),
             public_contributions: HashMap::new(),
             public_phase_started_at: HashMap::new(),
+            public_repairs: HashMap::new(),
             published_public_phases: HashSet::new(),
             published_public_messages: HashSet::new(),
             outbound_private_messages: HashMap::new(),
@@ -1499,6 +1515,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         .entry(phase)
                         .or_default()
                         .insert(origin, contribution);
+                    if transport
+                        .public_repairs
+                        .get(&phase)
+                        .is_some_and(|repair| !repair.in_flight)
+                    {
+                        transport.public_repairs.remove(&phase);
+                    }
                     transport.last_progress_at = Instant::now();
                     PublicContributionRecordOutcome::Recorded
                 }
@@ -1547,6 +1570,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     .public_phase_started_at
                     .entry(phase)
                     .or_insert_with(Instant::now);
+                if transport
+                    .public_repairs
+                    .get(&phase)
+                    .is_some_and(|repair| !repair.in_flight)
+                {
+                    transport.public_repairs.remove(&phase);
+                }
                 transport.last_progress_at = Instant::now();
                 PublicBatchRecordOutcome::Recorded
             } else {
@@ -1694,6 +1724,73 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             transport.attempt_id == Some(attempt_id)
                 && transport.activated
                 && transport.last_progress_at.elapsed() >= stall_interval
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn claim_public_phase_repair(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+    ) -> PublicRepairClaimOutcome {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return PublicRepairClaimOutcome::StaleAttempt;
+            }
+            let now = Instant::now();
+            match transport.public_repairs.get_mut(&phase) {
+                Some(repair) if repair.in_flight => PublicRepairClaimOutcome::InFlight,
+                Some(repair) if repair.next_allowed_at > now => PublicRepairClaimOutcome::Backoff,
+                Some(repair) => {
+                    repair.in_flight = true;
+                    PublicRepairClaimOutcome::Claimed
+                }
+                None => {
+                    transport.public_repairs.insert(
+                        phase,
+                        PublicRepairState {
+                            in_flight: true,
+                            next_allowed_at: now,
+                        },
+                    );
+                    PublicRepairClaimOutcome::Claimed
+                }
+            }
+        })
+        .await
+        .unwrap_or(PublicRepairClaimOutcome::StaleAttempt)
+    }
+
+    pub(crate) async fn finish_public_phase_repair(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        phase: PublicPhase,
+        made_progress: bool,
+        no_progress_backoff: std::time::Duration,
+    ) -> bool {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return false;
+            }
+            if made_progress {
+                transport.public_repairs.remove(&phase);
+                return true;
+            }
+            let repair = transport
+                .public_repairs
+                .entry(phase)
+                .or_insert(PublicRepairState {
+                    in_flight: false,
+                    next_allowed_at: Instant::now(),
+                });
+            repair.in_flight = false;
+            repair.next_allowed_at = Instant::now() + no_progress_backoff;
+            true
         })
         .await
         .unwrap_or(false)
@@ -3118,6 +3215,83 @@ mod tests {
         assert!(
             mgr.transport_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
                 .await
+        );
+    }
+
+    #[tokio::test]
+    async fn public_phase_repairs_are_single_flight_and_back_off_without_progress() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(25, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([5; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states.get_mut(&25).expect("session").transport.attempt_id = Some(attempt);
+        }
+
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, attempt, PublicPhase::Commitments)
+                .await,
+            PublicRepairClaimOutcome::Claimed
+        );
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, attempt, PublicPhase::Commitments)
+                .await,
+            PublicRepairClaimOutcome::InFlight
+        );
+        assert!(
+            mgr.finish_public_phase_repair(
+                &25,
+                attempt,
+                PublicPhase::Commitments,
+                false,
+                crate::constants::DKG_MAX_REPAIR_BACKOFF,
+            )
+            .await
+        );
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, attempt, PublicPhase::Commitments)
+                .await,
+            PublicRepairClaimOutcome::Backoff
+        );
+        assert_eq!(
+            mgr.record_public_contribution(
+                &25,
+                attempt,
+                PublicPhase::Commitments,
+                ParticipantRef::current(1),
+                network::SignedPayload {
+                    origin: vec![1],
+                    signature: vec![2],
+                    data: vec![3],
+                },
+            )
+            .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, attempt, PublicPhase::Commitments)
+                .await,
+            PublicRepairClaimOutcome::Claimed
+        );
+        assert!(
+            mgr.finish_public_phase_repair(
+                &25,
+                attempt,
+                PublicPhase::Commitments,
+                true,
+                crate::constants::DKG_MAX_REPAIR_BACKOFF,
+            )
+            .await
+        );
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, attempt, PublicPhase::Commitments)
+                .await,
+            PublicRepairClaimOutcome::Claimed
+        );
+        assert_eq!(
+            mgr.claim_public_phase_repair(&25, AttemptId([6; 32]), PublicPhase::CommitmentHashes,)
+                .await,
+            PublicRepairClaimOutcome::StaleAttempt
         );
     }
 
