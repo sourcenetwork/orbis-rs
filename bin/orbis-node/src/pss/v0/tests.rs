@@ -353,12 +353,11 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
     cleanup_db(&db_path);
 }
 
-/// Followers can decide that the canonical leader owns a refresh using the
-/// authenticated ring payload alone. They must not resolve the entire committee's
-/// NodeInfo on every scheduler tick, which becomes quadratic SourceHub load for a
-/// large committee and a short benchmark check interval.
+/// A follower resolves only the canonical leader when forwarding a refresh.
+/// An unavailable canonical route is surfaced without creating a local
+/// fallback attempt.
 #[tokio::test]
-async fn test_refresh_follower_skips_committee_route_resolution() {
+async fn test_refresh_follower_does_not_fall_back_when_canonical_route_is_missing() {
     let db_name = "pss_follower_skips_route_resolution";
     let (app_state, our_node_key, db_path, bulletin) = make_initiator_state(db_name).await;
 
@@ -379,8 +378,8 @@ async fn test_refresh_follower_skips_committee_route_resolution() {
 
     let result = super::pss_ring(&state, &entry).await;
     assert!(
-        result.is_ok(),
-        "a follower should stand down without resolving the missing leader route: {result:?}"
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "a missing canonical leader route should be an availability error: {result:?}"
     );
     assert_eq!(state.dkg_session_state.session_count().await, 0);
 

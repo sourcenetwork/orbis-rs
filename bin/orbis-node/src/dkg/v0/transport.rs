@@ -582,13 +582,13 @@ pub enum DkgControlMessage {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
     },
-    /// Ask the receiver to lead a due refresh. Sent by any current-committee
-    /// member walking `canonical_leader_candidates` in order; the receiver
-    /// independently re-validates the sender and the ring state rather than
-    /// trusting the request.
+    /// Ask the canonical current-committee leader to coordinate a due refresh.
+    /// The requester key lets the receiver authenticate only the sender's
+    /// SourceHub route instead of resolving the entire committee.
     StartRefresh {
         ring_id: String,
         expected_ring_pk: String,
+        requester_node_key: String,
     },
     RefreshStartAccepted {
         ceremony_id: CeremonyId,
@@ -596,8 +596,7 @@ pub enum DkgControlMessage {
     },
     /// The receiver independently re-checked and refresh is no longer due
     /// (e.g. another attempt already completed). Distinct from an error so
-    /// the forward-chain walk stops cleanly instead of trying the next
-    /// candidate.
+    /// the caller stops retrying the canonical leader cleanly.
     RefreshNotDue,
     Prepare(Box<PrepareSession>),
     Prepared {
@@ -811,15 +810,6 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8], max_bytes: usize) -> Result<T, 
 
 pub fn canonical_leader(peer_node_keys: &[String]) -> Option<&str> {
     peer_node_keys.iter().map(String::as_str).min()
-}
-
-/// Deterministic committee ordering used to walk refresh-leader candidates in
-/// a fixed sequence every current member agrees on without communicating.
-/// Rank 0 matches `canonical_leader`.
-pub fn canonical_leader_candidates(peer_node_keys: &[String]) -> Vec<&str> {
-    let mut candidates: Vec<&str> = peer_node_keys.iter().map(String::as_str).collect();
-    candidates.sort_unstable();
-    candidates
 }
 
 /// The lower canonical node ID opens the one stream for an unordered pair.
@@ -1087,23 +1077,6 @@ mod tests {
                 .collect(),
             threshold,
         }
-    }
-
-    #[test]
-    fn canonical_leader_candidates_are_fully_ordered_and_match_canonical_leader() {
-        let keys: Vec<String> = ["node-c", "node-a", "node-b"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        let candidates = canonical_leader_candidates(&keys);
-        assert_eq!(candidates, vec!["node-a", "node-b", "node-c"]);
-        assert_eq!(candidates.first().copied(), canonical_leader(&keys));
-
-        let single = vec!["only-node".to_string()];
-        assert_eq!(canonical_leader_candidates(&single), vec!["only-node"]);
-
-        let empty: Vec<String> = Vec::new();
-        assert!(canonical_leader_candidates(&empty).is_empty());
     }
 
     #[test]

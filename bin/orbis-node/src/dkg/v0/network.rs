@@ -56,6 +56,7 @@ use crate::helpers::auth::current_unix_time;
 use crate::helpers::identity::{extract_node_part, is_self_peer_id, validate_peer_id};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
+    NodeRoute,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
 #[cfg(test)]
@@ -274,6 +275,43 @@ enum PublicBatchAssembly {
         root: [u8; 32],
         contributions: Vec<VerifiedPublicContribution>,
     },
+}
+
+#[derive(Default)]
+struct ManifestRepairSchedule {
+    deadlines: BTreeMap<PublicPhase, Instant>,
+}
+
+impl ManifestRepairSchedule {
+    /// Arm one delayed repair per phase. Existing deadlines are deliberately
+    /// not extended: a leader cannot postpone repair by dripping manifests.
+    fn arm(&mut self, phase: PublicPhase, deadline: Instant) -> bool {
+        if self.deadlines.contains_key(&phase) {
+            return false;
+        }
+        self.deadlines.insert(phase, deadline);
+        true
+    }
+
+    fn cancel(&mut self, phase: PublicPhase) -> bool {
+        self.deadlines.remove(&phase).is_some()
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        self.deadlines.values().copied().min()
+    }
+
+    fn take_due(&mut self, now: Instant) -> Vec<PublicPhase> {
+        let due: Vec<_> = self
+            .deadlines
+            .iter()
+            .filter_map(|(phase, deadline)| (*deadline <= now).then_some(*phase))
+            .collect();
+        for phase in &due {
+            self.deadlines.remove(phase);
+        }
+        due
+    }
 }
 
 #[derive(Default)]
@@ -970,6 +1008,91 @@ fn leader_bootstrap(
     Ok(vec![PeerId::from_bytes(leader_route.as_bytes())])
 }
 
+fn validate_reshare_next_transport_committee(
+    next: &CommitteeConfig,
+    expected_node_keys: &[String],
+    expected_threshold: u32,
+    resolved_routes: &[NodeRoute],
+) -> Result<()> {
+    let expected_assignments = canonical_node_id_assignments_from_node_keys(expected_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let expected_keys: BTreeSet<_> = expected_node_keys.iter().collect();
+    let supplied_keys: BTreeSet<_> = next.node_keys.iter().collect();
+    if supplied_keys.len() != next.node_keys.len() || supplied_keys != expected_keys {
+        return Err(DkgError::Unauthorized(
+            "Reshare next transport committee does not match the announced next committee".into(),
+        ));
+    }
+    if next.threshold != expected_threshold {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare next transport threshold {} does not match announced threshold {}",
+            next.threshold, expected_threshold
+        )));
+    }
+    if next.node_id_assignments != expected_assignments {
+        return Err(DkgError::Unauthorized(
+            "Reshare next transport node-ID assignments are not canonical".into(),
+        ));
+    }
+
+    let expected_routes: BTreeMap<_, _> = resolved_routes
+        .iter()
+        .map(|route| (route.node_key.as_str(), route.peer_id.as_str()))
+        .collect();
+    if expected_routes.len() != expected_node_keys.len()
+        || expected_node_keys
+            .iter()
+            .any(|node_key| !expected_routes.contains_key(node_key.as_str()))
+    {
+        return Err(DkgError::InvalidState(
+            "resolved SourceHub routes do not cover the reshare next committee".into(),
+        ));
+    }
+    let supplied_routes: BTreeMap<_, _> = next
+        .node_keys
+        .iter()
+        .zip(&next.peer_routes)
+        .map(|(node_key, peer_route)| (node_key.as_str(), peer_route.as_str()))
+        .collect();
+    if supplied_routes.len() != next.node_keys.len() || supplied_routes != expected_routes {
+        // TODO(reporting): retain evidence that the authenticated reshare
+        // leader supplied transport routes contradicting SourceHub NodeInfo.
+        return Err(DkgError::Unauthorized(
+            "Reshare next transport routes do not match resolved SourceHub NodeInfo routes".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn validate_reshare_transport_routes<D>(
+    state: &Arc<AppState<D>>,
+    prepare: &PrepareSession,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let SessionKind::Reshare {
+        new_peer_node_keys,
+        new_threshold,
+        ..
+    } = &prepare.kind
+    else {
+        return Ok(());
+    };
+    let next = prepare.committees.next.as_ref().ok_or_else(|| {
+        DkgError::Unauthorized("Reshare Prepare omits the next transport committee".into())
+    })?;
+    let resolved_routes = resolve_node_routes(&state.bulletin, new_peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    validate_reshare_next_transport_committee(
+        next,
+        new_peer_node_keys,
+        *new_threshold,
+        &resolved_routes,
+    )
+}
+
 struct CeremonyStartGuard {
     ceremony_id: u128,
     lock: Weak<tokio::sync::Mutex<()>>,
@@ -1275,9 +1398,17 @@ where
         DkgControlMessage::StartRefresh {
             ring_id,
             expected_ring_pk,
+            requester_node_key,
         } => {
-            validate_refresh_start_sender(&state, routes, &ring_id, &expected_ring_pk, sender)
-                .await?;
+            validate_refresh_start_sender(
+                &state,
+                routes,
+                &ring_id,
+                &expected_ring_pk,
+                &requester_node_key,
+                sender,
+            )
+            .await?;
             let outcome = coordinate_refresh(state, routes, ring_id, expected_ring_pk).await?;
             match outcome {
                 RefreshStartOutcome::Started(ceremony_id, attempt_id)
@@ -2119,13 +2250,12 @@ where
 }
 
 /// Coordinate a due PSS refresh. Any current-committee member may call
-/// `start_refresh`; it walks `canonical_leader_candidates` in order and
-/// forwards to whichever candidate actually answers.
+/// `start_refresh`; nonleaders forward to the one canonical leader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RefreshStartOutcome {
     Started(CeremonyId, AttemptId),
     AlreadyActive(CeremonyId, AttemptId),
-    /// A different reachable committee member accepted and is leading.
+    /// The canonical leader accepted a request forwarded by this member.
     Forwarded(CeremonyId, AttemptId),
     NotDue,
 }
@@ -2378,6 +2508,7 @@ async fn validate_refresh_start_sender<D>(
     routes: &'static network::ProtocolRoutes,
     ring_id: &str,
     expected_ring_pk: &str,
+    requester_node_key: &str,
     sender: &PeerId,
 ) -> Result<()>
 where
@@ -2391,25 +2522,42 @@ where
             "refresh ring public key differs from SourceHub state".into(),
         ));
     }
-    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
-        .await
-        .map_err(DkgError::Unauthorized)?;
-    if current_routes
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?;
+    if canonical_leader != state.node_key {
+        crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefresh must be handled by the canonical leader".into(),
+        ));
+    }
+    if !ring
+        .peer_node_keys
         .iter()
-        .all(|route| !peer_matches_route(sender, &route.peer_id))
+        .any(|node_key| node_key == requester_node_key)
     {
         crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
         return Err(DkgError::Unauthorized(
-            "StartRefresh sender is not in the current committee".into(),
+            "StartRefresh requester is not in the current committee".into(),
+        ));
+    }
+    let requester_routes = resolve_node_routes(&state.bulletin, &[requester_node_key.to_string()])
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if requester_routes
+        .first()
+        .is_none_or(|route| !peer_matches_route(sender, &route.peer_id))
+    {
+        crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefresh sender does not match the requester SourceHub route".into(),
         ));
     }
     Ok(())
 }
 
-/// Coordinate a due PSS refresh as this node, becoming the ceremony leader.
-/// Callable both locally (this node reached its own turn in the
-/// `start_refresh` walk) and from the `StartRefresh` control handler (this
-/// node was asked directly by another current-committee member).
+/// Coordinate a due PSS refresh as the canonical current-committee leader.
+/// Callable both by the leader's local scheduler and by its `StartRefresh`
+/// control handler after authenticating a current-committee requester.
 async fn coordinate_refresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -2428,9 +2576,11 @@ where
             "refresh ring public key differs from SourceHub state".into(),
         ));
     }
-    if !ring.peer_node_keys.contains(&state.node_key) {
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?;
+    if canonical_leader != state.node_key {
         return Err(DkgError::Unauthorized(
-            "only a current-committee member may coordinate PSS refresh".into(),
+            "only the canonical current-committee leader may coordinate PSS refresh".into(),
         ));
     }
     if let Some(session_id) = state
@@ -2516,14 +2666,10 @@ where
         .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
 }
 
-/// Trigger a due PSS refresh. Any current-committee member may call this: it
-/// walks `canonical_leader_candidates` in a fixed deterministic order,
-/// coordinating locally when it reaches its own key and otherwise forwarding
-/// a short, single-shot request to each candidate in turn. Because every
-/// caller uses the same order and tests real reachability instead of a
-/// staggered timer, live members converge on the same next-reachable
-/// candidate within seconds when the canonical leader is down or
-/// partitioned — no leader-only gate, no arbitrary waiting.
+/// Trigger a due PSS refresh. Any current-committee member may call this, but
+/// only the deterministic canonical leader coordinates the attempt. Repeated
+/// forwarded starts retry that same leader and coalesce through its local
+/// ceremony-start lock.
 pub(crate) async fn start_refresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -2537,98 +2683,53 @@ where
     let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
         .await
         .map_err(DkgError::ProtocolError)?;
-    let candidates = transport::canonical_leader_candidates(&ring.peer_node_keys);
-    if candidates.is_empty() {
-        return Err(DkgError::InvalidParticipantCount(0));
+    if !ring.peer_node_keys.contains(&state.node_key) {
+        return Err(DkgError::Unauthorized(
+            "only a current-committee member may trigger PSS refresh".into(),
+        ));
     }
-    // A route that fails to resolve here means some committee member has
-    // never published NodeInfo on-chain at all — a ring-configuration gap,
-    // not network-level unreachability (that's caught below, per candidate,
-    // when the actual RPC attempt fails). No candidate can build a valid
-    // Prepare without every member's route, so nobody can proceed. The
-    // canonical leader is still responsible for surfacing that loudly (the
-    // pre-failover contract: a misconfigured ring is a real, reportable
-    // error). Any fallback candidate's inability to even attempt stepping up
-    // is inherently best-effort, so it stands down quietly instead.
-    let is_canonical_leader = candidates[0] == state.node_key;
-    let current_routes = match resolve_node_routes(&state.bulletin, &ring.peer_node_keys).await {
-        Ok(routes) => routes,
-        Err(error) if is_canonical_leader => return Err(DkgError::Unauthorized(error)),
-        Err(error) => {
-            tracing::debug!(
-                ring_id = %ring_id,
-                %error,
-                "PSS: refresh committee routes are not fully resolvable yet; standing down"
-            );
-            return Ok(RefreshStartOutcome::NotDue);
-        }
-    };
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if canonical_leader == state.node_key {
+        return coordinate_refresh(state, routes, ring_id, ring_pk).await;
+    }
 
-    for (rank, candidate) in candidates.into_iter().enumerate() {
-        if candidate == state.node_key {
-            if rank > 0 {
-                tracing::warn!(
-                    ring_id = %ring_id,
-                    rank,
-                    "PSS refresh: canonical leader(s) unreachable, this node is taking over as leader"
-                );
-                crate::metrics::record_dkg_transport_event(
-                    "control",
-                    "refresh_failover_leader_selected",
-                );
-            }
-            return coordinate_refresh(state, routes, ring_id, ring_pk).await;
-        }
-        let Some(candidate_route) = current_routes
-            .iter()
-            .find_map(|route| (route.node_key == candidate).then_some(route.peer_id.as_str()))
-        else {
-            // Route resolution comes from the same SourceHub read as the
-            // candidate list itself; an unroutable candidate is treated the
-            // same as an unreachable one.
-            continue;
-        };
-        crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
-        match control_request_with_timeout(
-            &state,
-            routes,
-            candidate_route,
-            DkgControlMessage::StartRefresh {
-                ring_id: ring_id.clone(),
-                expected_ring_pk: ring_pk.clone(),
-            },
-            PEER_RESPONSE_TIMEOUT,
-        )
-        .await
-        {
-            Ok(DkgControlMessage::RefreshStartAccepted {
-                ceremony_id,
-                attempt_id,
-            }) => {
-                return Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id));
-            }
-            Ok(DkgControlMessage::RefreshNotDue) => return Ok(RefreshStartOutcome::NotDue),
-            Ok(other) => {
-                return Err(DkgError::ProtocolError(format!(
-                    "unexpected refresh start response: {other:?}"
-                )));
-            }
-            Err(error) if retryable_control_error(&error) => {
-                tracing::debug!(
-                    candidate = %extract_node_part(candidate_route),
-                    %error,
-                    "refresh-leader candidate unreachable; trying next candidate"
-                );
-                continue;
-            }
-            Err(error) => return Err(error),
-        }
+    let leader_routes =
+        resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
+            .await
+            .map_err(DkgError::Unauthorized)?;
+    let leader_route = leader_routes
+        .first()
+        .map(|route| route.peer_id.as_str())
+        .ok_or_else(|| {
+            DkgError::InvalidState("canonical refresh leader route is missing".into())
+        })?;
+    crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
+    let forwarding_deadline =
+        Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
+    match retry_preparation_control(
+        &state,
+        routes,
+        leader_route,
+        DkgControlMessage::StartRefresh {
+            ring_id,
+            expected_ring_pk: ring_pk,
+            requester_node_key: state.node_key.clone(),
+        },
+        forwarding_deadline,
+    )
+    .await?
+    {
+        DkgControlMessage::RefreshStartAccepted {
+            ceremony_id,
+            attempt_id,
+        } => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        DkgControlMessage::RefreshNotDue => Ok(RefreshStartOutcome::NotDue),
+        other => Err(DkgError::ProtocolError(format!(
+            "canonical refresh leader returned unexpected start response: {other:?}"
+        ))),
     }
-    // Reached only if `state.node_key` is not itself a ring member — every
-    // real member is eventually its own candidate in the walk above.
-    Err(DkgError::Unauthorized(
-        "local node is not a member of the refresh committee".into(),
-    ))
 }
 
 async fn coordinate_fresh<D>(
@@ -2714,7 +2815,11 @@ where
         abort_prepared_attempt(&state, routes, &prepare, error.to_string()).await;
         state
             .dkg_session_state
-            .remove_session(&prepare.ceremony_id.0)
+            .abort_transport_preparation(
+                &prepare.ceremony_id.0,
+                prepare.attempt_id,
+                TopicTaskDisposition::Abort,
+            )
             .await;
     }
     result
@@ -3321,23 +3426,14 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    // Refresh has no single fixed leader: any current-committee member may
-    // have won the `start_refresh` forward-chain walk. Fresh/Reshare keep
-    // the exact-canonical-leader match, since only one leader is ever valid
-    // for those (the fresh-DKG committee leader / the next-committee
-    // receiver leader, respectively).
-    let leader_authorized = match &prepare.kind {
-        SessionKind::Refresh { .. } => prepare
-            .committees
-            .current
-            .node_keys
-            .iter()
-            .any(|node_key| node_key == &prepare.leader_node_key),
-        SessionKind::Fresh | SessionKind::Reshare { .. } => {
-            prepare.canonical_leader_node_key() == Some(&prepare.leader_node_key)
-        }
-    };
+    let leader_authorized =
+        prepare.canonical_leader_node_key() == Some(prepare.leader_node_key.as_str());
     if !leader_authorized {
+        if matches!(&prepare.kind, SessionKind::Refresh { .. }) {
+            // TODO(reporting): retain the authenticated noncanonical refresh
+            // Prepare as evidence of attributable leader impersonation.
+            crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
+        }
         return Err(DkgError::Unauthorized(
             "Prepare names an unauthorized leader".into(),
         ));
@@ -3356,6 +3452,7 @@ where
             "Prepare configuration digest mismatch".into(),
         ));
     }
+    validate_reshare_transport_routes(&state, &prepare).await?;
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     handle_session_init(
         &coordinator,
@@ -3703,6 +3800,7 @@ async fn topic_listener<D>(
     let mut acknowledgement_in_flight = false;
     let mut acknowledged_nonce: Option<[u8; 32]> = None;
     let mut public_batches = PublicBatchAssembler::default();
+    let mut manifest_repairs = ManifestRepairSchedule::default();
     let mut rejected_gossip_frames = 0u64;
     'listener: loop {
         if state
@@ -3715,6 +3813,7 @@ async fn topic_listener<D>(
             break;
         }
         let isolation_deadline = neighbor_tracker.isolation_deadline();
+        let manifest_repair_deadline = manifest_repairs.next_deadline();
         let event = tokio::select! {
             acknowledgement = acknowledgement_tasks.join_next(), if !acknowledgement_tasks.is_empty() => {
                 acknowledgement_in_flight = false;
@@ -3756,6 +3855,30 @@ async fn topic_listener<D>(
                             tracing::warn!(%error, "failed to recover isolated DKG Gossip topic");
                             break;
                         }
+                    }
+                }
+                continue;
+            }
+            _ = async {
+                match manifest_repair_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                for phase in manifest_repairs.take_due(Instant::now()) {
+                    if let Err(error) = repair_public_phase(
+                        state.clone(),
+                        routes,
+                        prepare.clone(),
+                        phase,
+                        false,
+                        TopicTaskDisposition::DetachCurrent,
+                    ).await {
+                        tracing::warn!(
+                            %error,
+                            phase = ?phase,
+                            "scheduled public DKG completeness repair failed"
+                        );
                     }
                 }
                 continue;
@@ -3961,6 +4084,9 @@ async fn topic_listener<D>(
                                 root,
                                 contributions,
                             }) => {
+                                if mode == PublicBatchMode::Complete {
+                                    manifest_repairs.cancel(phase);
+                                }
                                 match apply_validated_public_batch(
                                     &state,
                                     routes,
@@ -4022,26 +4148,14 @@ async fn topic_listener<D>(
                             }) => {
                                 tracing::debug!(phase = ?phase,
                                     "received public DKG manifest; awaiting chunks");
-                                let state = state.clone();
-                                let prepare = prepare.clone();
-                                tokio::spawn(async move {
-                                    sleep(DKG_REPAIR_STALL_INTERVAL).await;
-                                    if let Err(error) = repair_public_phase(
-                                        state,
-                                        routes,
-                                        prepare,
-                                        phase,
-                                        false,
-                                        TopicTaskDisposition::Abort,
-                                    )
-                                    .await
-                                    {
-                                        tracing::warn!(
-                                            %error,
-                                            "public DKG completeness repair failed"
-                                        );
-                                    }
-                                });
+                                let event = if manifest_repairs
+                                    .arm(phase, Instant::now() + DKG_REPAIR_STALL_INTERVAL)
+                                {
+                                    "manifest_repair_scheduled"
+                                } else {
+                                    "manifest_repair_coalesced"
+                                };
+                                crate::metrics::record_dkg_transport_event("public", event);
                             }
                             Ok(PublicBatchAssembly::Pending {
                                 manifest_added: false,
@@ -4057,6 +4171,9 @@ async fn topic_listener<D>(
                                 root,
                                 contributions,
                             }) => {
+                                if mode == PublicBatchMode::Complete {
+                                    manifest_repairs.cancel(phase);
+                                }
                                 match apply_validated_public_batch(
                                     &state,
                                     routes,
@@ -7766,6 +7883,110 @@ mod stability_tests {
         assert_eq!(transport::canonical_leader(&next_keys), Some("current-a"));
     }
 
+    fn resolved_next_routes() -> Vec<NodeRoute> {
+        vec![
+            NodeRoute {
+                node_key: "next-b".to_string(),
+                peer_id: format!("{}@127.0.0.1:9002", "bb".repeat(32)),
+            },
+            NodeRoute {
+                node_key: "next-a".to_string(),
+                peer_id: format!("{}@127.0.0.1:9001", "aa".repeat(32)),
+            },
+        ]
+    }
+
+    fn valid_next_transport_committee() -> CommitteeConfig {
+        let resolved = resolved_next_routes();
+        CommitteeConfig {
+            // Transport order need not match SourceHub order, but each route
+            // must remain bound to its node key.
+            node_keys: vec!["next-a".to_string(), "next-b".to_string()],
+            peer_routes: vec![resolved[1].peer_id.clone(), resolved[0].peer_id.clone()],
+            node_id_assignments: HashMap::from([
+                ("next-a".to_string(), 1),
+                ("next-b".to_string(), 2),
+            ]),
+            threshold: 2,
+        }
+    }
+
+    #[test]
+    fn reshare_next_transport_routes_accept_reordering_with_exact_key_bindings() {
+        validate_reshare_next_transport_committee(
+            &valid_next_transport_committee(),
+            &["next-b".to_string(), "next-a".to_string()],
+            2,
+            &resolved_next_routes(),
+        )
+        .expect("equivalent orderings with authoritative key-route bindings must validate");
+    }
+
+    #[test]
+    fn reshare_next_transport_routes_reject_altered_or_swapped_routes() {
+        let expected_keys = ["next-b".to_string(), "next-a".to_string()];
+        let resolved = resolved_next_routes();
+
+        let mut altered = valid_next_transport_committee();
+        altered.peer_routes[0] = format!("{}@127.0.0.1:9999", "aa".repeat(32));
+        let error =
+            validate_reshare_next_transport_committee(&altered, &expected_keys, 2, &resolved)
+                .expect_err("an altered direct address must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("SourceHub NodeInfo routes"));
+
+        let mut swapped = valid_next_transport_committee();
+        swapped.peer_routes.swap(0, 1);
+        let error =
+            validate_reshare_next_transport_committee(&swapped, &expected_keys, 2, &resolved)
+                .expect_err("a route set bound to the wrong node keys must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("SourceHub NodeInfo routes"));
+    }
+
+    #[test]
+    fn reshare_next_transport_rejects_membership_threshold_and_assignment_mismatches() {
+        let expected_keys = ["next-b".to_string(), "next-a".to_string()];
+        let resolved = resolved_next_routes();
+
+        let mut wrong_member = valid_next_transport_committee();
+        wrong_member.node_keys[0] = "next-c".to_string();
+        let error =
+            validate_reshare_next_transport_committee(&wrong_member, &expected_keys, 2, &resolved)
+                .expect_err("a different transport member must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("announced next committee"));
+
+        let mut wrong_threshold = valid_next_transport_committee();
+        wrong_threshold.threshold = 1;
+        let error = validate_reshare_next_transport_committee(
+            &wrong_threshold,
+            &expected_keys,
+            2,
+            &resolved,
+        )
+        .expect_err("a different transport threshold must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("announced threshold"));
+
+        let mut wrong_assignments = valid_next_transport_committee();
+        wrong_assignments
+            .node_id_assignments
+            .insert("next-a".to_string(), 2);
+        wrong_assignments
+            .node_id_assignments
+            .insert("next-b".to_string(), 1);
+        let error = validate_reshare_next_transport_committee(
+            &wrong_assignments,
+            &expected_keys,
+            2,
+            &resolved,
+        )
+        .expect_err("noncanonical next transport assignments must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("not canonical"));
+    }
+
     #[test]
     fn neighbor_churn_only_schedules_rejoin_after_sustained_full_isolation() {
         let peer_a = PeerId::from_bytes(b"peer-a");
@@ -9199,6 +9420,50 @@ mod stability_tests {
                 .collect::<Vec<_>>(),
             vec![ParticipantRef::current(1), ParticipantRef::current(2)]
         );
+    }
+
+    #[test]
+    fn manifest_repair_schedule_coalesces_without_extending_deadline() {
+        let now = Instant::now();
+        let first_deadline = now + DKG_REPAIR_STALL_INTERVAL;
+        let later_deadline = first_deadline + DKG_REPAIR_STALL_INTERVAL;
+        let mut schedule = ManifestRepairSchedule::default();
+
+        assert!(schedule.arm(PublicPhase::Commitments, first_deadline));
+        assert!(
+            !schedule.arm(PublicPhase::Commitments, later_deadline),
+            "another incremental root must not create work or postpone repair"
+        );
+        assert_eq!(schedule.next_deadline(), Some(first_deadline));
+        assert!(schedule
+            .take_due(first_deadline - Duration::from_nanos(1))
+            .is_empty());
+        assert_eq!(
+            schedule.take_due(first_deadline),
+            vec![PublicPhase::Commitments]
+        );
+        assert_eq!(schedule.next_deadline(), None);
+    }
+
+    #[test]
+    fn manifest_repair_schedule_tracks_phases_independently_and_cancels_complete_phase() {
+        let now = Instant::now();
+        let first_deadline = now + DKG_REPAIR_STALL_INTERVAL;
+        let second_deadline = first_deadline + Duration::from_secs(1);
+        let mut schedule = ManifestRepairSchedule::default();
+
+        assert!(schedule.arm(PublicPhase::Commitments, second_deadline));
+        assert!(schedule.arm(PublicPhase::CommitmentHashes, first_deadline));
+        assert_eq!(schedule.next_deadline(), Some(first_deadline));
+        assert_eq!(
+            schedule.take_due(first_deadline),
+            vec![PublicPhase::CommitmentHashes]
+        );
+        assert_eq!(schedule.next_deadline(), Some(second_deadline));
+
+        assert!(schedule.cancel(PublicPhase::Commitments));
+        assert!(!schedule.cancel(PublicPhase::Commitments));
+        assert_eq!(schedule.next_deadline(), None);
     }
 
     #[test]

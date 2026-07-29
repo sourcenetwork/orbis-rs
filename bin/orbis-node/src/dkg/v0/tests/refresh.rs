@@ -238,14 +238,17 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
 
     let mut sorted_node_keys = peer_node_keys.clone();
     sorted_node_keys.sort();
-    let initiator_node_key = sorted_node_keys[0].clone();
-    let initiator_state = if network.alice.app_state.node_key == initiator_node_key {
-        network.alice.app_state.clone()
-    } else if network.bob.app_state.node_key == initiator_node_key {
-        network.bob.app_state.clone()
-    } else {
-        network.charlie.app_state.clone()
-    };
+    let canonical_node_key = sorted_node_keys[0].clone();
+    let follower_states: Vec<_> = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ]
+    .into_iter()
+    .filter(|state| state.node_key != canonical_node_key)
+    .map(|state| Arc::new(state.clone()))
+    .collect();
+    assert_eq!(follower_states.len(), 2);
 
     #[cfg(feature = "fault-injection")]
     for controller in &fault_controllers {
@@ -260,20 +263,36 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
             .await;
     }
 
-    let refresh_outcome = start_refresh(
-        Arc::new(initiator_state),
+    let first_start = start_refresh(
+        follower_states[0].clone(),
         &::network::V0,
         TEST_FRESH_DKG_RING_ID.to_string(),
         key_string.clone(),
-    )
-    .await
-    .expect("canonical leader should start transport refresh");
-    let RefreshStartOutcome::Started(refresh_ceremony, refresh_attempt) = refresh_outcome else {
-        panic!("backdated refresh should start, got {refresh_outcome:?}");
+    );
+    let second_start = start_refresh(
+        follower_states[1].clone(),
+        &::network::V0,
+        TEST_FRESH_DKG_RING_ID.to_string(),
+        key_string.clone(),
+    );
+    let (first_outcome, second_outcome) = tokio::join!(first_start, second_start);
+    let first_outcome = first_outcome.expect("first follower should reach the canonical leader");
+    let second_outcome = second_outcome.expect("second follower should reach the canonical leader");
+    let (
+        RefreshStartOutcome::Forwarded(refresh_ceremony, refresh_attempt),
+        RefreshStartOutcome::Forwarded(second_ceremony, second_attempt),
+    ) = (first_outcome, second_outcome)
+    else {
+        panic!(
+            "concurrent follower triggers should both be forwarded: \
+             first={first_outcome:?}, second={second_outcome:?}"
+        );
     };
+    assert_eq!(second_ceremony, refresh_ceremony);
+    assert_eq!(second_attempt, refresh_attempt);
 
     println!(
-        "DKG transport PSS refresh initiated (session_id={}, attempt_id={})",
+        "DKG transport PSS refresh coalesced at canonical leader (session_id={}, attempt_id={})",
         refresh_ceremony.0,
         hex::encode(refresh_attempt.0)
     );
@@ -382,17 +401,13 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
     }
 }
 
-/// A non-canonical committee member takes over as refresh leader, and the
-/// ceremony completes end to end, when the canonical (rank-0) leader is
-/// unreachable. This exercises the `start_refresh` forward-chain walk against
-/// a live 3-node network — the base refresh test above always calls
-/// `start_refresh` as the canonical leader itself, so it never exercises the
-/// fallback path.
+/// A noncanonical member keeps retrying the one canonical refresh leader and
+/// never creates a local fallback attempt when that leader is unreachable.
 #[cfg(feature = "fault-injection")]
 #[tokio::test]
 #[serial_test::serial]
-async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
-    let db_name = "test_pss_refresh_leader_failover";
+async fn test_pss_refresh_does_not_fail_over_when_canonical_leader_is_unreachable() {
+    let db_name = "test_pss_refresh_canonical_leader_unreachable";
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -420,7 +435,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
                 crypto::PreImpl,
                 crypto::SignImpl,
             >(&node.app_state.network, Arc::new(node.app_state.clone()))
-            .expect("start faultable refresh-failover test router"),
+            .expect("start faultable canonical-refresh test router"),
         );
     }
 
@@ -444,7 +459,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         .expect("DKG should start");
 
     // Wait for DKG Phase 4 to complete (bulletin has a ring entry).
-    let (key_string, ring_pk_hex) = {
+    let key_string = {
         let start = Instant::now();
         let max_wait = Duration::from_secs(60);
         loop {
@@ -455,7 +470,7 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
                 let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
                 let agg_key = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes)
                     .expect("deserialize aggregate PK");
-                break (agg_key.to_string(), ring_payload.ring_pk);
+                break agg_key.to_string();
             }
             assert!(start.elapsed() < max_wait, "DKG did not complete in time");
             sleep(Duration::from_millis(500)).await;
@@ -476,16 +491,21 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
             .expect("save backdated RingShareBundle");
     }
 
-    // ── Phase B: Block the canonical leader, trigger refresh from the next
-    // candidate in the forward-chain order ─────────────────────────────────
+    // ── Phase B: Block the canonical leader and verify that the next member
+    // keeps retrying it instead of taking over. ─────────────────────────────
     let peer_node_keys = vec![
         network.alice.app_state.node_key.clone(),
         network.bob.app_state.node_key.clone(),
         network.charlie.app_state.node_key.clone(),
     ];
-    let candidates = crate::dkg::v0::transport::canonical_leader_candidates(&peer_node_keys);
-    let canonical_key = candidates[0].to_string();
-    let fallback_key = candidates[1].to_string();
+    let canonical_key = crate::dkg::v0::transport::canonical_leader(&peer_node_keys)
+        .expect("committee has a canonical leader")
+        .to_string();
+    let follower_key = peer_node_keys
+        .iter()
+        .find(|node_key| *node_key != &canonical_key)
+        .expect("three-node committee has a follower")
+        .clone();
 
     let nodes = [
         (&network.alice, &controllers[0]),
@@ -497,11 +517,13 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         .find(|(node, _)| node.app_state.node_key == canonical_key)
         .map(|(node, _)| hex::encode(node.app_state.network.local_peer_id().as_bytes()))
         .expect("canonical node must be present in the test network");
-    let fallback_state = nodes
-        .iter()
-        .find(|(node, _)| node.app_state.node_key == fallback_key)
-        .map(|(node, _)| node.app_state.clone())
-        .expect("fallback node must be present in the test network");
+    let follower_state = Arc::new(
+        nodes
+            .iter()
+            .find(|(node, _)| node.app_state.node_key == follower_key)
+            .map(|(node, _)| node.app_state.clone())
+            .expect("follower node must be present in the test network"),
+    );
 
     // Block every other node's outbound connections to the canonical leader,
     // simulating it being down or partitioned without actually stopping it.
@@ -511,48 +533,32 @@ async fn test_pss_refresh_leader_failover_when_canonical_leader_unreachable() {
         }
     }
 
-    let outcome = start_refresh(
-        Arc::new(fallback_state),
-        &::network::V0,
-        TEST_FRESH_DKG_RING_ID.to_string(),
-        key_string.clone(),
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        start_refresh(
+            follower_state.clone(),
+            &::network::V0,
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            key_string.clone(),
+        ),
     )
-    .await
-    .expect("the reachable fallback candidate should take over refresh leadership");
+    .await;
     assert!(
-        matches!(outcome, RefreshStartOutcome::Started(_, _)),
-        "expected the fallback candidate to become leader locally after the \
-         canonical leader was unreachable, got {outcome:?}"
+        outcome.is_err(),
+        "the follower should still be retrying the unavailable canonical leader"
     );
-
-    // ── Phase C: Wait for the fallback-led refresh to complete on all nodes ──
-    {
-        let start = Instant::now();
-        let max_wait = Duration::from_secs(60);
-        loop {
-            let all_done = [
-                &network.alice.app_state.local_storage,
-                &network.bob.app_state.local_storage,
-                &network.charlie.app_state.local_storage,
-            ]
-            .iter()
-            .all(|storage| {
-                RingPolyState::load_from_ring_pk_hex(*storage, &ring_pk_hex)
-                    .map(|s| s.last_pss > 0)
-                    .unwrap_or(false)
-            });
-            if all_done {
-                println!("Failover-led refresh complete (all 3 nodes updated RingPolyState)");
-                break;
-            }
-            assert!(
-                start.elapsed() < max_wait,
-                "PSS refresh did not complete within {} seconds",
-                max_wait.as_secs()
-            );
-            sleep(Duration::from_millis(500)).await;
-        }
-    }
+    assert_eq!(
+        follower_state.dkg_session_state.session_count().await,
+        0,
+        "the follower must not create a local refresh attempt"
+    );
+    assert!(
+        !follower_state
+            .dkg_session_state
+            .is_ring_pss_active(&key_string)
+            .await,
+        "the follower must not claim the ring while forwarding"
+    );
 
     network.shutdown_routers().await.expect("shutdown routers");
     for path in &db_paths {

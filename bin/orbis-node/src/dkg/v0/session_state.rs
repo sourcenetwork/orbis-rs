@@ -2342,6 +2342,41 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         true
     }
 
+    /// Remove preparation state only when it is still unconfigured or belongs
+    /// to the exact failed attempt. A stale coordinator must not erase a
+    /// different attempt that won transport configuration for the same
+    /// deterministic ceremony ID.
+    pub(crate) async fn abort_transport_preparation(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        topic_task: TopicTaskDisposition,
+    ) -> bool {
+        let mut state = {
+            let mut states = self.states.write().await;
+            let Some(existing) = states.get(session_id) else {
+                return false;
+            };
+            if existing
+                .transport
+                .attempt_id
+                .is_some_and(|configured| configured != attempt_id)
+            {
+                return false;
+            }
+            states
+                .remove(session_id)
+                .expect("the matching preparation session was checked above")
+        };
+        if let Some(task) = state.transport.topic_task.take() {
+            if topic_task == TopicTaskDisposition::Abort {
+                task.abort();
+            }
+        }
+        self.finish_removed_session(session_id, state, false).await;
+        true
+    }
+
     async fn remove_session_with_outcome(&self, session_id: &u128, completed: bool) {
         let mut state = {
             let mut states = self.states.write().await;
@@ -3988,5 +4023,59 @@ mod tests {
             "the listener must be allowed to return after detaching its own handle"
         );
         listener.abort();
+    }
+
+    #[tokio::test]
+    async fn preparation_abort_preserves_a_different_configured_attempt() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let session_id = 104u128;
+        let winning_attempt = AttemptId([6; 32]);
+        let stale_attempt = AttemptId([7; 32]);
+        mgr.create_session(session_id, make_node(1), 3, |state| {
+            state.transport.attempt_id = Some(winning_attempt);
+        })
+        .await;
+
+        assert!(
+            !mgr.abort_transport_preparation(
+                &session_id,
+                stale_attempt,
+                TopicTaskDisposition::Abort,
+            )
+            .await,
+            "a stale preparation failure must not remove the configured winner"
+        );
+        assert_eq!(
+            mgr.transport_attempt(&session_id).await,
+            Some(winning_attempt)
+        );
+
+        assert!(
+            mgr.abort_transport_preparation(
+                &session_id,
+                winning_attempt,
+                TopicTaskDisposition::Abort,
+            )
+            .await
+        );
+        assert!(!mgr.session_exists(&session_id).await);
+    }
+
+    #[tokio::test]
+    async fn preparation_abort_removes_unconfigured_session() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let session_id = 105u128;
+        mgr.create_session(session_id, make_node(1), 3, |_| {})
+            .await;
+
+        assert!(
+            mgr.abort_transport_preparation(
+                &session_id,
+                AttemptId([8; 32]),
+                TopicTaskDisposition::Abort,
+            )
+            .await
+        );
+        assert!(!mgr.session_exists(&session_id).await);
     }
 }

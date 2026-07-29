@@ -25,14 +25,11 @@
 //! because every next-committee receiver is required regardless of who
 //! triggers the attempt.
 //!
-//! Refresh: every current member walks the committee in a fixed deterministic
-//! order (lowest node key first) once refresh is due, asking each candidate
-//! in turn to lead with a short single-shot request; a candidate that doesn't
-//! respond in time is skipped in favor of the next. Whichever committee
-//! member actually answers becomes the ceremony leader and owns the gossip
-//! topic. This gives refresh real availability against a down or partitioned
-//! canonical leader without waiting on the (much slower) health-check/kick
-//! pipeline.
+//! Refresh: every current member may trigger a due ceremony, but nonleaders
+//! forward to the one canonical current-committee leader. The leader
+//! authenticates the requester and coalesces concurrent triggers into one
+//! deterministic ceremony and random attempt. An unavailable leader is
+//! retried; no other member takes over.
 //!
 //! All rings carry a `pss_interval` (seconds); `0` means immediately due.
 //! Reshare is always triggered regardless of elapsed time.
@@ -568,7 +565,7 @@ where
                 session_id = ceremony_id.0,
                 attempt_id = %hex::encode(attempt_id.0),
                 ring_id = %entry.bulletin_post_id,
-                "PSS: refresh start accepted by a reachable committee peer"
+                "PSS: refresh start accepted by the canonical leader"
             );
             return Ok(());
         }
