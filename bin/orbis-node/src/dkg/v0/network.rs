@@ -5516,6 +5516,21 @@ where
             .await
             .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?
     };
+    let items = state
+        .dkg_session_state
+        .public_contributions(&session_id, attempt_id, phase)
+        .await
+        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
+    if items.len() != expected {
+        return Ok(());
+    }
+    let hard_deadline = state
+        .dkg_session_state
+        .transport_hard_deadline(&session_id, attempt_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
+        .into();
+    let batch = prepare_public_batch(CeremonyId(session_id), attempt_id, phase, items, true)?;
     if !state
         .dkg_session_state
         .claim_public_phase_publish(&session_id, attempt_id, phase, expected)
@@ -5535,57 +5550,17 @@ where
         );
     }
     let dissemination_start = Instant::now();
-    let items = state
-        .dkg_session_state
-        .public_contributions(&session_id, attempt_id, phase)
-        .await
-        .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
-    let ids = contribution_ids(&items);
-    let ceremony_id = CeremonyId(session_id);
-    let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
-    let chunks = transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, items)
-        .map_err(DkgError::Serialization)?;
-    let topic = state
-        .dkg_session_state
-        .transport_topic(&session_id)
-        .await
-        .ok_or_else(|| DkgError::InvalidState("transport topic is missing".into()))?;
-    let manifest = DkgPublicMessage::Manifest(PhaseManifest {
-        ceremony_id,
+    publish_claimed_public_batches(
+        state,
+        session_id,
         attempt_id,
         phase,
-        phase_root: root,
-        contribution_ids: ids,
-        chunk_count: chunks.len() as u32,
-        complete: true,
-    });
-    topic
-        .broadcast(Bytes::from(
-            transport::encode(&manifest).map_err(DkgError::Serialization)?,
-        ))
-        .await
-        .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-    for chunk in chunks {
-        topic
-            .broadcast(Bytes::from(
-                transport::encode(&chunk).map_err(DkgError::Serialization)?,
-            ))
-            .await
-            .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-    }
-    crate::metrics::record_dkg_public_transport(
-        phase.as_metric_label(),
-        "dissemination",
-        dissemination_start.elapsed().as_secs_f64(),
-    );
-    crate::metrics::record_dkg_transport_event("public", "batch_published");
-    tracing::info!(
-        session_id,
-        phase = ?phase,
-        contribution_count = expected,
-        "leader published canonical public DKG batch"
-    );
-    Ok(())
+        PublicPublishClaim::CompletePhase,
+        vec![batch],
+        hard_deadline,
+        dissemination_start,
+    )
+    .await
 }
 
 async fn publish_incremental_public_contributions<D>(
@@ -5606,86 +5581,370 @@ where
         .public_contributions(&session_id, attempt_id, phase)
         .await
         .ok_or_else(|| DkgError::SessionNotFound(session_id.to_string()))?;
-    let topic = state
+    let hard_deadline = state
         .dkg_session_state
-        .transport_topic(&session_id)
+        .transport_hard_deadline(&session_id, attempt_id)
         .await
-        .ok_or_else(|| DkgError::InvalidState("transport topic is missing".into()))?;
-    let mut pending = BTreeMap::new();
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
+        .into();
+    let mut decoded = Vec::with_capacity(items.len());
     for (origin, signed) in items {
         let contribution =
             transport::decode::<DkgPublicContribution>(&signed.data, MAX_CONTROL_MESSAGE_BYTES)
                 .map_err(DkgError::Deserialization)?;
-        if !state
-            .dkg_session_state
-            .claim_public_message_publish(&session_id, attempt_id, contribution.message_id)
-            .await
-        {
-            continue;
-        }
-        pending.insert(origin, signed);
+        decoded.push((origin, signed, contribution.message_id));
     }
+    let message_ids = decoded
+        .iter()
+        .map(|(_, _, message_id)| *message_id)
+        .collect::<Vec<_>>();
+    let claimed = state
+        .dkg_session_state
+        .claim_public_messages_publish(&session_id, attempt_id, &message_ids)
+        .await
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if claimed.is_empty() {
+        return Ok(());
+    }
+    let mut pending = decoded
+        .into_iter()
+        .filter(|(_, _, message_id)| claimed.contains(message_id))
+        .map(|(origin, signed, _)| (origin, signed))
+        .collect::<BTreeMap<_, _>>();
     if pending.is_empty() {
         return Ok(());
     }
 
     let ceremony_id = CeremonyId(session_id);
-    let mut batches = Vec::new();
-    let mut current = BTreeMap::new();
-    for (origin, signed) in pending {
-        let mut candidate = current.clone();
-        candidate.insert(origin, signed.clone());
-        let candidate_ids = contribution_ids(&candidate);
-        let candidate_root = transport::phase_root(ceremony_id, attempt_id, phase, &candidate_ids);
-        let chunks = transport::chunk_public_contributions(
-            ceremony_id,
-            attempt_id,
-            phase,
-            candidate_root,
-            candidate.clone(),
-        )
-        .map_err(DkgError::Serialization)?;
-        if chunks.len() > 1 && !current.is_empty() {
+    let prepared = (|| {
+        let mut batches = Vec::new();
+        let mut current = BTreeMap::new();
+        for (origin, signed) in std::mem::take(&mut pending) {
+            let mut candidate = current.clone();
+            candidate.insert(origin, signed.clone());
+            let candidate_ids = contribution_ids(&candidate);
+            let candidate_root =
+                transport::phase_root(ceremony_id, attempt_id, phase, &candidate_ids);
+            let chunks = transport::chunk_public_contributions(
+                ceremony_id,
+                attempt_id,
+                phase,
+                candidate_root,
+                candidate.clone(),
+            )
+            .map_err(DkgError::Serialization)?;
+            if chunks.len() > 1 && !current.is_empty() {
+                batches.push(current);
+                current = BTreeMap::from([(origin, signed)]);
+            } else {
+                current = candidate;
+            }
+        }
+        if !current.is_empty() {
             batches.push(current);
-            current = BTreeMap::from([(origin, signed)]);
-        } else {
-            current = candidate;
         }
-    }
-    if !current.is_empty() {
-        batches.push(current);
-    }
+        batches
+            .into_iter()
+            .map(|batch| prepare_public_batch(ceremony_id, attempt_id, phase, batch, false))
+            .collect::<Result<Vec<_>>>()
+    })();
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            state
+                .dkg_session_state
+                .finish_public_messages_publish(
+                    &session_id,
+                    attempt_id,
+                    &claimed.iter().copied().collect::<Vec<_>>(),
+                    false,
+                )
+                .await;
+            return Err(error);
+        }
+    };
+    publish_claimed_public_batches(
+        state,
+        session_id,
+        attempt_id,
+        phase,
+        PublicPublishClaim::IncrementalMessages(claimed.into_iter().collect()),
+        prepared,
+        hard_deadline,
+        Instant::now(),
+    )
+    .await
+}
 
+#[derive(Clone)]
+struct PreparedPublicBatch {
+    root: [u8; 32],
+    contribution_count: usize,
+    messages: Vec<Bytes>,
+}
+
+#[derive(Clone)]
+enum PublicPublishClaim {
+    CompletePhase,
+    IncrementalMessages(Vec<MessageId>),
+}
+
+fn prepare_public_batch(
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    contributions: BTreeMap<ParticipantRef, SignedPayload>,
+    complete: bool,
+) -> Result<PreparedPublicBatch> {
+    let contribution_count = contributions.len();
+    let ids = contribution_ids(&contributions);
+    let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
+    let chunks =
+        transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, contributions)
+            .map_err(DkgError::Serialization)?;
+    let manifest = DkgPublicMessage::Manifest(PhaseManifest {
+        ceremony_id,
+        attempt_id,
+        phase,
+        phase_root: root,
+        contribution_ids: ids,
+        chunk_count: chunks.len() as u32,
+        complete,
+    });
+    let mut messages = Vec::with_capacity(chunks.len() + 1);
+    messages.push(Bytes::from(
+        transport::encode(&manifest).map_err(DkgError::Serialization)?,
+    ));
+    for chunk in chunks {
+        messages.push(Bytes::from(
+            transport::encode(&chunk).map_err(DkgError::Serialization)?,
+        ));
+    }
+    Ok(PreparedPublicBatch {
+        root,
+        contribution_count,
+        messages,
+    })
+}
+
+async fn broadcast_public_batches(
+    topic: &dyn Topic,
+    batches: &[PreparedPublicBatch],
+) -> network::Result<()> {
     for batch in batches {
-        let ids = contribution_ids(&batch);
-        let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
-        let chunks =
-            transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, batch)
-                .map_err(DkgError::Serialization)?;
-        let manifest = DkgPublicMessage::Manifest(PhaseManifest {
-            ceremony_id,
-            attempt_id,
-            phase,
-            phase_root: root,
-            contribution_ids: ids,
-            chunk_count: chunks.len() as u32,
-            complete: false,
-        });
-        topic
-            .broadcast(Bytes::from(
-                transport::encode(&manifest).map_err(DkgError::Serialization)?,
-            ))
-            .await
-            .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-        for chunk in chunks {
-            topic
-                .broadcast(Bytes::from(
-                    transport::encode(&chunk).map_err(DkgError::Serialization)?,
-                ))
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        for message in &batch.messages {
+            topic.broadcast(message.clone()).await?;
         }
+    }
+    Ok(())
+}
+
+async fn finish_public_publish_claim<D>(
+    state: &Arc<AppState<D>>,
+    session_id: u128,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    claim: &PublicPublishClaim,
+    published: bool,
+) -> bool
+where
+    D: CoordinatorDkg,
+{
+    match claim {
+        PublicPublishClaim::CompletePhase => {
+            state
+                .dkg_session_state
+                .finish_public_phase_publish(&session_id, attempt_id, phase, published)
+                .await
+        }
+        PublicPublishClaim::IncrementalMessages(message_ids) => {
+            state
+                .dkg_session_state
+                .finish_public_messages_publish(&session_id, attempt_id, message_ids, published)
+                .await
+        }
+    }
+}
+
+fn record_public_batches_published(
+    session_id: u128,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    batches: &[PreparedPublicBatch],
+    dissemination_start: Instant,
+) {
+    crate::metrics::record_dkg_public_transport(
+        phase.as_metric_label(),
+        "dissemination",
+        dissemination_start.elapsed().as_secs_f64(),
+    );
+    for _ in batches {
         crate::metrics::record_dkg_transport_event("public", "batch_published");
+    }
+    tracing::info!(
+        session_id,
+        attempt = %hex::encode(attempt_id.0),
+        phase = ?phase,
+        roots = ?batches
+            .iter()
+            .map(|batch| hex::encode(batch.root))
+            .collect::<Vec<_>>(),
+        contribution_count = batches
+            .iter()
+            .map(|batch| batch.contribution_count)
+            .sum::<usize>(),
+        batch_count = batches.len(),
+        "leader published canonical public DKG batch"
+    );
+}
+
+async fn broadcast_public_batches_for_attempt<D>(
+    state: &Arc<AppState<D>>,
+    session_id: u128,
+    attempt_id: AttemptId,
+    batches: &[PreparedPublicBatch],
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let topic = state
+        .dkg_session_state
+        .transport_topic_for_attempt(&session_id, attempt_id)
+        .await
+        .ok_or_else(|| {
+            DkgError::InvalidState("transport topic is missing or attempt is stale".into())
+        })?;
+    broadcast_public_batches(&*topic, batches)
+        .await
+        .map_err(|error| DkgError::NetworkCommunication(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn retry_claimed_public_batches<D>(
+    weak_state: Weak<AppState<D>>,
+    session_id: u128,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    claim: PublicPublishClaim,
+    batches: Vec<PreparedPublicBatch>,
+    hard_deadline: Instant,
+    dissemination_start: Instant,
+) where
+    D: CoordinatorDkg,
+{
+    let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
+    let mut retry = 0u32;
+    loop {
+        let Some(state) = weak_state.upgrade() else {
+            return;
+        };
+        if state.dkg_session_state.transport_attempt(&session_id).await != Some(attempt_id) {
+            return;
+        }
+        let remaining = hard_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            finish_public_publish_claim(&state, session_id, attempt_id, phase, &claim, false).await;
+            crate::metrics::record_dkg_transport_event("public", "batch_publish_abandoned");
+            tracing::warn!(
+                session_id,
+                attempt = %hex::encode(attempt_id.0),
+                phase = ?phase,
+                "public DKG batch publication reached the hard attempt deadline"
+            );
+            return;
+        }
+        drop(state);
+        sleep(backoff.min(remaining)).await;
+        if Instant::now() >= hard_deadline {
+            continue;
+        }
+        let Some(state) = weak_state.upgrade() else {
+            return;
+        };
+        if state.dkg_session_state.transport_attempt(&session_id).await != Some(attempt_id) {
+            return;
+        }
+        retry = retry.saturating_add(1);
+        match broadcast_public_batches_for_attempt(&state, session_id, attempt_id, &batches).await {
+            Ok(()) => {
+                if finish_public_publish_claim(&state, session_id, attempt_id, phase, &claim, true)
+                    .await
+                {
+                    record_public_batches_published(
+                        session_id,
+                        attempt_id,
+                        phase,
+                        &batches,
+                        dissemination_start,
+                    );
+                }
+                return;
+            }
+            Err(error) => {
+                crate::metrics::record_dkg_transport_event("public", "batch_publish_retry");
+                tracing::warn!(
+                    %error,
+                    session_id,
+                    attempt = %hex::encode(attempt_id.0),
+                    phase = ?phase,
+                    retry,
+                    "public DKG batch publication failed; retrying"
+                );
+                backoff = (backoff * 2).min(DKG_MAX_REPAIR_BACKOFF);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_claimed_public_batches<D>(
+    state: Arc<AppState<D>>,
+    session_id: u128,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    claim: PublicPublishClaim,
+    batches: Vec<PreparedPublicBatch>,
+    hard_deadline: Instant,
+    dissemination_start: Instant,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    match broadcast_public_batches_for_attempt(&state, session_id, attempt_id, &batches).await {
+        Ok(()) => {
+            if finish_public_publish_claim(&state, session_id, attempt_id, phase, &claim, true)
+                .await
+            {
+                record_public_batches_published(
+                    session_id,
+                    attempt_id,
+                    phase,
+                    &batches,
+                    dissemination_start,
+                );
+            }
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("public", "batch_publish_retry");
+            tracing::warn!(
+                %error,
+                session_id,
+                attempt = %hex::encode(attempt_id.0),
+                phase = ?phase,
+                "initial public DKG batch publication failed; retrying in background"
+            );
+            tokio::spawn(retry_claimed_public_batches(
+                Arc::downgrade(&state),
+                session_id,
+                attempt_id,
+                phase,
+                claim,
+                batches,
+                hard_deadline,
+                dissemination_start,
+            ));
+        }
     }
     Ok(())
 }
@@ -7376,6 +7635,81 @@ where
 #[cfg(test)]
 mod stability_tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ScriptedBroadcastTopic {
+        id: network::TopicId,
+        calls: AtomicUsize,
+        fail_on_calls: BTreeSet<usize>,
+        observed: tokio::sync::Mutex<Vec<Bytes>>,
+    }
+
+    impl ScriptedBroadcastTopic {
+        fn new(fail_on_calls: impl IntoIterator<Item = usize>) -> Self {
+            Self {
+                id: network::TopicId::new([42; 32]),
+                calls: AtomicUsize::new(0),
+                fail_on_calls: fail_on_calls.into_iter().collect(),
+                observed: tokio::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Topic for ScriptedBroadcastTopic {
+        fn id(&self) -> network::TopicId {
+            self.id
+        }
+
+        async fn broadcast(&self, data: Bytes) -> network::Result<()> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            self.observed.lock().await.push(data);
+            if self.fail_on_calls.contains(&call) {
+                return Err(network::NetworkError::Connection(format!(
+                    "scripted broadcast failure on call {call}"
+                )));
+            }
+            Ok(())
+        }
+
+        async fn recv(&self) -> network::Result<PubSubEvent> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_publication_failure_replays_the_exact_batch_from_manifest() {
+        let topic = ScriptedBroadcastTopic::new([2]);
+        let batch = PreparedPublicBatch {
+            root: [7; 32],
+            contribution_count: 1,
+            messages: vec![
+                Bytes::from_static(b"manifest"),
+                Bytes::from_static(b"chunk-0"),
+                Bytes::from_static(b"chunk-1"),
+            ],
+        };
+
+        assert!(
+            broadcast_public_batches(&topic, std::slice::from_ref(&batch))
+                .await
+                .is_err()
+        );
+        broadcast_public_batches(&topic, &[batch])
+            .await
+            .expect("the retry should restart with the identical manifest");
+
+        assert_eq!(
+            topic.observed.lock().await.as_slice(),
+            [
+                Bytes::from_static(b"manifest"),
+                Bytes::from_static(b"chunk-0"),
+                Bytes::from_static(b"manifest"),
+                Bytes::from_static(b"chunk-0"),
+                Bytes::from_static(b"chunk-1"),
+            ]
+        );
+    }
 
     fn pending_reshare_ring() -> RingPayload {
         RingPayload {
@@ -7871,6 +8205,100 @@ mod stability_tests {
                     .insert(origin.node_id, local_peer_hex);
             }
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn complete_phase_is_marked_published_only_after_retry_succeeds() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+            "complete_publication_commits_after_retry",
+            4249,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let topic = Arc::new(ScriptedBroadcastTopic::new([2]));
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            let transport = &mut states
+                .get_mut(&ceremony_id.0)
+                .expect("publication test session")
+                .transport;
+            transport.topic = Some(topic.clone());
+            transport.hard_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+            transport.public_contributions.insert(
+                PublicPhase::Commitments,
+                (1..=3)
+                    .map(|node_id| {
+                        (
+                            ParticipantRef::current(node_id),
+                            SignedPayload {
+                                origin: vec![node_id as u8],
+                                signature: vec![node_id as u8; 32],
+                                data: vec![node_id as u8; 32],
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+        }
+
+        publish_phase_if_complete(
+            state.clone(),
+            &network::V0,
+            ceremony_id.0,
+            attempt_id,
+            PublicPhase::Commitments,
+        )
+        .await
+        .expect("a transient Gossip failure should schedule publication retry");
+        assert_eq!(
+            state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| (
+                    session
+                        .transport
+                        .publishing_public_phases
+                        .contains(&PublicPhase::Commitments),
+                    session
+                        .transport
+                        .published_public_phases
+                        .contains(&PublicPhase::Commitments),
+                ))
+                .await,
+            Some((true, false)),
+            "a partial send must remain in-flight, not published"
+        );
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(INITIAL_CONTROL_RETRY_BACKOFF).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| (
+                    session
+                        .transport
+                        .publishing_public_phases
+                        .contains(&PublicPhase::Commitments),
+                    session
+                        .transport
+                        .published_public_phases
+                        .contains(&PublicPhase::Commitments),
+                ))
+                .await,
+            Some((false, true)),
+            "the full successful retry must atomically commit publication"
+        );
+        let observed = topic.observed.lock().await;
+        assert_eq!(observed.len(), 4, "manifest and chunk should be retried");
+        assert_eq!(observed[0], observed[2]);
+        assert_eq!(observed[1], observed[3]);
     }
 
     struct ScriptedPublicRepairRequester {

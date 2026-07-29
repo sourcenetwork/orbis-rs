@@ -465,6 +465,14 @@ origin. The leader then:
    count;
 5. publishes the chunks over the transient Gossip topic.
 
+Publication uses an attempt-scoped two-step claim. A phase or incremental
+message is first marked in flight and is marked published only after the
+manifest and every chunk in its immutable batch have been accepted by the
+Gossip backend. If any send fails, the leader retries the exact encoded batch
+from its manifest with bounded backoff until the attempt deadline. This makes
+partial-send retransmission idempotent and prevents both concurrent publishers
+and a transient failure from permanently suppressing publication.
+
 Reshare commitments are threshold tolerant and do not wait for every frozen
 dealer before dissemination. The leader coalesces newly retained contributions
 for 50 ms, canonically orders each incremental batch, and flushes before the
@@ -992,7 +1000,8 @@ Useful `dkg_transport_events_total` events include:
   `reshare_start_rejected`, `refresh_start_forwarded`,
   `refresh_failover_leader_selected`, and `refresh_start_rejected`;
 - public: `probe_broadcast`, `probe_broadcast_failure`, `contribution`,
-  `batch_published`, `neighbor_down`, `rejoin_isolation`, `rejoin_lag`,
+  `batch_published`, `batch_publish_retry`, `batch_publish_abandoned`,
+  `neighbor_down`, `rejoin_isolation`, `rejoin_lag`,
   `rejoin_subscription_error`, `rejoin_failure`, `repair`, `origin_repair`,
   `result_staged`, `result_stage_barrier`, `result_committed`, and
   `result_commit_barrier`;

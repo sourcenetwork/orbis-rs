@@ -407,7 +407,9 @@ pub(crate) struct DkgSessionTransportState {
         HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
     pub public_phase_started_at: HashMap<PublicPhase, Instant>,
     public_repairs: HashMap<PublicPhase, PublicRepairState>,
+    pub(crate) publishing_public_phases: HashSet<PublicPhase>,
     pub published_public_phases: HashSet<PublicPhase>,
+    pub(crate) publishing_public_messages: HashSet<MessageId>,
     pub published_public_messages: HashSet<MessageId>,
     pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
     pub acknowledged_private_messages: HashSet<MessageId>,
@@ -442,7 +444,9 @@ impl Default for DkgSessionTransportState {
             public_contributions: HashMap::new(),
             public_phase_started_at: HashMap::new(),
             public_repairs: HashMap::new(),
+            publishing_public_phases: HashSet::new(),
             published_public_phases: HashSet::new(),
+            publishing_public_messages: HashSet::new(),
             published_public_messages: HashSet::new(),
             outbound_private_messages: HashMap::new(),
             acknowledged_private_messages: HashSet::new(),
@@ -1357,6 +1361,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .flatten()
     }
 
+    pub(crate) async fn transport_topic_for_attempt(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+    ) -> Option<Arc<dyn network::Topic>> {
+        self.with_state(session_id, |state| {
+            (state.transport.attempt_id == Some(attempt_id))
+                .then(|| state.transport.topic.clone())
+                .flatten()
+        })
+        .await
+        .flatten()
+    }
+
     pub(crate) async fn transport_committees(&self, session_id: &u128) -> Option<CeremonyConfig> {
         self.with_state(session_id, |state| state.transport.committees.clone())
             .await
@@ -1643,27 +1661,96 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     .get(&phase)
                     .map_or(0, BTreeMap::len)
                     != expected
+                || transport.publishing_public_phases.contains(&phase)
                 || transport.published_public_phases.contains(&phase)
             {
                 return false;
             }
-            transport.published_public_phases.insert(phase);
+            transport.publishing_public_phases.insert(phase);
             true
         })
         .await
         .unwrap_or(false)
     }
 
-    pub(crate) async fn claim_public_message_publish(
+    pub(crate) async fn finish_public_phase_publish(
         &self,
         session_id: &u128,
         attempt_id: AttemptId,
-        message_id: MessageId,
+        phase: PublicPhase,
+        published: bool,
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            transport.attempt_id == Some(attempt_id)
-                && transport.published_public_messages.insert(message_id)
+            if transport.attempt_id != Some(attempt_id)
+                || !transport.publishing_public_phases.remove(&phase)
+            {
+                return false;
+            }
+            if published {
+                transport.published_public_phases.insert(phase);
+            }
+            true
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    pub(crate) async fn claim_public_messages_publish(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        message_ids: &[MessageId],
+    ) -> Vec<MessageId> {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return Vec::new();
+            }
+            let claimed = message_ids
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .filter(|message_id| {
+                    !transport.publishing_public_messages.contains(message_id)
+                        && !transport.published_public_messages.contains(message_id)
+                })
+                .collect::<Vec<_>>();
+            transport
+                .publishing_public_messages
+                .extend(claimed.iter().copied());
+            claimed
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    pub(crate) async fn finish_public_messages_publish(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+        message_ids: &[MessageId],
+        published: bool,
+    ) -> bool {
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id)
+                || message_ids
+                    .iter()
+                    .any(|message_id| !transport.publishing_public_messages.contains(message_id))
+            {
+                return false;
+            }
+            for message_id in message_ids {
+                transport.publishing_public_messages.remove(message_id);
+            }
+            if published {
+                transport
+                    .published_public_messages
+                    .extend(message_ids.iter().copied());
+            }
+            true
         })
         .await
         .unwrap_or(false)
@@ -3292,6 +3379,173 @@ mod tests {
             mgr.claim_public_phase_repair(&25, AttemptId([6; 32]), PublicPhase::CommitmentHashes,)
                 .await,
             PublicRepairClaimOutcome::StaleAttempt
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_publication_claim_commits_only_after_success() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(26, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([6; 32]);
+        let phase = PublicPhase::Commitments;
+        {
+            let mut states = mgr.states.write().await;
+            states.get_mut(&26).expect("session").transport.attempt_id = Some(attempt);
+        }
+        assert_eq!(
+            mgr.record_public_contribution(
+                &26,
+                attempt,
+                phase,
+                ParticipantRef::current(1),
+                network::SignedPayload {
+                    origin: vec![1],
+                    signature: vec![2],
+                    data: vec![3],
+                },
+            )
+            .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        assert!(mgr.claim_public_phase_publish(&26, attempt, phase, 1).await);
+        assert!(
+            !mgr.claim_public_phase_publish(&26, attempt, phase, 1).await,
+            "an in-flight publication must remain single-flight"
+        );
+        assert_eq!(
+            mgr.with_state(&26, |state| (
+                state.transport.publishing_public_phases.contains(&phase),
+                state.transport.published_public_phases.contains(&phase),
+            ))
+            .await,
+            Some((true, false)),
+            "claiming must not mark the phase published"
+        );
+
+        assert!(
+            mgr.finish_public_phase_publish(&26, attempt, phase, false)
+                .await
+        );
+        assert!(
+            mgr.claim_public_phase_publish(&26, attempt, phase, 1).await,
+            "a failed send must release the phase for retry"
+        );
+        assert!(
+            mgr.finish_public_phase_publish(&26, attempt, phase, true)
+                .await
+        );
+        assert_eq!(
+            mgr.with_state(&26, |state| (
+                state.transport.publishing_public_phases.contains(&phase),
+                state.transport.published_public_phases.contains(&phase),
+            ))
+            .await,
+            Some((false, true))
+        );
+        assert!(
+            !mgr.claim_public_phase_publish(&26, attempt, phase, 1).await,
+            "a successfully published phase must remain idempotent"
+        );
+    }
+
+    #[tokio::test]
+    async fn incremental_publication_claim_is_atomic_and_retryable() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(27, make_node(1), 3, |_| {}).await;
+        let attempt = AttemptId([7; 32]);
+        let first = MessageId([1; 32]);
+        let second = MessageId([2; 32]);
+        let unclaimed = MessageId([3; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            states.get_mut(&27).expect("session").transport.attempt_id = Some(attempt);
+        }
+
+        assert_eq!(
+            mgr.claim_public_messages_publish(&27, attempt, &[first, second])
+                .await,
+            vec![first, second]
+        );
+        assert!(
+            !mgr.finish_public_messages_publish(&27, attempt, &[first, unclaimed], true,)
+                .await,
+            "a mismatched completion must leave the entire claim untouched"
+        );
+        assert_eq!(
+            mgr.claim_public_messages_publish(&27, attempt, &[first, second])
+                .await,
+            Vec::<MessageId>::new()
+        );
+        assert!(
+            mgr.finish_public_messages_publish(&27, attempt, &[first, second], false)
+                .await
+        );
+        assert_eq!(
+            mgr.claim_public_messages_publish(&27, attempt, &[first, second])
+                .await,
+            vec![first, second],
+            "a failed batch must make every message retryable"
+        );
+        assert!(
+            mgr.finish_public_messages_publish(&27, attempt, &[first, second], true)
+                .await
+        );
+        assert_eq!(
+            mgr.with_state(&27, |state| (
+                state.transport.publishing_public_messages.is_empty(),
+                state.transport.published_public_messages.clone(),
+            ))
+            .await,
+            Some((true, HashSet::from([first, second])))
+        );
+        assert_eq!(
+            mgr.claim_public_messages_publish(&27, attempt, &[first, second, unclaimed])
+                .await,
+            vec![unclaimed],
+            "published IDs stay suppressed while new IDs remain claimable"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_publication_completion_cannot_mutate_the_active_attempt() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        mgr.create_session(28, make_node(1), 3, |_| {}).await;
+        let stale_attempt = AttemptId([8; 32]);
+        let active_attempt = AttemptId([9; 32]);
+        let phase = PublicPhase::Commitments;
+        let message_id = MessageId([4; 32]);
+        {
+            let mut states = mgr.states.write().await;
+            let transport = &mut states.get_mut(&28).expect("session").transport;
+            transport.attempt_id = Some(active_attempt);
+            transport.publishing_public_phases.insert(phase);
+            transport.publishing_public_messages.insert(message_id);
+        }
+
+        assert!(
+            !mgr.finish_public_phase_publish(&28, stale_attempt, phase, true)
+                .await
+        );
+        assert!(
+            !mgr.finish_public_messages_publish(&28, stale_attempt, &[message_id], true)
+                .await
+        );
+        assert_eq!(
+            mgr.with_state(&28, |state| (
+                state.transport.publishing_public_phases.contains(&phase),
+                state.transport.published_public_phases.contains(&phase),
+                state
+                    .transport
+                    .publishing_public_messages
+                    .contains(&message_id),
+                state
+                    .transport
+                    .published_public_messages
+                    .contains(&message_id),
+            ))
+            .await,
+            Some((true, false, true, false))
         );
     }
 
