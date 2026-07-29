@@ -399,7 +399,12 @@ fn ceremony_metrics(row: &SummaryRow, trials: &[TrialRecord]) -> Option<RowMetri
         min_ms,
         median_ms,
         max_ms,
-        detail: format!("median {:.2}s (min {:.2}s, max {:.2}s)", median_ms / 1000.0, min_ms / 1000.0, max_ms / 1000.0),
+        detail: format!(
+            "median {:.2}s (min {:.2}s, max {:.2}s)",
+            median_ms / 1000.0,
+            min_ms / 1000.0,
+            max_ms / 1000.0
+        ),
         scatter_seconds: trials
             .iter()
             .filter(|trial| trial_matches_row(trial, row))
@@ -1024,7 +1029,7 @@ mod tests {
         assert!(
             scale_chart(&[], &[], Operation::Dkg, "Ring size", false, |row| row
                 .ring_size)
-                .contains("No Dkg")
+            .contains("No Dkg")
         );
     }
 
