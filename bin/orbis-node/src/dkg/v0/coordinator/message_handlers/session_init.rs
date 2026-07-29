@@ -252,8 +252,8 @@ where
     let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
-    let expected_leader = canonical_leader(reshare_new_peer_node_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+    let expected_leader =
+        canonical_leader(reshare_new_peer_node_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
     if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
         return Err(DkgError::Unauthorized(format!(
             "Reshare initiator {} is not the canonical next-committee leader for ring {}",

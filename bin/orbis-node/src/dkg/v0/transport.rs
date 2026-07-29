@@ -752,7 +752,7 @@ pub enum DkgPrivateMessage {
         to: ParticipantRef,
         share_value: Vec<u8>,
         nonce: [u8; 16],
-        report_evidence: Option<SignedDkgShare>,
+        report_evidence: Option<Box<SignedDkgShare>>,
     },
     ShareAck {
         ceremony_id: CeremonyId,

@@ -1376,7 +1376,7 @@ where
         .map_err(DkgError::ProtocolError)?;
     validate_fresh_dkg_ring_payload(&ring_id, &ring)?;
     let leader = transport::canonical_leader(&ring.peer_node_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader == state.node_key {
         return coordinate_fresh(state, routes, ring_id, token_string).await;
@@ -1486,7 +1486,7 @@ where
     }
 
     let leader = transport::canonical_leader(&next_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     crate::metrics::record_dkg_transport_event("control", "reshare_next_leader_selected");
     if leader == state.node_key {
@@ -1544,8 +1544,8 @@ where
         .await
         .map_err(DkgError::ProtocolError)?;
     let (next_keys, _) = pending_reshare_parameters(&ring, expected_ring_pk)?;
-    let expected_leader = transport::canonical_leader(&next_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?;
+    let expected_leader =
+        transport::canonical_leader(&next_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
     if expected_leader != state.node_key {
         crate::metrics::record_dkg_transport_event("control", "reshare_start_rejected");
         return Err(DkgError::Unauthorized(
@@ -1584,7 +1584,7 @@ where
         .map_err(DkgError::ProtocolError)?;
     let (next_keys, next_threshold) = pending_reshare_parameters(&ring, &ring_pk)?;
     let leader = transport::canonical_leader(&next_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader != state.node_key {
         return Err(DkgError::Unauthorized(
@@ -1938,7 +1938,7 @@ where
         .map_err(DkgError::ProtocolError)?;
     validate_fresh_dkg_ring_payload(&ring_id, &ring)?;
     let leader = transport::canonical_leader(&ring.peer_node_keys)
-        .ok_or_else(|| DkgError::InvalidParticipantCount(0))?
+        .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader != state.node_key {
         return Err(DkgError::Unauthorized(
@@ -4815,7 +4815,7 @@ where
     };
     let outgoing: DkgPrivateMessage = transport::decode(&outgoing_bytes, MAX_CONTROL_MESSAGE_BYTES)
         .map_err(network::error::NetworkError::Serialization)?;
-    let exchange = timeout(PEER_RESPONSE_TIMEOUT, async {
+    timeout(PEER_RESPONSE_TIMEOUT, async {
         send_private(connection, routes.dkg_private_alpn, &outgoing).await?;
         let ack = recv_private(connection).await?;
         validate_share_ack(&outgoing, &ack).map_err(network::error::NetworkError::Protocol)?;
@@ -4835,7 +4835,7 @@ where
     })??;
     drop(permit);
     crate::metrics::record_dkg_transport_event("private", "pair_completed");
-    Ok(exchange)
+    Ok(())
 }
 
 async fn send_private(
@@ -5051,7 +5051,7 @@ where
             to.node_id,
             share_value,
             nonce,
-            report_evidence,
+            report_evidence.map(|evidence| *evidence),
         )
         .await?;
     Ok(PrivateShareCompletion {

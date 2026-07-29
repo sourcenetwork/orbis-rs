@@ -191,7 +191,7 @@ where
                 },
                 share_value,
                 nonce: share.nonce,
-                report_evidence,
+                report_evidence: report_evidence.map(Box::new),
             };
             let exact_bytes = encode(&private).map_err(DkgError::Serialization)?;
             if coord

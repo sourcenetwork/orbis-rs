@@ -337,7 +337,6 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
 mod tests {
     use super::*;
     use crate::config::{Experiment, NetworkProfile};
-    use sha2::{Digest, Sha256};
 
     fn render(network_size: usize, wan: bool) -> String {
         let mut experiment = Experiment::single(network_size, network_size, 2.min(network_size));
