@@ -61,7 +61,12 @@ use crate::helpers::node_routes::{
 };
 use crate::helpers::protocol_version::read_ring_for_route;
 #[cfg(test)]
-use crate::helpers::test_helpers::create_test_app_state_default;
+use crate::helpers::test_helpers::{
+    create_test_app_state_default, create_test_app_state_with_bulletin, TestKeyPair,
+    TEST_FRESH_DKG_RING_ID,
+};
+#[cfg(test)]
+use bulletin::dummy::DummyBulletin;
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
@@ -10523,5 +10528,196 @@ mod stability_tests {
             &BTreeSet::from([ParticipantRef::current(2)]),
         )
         .is_err());
+    }
+
+    /// Build a `PrepareSession` for a single-node (self-leader) fresh-DKG
+    /// committee, mirroring `coordinate_fresh`'s own construction exactly so
+    /// this exercises the same struct shape a retried leader-to-self or
+    /// leader-to-follower Prepare uses in production.
+    async fn fresh_self_prepare(
+        state: &Arc<AppState<crypto::DkgImpl>>,
+        ring_id: &str,
+        node_key: &str,
+        token: String,
+        ceremony_id: CeremonyId,
+    ) -> PrepareSession {
+        let leader = transport::canonical_leader(std::slice::from_ref(&node_key.to_string()))
+            .expect("single-member committee has a canonical leader")
+            .to_string();
+        let attempt_id = AttemptId::random();
+        let committee_digest =
+            transport::ceremony_committee_digest(std::slice::from_ref(&node_key.to_string()), None);
+        let resolved = resolve_node_routes(&state.bulletin, std::slice::from_ref(&node_key.to_string()))
+            .await
+            .expect("resolve self SourceHub route");
+        let peer_ids = peer_ids_from_routes(&resolved);
+        let assignments =
+            canonical_node_id_assignments_from_node_keys(std::slice::from_ref(&node_key.to_string()))
+                .expect("canonical node-ID assignment for a single-member committee");
+        let topic = transport::derive_topic_id(
+            &state.bulletin.chain_id(),
+            ring_id,
+            &committee_digest,
+            ceremony_id,
+            attempt_id,
+        );
+        let mut prepare = PrepareSession {
+            ceremony_id,
+            attempt_id,
+            config_digest: [0; 32],
+            topic_id: *topic.as_bytes(),
+            leader_node_key: leader,
+            committees: CeremonyConfig {
+                current: CommitteeConfig {
+                    node_keys: vec![node_key.to_string()],
+                    peer_routes: peer_ids,
+                    node_id_assignments: assignments,
+                    threshold: 1,
+                },
+                next: None,
+            },
+            token_string: token,
+            kind: SessionKind::Fresh,
+            pss_interval: 60,
+            policy_id: Some("test-policy".to_string()),
+            ring_id: ring_id.to_string(),
+        };
+        prepare.config_digest =
+            transport::config_digest(&prepare).expect("compute config digest for test Prepare");
+        prepare
+    }
+
+    fn fresh_test_ring(node_key: &str, threshold: u32) -> RingPayload {
+        RingPayload {
+            upgrade_info: Default::default(),
+            ring_pk: String::new(),
+            peer_node_keys: vec![node_key.to_string()],
+            new_peer_node_keys: None,
+            new_threshold: None,
+            threshold,
+            pss_interval: 60,
+            block_number_nonce: 0,
+            policy_id: Some("test-policy".to_string()),
+            reporting: Default::default(),
+        }
+    }
+
+    /// Regression test for a fix to `prepare_participant`: a retried `Prepare`
+    /// for an already-configured attempt must return the cached `Prepared`
+    /// response *without* re-running `handle_session_init`'s live SourceHub
+    /// validation. Proven here by corrupting the SourceHub ring's threshold
+    /// between the first and second call — if the retry re-validated against
+    /// SourceHub (the bug this guards against), it would fail on the
+    /// now-mismatched threshold instead of taking the fast idempotent path.
+    #[tokio::test]
+    async fn retried_prepare_skips_sourcehub_revalidation_when_already_configured() {
+        let db_name = "retried_prepare_skips_sourcehub_revalidation";
+        let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+        let node_key = app_state.node_key.clone();
+        let ring_id = TEST_FRESH_DKG_RING_ID.to_string();
+
+        bulletin
+            .set_ring(ring_id.clone(), fresh_test_ring(&node_key, 1))
+            .expect("seed fresh ring");
+
+        let state = Arc::new(app_state);
+        let token = TestKeyPair::new()
+            .create_dkg_jwt(&ring_id)
+            .expect("create JWT");
+        let ceremony_id = CeremonyId(0xC0FFEE);
+        let prepare =
+            fresh_self_prepare(&state, &ring_id, &node_key, token, ceremony_id).await;
+        let self_peer = state.network.local_peer_id();
+
+        match prepare_participant(state.clone(), &network::V0, prepare.clone(), &self_peer)
+            .await
+            .expect("first Prepare should succeed against the seeded ring")
+        {
+            DkgControlMessage::Prepared { .. } => {}
+            other => panic!("expected Prepared on the first call, got {other:?}"),
+        }
+
+        // Corrupt the ring so a fresh `handle_session_init` validation would
+        // fail with a threshold mismatch if it ran again.
+        bulletin
+            .set_ring(ring_id.clone(), fresh_test_ring(&node_key, 99))
+            .expect("corrupt ring threshold between the two Prepare calls");
+
+        match prepare_participant(state.clone(), &network::V0, prepare.clone(), &self_peer)
+            .await
+            .expect(
+                "retried Prepare must take the already-configured fast path, \
+                 not re-validate against the now-broken SourceHub ring",
+            )
+        {
+            DkgControlMessage::Prepared {
+                ceremony_id: got_ceremony,
+                attempt_id: got_attempt,
+                config_digest: got_digest,
+            } => {
+                assert_eq!(got_ceremony, prepare.ceremony_id);
+                assert_eq!(got_attempt, prepare.attempt_id);
+                assert_eq!(got_digest, prepare.config_digest);
+            }
+            other => panic!("expected Prepared on the retry, got {other:?}"),
+        }
+    }
+
+    /// A `Prepare` that conflicts with an already-configured attempt (same
+    /// session, different ceremony/attempt/config digest) must still be
+    /// rejected on retry, even though the rejection is now also detected
+    /// before the expensive SourceHub revalidation.
+    #[tokio::test]
+    async fn conflicting_prepare_is_rejected_without_sourcehub_revalidation() {
+        let db_name = "conflicting_prepare_is_rejected_without_sourcehub_revalidation";
+        let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+        let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+        let node_key = app_state.node_key.clone();
+        let ring_id = TEST_FRESH_DKG_RING_ID.to_string();
+
+        bulletin
+            .set_ring(ring_id.clone(), fresh_test_ring(&node_key, 1))
+            .expect("seed fresh ring");
+
+        let state = Arc::new(app_state);
+        let token = TestKeyPair::new()
+            .create_dkg_jwt(&ring_id)
+            .expect("create JWT");
+        let first_ceremony_id = CeremonyId(0xC0FFEE);
+        let first = fresh_self_prepare(
+            &state,
+            &ring_id,
+            &node_key,
+            token.clone(),
+            first_ceremony_id,
+        )
+        .await;
+        let self_peer = state.network.local_peer_id();
+
+        prepare_participant(state.clone(), &network::V0, first.clone(), &self_peer)
+            .await
+            .expect("first Prepare should succeed against the seeded ring");
+
+        // Corrupt the ring; the conflicting retry below must be rejected
+        // before this would even be consulted.
+        bulletin
+            .set_ring(ring_id.clone(), fresh_test_ring(&node_key, 99))
+            .expect("corrupt ring threshold before the conflicting retry");
+
+        // Same session (same ring, so same deterministic ceremony ID
+        // pattern here is reused directly), different attempt: a fresh
+        // `AttemptId` makes this a conflicting attempt for the session
+        // `prepare_participant` already configured above.
+        let mut conflicting = first.clone();
+        conflicting.attempt_id = AttemptId::random();
+        conflicting.config_digest = transport::config_digest(&conflicting)
+            .expect("compute config digest for conflicting test Prepare");
+
+        let error = prepare_participant(state.clone(), &network::V0, conflicting, &self_peer)
+            .await
+            .expect_err("a conflicting attempt for an already-configured session must be rejected");
+        assert!(matches!(error, DkgError::ProtocolError(_)));
+        assert!(error.to_string().contains("conflicts with the configured transport attempt"));
     }
 }

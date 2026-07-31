@@ -501,6 +501,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dkg::v0::session_state::ReshareParams;
     use crate::helpers::test_helpers::create_test_app_state_default;
     use crypto::r#trait::Dkg as _;
     use crypto::DkgImpl;
@@ -621,5 +622,73 @@ mod tests {
         handle_reshare_participant_set(&coord, AttemptKey::test(1004), 1, vec![1])
             .await
             .expect("a dealer that is both active and share-validated must be accepted");
+    }
+
+    /// Build a new-committee-node-1 (selector) coordinator with a reshare
+    /// session configured to accept `ReshareShareAck` messages: `reshare.params`
+    /// names this node as new-committee node 1, and the new-committee routing
+    /// map is fully populated. `active_dealers` is the frozen old-committee
+    /// dealer set the selector should check acks against.
+    async fn reshare_selector_test_coordinator(
+        db_name: &str,
+        session_id: u128,
+        active_dealers: Vec<u32>,
+    ) -> DkgCoordinator<DkgImpl> {
+        let coord =
+            reshare_receiver_test_coordinator(db_name, session_id, active_dealers, vec![]).await;
+        {
+            let mut states = coord.app_state.dkg_session_state.states.write().await;
+            let session = states
+                .get_mut(&session_id)
+                .expect("session was just created");
+            session.reshare.params = Some(ReshareParams {
+                old_share: None,
+                participating_ids: vec![1, 2],
+                new_threshold: 1,
+                new_total_nodes: 2,
+                new_peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
+                new_node_id: Some(1),
+                bulletin_post_id: "test-ring-post".to_string(),
+            });
+            session
+                .routing
+                .reshare_new_node_id_to_peer_id
+                .insert(1, "peer-a".to_string());
+            session
+                .routing
+                .reshare_new_node_id_to_peer_id
+                .insert(2, "peer-b".to_string());
+        }
+        coord
+    }
+
+    #[tokio::test]
+    async fn rejects_share_ack_for_inactive_dealer() {
+        let coord = reshare_selector_test_coordinator(
+            "reshare_share_ack_rejects_inactive_dealer",
+            2001,
+            vec![], // no active dealers at all: dealer 1 was never frozen in
+        )
+        .await;
+
+        let error = handle_reshare_share_ack(&coord, AttemptKey::test(2001), 2, 1)
+            .await
+            .expect_err("an ack naming a dealer outside active_dealers must be rejected");
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        assert!(error.to_string().contains("inactive dealer"));
+    }
+
+    #[tokio::test]
+    async fn accepts_share_ack_for_active_dealer() {
+        let coord = reshare_selector_test_coordinator(
+            "reshare_share_ack_accepts_active_dealer",
+            2002,
+            vec![1], // dealer 1 is frozen into the active set
+        )
+        .await;
+
+        handle_reshare_share_ack(&coord, AttemptKey::test(2002), 2, 1)
+            .await
+            .expect("an ack naming an active dealer must be accepted");
     }
 }
