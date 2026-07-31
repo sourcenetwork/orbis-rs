@@ -981,9 +981,7 @@ const CSS: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Experiment, Operation, RingCase};
-    use crate::results::{HostMetadata, RunStatus};
-    use sha2::{Digest, Sha256};
+    use crate::config::{Operation, RingCase};
 
     fn sample_trial() -> TrialRecord {
         TrialRecord {
