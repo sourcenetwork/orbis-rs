@@ -65,10 +65,10 @@ use crate::helpers::test_helpers::{
     create_test_app_state_default, create_test_app_state_with_bulletin, TestKeyPair,
     TEST_FRESH_DKG_RING_ID,
 };
-#[cfg(test)]
-use bulletin::dummy::DummyBulletin;
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::ring_state::RingShareBundle;
+#[cfg(test)]
+use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::RingPayload;
 use crypto::SignImpl;
 
@@ -10547,13 +10547,15 @@ mod stability_tests {
         let attempt_id = AttemptId::random();
         let committee_digest =
             transport::ceremony_committee_digest(std::slice::from_ref(&node_key.to_string()), None);
-        let resolved = resolve_node_routes(&state.bulletin, std::slice::from_ref(&node_key.to_string()))
-            .await
-            .expect("resolve self SourceHub route");
+        let resolved =
+            resolve_node_routes(&state.bulletin, std::slice::from_ref(&node_key.to_string()))
+                .await
+                .expect("resolve self SourceHub route");
         let peer_ids = peer_ids_from_routes(&resolved);
-        let assignments =
-            canonical_node_id_assignments_from_node_keys(std::slice::from_ref(&node_key.to_string()))
-                .expect("canonical node-ID assignment for a single-member committee");
+        let assignments = canonical_node_id_assignments_from_node_keys(std::slice::from_ref(
+            &node_key.to_string(),
+        ))
+        .expect("canonical node-ID assignment for a single-member committee");
         let topic = transport::derive_topic_id(
             &state.bulletin.chain_id(),
             ring_id,
@@ -10626,8 +10628,7 @@ mod stability_tests {
             .create_dkg_jwt(&ring_id)
             .expect("create JWT");
         let ceremony_id = CeremonyId(0xC0FFEE);
-        let prepare =
-            fresh_self_prepare(&state, &ring_id, &node_key, token, ceremony_id).await;
+        let prepare = fresh_self_prepare(&state, &ring_id, &node_key, token, ceremony_id).await;
         let self_peer = state.network.local_peer_id();
 
         match prepare_participant(state.clone(), &network::V0, prepare.clone(), &self_peer)
@@ -10649,8 +10650,7 @@ mod stability_tests {
             .expect(
                 "retried Prepare must take the already-configured fast path, \
                  not re-validate against the now-broken SourceHub ring",
-            )
-        {
+            ) {
             DkgControlMessage::Prepared {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
@@ -10718,6 +10718,8 @@ mod stability_tests {
             .await
             .expect_err("a conflicting attempt for an already-configured session must be rejected");
         assert!(matches!(error, DkgError::ProtocolError(_)));
-        assert!(error.to_string().contains("conflicts with the configured transport attempt"));
+        assert!(error
+            .to_string()
+            .contains("conflicts with the configured transport attempt"));
     }
 }
