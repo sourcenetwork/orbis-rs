@@ -103,7 +103,7 @@ lazy_static! {
     // Ingress-limiting metrics (expected/normal — separate from errors)
     pub static ref P2P_INGRESS_DROPPED_TOTAL: CounterVec = register_counter_vec!(
         "p2p_ingress_dropped_total",
-        "Inbound streams dropped by the router before handler execution, by limiting reason",
+        "Inbound direct streams and PubSub frames dropped before application processing, by limiting reason",
         &["protocol", "reason"]
     )
     .expect("failed to register p2p_ingress_dropped_total");
@@ -210,7 +210,7 @@ pub fn record_gossip_frame_rejected(protocol: &[u8], reason: &'static str) {
         .inc();
 }
 
-/// Record an inbound stream dropped by the router before handler execution.
+/// Record an inbound work item dropped before application processing.
 /// `reason` is one of `"rate_limit"` or `"concurrency_limit"`.
 pub fn record_ingress_dropped(protocol: &[u8], reason: &'static str) {
     let label = protocol_label(protocol);

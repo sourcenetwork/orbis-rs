@@ -1,7 +1,4 @@
 use crate::app_state::AppState;
-use crate::constants::{
-    NETWORK_MAX_CONCURRENT_INBOUND_STREAMS, NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND,
-};
 use crate::dkg::v0::network::{DkgControlHandler, DkgPrivateHandler};
 use crate::helpers::protocol_handler::GenericProtocolHandler;
 use crate::pre::v0::coordinator::PreCoordinator;
@@ -10,14 +7,6 @@ use crate::sign::v0::coordinator::SignCoordinator;
 use network::error::Result as NetworkResult;
 use network::Router;
 use std::sync::Arc;
-
-fn apply_ingress_limits(
-    router_builder: Box<dyn network::RouterBuilder>,
-) -> Box<dyn network::RouterBuilder> {
-    router_builder
-        .max_concurrent_streams(NETWORK_MAX_CONCURRENT_INBOUND_STREAMS)
-        .max_streams_per_peer_per_second(NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND)
-}
 
 /// Create a router with both DKG and PRE protocol handlers
 #[cfg(test)]
@@ -49,7 +38,7 @@ where
         + Sync
         + 'static,
 {
-    let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
+    let mut router_builder = network.create_router_builder()?;
     for version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let routes = network::routes_for_version(*version)
             .expect("supported protocol version must have registered routes");
@@ -109,7 +98,7 @@ where
         + Sync
         + 'static,
 {
-    let mut router_builder = apply_ingress_limits(network.create_router_builder()?);
+    let mut router_builder = network.create_router_builder()?;
     for version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let routes = network::routes_for_version(*version)
             .expect("supported protocol version must have registered routes");

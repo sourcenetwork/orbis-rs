@@ -3,12 +3,14 @@
 //! This API transports only opaque bytes. Protocol crates should wrap it in a
 //! type-safe publisher that accepts public message variants only.
 
-use crate::{PeerId, Result};
+use crate::{IngressDropReason, PeerId, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
+
+use crate::ingress::IngressLease;
 
 /// A 32-byte topic identifier.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,6 +38,10 @@ pub struct AuthenticatedMessage {
     pub origin: PeerId,
     pub delivered_from: PeerId,
     pub data: Bytes,
+    /// Holds shared ingress capacity until the application finishes processing
+    /// a message received from the network. Embedded-signature verification does
+    /// not attach a lease.
+    pub(crate) ingress_lease: Option<Arc<IngressLease>>,
 }
 
 /// Endpoint-identity-signed opaque payload suitable for embedding in a relayed
@@ -67,6 +73,14 @@ pub enum PubSubEvent {
     Rejected {
         delivered_from: PeerId,
         reason: PubSubRejectReason,
+    },
+    /// An application frame was dropped by configured ingress admission.
+    /// This is an availability event, not failed authentication or evidence of
+    /// publisher misconduct. Consumers must keep the subscription and use their
+    /// ordinary completeness-repair policy.
+    IngressDropped {
+        delivered_from: PeerId,
+        reason: IngressDropReason,
     },
     /// The local subscriber stopped consuming quickly enough. Protocols must
     /// rejoin and repair their expected-message set before advancing.

@@ -132,7 +132,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let mut network_builder = network::NetworkImpl::builder()
             .secret_key(secret_key)
             .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
-            .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS);
+            .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
+            .max_concurrent_ingress_work(constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK)
+            .max_ingress_events_per_peer_per_second(
+                constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+            );
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \

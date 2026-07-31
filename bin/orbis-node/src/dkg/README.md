@@ -502,6 +502,15 @@ failures instead: they enter repair and eventually time out rather than being
 treated as proof of malicious behavior. The leader is a relay and ordering
 point, not a substitute signer.
 
+Direct protocol streams and Gossip application frames share one node-wide
+ingress admission controller. A Gossip frame is charged to its
+transport-authenticated immediate neighbor before envelope decoding or endpoint
+signature verification. Frames exceeding the configured per-peer rate or
+global concurrency limit are dropped without queueing. Such a drop is an
+availability loss: it does not abort the attempt, attribute misconduct, or
+force a subscription rejoin. Missing public data follows the normal repair and
+timeout paths below.
+
 ### Completeness repair
 
 Gossip is the efficient dissemination path, not the sole source of truth. Every
@@ -840,6 +849,8 @@ be used to hide a dropped message; the shorter loops must repair it.
 | DKG transport hard attempt deadline | 15 minutes | Fresh DKG, refresh, or reshare attempt |
 | QUIC keepalive | 10 seconds | Active peer connections |
 | QUIC idle timeout | 5 minutes | Connection path health and inter-phase pauses |
+| Concurrent P2P ingress work | 1,024 | Direct handlers and Gossip application frames combined |
+| P2P ingress events per immediate peer | 512/second | Direct streams and Gossip application frames combined |
 
 DKG transport sessions remain repairable until explicit completion, explicit
 abort, or the 15-minute hard attempt deadline. The expiration worker enforces

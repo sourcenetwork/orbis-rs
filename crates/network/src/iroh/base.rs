@@ -15,11 +15,12 @@ use std::time::Instant;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::error::{NetworkError, Result};
+use crate::ingress::IngressController;
 use crate::iroh::pubsub::IrohPubSub;
 use crate::iroh::router::IrohRouterBuilder;
 use crate::metrics;
 use crate::r#trait::{
-    Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler,
+    Connection, Message, Network, NetworkIngressLimits, PeerConnection, PeerId, ProtocolHandler,
     RouterBuilder as RouterBuilderTrait,
 };
 
@@ -28,12 +29,15 @@ use crate::r#trait::{
 pub struct IrohNetworkConfig {
     /// Maximum size for receiving messages (in bytes)
     pub max_message_size: usize,
+    /// Admission limits shared by direct protocol streams and PubSub frames.
+    pub ingress_limits: NetworkIngressLimits,
 }
 
 impl Default for IrohNetworkConfig {
     fn default() -> Self {
         Self {
             max_message_size: 1024 * 1024, // 1MB default
+            ingress_limits: NetworkIngressLimits::default(),
         }
     }
 }
@@ -44,6 +48,7 @@ pub struct IrohNetwork {
     local_peer_id: PeerId,
     config: IrohNetworkConfig,
     handlers: Arc<RwLock<HashMap<Vec<u8>, Arc<dyn ProtocolHandler>>>>,
+    ingress: Arc<IngressController>,
     gossip: iroh_gossip::net::Gossip,
     pubsub: Arc<IrohPubSub>,
 }
@@ -93,6 +98,20 @@ impl IrohNetworkBuilder {
     /// Set the maximum message size
     pub fn max_message_size(mut self, size: usize) -> Self {
         self.config.max_message_size = size;
+        self
+    }
+
+    /// Set the maximum number of concurrently executing inbound application
+    /// work items across direct protocol streams and PubSub frames.
+    pub fn max_concurrent_ingress_work(mut self, limit: usize) -> Self {
+        self.config.ingress_limits.max_concurrent_work = limit;
+        self
+    }
+
+    /// Set the maximum direct streams and PubSub frames accepted from one
+    /// immediate peer in a one-second window.
+    pub fn max_ingress_events_per_peer_per_second(mut self, limit: usize) -> Self {
+        self.config.ingress_limits.max_events_per_peer_per_second = limit;
         self
     }
 
@@ -199,10 +218,12 @@ impl IrohNetworkBuilder {
         let gossip = iroh_gossip::net::Gossip::builder()
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());
+        let ingress = Arc::new(IngressController::new(self.config.ingress_limits));
         let pubsub = Arc::new(IrohPubSub::new(
             endpoint.clone(),
             gossip.clone(),
             static_provider,
+            Arc::clone(&ingress),
         ));
 
         Ok(IrohNetwork {
@@ -210,6 +231,7 @@ impl IrohNetworkBuilder {
             local_peer_id: peer_id,
             config: self.config,
             handlers: Arc::new(RwLock::new(HashMap::new())),
+            ingress,
             gossip,
             pubsub,
         })
@@ -323,6 +345,8 @@ impl Network for IrohNetwork {
         Ok(Box::new(IrohRouterBuilder::new(
             self.endpoint.clone(),
             Some(self.gossip.clone()),
+            self.config.max_message_size,
+            Arc::clone(&self.ingress),
         )))
     }
 }

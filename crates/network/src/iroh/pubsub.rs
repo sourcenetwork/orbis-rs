@@ -11,17 +11,19 @@ use iroh_gossip::net::Gossip;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 use tokio::sync::Mutex;
 
 use crate::error::{NetworkError, Result};
+use crate::ingress::IngressController;
 use crate::metrics;
 use crate::pubsub::{
     AuthenticatedMessage, PubSub, PubSubEvent, PubSubRejectReason, SignedPayload, Topic, TopicId,
 };
-use crate::PeerId;
+use crate::{IngressDropReason, PeerId};
 
 const SIGNING_DOMAIN: &[u8] = b"orbis-authenticated-pubsub-v1";
 
@@ -109,6 +111,7 @@ fn verify_signed(domain: &[u8], payload: &SignedPayload) -> Result<Authenticated
         origin: PeerId::from_bytes(origin.as_bytes()),
         delivered_from: PeerId::from_bytes(origin.as_bytes()),
         data: payload.data.clone().into(),
+        ingress_lease: None,
     })
 }
 
@@ -151,14 +154,21 @@ pub struct IrohPubSub {
     endpoint: Endpoint,
     gossip: Gossip,
     static_provider: StaticProvider,
+    ingress: Arc<IngressController>,
 }
 
 impl IrohPubSub {
-    pub(crate) fn new(endpoint: Endpoint, gossip: Gossip, static_provider: StaticProvider) -> Self {
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        gossip: Gossip,
+        static_provider: StaticProvider,
+        ingress: Arc<IngressController>,
+    ) -> Self {
         Self {
             endpoint,
             gossip,
             static_provider,
+            ingress,
         }
     }
 }
@@ -191,6 +201,29 @@ struct IrohTopic {
     sender: GossipSender,
     receiver: Mutex<GossipReceiver>,
     neighbors: StdMutex<HashSet<PublicKey>>,
+    ingress: Arc<IngressController>,
+    rate_limited_frames: AtomicU64,
+    concurrency_limited_frames: AtomicU64,
+}
+
+impl IrohTopic {
+    fn record_ingress_drop(&self, delivered_from: &PeerId, reason: IngressDropReason) {
+        metrics::record_ingress_dropped(iroh_gossip::ALPN, reason.as_str());
+        let counter = match reason {
+            IngressDropReason::RateLimit => &self.rate_limited_frames,
+            IngressDropReason::ConcurrencyLimit => &self.concurrency_limited_frames,
+        };
+        let dropped = counter.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+        if dropped == 1 || dropped.is_power_of_two() {
+            tracing::warn!(
+                topic = %hex::encode(self.id.as_bytes()),
+                delivered_from = %hex::encode(delivered_from.as_bytes()),
+                reason = reason.as_str(),
+                dropped_frames = dropped,
+                "dropping Gossip frame at network ingress"
+            );
+        }
+    }
 }
 
 impl Drop for IrohTopic {
@@ -263,7 +296,7 @@ impl Topic for IrohTopic {
             .ok_or_else(|| NetworkError::Connection("gossip topic closed".to_string()))?
             .map_err(|error| NetworkError::Protocol(error.to_string()))?;
 
-        match event {
+        let event = match event {
             Event::NeighborUp(peer) => {
                 if self
                     .neighbors
@@ -275,7 +308,7 @@ impl Topic for IrohTopic {
                         .with_label_values(&[metrics::protocol_label(iroh_gossip::ALPN).as_str()])
                         .inc();
                 }
-                Ok(PubSubEvent::NeighborUp(PeerId::from_bytes(peer.as_bytes())))
+                PubSubEvent::NeighborUp(PeerId::from_bytes(peer.as_bytes()))
             }
             Event::NeighborDown(peer) => {
                 if self
@@ -288,11 +321,9 @@ impl Topic for IrohTopic {
                         .with_label_values(&[metrics::protocol_label(iroh_gossip::ALPN).as_str()])
                         .dec();
                 }
-                Ok(PubSubEvent::NeighborDown(PeerId::from_bytes(
-                    peer.as_bytes(),
-                )))
+                PubSubEvent::NeighborDown(PeerId::from_bytes(peer.as_bytes()))
             }
-            Event::Lagged => Ok(PubSubEvent::Lagged),
+            Event::Lagged => PubSubEvent::Lagged,
             Event::Received(message) => {
                 metrics::record_message_received(
                     iroh_gossip::ALPN,
@@ -300,18 +331,32 @@ impl Topic for IrohTopic {
                     start.elapsed().as_secs_f64(),
                 );
                 let delivered_from = PeerId::from_bytes(message.delivered_from.as_bytes());
-                match authenticate_topic_frame(self.id, delivered_from.clone(), &message.content) {
-                    Ok(authenticated) => Ok(PubSubEvent::Received(authenticated)),
+                let lease = match self.ingress.try_admit(&delivered_from).await {
+                    Ok(lease) => lease,
                     Err(reason) => {
-                        metrics::record_gossip_frame_rejected(iroh_gossip::ALPN, reason.as_str());
-                        Ok(PubSubEvent::Rejected {
+                        self.record_ingress_drop(&delivered_from, reason);
+                        return Ok(PubSubEvent::IngressDropped {
                             delivered_from,
                             reason,
-                        })
+                        });
+                    }
+                };
+                match authenticate_topic_frame(self.id, delivered_from.clone(), &message.content) {
+                    Ok(mut authenticated) => {
+                        authenticated.ingress_lease = Some(Arc::new(lease));
+                        PubSubEvent::Received(authenticated)
+                    }
+                    Err(reason) => {
+                        metrics::record_gossip_frame_rejected(iroh_gossip::ALPN, reason.as_str());
+                        PubSubEvent::Rejected {
+                            delivered_from,
+                            reason,
+                        }
                     }
                 }
             }
-        }
+        };
+        Ok(event)
     }
 }
 
@@ -359,6 +404,9 @@ impl PubSub for IrohPubSub {
             sender,
             receiver: Mutex::new(receiver),
             neighbors: StdMutex::new(HashSet::new()),
+            ingress: Arc::clone(&self.ingress),
+            rate_limited_frames: AtomicU64::new(0),
+            concurrency_limited_frames: AtomicU64::new(0),
         }))
     }
 }

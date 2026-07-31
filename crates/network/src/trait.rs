@@ -10,20 +10,38 @@ use std::sync::Arc;
 
 use crate::pubsub::PubSub;
 
-/// Inbound stream limits enforced by routers before protocol handlers run.
+/// Inbound work limits shared by direct protocol streams and PubSub frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RouterIngressLimits {
-    /// Maximum concurrently executing handler tasks per registered protocol.
-    pub max_concurrent_streams: usize,
-    /// Maximum accepted streams per remote peer per one-second window.
-    pub max_streams_per_peer_per_second: usize,
+pub struct NetworkIngressLimits {
+    /// Maximum concurrently executing inbound application work across transports.
+    pub max_concurrent_work: usize,
+    /// Maximum accepted direct streams and PubSub frames from one immediate peer
+    /// per one-second window.
+    pub max_events_per_peer_per_second: usize,
 }
 
-impl Default for RouterIngressLimits {
+impl Default for NetworkIngressLimits {
     fn default() -> Self {
         Self {
-            max_concurrent_streams: 1024,
-            max_streams_per_peer_per_second: 512,
+            max_concurrent_work: 1024,
+            max_events_per_peer_per_second: 512,
+        }
+    }
+}
+
+/// Bounded reasons why authenticated-peer ingress was dropped before
+/// application processing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngressDropReason {
+    RateLimit,
+    ConcurrencyLimit,
+}
+
+impl IngressDropReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate_limit",
+            Self::ConcurrencyLimit => "concurrency_limit",
         }
     }
 }
@@ -126,12 +144,6 @@ pub trait RouterBuilder: Send + Sync {
 
     /// Set the maximum message size for connections
     fn max_message_size(self: Box<Self>, size: usize) -> Box<dyn RouterBuilder>;
-
-    /// Set the maximum concurrently executing inbound streams per protocol.
-    fn max_concurrent_streams(self: Box<Self>, limit: usize) -> Box<dyn RouterBuilder>;
-
-    /// Set the maximum accepted inbound streams per peer per one-second window.
-    fn max_streams_per_peer_per_second(self: Box<Self>, limit: usize) -> Box<dyn RouterBuilder>;
 
     /// Build and spawn the router with all registered handlers
     fn spawn(self: Box<Self>) -> Result<Box<dyn Router>>;

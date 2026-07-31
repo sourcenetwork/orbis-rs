@@ -4448,6 +4448,14 @@ async fn topic_listener<D>(
                     );
                 }
             }
+            Ok(PubSubEvent::IngressDropped {
+                delivered_from: _,
+                reason: _,
+            }) => {
+                // Ingress overload is ordinary availability loss. The network
+                // adapter already records bounded metrics/logs; keep this
+                // subscription and let manifest/periodic repair recover gaps.
+            }
             Ok(PubSubEvent::NeighborUp(peer)) => {
                 neighbor_tracker.neighbor_up(&peer);
             }

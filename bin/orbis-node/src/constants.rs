@@ -242,20 +242,17 @@ pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1_000;
 /// QUIC keep-alive interval for active peer connections.
 pub const NETWORK_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 
-/// Maximum concurrently executing inbound P2P handler tasks per protocol.
+/// Maximum concurrently executing inbound P2P application work items.
 ///
-/// The iroh router accepts one QUIC stream per node-to-node request/session.
-/// This cap prevents a single protocol from spawning unbounded handler tasks
-/// under flood or retry storms. Excess streams are dropped before protocol
-/// deserialization.
-pub const NETWORK_MAX_CONCURRENT_INBOUND_STREAMS: usize = 1024;
+/// Direct QUIC streams and authenticated Gossip frames share this node-wide
+/// budget. Excess work is dropped before protocol deserialization.
+pub const NETWORK_MAX_CONCURRENT_INGRESS_WORK: usize = 1024;
 
-/// Maximum inbound P2P streams accepted from one peer per protocol per second.
+/// Maximum inbound P2P work items accepted from one immediate peer per second.
 ///
-/// DKG, PRE, and Sign traffic should stay well below this in normal operation;
-/// the limit primarily protects handler allocation and downstream crypto work
-/// from cheap stream-open floods.
-pub const NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND: usize = 512;
+/// Direct streams and Gossip frames count against the same peer budget. DKG,
+/// PRE, and Sign traffic should stay well below this in normal operation.
+pub const NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND: usize = 512;
 
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
