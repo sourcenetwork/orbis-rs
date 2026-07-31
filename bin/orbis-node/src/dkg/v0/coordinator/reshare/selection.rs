@@ -223,6 +223,13 @@ where
                     state.node.total_nodes()
                 )));
             }
+            let dealer = ParticipantRef::current(dealer_id);
+            if !state.transport.active_dealers.contains(&dealer) {
+                return Err(DkgError::Unauthorized(format!(
+                    "ReshareShareAck names inactive dealer {}",
+                    dealer_id
+                )));
+            }
 
             let inserted = state
                 .reshare
