@@ -180,7 +180,7 @@ fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
 }
 fn default_sourcehub_ref() -> String {
-    "392d69c6f8c10c2f9f9bf45eda882d2da2ab854c".to_string()
+    "c67e328382ab55d69318ed6e7778d4827996429f".to_string()
 }
 fn default_sourcehub_replicas() -> usize {
     1

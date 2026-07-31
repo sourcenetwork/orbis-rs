@@ -3593,6 +3593,34 @@ where
             "Prepare configuration digest mismatch".into(),
         ));
     }
+
+    // A lost Prepared response may cause the leader to retry the exact request.
+    // Check this cheap, session-local fast path before paying for SourceHub
+    // reshare route resolution or session-init validation below: both make
+    // live chain reads, and retries must stay cheap or preparation cannot
+    // tolerate the network hiccups it exists to survive. `transport_configuration`
+    // safely returns `None` when no session has been created yet, so this is
+    // sound to check before `handle_session_init` creates one.
+    if let Some((ceremony_id, attempt_id, config_digest)) = state
+        .dkg_session_state
+        .transport_configuration(&prepare.ceremony_id.0)
+        .await
+    {
+        if ceremony_id == prepare.ceremony_id
+            && attempt_id == prepare.attempt_id
+            && config_digest == prepare.config_digest
+        {
+            return Ok(DkgControlMessage::Prepared {
+                ceremony_id: prepare.ceremony_id,
+                attempt_id: prepare.attempt_id,
+                config_digest: prepare.config_digest,
+            });
+        }
+        return Err(DkgError::ProtocolError(
+            "Prepare conflicts with the configured transport attempt".into(),
+        ));
+    }
+
     validate_reshare_transport_routes(&state, &prepare).await?;
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     handle_session_init(
@@ -3612,9 +3640,11 @@ where
     )
     .await?;
 
-    // A lost Prepared response may cause the leader to retry the exact request.
-    // Do not create and immediately drop another Gossip subscription in that case;
-    // doing so emits neighbor churn across the whole transient mesh.
+    // Do not create and immediately drop another Gossip subscription for a
+    // retried Prepare; doing so emits neighbor churn across the whole
+    // transient mesh. This second check catches the case where session_init
+    // ran concurrently (e.g. two in-flight retries) and the transport got
+    // configured by the other task while this one was awaiting SourceHub.
     if let Some((ceremony_id, attempt_id, config_digest)) = state
         .dkg_session_state
         .transport_configuration(&prepare.ceremony_id.0)
