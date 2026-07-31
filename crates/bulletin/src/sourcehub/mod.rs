@@ -340,19 +340,45 @@ impl SourceHubBulletin {
         // account_number is now wrong and every signature this signer
         // produces will fail verification. Resync before the first outgoing
         // transaction below.
-        client
+        let (_, sequence) = client
             .chain_client
             .resync_account()
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
 
-        // Transfer to self to register account on-chain (registers public key)
-        let result = client
-            .chain_client
-            .transfer(&address, 1u64, &denom)
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-        check_result(result, "register account self-transfer")?;
+        // Transfer to self to register account on-chain (registers public key).
+        // This is this signing key's first-ever transaction, so a nonzero
+        // resynced sequence means an earlier boot of this same node (e.g. a
+        // process restart) already sent it — most likely still landing on
+        // chain right as this process started. Sending it again would either
+        // be a redundant duplicate or, if the earlier transaction had not yet
+        // committed when we resynced, collide on the same sequence number and
+        // fail outright. Either way the account is already registered, so
+        // there is nothing left to do here.
+        if sequence == 0 {
+            match client.chain_client.transfer(&address, 1u64, &denom).await {
+                Ok(result) => check_result(result, "register account self-transfer")?,
+                Err(error) => {
+                    // The check above is not atomic with this transfer: an
+                    // earlier boot's still-in-flight registration can still
+                    // land between the resync and this call, so this failure
+                    // may be that same race rather than a real problem.
+                    // Re-check before treating it as fatal.
+                    let (_, sequence_after_failure) = client
+                        .chain_client
+                        .resync_account()
+                        .await
+                        .map_err(|resync_err| {
+                            BulletinError::ChainError(format!(
+                                "register account self-transfer failed: {error}; additionally failed to resync account: {resync_err}"
+                            ))
+                        })?;
+                    if sequence_after_failure == 0 {
+                        return Err(BulletinError::ChainError(error.to_string()));
+                    }
+                }
+            }
+        }
 
         Ok(client)
     }
