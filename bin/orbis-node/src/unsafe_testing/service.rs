@@ -12,6 +12,7 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::AbandonedPssSession;
+use crate::dkg::v0::transport::{AttemptKey, CeremonyId};
 use crate::pre::v0::coordinator::PreCoordinator;
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::RelayRequestStatement;
@@ -229,6 +230,14 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         let app_state = self.app_state.clone().ok_or_else(|| {
             Status::failed_precondition("unsafe DKG evidence injection requires app state")
         })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
         let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
 
         let from_node_id = evidence.statement.from_node_id;
@@ -237,7 +246,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         let nonce = evidence.statement.nonce;
         let verified = verify_share_evidence::<DkgImpl>(
             &coordinator,
-            session_id,
+            attempt,
             from_node_id,
             to_node_id,
             &share_value,
@@ -254,7 +263,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             ));
         }
 
-        queue_or_relay_invalid_share::<DkgImpl>(&coordinator, session_id, verified)
+        queue_or_relay_invalid_share::<DkgImpl>(&coordinator, attempt, verified)
             .await
             .map_err(|error| Status::failed_precondition(error.to_string()))?;
 
@@ -281,16 +290,19 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         let app_state = self.app_state.clone().ok_or_else(|| {
             Status::failed_precondition("unsafe DKG evidence injection requires app state")
         })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
         let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
 
-        queue_or_relay_equivocation::<DkgImpl>(
-            &coordinator,
-            session_id,
-            commitment_a,
-            commitment_b,
-        )
-        .await
-        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+        queue_or_relay_equivocation::<DkgImpl>(&coordinator, attempt, commitment_a, commitment_b)
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
 
         Ok(Response::new(SubmitDkgEquivocationEvidenceResponse {}))
     }
