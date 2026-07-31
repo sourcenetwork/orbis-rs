@@ -8,6 +8,7 @@ use crate::dkg::v0::{
     transport::AttemptKey,
 };
 use crate::helpers::identity::extract_node_part;
+use crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys;
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, create_test_app_state_default,
@@ -1130,6 +1131,94 @@ async fn test_fresh_session_init_publishes_complete_state() {
     assert_eq!(snapshot.5.get(&1), Some(&local_peer_id_hex));
     assert_eq!(snapshot.6.get(&local_peer_id_hex), Some(&1));
 
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_fresh_session_init_rejects_swapped_sourcehub_route_bindings() {
+    let db_name = "test_fresh_session_init_rejects_swapped_routes";
+    let db_path = test_db_path(db_name);
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_route = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let node_b = "route-binding-node-b".to_string();
+    let node_c = "route-binding-node-c".to_string();
+    let route_b = "bb".repeat(32);
+    let route_c = "cc".repeat(32);
+
+    for (node_key, peer_id) in [
+        (node_b.clone(), route_b.clone()),
+        (node_c.clone(), route_c.clone()),
+    ] {
+        bulletin
+            .set_node_info(
+                node_key,
+                NodeInfo {
+                    peer_id,
+                    controller_key: "controller".to_string(),
+                    whitelisted_policy_ids: vec![],
+                    whitelisted_ring_ids: vec![TEST_FRESH_DKG_RING_ID.to_string()],
+                },
+            )
+            .expect("seed NodeInfo");
+    }
+    let peer_node_keys = vec![local_node_key.clone(), node_b, node_c];
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: String::new(),
+                peer_node_keys: peer_node_keys.clone(),
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 2,
+                pss_interval: 60,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+                reporting: Default::default(),
+            },
+        )
+        .expect("seed fresh ring");
+
+    let app_state = Arc::new(app_state);
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+    let session_id = 222_334u128;
+    let session_init = TestSessionInit {
+        session_id,
+        threshold: 2,
+        total_participants: 3,
+        // The route set is authoritative, but B and C are bound to the wrong
+        // node keys. Keeping the leader/local binding correct demonstrates the
+        // permutation that the old unordered-set check accepted.
+        peer_ids: vec![local_peer_route, route_c, route_b],
+        peer_node_keys: peer_node_keys.clone(),
+        node_id_assignments: canonical_node_id_assignments_from_node_keys(&peer_node_keys)
+            .expect("canonical assignments"),
+        token_string: TestKeyPair::new()
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("create JWT"),
+        kind: SessionKind::Fresh,
+        pss_interval: 60,
+        policy_id: Some("test-policy".to_string()),
+        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+    };
+    let sender = app_state.network.local_peer_id().clone();
+
+    let error = invoke_session_init(&coordinator, session_init, &sender)
+        .await
+        .expect_err("swapped SourceHub route bindings must be rejected");
+
+    assert!(matches!(error, DkgError::Unauthorized(_)));
+    assert!(error.to_string().contains("SourceHub NodeInfo"));
+    assert!(
+        !app_state
+            .dkg_session_state
+            .session_exists(&session_id)
+            .await,
+        "route-binding rejection must happen before session creation"
+    );
     cleanup_db(&db_path);
 }
 

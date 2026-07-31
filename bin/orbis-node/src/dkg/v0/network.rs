@@ -57,7 +57,7 @@ use crate::helpers::auth::current_unix_time;
 use crate::helpers::identity::{extract_node_part, is_self_peer_id, validate_peer_id};
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
-    NodeRoute,
+    validate_node_route_bindings, NodeRoute,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
 #[cfg(test)]
@@ -1049,18 +1049,14 @@ fn validate_reshare_next_transport_committee(
             "resolved SourceHub routes do not cover the reshare next committee".into(),
         ));
     }
-    let supplied_routes: BTreeMap<_, _> = next
-        .node_keys
-        .iter()
-        .zip(&next.peer_routes)
-        .map(|(node_key, peer_route)| (node_key.as_str(), peer_route.as_str()))
-        .collect();
-    if supplied_routes.len() != next.node_keys.len() || supplied_routes != expected_routes {
+    if let Err(detail) =
+        validate_node_route_bindings(&next.node_keys, &next.peer_routes, resolved_routes)
+    {
         // TODO(reporting): retain evidence that the authenticated reshare
         // leader supplied transport routes contradicting SourceHub NodeInfo.
-        return Err(DkgError::Unauthorized(
-            "Reshare next transport routes do not match resolved SourceHub NodeInfo routes".into(),
-        ));
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare next transport routes do not match resolved SourceHub NodeInfo routes: {detail}"
+        )));
     }
     Ok(())
 }

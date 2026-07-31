@@ -98,13 +98,14 @@ where
     let routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Refresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let route_peer_ids = peer_ids_from_routes(&routes);
-    if !peers::same_peer_set(peer_ids, &route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Refresh peer_ids do not match NodeInfo routes for ring {}",
-            ring_pk_hex
-        )));
-    }
     let local_node_peer_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
     if node_key_for_peer(&routes, &local_node_peer_hex) != Some(coord.app_state.node_key.as_str()) {
         return Err(DkgError::Unauthorized(format!(
@@ -233,13 +234,14 @@ where
     let old_routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Reshare old current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let old_route_peer_ids = peer_ids_from_routes(&old_routes);
-    if !peers::same_peer_set(peer_ids, &old_route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare old peer_ids do not match NodeInfo routes for ring {}",
-            ring_pk_hex
-        )));
-    }
     let old_route_assignments =
         canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
             .map_err(DkgError::InvalidInput)?;
@@ -357,13 +359,14 @@ where
     let routes = resolve_node_routes(&coord.app_state.bulletin, peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Fresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let route_peer_ids = peer_ids_from_routes(&routes);
-    if !peers::same_peer_set(peer_ids, &route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh peer_ids do not match NodeInfo routes for ring {}",
-            ring_id
-        )));
-    }
     let route_assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
         .map_err(DkgError::InvalidInput)?;
     let route_map =
