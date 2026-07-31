@@ -28,9 +28,10 @@ use crate::dkg::v0::coordinator::evidence::{
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
     handle_commitment_message, handle_reshare_participant_set, handle_reshare_share_ack,
-    handle_session_init,
+    handle_session_init, preflight_commitment_audit_message, preflight_commitment_hash_message,
+    preflight_commitment_message, preflight_reshare_participant_set,
 };
-use crate::dkg::v0::coordinator::refresh_health_check::handle_result;
+use crate::dkg::v0::coordinator::refresh_health_check::{handle_result, preflight_result};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -1561,6 +1562,50 @@ where
                 "leader received signed public DKG contribution"
             );
             validate_leader_local(&state, contribution.ceremony_id.0).await?;
+            if let Err(error) =
+                preflight_public_contribution_if_new(&state, routes, &signed, &contribution).await
+            {
+                if attributable_public_preflight_error(&error) {
+                    let attempt =
+                        AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+                    let participant_routes = state
+                        .dkg_session_state
+                        .with_attempt_state(attempt, |session| {
+                            session.transport.participant_routes.clone()
+                        })
+                        .await
+                        .unwrap_or_default();
+                    tracing::error!(
+                        session_id = contribution.ceremony_id.0,
+                        attempt_id = %hex::encode(contribution.attempt_id.0),
+                        phase = ?contribution.payload.phase(),
+                        origin = ?contribution.origin,
+                        message_id = %hex::encode(contribution.message_id.0),
+                        %error,
+                        "leader aborting DKG attempt after direct-origin payload failed preflight"
+                    );
+                    crate::metrics::record_dkg_transport_event(
+                        "public",
+                        "protocol_violation_abort",
+                    );
+                    // TODO(reporting): retain the authenticated origin envelope
+                    // and submit invalid-public-contribution evidence.
+                    state
+                        .dkg_session_state
+                        .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
+                        .await;
+                    broadcast_attempt_abort(
+                        &state,
+                        routes,
+                        participant_routes,
+                        contribution.ceremony_id,
+                        contribution.attempt_id,
+                        format!("direct-origin public contribution failed preflight: {error}"),
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
             record_public_contribution_at_leader(&state, routes, signed.clone(), &contribution)
                 .await?;
             publish_phase_if_complete(
@@ -1617,6 +1662,28 @@ where
                 return Err(DkgError::Unauthorized(
                     "only a refresh health-check result may use the result barrier".into(),
                 ));
+            }
+            if let Err(error) =
+                preflight_public_contribution_if_new(&state, routes, &signed, &contribution).await
+            {
+                if attributable_public_preflight_error(&error) {
+                    let attempt =
+                        AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+                    tracing::error!(
+                        session_id = contribution.ceremony_id.0,
+                        attempt_id = %hex::encode(contribution.attempt_id.0),
+                        message_id = %hex::encode(contribution.message_id.0),
+                        %error,
+                        "aborting DKG attempt after staged leader result failed preflight"
+                    );
+                    // TODO(reporting): retain the authenticated leader envelope
+                    // and report the invalid staged refresh result.
+                    state
+                        .dkg_session_state
+                        .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
+                        .await;
+                }
+                return Err(error);
             }
             record_public_contribution(&state, signed, &contribution).await?;
             crate::metrics::record_dkg_transport_event("public", "result_staged");
@@ -1685,7 +1752,34 @@ where
             // Commit is the authorization to apply it, so bypass the generic
             // record-and-deduplicate helper: treating the retained record as a
             // completed application would leave followers staged forever.
-            dispatch_public_contribution(state.clone(), routes, signed, contribution).await?;
+            if let Err(error) =
+                dispatch_public_contribution(state.clone(), routes, signed, contribution.clone())
+                    .await
+            {
+                if attributable_public_preflight_error(&error) {
+                    tracing::error!(
+                        session_id = ceremony_id.0,
+                        attempt_id = %hex::encode(attempt_id.0),
+                        message_id = %hex::encode(message_id.0),
+                        %error,
+                        "aborting DKG attempt after committed leader result failed validation"
+                    );
+                    crate::metrics::record_dkg_transport_event(
+                        "public",
+                        "protocol_violation_abort",
+                    );
+                    // TODO(reporting): retain the authenticated leader result
+                    // and report the invalid committed refresh result.
+                    state
+                        .dkg_session_state
+                        .abort_transport_attempt(
+                            AttemptKey::new(ceremony_id, attempt_id),
+                            TopicTaskDisposition::Abort,
+                        )
+                        .await;
+                }
+                return Err(error);
+            }
 
             let now = Instant::now();
             let mut receipts = state.dkg_public_commit_receipts.lock().await;
@@ -3750,6 +3844,46 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    for verified in &contributions {
+        if let Err(error) = preflight_public_contribution_if_new(
+            state,
+            routes,
+            &verified.signed,
+            &verified.contribution,
+        )
+        .await
+        {
+            if state
+                .dkg_session_state
+                .transport_attempt(&prepare.ceremony_id.0)
+                .await
+                != Some(prepare.attempt_id)
+            {
+                return Ok(false);
+            }
+            if !attributable_public_preflight_error(&error) {
+                tracing::warn!(
+                    %error,
+                    phase = ?phase,
+                    root = %hex::encode(root),
+                    origin = ?verified.contribution.origin,
+                    "deferring public DKG batch after local payload preflight could not complete"
+                );
+                crate::metrics::record_dkg_transport_event("public", "batch_preflight_deferred");
+                return Ok(true);
+            }
+            return Err(PublicProtocolViolation::leader(
+                PublicProtocolViolationKind::InvalidContribution,
+                Some(phase),
+                Some(root),
+                format!(
+                    "origin {:?} contribution failed payload preflight: {error}",
+                    verified.contribution.origin
+                ),
+            )
+            .with_message_id(verified.contribution.message_id));
+        }
+    }
     let retained: BTreeMap<_, _> = contributions
         .iter()
         .map(|verified| (verified.contribution.origin, verified.signed.clone()))
@@ -3801,6 +3935,7 @@ where
                     &error,
                     DkgError::Unauthorized(_)
                         | DkgError::Deserialization(_)
+                        | DkgError::Crypto(_)
                         | DkgError::InvalidInput(_)
                         | DkgError::CommitmentVerificationFailed(_)
                 ) {
@@ -4569,6 +4704,37 @@ where
     if contributions.is_empty() {
         return Ok(true);
     }
+    for verified in &contributions {
+        if let Err(error) = preflight_public_contribution_if_new(
+            state,
+            routes,
+            &verified.signed,
+            &verified.contribution,
+        )
+        .await
+        {
+            if state
+                .dkg_session_state
+                .transport_attempt(&prepare.ceremony_id.0)
+                .await
+                != Some(prepare.attempt_id)
+            {
+                return Ok(false);
+            }
+            if attributable_public_preflight_error(&error) {
+                return Err(PublicRepairFailure::Violation(
+                    repair_contribution_violation(
+                        source,
+                        phase,
+                        verified.contribution.origin,
+                        format!("direct-repair contribution failed payload preflight: {error}"),
+                    )
+                    .with_message_id(verified.contribution.message_id),
+                ));
+            }
+            return Err(PublicRepairFailure::Error(error));
+        }
+    }
     let retained: BTreeMap<_, _> = contributions
         .iter()
         .map(|verified| (verified.contribution.origin, verified.signed.clone()))
@@ -4623,6 +4789,7 @@ where
                 &error,
                 DkgError::Unauthorized(_)
                     | DkgError::Deserialization(_)
+                    | DkgError::Crypto(_)
                     | DkgError::InvalidInput(_)
                     | DkgError::ProtocolError(_)
                     | DkgError::CommitmentVerificationFailed(_)
@@ -5528,6 +5695,166 @@ where
     Ok(true)
 }
 
+/// Validate the contribution's protocol payload without retaining it, mutating
+/// cryptographic state, advancing a phase, or performing network/bulletin writes.
+async fn preflight_public_contribution<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    contribution: &DkgPublicContribution,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+    let local_is_origin = state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| session.transport.committees.clone())
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .and_then(|committees| {
+            committees
+                .node_key(contribution.origin)
+                .map(|node_key| node_key == state.node_key)
+        })
+        .unwrap_or(false);
+    if contribution.origin.scope == CommitteeScope::Current && local_is_origin {
+        return Ok(());
+    }
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    match &contribution.payload {
+        DkgPublicPayload::CommitmentHash { commitment_hash } => {
+            preflight_commitment_hash_message(
+                &coordinator,
+                attempt,
+                contribution.origin.node_id,
+                *commitment_hash,
+            )
+            .await
+        }
+        DkgPublicPayload::Commitment {
+            commitment,
+            report_evidence,
+        } => {
+            preflight_commitment_message(
+                &coordinator,
+                attempt,
+                contribution.origin.node_id,
+                commitment,
+                report_evidence.as_ref(),
+            )
+            .await
+        }
+        DkgPublicPayload::CommitmentAudit { .. } => {
+            preflight_commitment_audit_message(&coordinator, attempt).await
+        }
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement,
+            signature,
+        } => {
+            preflight_result(
+                &coordinator,
+                attempt,
+                contribution.origin.node_id,
+                statement,
+                signature.as_deref(),
+            )
+            .await
+        }
+        DkgPublicPayload::ReshareParticipantSet { selected_dealers } => {
+            if selected_dealers
+                .iter()
+                .any(|dealer| dealer.scope != CommitteeScope::Current)
+            {
+                return Err(DkgError::Unauthorized(
+                    "ReshareParticipantSet dealers must use current-committee scope".into(),
+                ));
+            }
+            let selected_dealer_ids = selected_dealers
+                .iter()
+                .map(|dealer| dealer.node_id)
+                .collect::<Vec<_>>();
+            preflight_reshare_participant_set(
+                &coordinator,
+                attempt,
+                contribution.origin.node_id,
+                &selected_dealer_ids,
+            )
+            .await
+        }
+    }
+}
+
+/// Exact retransmissions have already crossed the preflight barrier. Conflicts
+/// are intentionally left to the atomic record operation, which classifies
+/// origin equivocation without applying either value.
+async fn preflight_public_contribution_if_new<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    signed: &SignedPayload,
+    contribution: &DkgPublicContribution,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+    let existing = state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .transport
+                .public_contributions
+                .get(&contribution.payload.phase())
+                .and_then(|items| items.get(&contribution.origin))
+                .cloned()
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
+    if existing.is_some() {
+        // Both identical retransmissions and signed conflicts are handled by
+        // the following atomic record operation. Neither should be applied as
+        // a new contribution during preflight.
+        return Ok(());
+    }
+    let ids = BTreeMap::from([(contribution.origin, contribution.message_id)]);
+    let root = transport::phase_root(
+        contribution.ceremony_id,
+        contribution.attempt_id,
+        contribution.payload.phase(),
+        &ids,
+    );
+    let single = DkgPublicMessage::Chunk {
+        ceremony_id: contribution.ceremony_id,
+        attempt_id: contribution.attempt_id,
+        phase: contribution.payload.phase(),
+        phase_root: root,
+        index: 0,
+        contributions: vec![signed.clone()],
+    };
+    let encoded_len = transport::encode(&single)
+        .map_err(DkgError::Serialization)?
+        .len();
+    if encoded_len > transport::MAX_PUBLIC_CHUNK_BYTES {
+        return Err(DkgError::InvalidInput(format!(
+            "signed public contribution requires a {encoded_len}-byte Gossip chunk, exceeding the {}-byte limit",
+            transport::MAX_PUBLIC_CHUNK_BYTES
+        )));
+    }
+    preflight_public_contribution(state, routes, contribution).await
+}
+
+fn attributable_public_preflight_error(error: &DkgError) -> bool {
+    matches!(
+        error,
+        DkgError::Unauthorized(_)
+            | DkgError::Deserialization(_)
+            | DkgError::Crypto(_)
+            | DkgError::InvalidInput(_)
+            | DkgError::CommitmentVerificationFailed(_)
+    )
+}
+
 async fn dispatch_public_contribution<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -6389,6 +6716,8 @@ where
         leader = %leader,
         "submitting signed public DKG contribution"
     );
+    preflight_public_contribution_if_new(&coord.app_state, coord.routes, &signed, &contribution)
+        .await?;
     // Retain the exact signed bytes in the same phase index used for direct
     // repair. This lets an origin serve its own contribution even if the
     // leader omits a chunk or the local subscriber never receives the relay.
@@ -8574,7 +8903,7 @@ mod stability_tests {
     fn refresh_health_payload(session_id: u128) -> DkgPublicPayload {
         DkgPublicPayload::RefreshHealthCheckResult {
             statement: crate::sign::v0::messages::RefreshHealthCheckStatement {
-                domain: "repair-test".to_string(),
+                domain: crate::sign::v0::messages::REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
                 session_id,
                 ring_pk: "test-ring".to_string(),
                 public_polynomial_sha256: "00".repeat(32),
@@ -8869,9 +9198,7 @@ mod stability_tests {
         let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
             "later_leader_page_failure_uses_origins",
             4251,
-            SessionKind::Refresh {
-                ring_pk_hex: "test-ring".to_string(),
-            },
+            SessionKind::Fresh,
             Vec::new(),
             first,
         )
@@ -8884,7 +9211,9 @@ mod stability_tests {
             attempt_id,
             committee_digest,
             first,
-            refresh_health_payload(ceremony_id.0),
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [1; 32],
+            },
         )
         .await;
         let second_signed = sign_contribution(
@@ -8893,7 +9222,9 @@ mod stability_tests {
             attempt_id,
             committee_digest,
             second,
-            refresh_health_payload(ceremony_id.0),
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [2; 32],
+            },
         )
         .await;
         let requester = ScriptedPublicRepairRequester::new(HashMap::from([
@@ -8903,7 +9234,7 @@ mod stability_tests {
                     Ok(DkgControlMessage::PublicPhaseResponse {
                         ceremony_id,
                         attempt_id,
-                        phase: PublicPhase::RefreshHealthCheck,
+                        phase: PublicPhase::CommitmentHashes,
                         contributions: vec![first_signed],
                         next_cursor: Some(first),
                     }),
@@ -8930,7 +9261,7 @@ mod stability_tests {
             &network::V0,
             &requester,
             &prepare,
-            PublicPhase::RefreshHealthCheck,
+            PublicPhase::CommitmentHashes,
             &expected,
         )
         .await
@@ -8944,7 +9275,7 @@ mod stability_tests {
             &network::V0,
             &requester,
             &prepare,
-            PublicPhase::RefreshHealthCheck,
+            PublicPhase::CommitmentHashes,
             &expected,
         )
         .await
@@ -8952,7 +9283,7 @@ mod stability_tests {
 
         let retained = state
             .dkg_session_state
-            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::CommitmentHashes)
             .await
             .expect("active repair attempt");
         assert_eq!(
@@ -8968,9 +9299,7 @@ mod stability_tests {
         let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
             "unavailable_origin_does_not_block_others",
             4252,
-            SessionKind::Refresh {
-                ring_pk_hex: "test-ring".to_string(),
-            },
+            SessionKind::Fresh,
             Vec::new(),
             first,
         )
@@ -8983,7 +9312,9 @@ mod stability_tests {
             attempt_id,
             committee_digest,
             second,
-            refresh_health_payload(ceremony_id.0),
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [2; 32],
+            },
         )
         .await;
         let requester = ScriptedPublicRepairRequester::new(HashMap::from([
@@ -9010,7 +9341,7 @@ mod stability_tests {
             &network::V0,
             &requester,
             &prepare,
-            PublicPhase::RefreshHealthCheck,
+            PublicPhase::CommitmentHashes,
             &BTreeSet::from([first, second]),
         )
         .await
@@ -9018,7 +9349,7 @@ mod stability_tests {
 
         let retained = state
             .dkg_session_state
-            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::CommitmentHashes)
             .await
             .expect("active repair attempt");
         assert!(!retained.contains_key(&first));
@@ -9097,6 +9428,243 @@ mod stability_tests {
                 .expect("active repair attempt")
                 .is_empty(),
             "origin responses must be preflighted before any valid subset is recorded"
+        );
+    }
+
+    fn fresh_commitment_bytes(origin_node_id: u32, session_id: u128) -> Vec<u8> {
+        use crypto::r#trait::{Dkg as _, DkgMode, DkgRole};
+
+        let mut sender = *crypto::DkgImpl::new(origin_node_id, 2, 3, session_id, DkgRole::Standard)
+            .expect("construct fresh commitment sender");
+        sender
+            .generate_polynomial(DkgMode::Fresh)
+            .expect("generate fresh commitment");
+        crate::dkg::v0::helpers::serialize_commitment_coefficients(
+            &sender.commitment().coefficients,
+        )
+        .expect("serialize fresh commitment")
+    }
+
+    fn verified_test_contribution(
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        committee_digest: [u8; 32],
+        origin: ParticipantRef,
+        payload: DkgPublicPayload,
+    ) -> VerifiedPublicContribution {
+        let contribution = DkgPublicContribution::new(
+            ceremony_id,
+            attempt_id,
+            "test-ring-post".to_string(),
+            committee_digest,
+            origin,
+            payload,
+        )
+        .expect("construct test contribution");
+        VerifiedPublicContribution {
+            signed: SignedPayload {
+                origin: vec![origin.node_id as u8; 32],
+                signature: vec![origin.node_id as u8; 64],
+                data: transport::encode(&contribution).expect("encode test contribution"),
+            },
+            contribution,
+        }
+    }
+
+    #[tokio::test]
+    async fn repair_payload_preflight_is_atomic_before_retention_or_crypto_mutation() {
+        let first = ParticipantRef::current(2);
+        let second = ParticipantRef::current(3);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "repair_payload_preflight_is_atomic",
+            4255,
+            SessionKind::Fresh,
+            Vec::new(),
+            first,
+        )
+        .await;
+        bind_test_origin_to_local_peer(&state, ceremony_id.0, second).await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 3);
+
+        let valid_commitment = fresh_commitment_bytes(first.node_id, ceremony_id.0);
+        let mut invalid_commitment = fresh_commitment_bytes(second.node_id, ceremony_id.0);
+        invalid_commitment[..crypto::GROUP_POINT_SIZE].fill(0xff);
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            let session = states.get_mut(&ceremony_id.0).expect("repair test session");
+            session.commit_reveal.received_hashes.insert(
+                first.node_id,
+                crate::dkg::v0::helpers::fresh_commitment_hash(
+                    ceremony_id.0,
+                    first.node_id,
+                    &valid_commitment,
+                ),
+            );
+            session.commit_reveal.received_hashes.insert(
+                second.node_id,
+                crate::dkg::v0::helpers::fresh_commitment_hash(
+                    ceremony_id.0,
+                    second.node_id,
+                    &invalid_commitment,
+                ),
+            );
+        }
+
+        let valid = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            first,
+            DkgPublicPayload::Commitment {
+                commitment: valid_commitment,
+                report_evidence: None,
+            },
+        );
+        let invalid = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            second,
+            DkgPublicPayload::Commitment {
+                commitment: invalid_commitment,
+                report_evidence: None,
+            },
+        );
+
+        let error = apply_repair_contributions(
+            &state,
+            &network::V0,
+            &prepare,
+            PublicPhase::Commitments,
+            vec![valid, invalid],
+            RepairContributionSource::Origin,
+        )
+        .await
+        .expect_err("a crypto-invalid direct-origin contribution must fail preflight");
+        assert!(matches!(
+            error,
+            PublicRepairFailure::Violation(PublicProtocolViolation {
+                kind: PublicProtocolViolationKind::InvalidContribution,
+                accused: PublicViolationAccused::Origin(origin),
+                ..
+            }) if origin == second
+        ));
+
+        let retained = state
+            .dkg_session_state
+            .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::Commitments)
+            .await
+            .expect("active repair attempt");
+        assert!(
+            retained.is_empty(),
+            "a failed payload preflight must retain none of the repair batch"
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| session.commitments_received)
+                .await,
+            Some(0),
+            "a failed payload preflight must not apply the valid batch prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_origin_payload_is_preflighted_before_leader_relay() {
+        let origin = ParticipantRef::current(2);
+        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+            "direct_origin_preflight_before_relay",
+            4256,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let topic = Arc::new(ScriptedBroadcastTopic::new([]));
+        let mut invalid_commitment = fresh_commitment_bytes(origin.node_id, ceremony_id.0);
+        invalid_commitment[..crypto::GROUP_POINT_SIZE].fill(0xff);
+        let signed = sign_contribution(
+            &state,
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: invalid_commitment.clone(),
+                report_evidence: None,
+            },
+        )
+        .await;
+
+        let first = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            ParticipantRef::current(1),
+            DkgPublicPayload::Commitment {
+                commitment: fresh_commitment_bytes(1, ceremony_id.0),
+                report_evidence: None,
+            },
+        );
+        let third = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            ParticipantRef::current(3),
+            DkgPublicPayload::Commitment {
+                commitment: fresh_commitment_bytes(3, ceremony_id.0),
+                report_evidence: None,
+            },
+        );
+        {
+            let mut states = state.dkg_session_state.states.write().await;
+            let session = states
+                .get_mut(&ceremony_id.0)
+                .expect("direct contribution test session");
+            session.transport.leader_node_key = Some(state.node_key.clone());
+            session.transport.topic = Some(topic.clone());
+            session.transport.hard_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+            session.transport.public_contributions.insert(
+                PublicPhase::Commitments,
+                BTreeMap::from([
+                    (first.contribution.origin, first.signed),
+                    (third.contribution.origin, third.signed),
+                ]),
+            );
+            session.commit_reveal.received_hashes.insert(
+                origin.node_id,
+                crate::dkg::v0::helpers::fresh_commitment_hash(
+                    ceremony_id.0,
+                    origin.node_id,
+                    &invalid_commitment,
+                ),
+            );
+        }
+        let sender = state.network.local_peer_id().clone();
+
+        let error = handle_control(
+            state.clone(),
+            &network::V0,
+            DkgControlMessage::PublicContribution(signed),
+            &sender,
+        )
+        .await
+        .expect_err("the leader must reject a crypto-invalid direct contribution");
+
+        assert!(matches!(error, DkgError::Deserialization(_)));
+        assert_eq!(
+            topic.calls.load(Ordering::SeqCst),
+            0,
+            "the invalid contribution must not complete and relay the phase batch"
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .transport_attempt(&ceremony_id.0)
+                .await,
+            None,
+            "an attributable direct-origin violation must abort the exact attempt"
         );
     }
 

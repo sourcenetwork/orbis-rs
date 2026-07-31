@@ -178,6 +178,50 @@ async fn commitment_before_hash_is_buffered_and_replayed() {
 }
 
 #[tokio::test]
+async fn malformed_commitment_before_hash_is_rejected_without_buffering() {
+    let db_name = "commit_reveal_malformed_before_hash";
+    let db_path = test_db_path(db_name);
+    let fixture = fresh_fixture(db_name).await;
+    let mut malformed = fixture.commitment.clone();
+    malformed[..crypto::GROUP_POINT_SIZE].fill(0xff);
+
+    let result = handle_commitment_message(
+        &fixture.coordinator,
+        AttemptKey::test(SESSION_ID),
+        2,
+        malformed,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(result, Err(DkgError::Deserialization(_))),
+        "crypto-invalid bytes must fail before the commit-reveal buffer"
+    );
+    let (commitments_received, buffered) = fixture
+        .app_state
+        .dkg_session_state
+        .with_state(&SESSION_ID, |state| {
+            (
+                state.commitments_received,
+                state
+                    .pending
+                    .pending_commitments_waiting_for_hash
+                    .contains_key(&2),
+            )
+        })
+        .await
+        .expect("session exists");
+    assert_eq!(commitments_received, 0);
+    assert!(
+        !buffered,
+        "malformed commitment must not be retained for replay"
+    );
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
 async fn reveal_that_does_not_match_hash_is_rejected() {
     let db_name = "commit_reveal_mismatch";
     let db_path = test_db_path(db_name);

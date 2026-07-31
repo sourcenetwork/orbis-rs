@@ -350,77 +350,12 @@ where
     let accepted = coord
         .app_state
         .dkg_session_state
-        .with_attempt_state_mut(attempt, |state| {
-            if from_node_id != 1 {
-                return Err(DkgError::Unauthorized(format!(
-                    "ReshareParticipantSet must come from new committee node 1, got {}",
-                    from_node_id
-                )));
+        .with_attempt_state_mut(attempt, |state| -> Result<bool> {
+            let accepted =
+                validate_reshare_participant_set_state(state, from_node_id, &selected_dealer_ids)?;
+            if !accepted {
+                return Ok(false);
             }
-            if !matches!(state.kind, SessionKind::Reshare { .. }) {
-                return Err(DkgError::InvalidInput(
-                    "ReshareParticipantSet received for non-reshare session".to_string(),
-                ));
-            }
-            if !matches!(
-                state.node.role(),
-                DkgRole::Receiver | DkgRole::DealerReceiver
-            ) {
-                return Err(DkgError::InvalidInput(
-                    "ReshareParticipantSet received by node outside new committee".to_string(),
-                ));
-            }
-            if selected_dealer_ids.len() != state.node.threshold() {
-                return Err(DkgError::InvalidInput(format!(
-                    "ReshareParticipantSet has {} dealers, expected old threshold {}",
-                    selected_dealer_ids.len(),
-                    state.node.threshold()
-                )));
-            }
-
-            let mut canonical = selected_dealer_ids.clone();
-            canonical.sort_unstable();
-            canonical.dedup();
-            if canonical.len() != selected_dealer_ids.len() {
-                return Err(DkgError::InvalidInput(
-                    "ReshareParticipantSet contains duplicate dealer IDs".to_string(),
-                ));
-            }
-            for dealer_id in &selected_dealer_ids {
-                if *dealer_id == 0 || *dealer_id as usize > state.node.total_nodes() {
-                    return Err(DkgError::InvalidInput(format!(
-                        "ReshareParticipantSet dealer ID {} is outside old committee 1..={}",
-                        dealer_id,
-                        state.node.total_nodes()
-                    )));
-                }
-                let dealer = ParticipantRef::current(*dealer_id);
-                if !state.transport.active_dealers.contains(&dealer) {
-                    return Err(DkgError::Unauthorized(format!(
-                        "ReshareParticipantSet contains inactive dealer {}",
-                        dealer_id
-                    )));
-                }
-                if !state.reshare.valid_share_dealers.contains(dealer_id) {
-                    return Err(DkgError::InvalidState(format!(
-                        "ReshareParticipantSet selected dealer {} before this receiver accepted its commitment and share",
-                        dealer_id
-                    )));
-                }
-            }
-
-            if let Some(existing) = &state.reshare.selected_dealers {
-                let mut existing_canonical = existing.clone();
-                existing_canonical.sort_unstable();
-                if existing_canonical == canonical {
-                    return Ok(false);
-                }
-                return Err(DkgError::InvalidInput(format!(
-                    "Conflicting ReshareParticipantSet: existing {:?}, new {:?}",
-                    existing, selected_dealer_ids
-                )));
-            }
-
             state
                 .node
                 .select_reshare_participants(selected_dealer_ids.clone())
@@ -449,6 +384,111 @@ where
     }
 
     Ok(())
+}
+
+pub(crate) async fn preflight_reshare_participant_set<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    from_node_id: u32,
+    selected_dealer_ids: &[u32],
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| {
+            validate_reshare_participant_set_state(state, from_node_id, selected_dealer_ids)
+        })
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))??;
+    Ok(())
+}
+
+fn validate_reshare_participant_set_state<D>(
+    state: &DkgSessionState<D>,
+    from_node_id: u32,
+    selected_dealer_ids: &[u32],
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+{
+    if from_node_id != 1 {
+        return Err(DkgError::Unauthorized(format!(
+            "ReshareParticipantSet must come from new committee node 1, got {}",
+            from_node_id
+        )));
+    }
+    if !matches!(state.kind, SessionKind::Reshare { .. }) {
+        return Err(DkgError::InvalidInput(
+            "ReshareParticipantSet received for non-reshare session".to_string(),
+        ));
+    }
+    if !matches!(
+        state.node.role(),
+        DkgRole::Receiver | DkgRole::DealerReceiver
+    ) {
+        return Err(DkgError::InvalidInput(
+            "ReshareParticipantSet received by node outside new committee".to_string(),
+        ));
+    }
+    if selected_dealer_ids.len() != state.node.threshold() {
+        return Err(DkgError::InvalidInput(format!(
+            "ReshareParticipantSet has {} dealers, expected old threshold {}",
+            selected_dealer_ids.len(),
+            state.node.threshold()
+        )));
+    }
+
+    let mut canonical = selected_dealer_ids.to_vec();
+    canonical.sort_unstable();
+    canonical.dedup();
+    if canonical.len() != selected_dealer_ids.len() {
+        return Err(DkgError::InvalidInput(
+            "ReshareParticipantSet contains duplicate dealer IDs".to_string(),
+        ));
+    }
+    for dealer_id in selected_dealer_ids {
+        if *dealer_id == 0 || *dealer_id as usize > state.node.total_nodes() {
+            return Err(DkgError::InvalidInput(format!(
+                "ReshareParticipantSet dealer ID {} is outside old committee 1..={}",
+                dealer_id,
+                state.node.total_nodes()
+            )));
+        }
+        let dealer = ParticipantRef::current(*dealer_id);
+        if !state.transport.active_dealers.contains(&dealer) {
+            return Err(DkgError::Unauthorized(format!(
+                "ReshareParticipantSet contains inactive dealer {}",
+                dealer_id
+            )));
+        }
+        if !state.reshare.valid_share_dealers.contains(dealer_id) {
+            return Err(DkgError::InvalidState(format!(
+                "ReshareParticipantSet selected dealer {} before this receiver accepted its commitment and share",
+                dealer_id
+            )));
+        }
+    }
+
+    if let Some(existing) = &state.reshare.selected_dealers {
+        let mut existing_canonical = existing.clone();
+        existing_canonical.sort_unstable();
+        if existing_canonical == canonical {
+            return Ok(false);
+        }
+        return Err(DkgError::InvalidInput(format!(
+            "Conflicting ReshareParticipantSet: existing {:?}, new {:?}",
+            existing, selected_dealer_ids
+        )));
+    }
+
+    let mut node_probe = state.node.clone();
+    node_probe
+        .select_reshare_participants(selected_dealer_ids.to_vec())
+        .map_err(|e| DkgError::Crypto(format!("Failed to select reshare participants: {}", e)))?;
+    Ok(true)
 }
 
 #[cfg(test)]

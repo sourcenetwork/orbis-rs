@@ -27,6 +27,27 @@ fn bounded_unique_reveals(
     accepted
 }
 
+pub(crate) async fn preflight_commitment_audit_message<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let is_fresh = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| matches!(state.kind, SessionKind::Fresh))
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if is_fresh {
+        return Err(DkgError::ProtocolError(
+            "CommitmentAudit is only valid for Refresh/Reshare DKG sessions".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Apply a typed public commitment audit contribution.
 ///
 /// A peer whose refresh/reshare ceremony failed an equivocation-consistent phase4 check
@@ -46,23 +67,13 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     let session_id = attempt.session_id();
-    let (is_fresh, committee_size) = coord
+    preflight_commitment_audit_message(coord, attempt).await?;
+    let committee_size = coord
         .app_state
         .dkg_session_state
-        .with_attempt_state(attempt, |state| {
-            (
-                matches!(state.kind, SessionKind::Fresh),
-                state.node.total_nodes(),
-            )
-        })
+        .with_attempt_state(attempt, |state| state.node.total_nodes())
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
-
-    if is_fresh {
-        return Err(DkgError::ProtocolError(
-            "CommitmentAudit is only valid for Refresh/Reshare DKG sessions".to_string(),
-        ));
-    }
 
     // Keep only reveals that are genuinely signed by the claimed dealer and bound to this
     // session/ring; a reveal that fails verification is not evidence of anything.

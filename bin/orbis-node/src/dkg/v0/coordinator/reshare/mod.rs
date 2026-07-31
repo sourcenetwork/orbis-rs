@@ -3,6 +3,7 @@ use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::network::{send_reshare_share_ack, submit_public_contribution};
 #[cfg(test)]
 use crate::dkg::v0::session_state::CreateSessionOutcome;
+use crate::dkg::v0::session_state::DkgSessionState;
 use crate::dkg::v0::transport::{AttemptKey, DkgPublicPayload, ParticipantRef};
 use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::DkgRole;

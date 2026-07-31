@@ -194,6 +194,65 @@ where
     Ok(())
 }
 
+pub(crate) async fn preflight_result<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    from_node_id: u32,
+    statement: &RefreshHealthCheckStatement,
+    signature: Option<&str>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    validate_result_scope(coord, attempt, from_node_id, statement).await?;
+    let candidate = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| state.refresh.candidate.clone())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if let (Some(candidate), Some(signature)) = (candidate, signature) {
+        verify_result_signature::<D>(&candidate, statement, signature)?;
+    }
+    Ok(())
+}
+
+async fn validate_result_scope<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    from_node_id: u32,
+    statement: &RefreshHealthCheckStatement,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    if from_node_id != 1 {
+        return Err(DkgError::Unauthorized(format!(
+            "RefreshHealthCheckResult must come from node 1, got {}",
+            from_node_id
+        )));
+    }
+    if statement.session_id != attempt.session_id() {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh health-check statement session_id {} does not match routed session {}",
+            statement.session_id,
+            attempt.session_id()
+        )));
+    }
+    if statement.domain != REFRESH_HEALTH_CHECK_DOMAIN {
+        return Err(DkgError::Unauthorized(
+            "Refresh health-check statement has the wrong domain".to_string(),
+        ));
+    }
+    coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |_| ())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    Ok(())
+}
+
 pub async fn apply_pending_result_if_present<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -238,18 +297,7 @@ where
     D: CoordinatorDkg,
 {
     let session_id = attempt.session_id();
-    if from_node_id != 1 {
-        return Err(DkgError::Unauthorized(format!(
-            "RefreshHealthCheckResult must come from node 1, got {}",
-            from_node_id
-        )));
-    }
-    if statement.session_id != session_id {
-        return Err(DkgError::Unauthorized(format!(
-            "Refresh health-check statement session_id {} does not match routed session {}",
-            statement.session_id, session_id
-        )));
-    }
+    validate_result_scope(coord, attempt, from_node_id, &statement).await?;
 
     let candidate = coord
         .app_state

@@ -43,12 +43,16 @@ mod commitment_hash;
 mod session_init;
 mod share;
 
+pub(crate) use crate::dkg::v0::coordinator::reshare::selection::preflight_reshare_participant_set;
 pub use crate::dkg::v0::coordinator::reshare::selection::{
     handle_reshare_participant_set, handle_reshare_share_ack,
 };
 pub use commitment::handle_commitment_message;
+pub(crate) use commitment::preflight_commitment_message;
 pub use commitment_audit::handle_commitment_audit_message;
+pub(crate) use commitment_audit::preflight_commitment_audit_message;
 pub use commitment_hash::handle_commitment_hash_message;
+pub(crate) use commitment_hash::preflight_commitment_hash_message;
 pub use session_init::handle_session_init;
 #[cfg(test)]
 pub use share::handle_share_message;
