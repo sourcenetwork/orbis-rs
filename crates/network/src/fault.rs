@@ -182,8 +182,9 @@ impl FaultNetworkController {
             .configure(pass_through, count);
     }
 
-    /// Clear configured protocol stream-open failures.
-    pub async fn clear_protocol_stream_faults(&self) {
+    /// Clear all configured protocol faults: stream-open failures, response
+    /// failures, response stalls, and response corruptions.
+    pub async fn clear_protocol_faults(&self) {
         self.state.protocol_stream_failures.write().await.clear();
         self.state.protocol_response_failures.write().await.clear();
         self.state.protocol_response_stalls.write().await.clear();

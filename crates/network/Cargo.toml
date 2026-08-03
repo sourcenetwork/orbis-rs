@@ -16,7 +16,7 @@ bincode = { workspace = true }
 async-trait = { workspace = true }
 hex = "0.4"
 futures = "0.3"
-bytes = "1.5"
+bytes = { workspace = true }
 prometheus = { workspace = true }
 lazy_static = { workspace = true }
 tracing = "0.1"
@@ -29,7 +29,7 @@ fault-injection = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
-bytes = "1.5"
+bytes = { workspace = true }
 serial_test = "3.2.0"
 [lints]
 workspace = true

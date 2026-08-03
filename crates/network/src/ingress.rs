@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 
+use crate::error::NetworkError;
 use crate::r#trait::{IngressDropReason, NetworkIngressLimits, PeerId};
 
 const MAX_TRACKED_RATE_LIMIT_PEERS: usize = 8192;
@@ -25,12 +26,29 @@ pub(crate) struct IngressController {
 }
 
 impl IngressController {
-    pub(crate) fn new(limits: NetworkIngressLimits) -> Self {
-        Self {
+    pub(crate) fn new(limits: NetworkIngressLimits) -> Result<Self, NetworkError> {
+        // A zero `max_concurrent_work` builds a `Semaphore::new(0)`: every
+        // `try_acquire_owned` would fail forever, permanently wedging all
+        // ingress work rather than just limiting it. A zero
+        // `max_events_per_peer_per_second` similarly rejects every peer
+        // outright. Neither is a sane "limit" — reject them at construction
+        // instead of silently building a controller that can never admit
+        // anything.
+        if limits.max_concurrent_work == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_concurrent_work must be at least 1".to_string(),
+            ));
+        }
+        if limits.max_events_per_peer_per_second == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_events_per_peer_per_second must be at least 1".to_string(),
+            ));
+        }
+        Ok(Self {
             limits,
             permits: Arc::new(Semaphore::new(limits.max_concurrent_work)),
             peer_rate_limiters: Mutex::new(HashMap::new()),
-        }
+        })
     }
 
     /// Admit one unit of authenticated-peer ingress without queueing.
@@ -144,7 +162,8 @@ mod tests {
         let controller = IngressController::new(NetworkIngressLimits {
             max_concurrent_work: 1,
             max_events_per_peer_per_second: 2,
-        });
+        })
+        .expect("nonzero limits construct a controller");
         let peer = PeerId::from_bytes(&[7; 32]);
 
         let lease = controller.try_admit(&peer).await.expect("first admission");
@@ -157,5 +176,27 @@ mod tests {
             controller.try_admit(&peer).await.unwrap_err(),
             IngressDropReason::RateLimit
         );
+    }
+
+    #[test]
+    fn new_rejects_zero_max_concurrent_work() {
+        let Err(error) = IngressController::new(NetworkIngressLimits {
+            max_concurrent_work: 0,
+            max_events_per_peer_per_second: 2,
+        }) else {
+            panic!("zero max_concurrent_work must be rejected");
+        };
+        assert!(matches!(error, NetworkError::InvalidConfig(_)));
+    }
+
+    #[test]
+    fn new_rejects_zero_max_events_per_peer_per_second() {
+        let Err(error) = IngressController::new(NetworkIngressLimits {
+            max_concurrent_work: 1,
+            max_events_per_peer_per_second: 0,
+        }) else {
+            panic!("zero max_events_per_peer_per_second must be rejected");
+        };
+        assert!(matches!(error, NetworkError::InvalidConfig(_)));
     }
 }

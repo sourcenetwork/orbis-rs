@@ -4,4 +4,5 @@ mod commit_reveal;
 mod dkg;
 mod refresh;
 mod reshare;
+mod support;
 mod upgrade;

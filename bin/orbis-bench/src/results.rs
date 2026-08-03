@@ -248,14 +248,7 @@ impl ResultStore {
         let mut rows = summarize(&trials);
         let manifest: RunManifest =
             serde_json::from_slice(&fs::read(self.root.join("manifest.json"))?)?;
-        for row in &mut rows {
-            let expected = if row.concurrency.is_some() {
-                1
-            } else {
-                manifest.experiment.repetitions
-            };
-            row.viable &= row.trials == expected;
-        }
+        apply_expected_trial_counts(&mut rows, &manifest);
         let mut output = File::create(self.root.join("summary.csv"))?;
         writeln!(
             output,
@@ -472,6 +465,20 @@ pub fn summarize(trials: &[TrialRecord]) -> Vec<SummaryRow> {
             },
         )
         .collect()
+}
+
+/// Narrow each row's viability to also require every expected repetition (or,
+/// for a load trial, its one fixed-window run) actually completed — a trial
+/// that never ran at all must not still read as viable.
+pub fn apply_expected_trial_counts(rows: &mut [SummaryRow], manifest: &RunManifest) {
+    for row in rows {
+        let expected = if row.concurrency.is_some() {
+            1
+        } else {
+            manifest.experiment.repetitions
+        };
+        row.viable &= row.trials == expected;
+    }
 }
 
 pub fn percentile(values: &mut [f64], quantile: f64) -> Option<f64> {

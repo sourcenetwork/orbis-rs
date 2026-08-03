@@ -119,6 +119,16 @@ fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     }))
 }
 
+/// The full `orbis-bench-sourcehub:<tag>` image reference for a given
+/// `sourcehub_ref`, truncated to at most 12 characters (not bytes, so a
+/// multi-byte character straddling that boundary doesn't panic on slicing).
+/// Shared by the compose service definitions and the manifest image-digest
+/// lookup so the tag can't drift between the two.
+pub fn sourcehub_image_tag(sourcehub_ref: &str) -> String {
+    let truncated: String = sourcehub_ref.chars().take(12).collect();
+    format!("orbis-bench-sourcehub:{truncated}")
+}
+
 fn sourcehub_service(input: &ComposeInput<'_>) -> Value {
     let sourcehub_context = input.repository_root.join("docker");
     let command = r#"
@@ -147,7 +157,7 @@ touch /handoff/ready
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
 "#;
     json!({
-        "image": format!("orbis-bench-sourcehub:{}", &input.sourcehub_ref[..12.min(input.sourcehub_ref.len())]),
+        "image": sourcehub_image_tag(input.sourcehub_ref),
         "build": {
             "context": sourcehub_context,
             "dockerfile": "Dockerfile.sourcehub-integration",
@@ -216,7 +226,7 @@ cp /handoff/genesis.json /home/node/.sourcehub/config/genesis.json
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@sourcehub:26656"
 "#;
     json!({
-        "image": format!("orbis-bench-sourcehub:{}", &input.sourcehub_ref[..12.min(input.sourcehub_ref.len())]),
+        "image": sourcehub_image_tag(input.sourcehub_ref),
         "build": {
             "context": sourcehub_context,
             "dockerfile": "Dockerfile.sourcehub-integration",
@@ -256,7 +266,11 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
     // Bucket nodes across SourceHub replicas (index 0 is always the
     // validator) so REST/RPC load during ring finalization scales
     // horizontally instead of queuing behind one server.
-    let sourcehub_target = sourcehub_service_name((index - 1) % input.sourcehub_replicas);
+    // `Experiment::validate()` rejects zero replicas, but `ComposeInput` can
+    // also be reached directly (e.g. via `write_stack_files` from a test or
+    // library caller) without going through that check first — normalize
+    // rather than let an unvalidated zero panic here on the modulo.
+    let sourcehub_target = sourcehub_service_name((index - 1) % input.sourcehub_replicas.max(1));
     let command = vec![
         "--addr".to_string(),
         "0.0.0.0:50051".to_string(),

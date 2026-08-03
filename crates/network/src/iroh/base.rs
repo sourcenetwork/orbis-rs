@@ -218,7 +218,7 @@ impl IrohNetworkBuilder {
         let gossip = iroh_gossip::net::Gossip::builder()
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());
-        let ingress = Arc::new(IngressController::new(self.config.ingress_limits));
+        let ingress = Arc::new(IngressController::new(self.config.ingress_limits)?);
         let pubsub = Arc::new(IrohPubSub::new(
             endpoint.clone(),
             gossip.clone(),

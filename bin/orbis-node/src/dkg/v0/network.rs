@@ -8933,6 +8933,16 @@ mod stability_tests {
     // verify_signed_contribution — per-phase/scope authorization matrix
     // =========================================================================
 
+    /// Removes its test database file on drop, including when a test panics
+    /// partway through (e.g. a failed `assert!`) — unlike a cleanup call
+    /// placed at the end of the test body, which such a panic would skip.
+    struct TestDbCleanup(String);
+    impl Drop for TestDbCleanup {
+        fn drop(&mut self) {
+            crate::helpers::test_helpers::cleanup_db(&self.0);
+        }
+    }
+
     /// Build a single-node test `AppState` with a session pre-configured as if
     /// `configure_transport`/`activate_transport` had already run, then sign a
     /// contribution from `origin` using that same node's own endpoint identity
@@ -8949,7 +8959,9 @@ mod stability_tests {
         CeremonyId,
         AttemptId,
         [u8; 32],
+        TestDbCleanup,
     ) {
+        let db_cleanup = TestDbCleanup(crate::helpers::test_helpers::test_db_path(db_name));
         let state = Arc::new(create_test_app_state_default(db_name).await);
         let node = *{
             use crypto::r#trait::Dkg as _;
@@ -8991,7 +9003,7 @@ mod stability_tests {
                 .insert(origin.node_id, local_peer_hex);
         }
 
-        (state, ceremony_id, attempt_id, committee_digest)
+        (state, ceremony_id, attempt_id, committee_digest, db_cleanup)
     }
 
     async fn sign_contribution(
@@ -9104,7 +9116,7 @@ mod stability_tests {
     #[tokio::test(start_paused = true)]
     async fn complete_phase_is_marked_published_only_after_retry_succeeds() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, _, _guard) = contribution_test_state(
             "complete_publication_commits_after_retry",
             4249,
             SessionKind::Fresh,
@@ -9259,7 +9271,7 @@ mod stability_tests {
     #[tokio::test]
     async fn leader_unavailability_enters_direct_origin_repair() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "leader_unavailability_enters_origin_repair",
             4250,
             SessionKind::Refresh {
@@ -9319,7 +9331,7 @@ mod stability_tests {
     #[tokio::test]
     async fn commitment_audit_leader_failure_does_not_create_origin_fanout() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, _, _guard) = contribution_test_state(
             "commitment_audit_repair_remains_best_effort",
             4255,
             SessionKind::Refresh {
@@ -9357,7 +9369,7 @@ mod stability_tests {
     async fn later_leader_page_failure_preserves_pages_then_uses_origins() {
         let first = ParticipantRef::current(1);
         let second = ParticipantRef::current(2);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "later_leader_page_failure_uses_origins",
             4251,
             SessionKind::Fresh,
@@ -9458,7 +9470,7 @@ mod stability_tests {
     async fn unavailable_origin_does_not_block_other_origin_responses() {
         let first = ParticipantRef::current(1);
         let second = ParticipantRef::current(2);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "unavailable_origin_does_not_block_others",
             4252,
             SessionKind::Fresh,
@@ -9522,7 +9534,7 @@ mod stability_tests {
     async fn malformed_origin_response_preflights_before_any_origin_is_applied() {
         let first = ParticipantRef::current(1);
         let second = ParticipantRef::current(2);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "malformed_origin_response_is_atomic",
             4253,
             SessionKind::Refresh {
@@ -9637,7 +9649,7 @@ mod stability_tests {
     async fn repair_payload_preflight_is_atomic_before_retention_or_crypto_mutation() {
         let first = ParticipantRef::current(2);
         let second = ParticipantRef::current(3);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "repair_payload_preflight_is_atomic",
             4255,
             SessionKind::Fresh,
@@ -9734,7 +9746,7 @@ mod stability_tests {
     #[tokio::test]
     async fn direct_origin_payload_is_preflighted_before_leader_relay() {
         let origin = ParticipantRef::current(2);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "direct_origin_preflight_before_relay",
             4256,
             SessionKind::Fresh,
@@ -9833,7 +9845,7 @@ mod stability_tests {
     #[tokio::test]
     async fn malformed_leader_repair_is_attributable_but_stale_abort_is_attempt_scoped() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, _) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, _, _guard) = contribution_test_state(
             "malformed_leader_repair_is_attempt_scoped",
             4254,
             SessionKind::Refresh {
@@ -9897,14 +9909,15 @@ mod stability_tests {
     #[tokio::test]
     async fn recording_a_stale_public_contribution_is_not_equivocation() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, active_attempt, committee_digest) = contribution_test_state(
-            "record_stale_public_contribution",
-            4241,
-            SessionKind::Fresh,
-            Vec::new(),
-            origin,
-        )
-        .await;
+        let (state, ceremony_id, active_attempt, committee_digest, _guard) =
+            contribution_test_state(
+                "record_stale_public_contribution",
+                4241,
+                SessionKind::Fresh,
+                Vec::new(),
+                origin,
+            )
+            .await;
         let stale_attempt = AttemptId([active_attempt.0[0].wrapping_add(1); 32]);
         let contribution = DkgPublicContribution::new(
             ceremony_id,
@@ -9935,7 +9948,7 @@ mod stability_tests {
     #[tokio::test]
     async fn verify_signed_contribution_rejects_reshare_commitment_from_non_dealer() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "verify_signed_contribution_rejects_non_dealer",
             4242,
             SessionKind::Reshare {
@@ -9973,7 +9986,7 @@ mod stability_tests {
     #[tokio::test]
     async fn verify_signed_contribution_accepts_reshare_commitment_from_active_dealer() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "verify_signed_contribution_accepts_active_dealer",
             4243,
             SessionKind::Reshare {
@@ -10008,7 +10021,7 @@ mod stability_tests {
     #[tokio::test]
     async fn verify_signed_contribution_rejects_foreign_ring_id() {
         let origin = ParticipantRef::current(1);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "verify_signed_contribution_rejects_foreign_ring",
             4245,
             SessionKind::Fresh,
@@ -10049,7 +10062,7 @@ mod stability_tests {
         // Refresh has no "next" committee at all — a contribution whose origin
         // claims `CommitteeScope::Next` must be rejected regardless of phase.
         let origin = ParticipantRef::next(1);
-        let (state, ceremony_id, attempt_id, committee_digest) = contribution_test_state(
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
             "verify_signed_contribution_rejects_next_scope_refresh",
             4244,
             SessionKind::Refresh {

@@ -286,7 +286,7 @@ where
         .await
         .map_err(|error| attempt_state_error(attempt, error))??;
 
-    if let Some((selected_dealer_ids, new_route_peer_ids, newly_frozen)) = selection {
+    if let Some((selected_dealer_ids, _new_route_peer_ids, newly_frozen)) = selection {
         if newly_frozen {
             tracing::info!(
                 session_id = session_id,
@@ -301,13 +301,7 @@ where
             );
         }
 
-        broadcast_reshare_participant_set(
-            coord,
-            attempt,
-            &selected_dealer_ids,
-            &new_route_peer_ids,
-        )
-        .await?;
+        broadcast_reshare_participant_set(coord, attempt, &selected_dealer_ids).await?;
 
         phases::drive_event(
             coord,
@@ -325,7 +319,6 @@ async fn broadcast_reshare_participant_set<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
     selected_dealer_ids: &[u32],
-    _new_route_peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -519,7 +512,8 @@ mod tests {
         session_id: u128,
         active_dealers: Vec<u32>,
         valid_share_dealers: Vec<u32>,
-    ) -> DkgCoordinator<DkgImpl> {
+    ) -> (DkgCoordinator<DkgImpl>, String) {
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
         let state = Arc::new(create_test_app_state_default(db_name).await);
         let node = *DkgImpl::new(1, 1, 2, 0, DkgRole::Receiver)
             .expect("construct receiver DkgImpl for test session");
@@ -550,12 +544,12 @@ mod tests {
                 .collect();
             session.reshare.valid_share_dealers = valid_share_dealers.into_iter().collect();
         }
-        DkgCoordinator::with_routes(state, &::network::V0)
+        (DkgCoordinator::with_routes(state, &::network::V0), db_path)
     }
 
     #[tokio::test]
     async fn rejects_dealer_not_in_active_dealers() {
-        let coord = reshare_receiver_test_coordinator(
+        let (coord, db_path) = reshare_receiver_test_coordinator(
             "reshare_participant_set_rejects_inactive_dealer",
             1001,
             vec![],  // no active dealers at all
@@ -568,11 +562,12 @@ mod tests {
             .expect_err("a dealer outside active_dealers must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
         assert!(error.to_string().contains("inactive dealer"));
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[tokio::test]
     async fn rejects_dealer_without_a_previously_accepted_valid_share() {
-        let coord = reshare_receiver_test_coordinator(
+        let (coord, db_path) = reshare_receiver_test_coordinator(
             "reshare_participant_set_rejects_no_valid_share",
             1002,
             vec![1], // dealer 1 is active
@@ -588,11 +583,12 @@ mod tests {
             );
         assert!(matches!(error, DkgError::InvalidState(_)));
         assert!(error.to_string().contains("before this receiver accepted"));
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[tokio::test]
     async fn rejects_participant_set_from_a_non_leader_sender() {
-        let coord = reshare_receiver_test_coordinator(
+        let (coord, db_path) = reshare_receiver_test_coordinator(
             "reshare_participant_set_rejects_non_leader",
             1003,
             vec![1],
@@ -607,11 +603,12 @@ mod tests {
             .await
             .expect_err("a non-leader sender must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[tokio::test]
     async fn accepts_dealer_that_is_both_active_and_share_validated() {
-        let coord = reshare_receiver_test_coordinator(
+        let (coord, db_path) = reshare_receiver_test_coordinator(
             "reshare_participant_set_accepts_valid_dealer",
             1004,
             vec![1],
@@ -622,6 +619,7 @@ mod tests {
         handle_reshare_participant_set(&coord, AttemptKey::test(1004), 1, vec![1])
             .await
             .expect("a dealer that is both active and share-validated must be accepted");
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     /// Build a new-committee-node-1 (selector) coordinator with a reshare
@@ -633,8 +631,8 @@ mod tests {
         db_name: &str,
         session_id: u128,
         active_dealers: Vec<u32>,
-    ) -> DkgCoordinator<DkgImpl> {
-        let coord =
+    ) -> (DkgCoordinator<DkgImpl>, String) {
+        let (coord, db_path) =
             reshare_receiver_test_coordinator(db_name, session_id, active_dealers, vec![]).await;
         {
             let mut states = coord.app_state.dkg_session_state.states.write().await;
@@ -659,12 +657,12 @@ mod tests {
                 .reshare_new_node_id_to_peer_id
                 .insert(2, "peer-b".to_string());
         }
-        coord
+        (coord, db_path)
     }
 
     #[tokio::test]
     async fn rejects_share_ack_for_inactive_dealer() {
-        let coord = reshare_selector_test_coordinator(
+        let (coord, db_path) = reshare_selector_test_coordinator(
             "reshare_share_ack_rejects_inactive_dealer",
             2001,
             vec![], // no active dealers at all: dealer 1 was never frozen in
@@ -676,11 +674,12 @@ mod tests {
             .expect_err("an ack naming a dealer outside active_dealers must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
         assert!(error.to_string().contains("inactive dealer"));
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[tokio::test]
     async fn accepts_share_ack_for_active_dealer() {
-        let coord = reshare_selector_test_coordinator(
+        let (coord, db_path) = reshare_selector_test_coordinator(
             "reshare_share_ack_accepts_active_dealer",
             2002,
             vec![1], // dealer 1 is frozen into the active set
@@ -690,5 +689,6 @@ mod tests {
         handle_reshare_share_ack(&coord, AttemptKey::test(2002), 2, 1)
             .await
             .expect("an ack naming an active dealer must be accepted");
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 }

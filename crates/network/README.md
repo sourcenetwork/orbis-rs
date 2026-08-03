@@ -107,12 +107,16 @@ relayed DKG contribution.
 
 ## Ingress and resource behavior
 
-[`RouterIngressLimits`](src/trait.rs) bounds inbound work before a direct
+[`NetworkIngressLimits`](src/trait.rs) bounds inbound work before a direct
 protocol handler runs:
 
-- `max_concurrent_streams` caps concurrently executing streams per route;
-- `max_streams_per_peer_per_second` caps new streams from one remote peer;
-- `max_message_size` rejects an oversized frame before allocating its payload.
+- `max_concurrent_work` caps concurrently executing ingress work (enforced via
+  a semaphore, see `src/ingress.rs`);
+- `max_events_per_peer_per_second` caps new events from one remote peer.
+
+Separately, `max_message_size` (set on the router/connection builder — see
+`RouterBuilder::max_message_size` in `src/trait.rs` and `src/iroh/router.rs`)
+rejects an oversized frame before allocating its payload.
 
 The router drops excess streams before DKG, PRE, or SIGN deserialization and
 records the corresponding P2P error. The node connection pool is bounded and

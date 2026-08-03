@@ -164,7 +164,11 @@ fn resolve_experiment(args: &ExperimentArgs) -> Result<Experiment> {
         if args.network_size.is_some() || args.ring_size.is_some() || args.threshold.is_some() {
             bail!("--config cannot be combined with individual case flags");
         }
-        return Experiment::from_yaml(config);
+        let mut experiment = Experiment::from_yaml(config)?;
+        if let Some(output) = &args.output {
+            experiment.output_dir = output.clone();
+        }
+        return Ok(experiment);
     }
     let mut experiment = Experiment::single(
         args.network_size
@@ -181,10 +185,18 @@ fn resolve_experiment(args: &ExperimentArgs) -> Result<Experiment> {
 
 fn resolve_sweep(args: &SweepArgs) -> Result<Experiment> {
     if let Some(resume) = &args.resume {
-        return Ok(read_manifest(resume)?.experiment);
+        let mut experiment = read_manifest(resume)?.experiment;
+        if let Some(output) = &args.output {
+            experiment.output_dir = output.clone();
+        }
+        return Ok(experiment);
     }
     if let Some(config) = &args.config {
-        return Experiment::from_yaml(config);
+        let mut experiment = Experiment::from_yaml(config)?;
+        if let Some(output) = &args.output {
+            experiment.output_dir = output.clone();
+        }
+        return Ok(experiment);
     }
     if args.ring_step == 0 {
         bail!("--ring-step must be at least one");

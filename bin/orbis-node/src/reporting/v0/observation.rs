@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::dkg::v0::error::DkgError;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
@@ -128,15 +126,6 @@ pub fn offline_observation_from_sign_error_scoped(
         signing_committee_scope,
         session_id,
     )
-}
-
-#[cfg(test)]
-pub fn is_reportable_dkg_offline_error(error: &DkgError) -> bool {
-    match error {
-        DkgError::NetworkConnection(_) => true,
-        DkgError::NetworkCommunication(message) if message.starts_with("Failed to send") => true,
-        _ => false,
-    }
 }
 
 fn is_reportable_pre_offline_error(error: &PreError) -> bool {
@@ -299,15 +288,6 @@ mod tests {
             "sign-request-1",
         )
         .is_none());
-        assert!(is_reportable_dkg_offline_error(
-            &DkgError::NetworkConnection("down".into())
-        ));
-        assert!(is_reportable_dkg_offline_error(
-            &DkgError::NetworkCommunication("Failed to send to peer".into())
-        ));
-        assert!(!is_reportable_dkg_offline_error(&DkgError::ProtocolError(
-            "bad".into()
-        )));
     }
 
     #[test]

@@ -18,6 +18,7 @@ where
         node_id,
         threshold,
         is_reshare,
+        reshare_new_node_id,
         reshare_new_node_id_to_peer_id,
         current_node_id_to_peer_id,
         commitment_bytes,
@@ -55,11 +56,17 @@ where
                 .params
                 .as_ref()
                 .map(|_| state.routing.reshare_new_node_id_to_peer_id.clone());
+            let reshare_new_node_id = state
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id);
             Ok::<_, DkgError>((
                 shares,
                 state.node.node_id(),
                 state.node.threshold(),
                 matches!(state.kind, SessionKind::Reshare { .. }),
+                reshare_new_node_id,
                 reshare_peer_ids,
                 state.routing.node_id_to_peer_id.clone(),
                 serialize_commitment_coefficients(&state.node.commitment().coefficients)?,
@@ -126,6 +133,20 @@ where
         if !is_reshare && share.to_id == node_id {
             continue;
         }
+        if is_reshare && Some(share.to_id) == reshare_new_node_id {
+            // A DealerReceiver's own reshare contribution is evaluated from
+            // its retained polynomial by the crypto implementation. Feeding
+            // it back through `receive_share` would be both redundant and
+            // invalid (`from_id == self`). The post-distribution state-machine
+            // event records this dealer as locally valid for selection.
+            //
+            // Checked by node ID here, before resolving a route: a receiver
+            // that continues into the new committee has no reason to hold a
+            // route to itself, so resolving `target_peer_id` first could fail
+            // with a spurious "missing peer mapping" error for this exact
+            // self-delivery case.
+            continue;
+        }
         let target_peer_id = if is_reshare {
             reshare_new_node_id_to_peer_id
                 .as_ref()
@@ -167,14 +188,6 @@ where
             &share_value,
             &share.nonce,
         );
-        if is_reshare && is_self_peer_id(&coord.app_state.network, &target_peer_id) {
-            // A DealerReceiver's own reshare contribution is evaluated from
-            // its retained polynomial by the crypto implementation. Feeding
-            // it back through `receive_share` would be both redundant and
-            // invalid (`from_id == self`). The post-distribution state-machine
-            // event records this dealer as locally valid for selection.
-            continue;
-        }
         let private = DkgPrivateMessage::ShareDelivery {
             ceremony_id,
             attempt_id,

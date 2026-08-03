@@ -10,7 +10,6 @@ use crate::dkg::v0::transport::{
     derive_private_message_id, encode, AttemptKey, DkgPrivateMessage, DkgPublicPayload,
     ParticipantRef,
 };
-use crate::helpers::identity::is_self_peer_id;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
 use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};

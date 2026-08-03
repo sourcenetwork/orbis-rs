@@ -288,7 +288,19 @@ impl DirectClients {
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now);
             loop {
-                let ring = sourcehub.orbis_read_ring(ring_id).await?;
+                let ring = match crate::runner::read_ring_with_retry(sourcehub, ring_id).await {
+                    Ok(ring) => ring,
+                    Err(error) => {
+                        if last_progress.elapsed() >= Duration::from_secs(10) {
+                            eprintln!(
+                                "ring {ring_id}: SourceHub read failed, retrying until timeout: {error:#}"
+                            );
+                            last_progress = Instant::now();
+                        }
+                        sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
                 if let Some(ring) = ring.filter(|ring| !ring.ring_pk.is_empty()) {
                     match self.ring_states(members, &ring.ring_pk).await {
                         Ok(states) => {
@@ -435,7 +447,6 @@ pub async fn pre_call(
     client: &mut PreServiceClient<Channel>,
     fixture: &PreFixture,
 ) -> Result<PreMeasurement> {
-    let total_started = Instant::now();
     let signer = JwtSigner::from_key_pair(did_key_pair(&fixture.reader_identity));
     let token = signer.create_pre_jwt(
         fixture.reader_pk.clone(),
@@ -443,6 +454,7 @@ pub async fn pre_call(
         fixture.derivation.clone(),
         fixture.salt.clone(),
     )?;
+    let total_started = Instant::now();
     let request = create_authenticated_request(
         StartPreRequest {
             rdr_pk: fixture.reader_pk.clone(),
@@ -506,9 +518,9 @@ pub async fn sign_call(
     fixture: &SignFixture,
     message: Vec<u8>,
 ) -> Result<SignMeasurement> {
-    let total_started = Instant::now();
     let signer = JwtSigner::from_key_pair(did_key_pair(&fixture.reader_identity));
     let token = signer.create_sign_jwt(&fixture.derivation_id, &message)?;
+    let total_started = Instant::now();
     let request = create_authenticated_request(
         StartSignRequest {
             message: message.clone(),

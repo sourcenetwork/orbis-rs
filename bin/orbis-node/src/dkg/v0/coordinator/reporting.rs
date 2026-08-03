@@ -262,7 +262,7 @@ impl PssStallReporterHandle {
 /// necessarily-broad "silent dealer" set safe.
 pub(crate) fn spawn_pss_stall_reporter<D>(
     app_state: Arc<AppState<D>>,
-    mut rx: mpsc::UnboundedReceiver<AbandonedPssSession>,
+    mut rx: mpsc::Receiver<AbandonedPssSession>,
 ) -> PssStallReporterHandle
 where
     D: Dkg<

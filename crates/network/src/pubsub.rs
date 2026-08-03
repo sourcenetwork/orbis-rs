@@ -36,6 +36,15 @@ impl fmt::Debug for TopicId {
 #[derive(Debug, Clone)]
 pub struct AuthenticatedMessage {
     pub origin: PeerId,
+    /// For a message received over an actual topic subscription, the
+    /// immediate Gossip relay — not an attributable publisher, so this must
+    /// not be used as protocol evidence (see [`PubSubEvent::Rejected`] and
+    /// [`PubSubEvent::IngressDropped`], which document the same caveat).
+    ///
+    /// For a message produced by [`PubSub::verify`] on a standalone
+    /// [`SignedPayload`] (no topic delivery involved, so no relay exists),
+    /// this is simply set equal to `origin` rather than left meaningless;
+    /// consumers must not read that as relay attribution either.
     pub delivered_from: PeerId,
     pub data: Bytes,
     /// Holds shared ingress capacity until the application finishes processing

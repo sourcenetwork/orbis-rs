@@ -1,7 +1,8 @@
+use super::support::{invoke_session_init, TestSessionInit};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
-    coordinator::{message_handlers::handle_session_init, DkgCoordinator},
-    error::{DkgError, Result},
+    coordinator::DkgCoordinator,
+    error::DkgError,
     helpers::derive_reshare_session_id,
     messages::SessionKind,
     network::{start_reshare, ReshareStartOutcome},
@@ -30,44 +31,6 @@ use tracing_subscriber;
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
 use crypto::{DkgImpl, PreImpl, SignImpl};
-
-#[derive(Clone)]
-struct TestSessionInit {
-    session_id: u128,
-    threshold: u32,
-    total_participants: u32,
-    peer_ids: Vec<String>,
-    peer_node_keys: Vec<String>,
-    node_id_assignments: std::collections::HashMap<String, u32>,
-    token_string: String,
-    kind: SessionKind,
-    pss_interval: u64,
-    policy_id: Option<String>,
-    ring_id: String,
-}
-
-async fn invoke_session_init(
-    coordinator: &DkgCoordinator<DkgImpl>,
-    init: TestSessionInit,
-    sender: &PeerId,
-) -> Result<()> {
-    handle_session_init(
-        coordinator,
-        AttemptKey::test(init.session_id),
-        init.threshold,
-        init.total_participants,
-        &init.peer_ids,
-        &init.peer_node_keys,
-        &init.node_id_assignments,
-        &init.token_string,
-        &init.kind,
-        init.pss_interval,
-        init.policy_id,
-        init.ring_id,
-        sender,
-    )
-    .await
-}
 
 // =============================================================================
 // Reshare validation tests
@@ -671,11 +634,12 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
         .set_ring(bulletin_post_id, finalized_payload)
         .expect("finalize committee transition");
 
+    // Poll the actual condition under test (bundle deletion), not session
+    // removal as a proxy for it — the two are separate cleanup steps with no
+    // guaranteed ordering, so a proxy wait could exit before deletion
+    // actually completes.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while app_state
-        .dkg_session_state
-        .session_exists(&session_id)
-        .await
+    while RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk).is_ok()
         && Instant::now() < deadline
     {
         sleep(Duration::from_millis(20)).await;

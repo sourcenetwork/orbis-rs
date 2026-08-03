@@ -6,14 +6,21 @@ use std::path::PathBuf;
 
 fn smoke_experiment(profile: NetworkProfile, network_size: usize, ring_size: usize) -> Experiment {
     let mut experiment = Experiment::single(network_size, ring_size, (2 * ring_size).div_ceil(3));
-    experiment.name = format!("docker-smoke-{network_size}-{ring_size}");
+    experiment.name = format!("docker-smoke-{network_size}-{ring_size}-{}", profile.name);
     experiment.profiles = vec![profile];
     experiment.warmups = 0;
     experiment.repetitions = 1;
     experiment.load.warmup_secs = 1;
     experiment.load.measure_secs = 1;
     experiment.load.concurrency = vec![1];
-    experiment.output_dir = PathBuf::from(format!("/tmp/orbis-bench-smoke-{}", std::process::id()));
+    // All tests in this file share one process, so the PID alone is not
+    // enough to keep their output directories from colliding when run
+    // together (e.g. via `cargo test -- --ignored`).
+    experiment.output_dir = PathBuf::from(format!(
+        "/tmp/orbis-bench-smoke-{}-{}",
+        std::process::id(),
+        experiment.name
+    ));
     experiment
 }
 
@@ -192,7 +199,6 @@ async fn fifty_node_transport_acceptance_lan_and_wan() {
 async fn fifty_node_reshare_acceptance_lan_and_wan() {
     let mut experiment = smoke_experiment(NetworkProfile::lan(), 50, 34);
     experiment.name = "reshare-50-node-34-member-threshold-23-overlap-18".into();
-    experiment.networks[0].cases[0].threshold = 23;
     experiment.profiles = vec![NetworkProfile::lan(), NetworkProfile::wan_50ms()];
     experiment.warmups = 1;
     experiment.repetitions = 5;

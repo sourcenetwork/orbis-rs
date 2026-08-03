@@ -94,7 +94,9 @@ message SubmitDkgInvalidRefreshCommitmentEvidenceResponse {}
 // attributing `peer_id` as a silent dealer. Used to test the stall/offline->node_offline flow
 // deterministically: the accused must be genuinely stopped so the co-signer reachability probe
 // passes and the report is accepted. Refresh by default; set `new_peer_node_keys` (non-empty) to
-// attribute a reshare session instead.
+// attribute a reshare session instead, in which case `new_threshold` and `bulletin_post_id` must
+// also be set to valid values — the server passes all three straight through into the reshare
+// session kind without validating them.
 message SubmitPssStallOfflineReportRequest {
   string ring_id = 1;
   string session_id = 2;

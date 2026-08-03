@@ -151,6 +151,11 @@ impl CommitteeConfig {
         self.node_keys.len()
     }
 
+    #[allow(dead_code)] // API symmetry with `len` (clippy::len_without_is_empty); no caller yet.
+    pub fn is_empty(&self) -> bool {
+        self.node_keys.is_empty()
+    }
+
     pub fn participant(&self, scope: CommitteeScope, node_key: &str) -> Option<ParticipantRef> {
         self.node_id_assignments
             .get(node_key)
@@ -843,6 +848,13 @@ pub fn canonical_leader(peer_node_keys: &[String]) -> Option<&str> {
 }
 
 /// The lower canonical node ID opens the one stream for an unordered pair.
+///
+/// Comparing raw numeric IDs like this is only valid for an ordinary
+/// same-scope pair. For a reshare pair, `Current` and `Next` identities are
+/// assigned independently and may share the same numeric ID for different
+/// physical nodes, so this function cannot disambiguate them — reshare
+/// callers must use [`CeremonyConfig::canonical_pair_opener`], which compares
+/// by node key instead.
 pub fn is_canonical_pair_opener(local_node_id: u32, remote_node_id: u32) -> bool {
     local_node_id < remote_node_id
 }

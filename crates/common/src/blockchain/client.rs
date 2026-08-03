@@ -217,6 +217,12 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        // Match `resync_account`'s locking order: without it, this could race
+        // an in-progress broadcast (which holds `tx_lock` across its own
+        // read-sign-send-bump sequence) and overwrite the nonce with a stale
+        // value read before that broadcast's own update lands, or have its
+        // own update immediately clobbered by that broadcast's bump.
+        let _guard = self.tx_lock.lock().await;
         self.resync_nonce_inner(signer).await
     }
 

@@ -1,11 +1,11 @@
+use super::support::{invoke_session_init, TestSessionInit};
 use crate::constants::MAX_DKG_SESSIONS;
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
-    coordinator::{message_handlers::handle_session_init, DkgCoordinator},
-    error::{DkgError, Result},
+    coordinator::DkgCoordinator,
+    error::DkgError,
     messages::SessionKind,
     session_state::{CreateSessionOutcome, SessionStateManager},
-    transport::AttemptKey,
 };
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys;
@@ -26,43 +26,6 @@ use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use tonic::{Request, Response};
 use tracing_subscriber;
-
-struct TestSessionInit {
-    session_id: u128,
-    threshold: u32,
-    total_participants: u32,
-    peer_ids: Vec<String>,
-    peer_node_keys: Vec<String>,
-    node_id_assignments: std::collections::HashMap<String, u32>,
-    token_string: String,
-    kind: SessionKind,
-    pss_interval: u64,
-    policy_id: Option<String>,
-    ring_id: String,
-}
-
-async fn invoke_session_init(
-    coordinator: &DkgCoordinator<crypto::DkgImpl>,
-    init: TestSessionInit,
-    sender: &network::PeerId,
-) -> Result<()> {
-    handle_session_init(
-        coordinator,
-        AttemptKey::test(init.session_id),
-        init.threshold,
-        init.total_participants,
-        &init.peer_ids,
-        &init.peer_node_keys,
-        &init.node_id_assignments,
-        &init.token_string,
-        &init.kind,
-        init.pss_interval,
-        init.policy_id,
-        init.ring_id,
-        sender,
-    )
-    .await
-}
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
 use crypto::DkgImpl;

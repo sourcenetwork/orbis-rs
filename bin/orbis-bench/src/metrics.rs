@@ -4,11 +4,14 @@ use std::time::Duration;
 
 pub type MetricSnapshot = BTreeMap<String, f64>;
 
-pub async fn scrape(endpoint: &str, timeout: Duration) -> Result<MetricSnapshot> {
-    let response = reqwest::Client::builder()
-        .timeout(timeout)
-        .build()?
+pub async fn scrape(
+    client: &reqwest::Client,
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<MetricSnapshot> {
+    let response = client
         .get(endpoint)
+        .timeout(timeout)
         .send()
         .await
         .with_context(|| format!("scrape Prometheus endpoint {endpoint}"))?;
@@ -25,16 +28,29 @@ pub fn parse_prometheus(input: &str) -> Result<MetricSnapshot> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let split = line
-            .rfind(|character: char| character.is_ascii_whitespace())
-            .ok_or_else(|| anyhow::anyhow!("invalid metric line {}: {line}", line_number + 1))?;
-        let name = line[..split].trim();
-        let value_text = line[split..].trim();
+        // The name (with labels, if any) comes first, followed by the value
+        // and an optional trailing timestamp. `rfind` on whitespace would
+        // instead split right before the timestamp when one is present,
+        // handing the timestamp to the value and swallowing the real value
+        // into the name. Find where the name actually ends instead: right
+        // after the closing `}` for a labeled metric, or at the first
+        // whitespace for an unlabeled one.
+        let (name, rest) = if let Some(labels_start) = line.find('{') {
+            let closing = line[labels_start..].find('}').ok_or_else(|| {
+                anyhow::anyhow!("invalid metric line {}: {line}", line_number + 1)
+            })?;
+            let labels_end = labels_start + closing + 1;
+            (line[..labels_end].trim(), line[labels_end..].trim())
+        } else {
+            let split = line
+                .find(|character: char| character.is_ascii_whitespace())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("invalid metric line {}: {line}", line_number + 1)
+                })?;
+            (line[..split].trim(), line[split..].trim())
+        };
         // Prometheus text can optionally include a timestamp after the value.
-        let value_text = value_text
-            .split_ascii_whitespace()
-            .next()
-            .unwrap_or(value_text);
+        let value_text = rest.split_ascii_whitespace().next().unwrap_or(rest);
         let value = match value_text {
             "+Inf" => f64::INFINITY,
             "-Inf" => f64::NEG_INFINITY,
@@ -144,6 +160,10 @@ plain_total 9
         assert_eq!(
             parsed["dkg_phase_duration_seconds_bucket{kind=\"fresh\",le=\"1\",phase=\"shares\"}"],
             4.0
+        );
+        assert_eq!(
+            parsed["dkg_phase_duration_seconds_sum{kind=\"fresh\",phase=\"shares\"}"],
+            2.5
         );
         assert_eq!(parsed["plain_total"], 9.0);
     }

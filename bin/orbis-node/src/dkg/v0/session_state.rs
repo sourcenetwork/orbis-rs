@@ -776,7 +776,7 @@ pub struct SessionStateManager<D: Dkg> {
     /// Receiver for stalled refresh/reshare sessions published by the expiration sweep for
     /// offline-report attribution. Taken once via [`SessionStateManager::take_stall_report_receiver`]
     /// at node startup; the sender lives inside the expiration worker.
-    stall_report_rx: StdMutex<Option<mpsc::UnboundedReceiver<AbandonedPssSession>>>,
+    stall_report_rx: StdMutex<Option<mpsc::Receiver<AbandonedPssSession>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -790,7 +790,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
         // Spawn background expiration task (handles abandoned sessions). It owns the sole
         // sender for the stall-report channel, so the receiver stays open for the worker's life.
-        let (stall_report_tx, stall_report_rx) = mpsc::unbounded_channel();
+        // Bounded rather than unbounded: if the drain worker (or whoever holds the receiver)
+        // stalls, this caps how much memory queued-but-unprocessed events can hold rather than
+        // growing without bound. A full channel just drops the newest event (see
+        // `expiration_worker`) and counts it, rather than blocking the expiration sweep.
+        let (stall_report_tx, stall_report_rx) = mpsc::channel(256);
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
         let ready_clone = reshare_signature_ready.clone();
@@ -818,10 +822,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Take the receiver for stalled-PSS-session offline-report attribution. Returns `Some`
     /// exactly once (the first caller); subsequent calls return `None`. Called at node startup
     /// to spawn the drain worker. If no one takes it, the sweep's published events accumulate
-    /// unread in the channel — harmless, just never turned into reports.
-    pub fn take_stall_report_receiver(
-        &self,
-    ) -> Option<mpsc::UnboundedReceiver<AbandonedPssSession>> {
+    /// unread in the channel until it fills, after which further events are dropped and counted
+    /// (see `expiration_worker`) — never fatal, just never turned into reports.
+    pub fn take_stall_report_receiver(&self) -> Option<mpsc::Receiver<AbandonedPssSession>> {
         self.stall_report_rx
             .lock()
             .expect("stall_report_rx mutex poisoned")
@@ -837,7 +840,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
         reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
         mut shutdown_rx: watch::Receiver<bool>,
-        stall_report_tx: mpsc::UnboundedSender<AbandonedPssSession>,
+        stall_report_tx: mpsc::Sender<AbandonedPssSession>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
 
@@ -896,13 +899,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     ) {
                         let missing_peer_ids = state.missing_dealer_peer_ids(state.phase);
                         if !missing_peer_ids.is_empty() {
-                            let _ = stall_report_tx.send(AbandonedPssSession {
+                            if let Err(error) = stall_report_tx.try_send(AbandonedPssSession {
                                 session_id: *session_id,
                                 kind: state.kind.clone(),
                                 ring_id: state.routing.ring_id.clone(),
                                 protocol_version: state.protocol_version,
                                 missing_peer_ids,
-                            });
+                            }) {
+                                crate::metrics::record_dkg_transport_event(
+                                    "pss_stall_report",
+                                    "dropped",
+                                );
+                                tracing::warn!(
+                                    session_id = session_id,
+                                    %error,
+                                    "SessionStateManager: stall-report channel full or closed; dropping offline-attribution event"
+                                );
+                            }
                         }
                     }
                 }
@@ -977,7 +990,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             reshare_signature_ready
                 .write()
                 .await
-                .retain(|_, inserted_at| now.duration_since(*inserted_at) < DKG_COMPLETED_SESSION_TTL);
+                .retain(|_, inserted_at| {
+                    now.duration_since(*inserted_at) < DKG_COMPLETED_SESSION_TTL
+                });
 
             let removed = initial_count - states.len();
             if removed > 0 {
@@ -1120,17 +1135,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         current_ring_sha256: &str,
         finalized_ring_sha256: &str,
     ) -> bool {
-        self.reshare_signature_ready
-            .read()
-            .await
-            .keys()
-            .any(|key| {
-                key.ring_key == ring_key
-                    && key.session_id == session_id
-                    && key.ring_id == ring_id
-                    && key.current_ring_sha256 == current_ring_sha256
-                    && key.finalized_ring_sha256 == finalized_ring_sha256
-            })
+        self.reshare_signature_ready.read().await.keys().any(|key| {
+            key.ring_key == ring_key
+                && key.session_id == session_id
+                && key.ring_id == ring_id
+                && key.current_ring_sha256 == current_ring_sha256
+                && key.finalized_ring_sha256 == finalized_ring_sha256
+        })
     }
 
     /// Clear the in-progress PSS claim for a ring (called on setup failure before a
@@ -1698,25 +1709,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         nonce: [u8; 32],
         peer: String,
     ) -> TopologyAckRecordOutcome {
-        let outcome = self
-            .with_state_mut(session_id, |state| {
-                let transport = &mut state.transport;
-                if transport.attempt_id != Some(attempt_id) {
-                    return TopologyAckRecordOutcome::StaleAttempt;
-                }
-                if transport.topology_probe_nonce != Some(nonce) {
-                    return TopologyAckRecordOutcome::WrongNonce;
-                }
-                if !transport.topology_probe_acknowledgements.insert(peer) {
-                    return TopologyAckRecordOutcome::Duplicate;
-                }
-                transport.last_progress_at = Instant::now();
-                transport.topology_probe_notify.notify_waiters();
-                TopologyAckRecordOutcome::Recorded
-            })
-            .await
-            .unwrap_or(TopologyAckRecordOutcome::MissingSession);
-        outcome
+        self.with_state_mut(session_id, |state| {
+            let transport = &mut state.transport;
+            if transport.attempt_id != Some(attempt_id) {
+                return TopologyAckRecordOutcome::StaleAttempt;
+            }
+            if transport.topology_probe_nonce != Some(nonce) {
+                return TopologyAckRecordOutcome::WrongNonce;
+            }
+            if !transport.topology_probe_acknowledgements.insert(peer) {
+                return TopologyAckRecordOutcome::Duplicate;
+            }
+            transport.last_progress_at = Instant::now();
+            transport.topology_probe_notify.notify_waiters();
+            TopologyAckRecordOutcome::Recorded
+        })
+        .await
+        .unwrap_or(TopologyAckRecordOutcome::MissingSession)
     }
 
     pub(crate) async fn topology_probe_acknowledgements(

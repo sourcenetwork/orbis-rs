@@ -354,6 +354,14 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     // Fetch the canonical RingPayload from the bulletin — it is the source of truth.
     let ring_payload =
         load_ring_payload_by_post_id(ring_pk_hex, post_id, bulletin, protocol_version).await?;
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Refresh target ring {} has {} participants, maximum is {}",
+            ring_pk_hex,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
 
     // 2. Verify enough time has elapsed since the last refresh/DKG.
     let pss_interval_secs = ring_payload.pss_interval;

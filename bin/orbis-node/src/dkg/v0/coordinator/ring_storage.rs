@@ -75,6 +75,12 @@ where
     D: Dkg + Clone + 'static,
 {
     let _guard = app_state.ring_index_lock.lock().await;
+    // Remove the index entry before the bundle it points to: if a failure
+    // between the two steps leaves one of them done and the other not, an
+    // orphaned bundle (harmless — just unreferenced material left on disk)
+    // is preferable to an index entry pointing at material that no longer
+    // exists.
+    remove_ring_index_entry(&app_state.local_storage, ring_key)?;
     app_state
         .local_storage
         .delete(LocalStorageKeys::RingKey(ring_key.to_string()))
@@ -83,7 +89,6 @@ where
                 "Reshare Dealer: failed to delete finalized departed share bundle for ring {ring_key}: {error}"
             ))
         })?;
-    remove_ring_index_entry(&app_state.local_storage, ring_key)?;
     tracing::info!(
         session_id,
         ring_key,

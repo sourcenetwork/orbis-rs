@@ -223,16 +223,15 @@ where
                 e
             ))
         })?;
-        let peer_ids = coord
+        let (peer_ids, peer_node_keys) = coord
             .app_state
             .dkg_session_state
-            .with_attempt_state(attempt, |state| state.routing.peer_ids.clone())
-            .await
-            .map_err(|error| attempt_state_error(attempt, error))?;
-        let peer_node_keys = coord
-            .app_state
-            .dkg_session_state
-            .with_attempt_state(attempt, |state| state.routing.peer_node_keys.clone())
+            .with_attempt_state(attempt, |state| {
+                (
+                    state.routing.peer_ids.clone(),
+                    state.routing.peer_node_keys.clone(),
+                )
+            })
             .await
             .map_err(|error| attempt_state_error(attempt, error))?;
         if peer_node_keys.is_empty() {

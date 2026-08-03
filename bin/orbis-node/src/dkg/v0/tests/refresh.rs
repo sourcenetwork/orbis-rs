@@ -1,13 +1,13 @@
+use super::support::{invoke_session_init, TestSessionInit};
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::{
         message_handlers::{
-            handle_commitment_hash_message, handle_commitment_message, handle_session_init,
-            handle_share_message,
+            handle_commitment_hash_message, handle_commitment_message, handle_share_message,
         },
         DkgCoordinator,
     },
-    error::{DkgError, Result},
+    error::DkgError,
     helpers::{
         derive_refresh_session_id, fresh_commitment_hash, serialize_commitment_coefficients,
     },
@@ -37,43 +37,6 @@ use tracing_subscriber;
 
 // Concrete crypto implementation for tests (selected via crypto crate features)
 use crypto::DkgImpl;
-
-struct TestSessionInit {
-    session_id: u128,
-    threshold: u32,
-    total_participants: u32,
-    peer_ids: Vec<String>,
-    peer_node_keys: Vec<String>,
-    node_id_assignments: std::collections::HashMap<String, u32>,
-    token_string: String,
-    kind: SessionKind,
-    pss_interval: u64,
-    policy_id: Option<String>,
-    ring_id: String,
-}
-
-async fn invoke_session_init(
-    coordinator: &DkgCoordinator<DkgImpl>,
-    init: TestSessionInit,
-    sender: &PeerId,
-) -> Result<()> {
-    handle_session_init(
-        coordinator,
-        AttemptKey::test(init.session_id),
-        init.threshold,
-        init.total_participants,
-        &init.peer_ids,
-        &init.peer_node_keys,
-        &init.node_id_assignments,
-        &init.token_string,
-        &init.kind,
-        init.pss_interval,
-        init.policy_id,
-        init.ring_id,
-        sender,
-    )
-    .await
-}
 
 // ============================================================================
 // PSS Refresh Integration Test

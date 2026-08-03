@@ -129,14 +129,19 @@ where
         }
     }
 
+    // Peek rather than remove: if the replay below fails, the entry must
+    // survive so a later retry can still replay it. Removing it up front
+    // would otherwise lose the commitment and its evidence for good on any
+    // transient replay failure.
     let pending = coord
         .app_state
         .dkg_session_state
-        .with_attempt_state_mut(attempt, |state| {
+        .with_attempt_state(attempt, |state| {
             state
                 .pending
                 .pending_commitments_waiting_for_hash
-                .remove(&from_node_id)
+                .get(&from_node_id)
+                .cloned()
         })
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
@@ -154,6 +159,17 @@ where
             pending.report_evidence,
         )
         .await?;
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state_mut(attempt, |state| {
+                state
+                    .pending
+                    .pending_commitments_waiting_for_hash
+                    .remove(&from_node_id)
+            })
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
     }
 
     let peer_ids = coord

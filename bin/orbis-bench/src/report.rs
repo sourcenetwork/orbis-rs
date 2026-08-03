@@ -1,5 +1,7 @@
 use crate::config::Operation;
-use crate::results::{read_trials, summarize, RunManifest, SummaryRow, TrialRecord};
+use crate::results::{
+    apply_expected_trial_counts, read_trials, summarize, RunManifest, SummaryRow, TrialRecord,
+};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -12,14 +14,7 @@ pub fn generate_report(run_dir: &Path) -> Result<()> {
     )?;
     let trials = read_trials(run_dir)?;
     let mut summary = summarize(&trials);
-    for row in &mut summary {
-        let expected = if row.concurrency.is_some() {
-            1
-        } else {
-            manifest.experiment.repetitions
-        };
-        row.viable &= row.trials == expected;
-    }
+    apply_expected_trial_counts(&mut summary, &manifest);
     let resources = read_resource_summary(&run_dir.join("resource-samples.csv"))?;
     let html = render_report(&manifest, &trials, &summary, &resources);
     fs::write(run_dir.join("report.html"), html)?;
@@ -36,6 +31,39 @@ struct ResourceSummary {
     network_tx_bytes: u64,
 }
 
+/// Parses one line written by `results::csv_field`: a field is quoted only
+/// when it contains a comma, quote, or newline, with embedded quotes doubled.
+/// A plain `line.split(',')` would misparse such a field's embedded commas as
+/// column separators, silently shifting every numeric column after it.
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(character) = chars.next() {
+        if in_quotes {
+            if character == '"' {
+                if chars.peek() == Some(&'"') {
+                    field.push('"');
+                    chars.next();
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(character);
+            }
+        } else {
+            match character {
+                '"' if field.is_empty() => in_quotes = true,
+                ',' => fields.push(std::mem::take(&mut field)),
+                _ => field.push(character),
+            }
+        }
+    }
+    fields.push(field);
+    fields
+}
+
 fn read_resource_summary(path: &Path) -> Result<ResourceSummary> {
     if !path.exists() {
         return Ok(ResourceSummary::default());
@@ -43,7 +71,7 @@ fn read_resource_summary(path: &Path) -> Result<ResourceSummary> {
     let mut by_stack_timestamp: BTreeMap<(String, u128), (u64, f64)> = BTreeMap::new();
     let mut network_by_container: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for line in fs::read_to_string(path)?.lines().skip(1) {
-        let fields: Vec<&str> = line.split(',').collect();
+        let fields = parse_csv_line(line);
         if fields.len() < 10 {
             continue;
         }
@@ -462,6 +490,12 @@ fn scale_chart(
             ceremony_metrics(row, trials)
         }
     };
+    // `ceremony_metrics` rescans all of `trials` per call; compute it once per
+    // filtered row here (index-aligned with `filtered`) instead of repeating
+    // that scan for the same row in the max-seconds, polyline, and marker
+    // passes below.
+    let row_metrics: Vec<Option<RowMetrics>> =
+        filtered.iter().map(|row| metrics_for(row)).collect();
 
     let mut y_values: Vec<usize> = filtered.iter().map(|row| y_value(row)).collect();
     y_values.sort_unstable();
@@ -483,9 +517,9 @@ fn scale_chart(
     let row_height = 46.0;
     let height = top + bottom + y_values.len() as f64 * row_height;
 
-    let max_seconds = (filtered
+    let max_seconds = (row_metrics
         .iter()
-        .filter_map(|row| metrics_for(row))
+        .filter_map(|metrics| metrics.as_ref())
         .map(|metrics| metrics.max_ms)
         .fold(0.0_f64, f64::max)
         / 1000.0)
@@ -537,9 +571,10 @@ fn scale_chart(
         let color = colors[index % colors.len()];
         let mut points: Vec<(f64, f64)> = filtered
             .iter()
-            .filter(|row| &row.profile == profile)
-            .filter_map(|row| {
-                let metrics = metrics_for(row)?;
+            .zip(row_metrics.iter())
+            .filter(|(row, _)| &row.profile == profile)
+            .filter_map(|(row, metrics)| {
+                let metrics = metrics.as_ref()?;
                 Some((
                     row_y(y_value(row)) + profile_offset(profile),
                     x(metrics.median_ms / 1000.0),
@@ -561,11 +596,11 @@ fn scale_chart(
         }
     }
 
-    for row in &filtered {
+    for (row, metrics) in filtered.iter().zip(row_metrics.iter()) {
         let color_index = profiles.iter().position(|p| *p == row.profile).unwrap_or(0);
         let color = colors[color_index % colors.len()];
         let yy = row_y(y_value(row)) + profile_offset(&row.profile);
-        let Some(metrics) = metrics_for(row) else {
+        let Some(metrics) = metrics else {
             continue;
         };
         let (min_s, median_s, max_s) = (

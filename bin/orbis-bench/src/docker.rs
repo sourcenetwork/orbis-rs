@@ -108,6 +108,13 @@ impl DockerCompose {
             "up".to_string(),
             "--detach".to_string(),
             "--wait".to_string(),
+            // Without an explicit bound, `--wait` blocks forever if a
+            // container never reports healthy. The sourcehub healthcheck
+            // (compose.rs) allows a 20s start period plus 60 retries at a 5s
+            // interval — 320s worst case — so give it comfortable margin
+            // rather than hanging the whole run on a stuck container.
+            "--wait-timeout".to_string(),
+            "600".to_string(),
         ];
         args.extend(services);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -242,9 +249,16 @@ impl DockerCompose {
             .trim()
             .parse()
             .context("parse UDP calibration milliseconds")?;
-        if elapsed_ms + 5.0 < profile.delay_ms {
+        // `profile.delay_ms` is applied as a one-way egress delay on both
+        // containers, and this probe measures a round trip (source -> target
+        // -> source), so it crosses that shaped egress path twice.
+        let expected_round_trip_ms = 2.0 * profile.delay_ms;
+        if elapsed_ms + 5.0 < expected_round_trip_ms {
             bail!(
-                "UDP calibration observed {elapsed_ms:.1} ms, below the configured {:.1} ms egress delay",
+                "UDP calibration observed {elapsed_ms:.1} ms round-trip, below the expected {:.1} ms \
+                 (2x the {:.1} ms configured one-way egress delay, since the reply crosses both \
+                 containers' shaped egress paths)",
+                expected_round_trip_ms,
                 profile.delay_ms
             );
         }

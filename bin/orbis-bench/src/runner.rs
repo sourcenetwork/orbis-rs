@@ -339,9 +339,8 @@ impl BenchmarkRunner {
             ))
             .await
             .ok();
-            manifest.sourcehub_image = image_digest(&format!(
-                "orbis-bench-sourcehub:{}",
-                &self.experiment.sourcehub_ref[..12.min(self.experiment.sourcehub_ref.len())]
+            manifest.sourcehub_image = image_digest(&crate::compose::sourcehub_image_tag(
+                &self.experiment.sourcehub_ref,
             ))
             .await
             .ok();
@@ -684,6 +683,10 @@ impl BenchmarkRunner {
             let fixtures = online
                 .as_ref()
                 .context("PRE requires an online fixture ring")?;
+            let ring = rings
+                .online
+                .as_ref()
+                .context("PRE requires an online fixture ring")?;
             viable &= self
                 .run_pre_trials(
                     store,
@@ -694,6 +697,7 @@ impl BenchmarkRunner {
                     clients,
                     endpoints,
                     rings,
+                    ring,
                     completed,
                     rng,
                     &fixtures.pre,
@@ -702,6 +706,10 @@ impl BenchmarkRunner {
         }
         if self.experiment.operations.contains(&Operation::Sign) {
             let fixtures = online
+                .as_ref()
+                .context("SIGN requires an online fixture ring")?;
+            let ring = rings
+                .online
                 .as_ref()
                 .context("SIGN requires an online fixture ring")?;
             viable &= self
@@ -714,6 +722,7 @@ impl BenchmarkRunner {
                     clients,
                     endpoints,
                     rings,
+                    ring,
                     completed,
                     rng,
                     &fixtures.sign,
@@ -751,15 +760,13 @@ impl BenchmarkRunner {
         clients: &mut DirectClients,
         endpoints: &[NodeEndpoint],
         rings: &CaseRings,
+        ring: &PlannedRing,
         completed: &HashSet<TrialKey>,
         rng: &mut StdRng,
         fixture: &PreFixture,
     ) -> Result<bool> {
         let mut viable = true;
-        let committee = committee_endpoints(
-            rings.online.as_ref().expect("online PRE ring exists"),
-            endpoints,
-        );
+        let committee = committee_endpoints(ring, endpoints);
         let initiator_offset = (rng.next_u64() as usize) % rings.case.ring_size;
         for trial in 0..self.experiment.warmups + self.experiment.repetitions {
             let warmup = trial < self.experiment.warmups;
@@ -776,12 +783,7 @@ impl BenchmarkRunner {
                 continue;
             }
             let initiator_position = (initiator_offset + trial) % rings.case.ring_size;
-            let initiator = rings
-                .online
-                .as_ref()
-                .expect("online PRE ring exists")
-                .members[initiator_position]
-                - 1;
+            let initiator = ring.members[initiator_position] - 1;
             let before = scrape_committee(&committee).await;
             let started = Instant::now();
             let result = timeout(
@@ -790,8 +792,8 @@ impl BenchmarkRunner {
             )
             .await;
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let failures = compose.container_failures().await.unwrap_or_default();
             let after = scrape_committee(&committee).await;
+            let failures = compose.container_failures().await.unwrap_or_default();
             let (success, duration_ms, client_total_ms, verification_ms, class, error) =
                 match result {
                     Ok(Ok(result)) if failures.is_empty() => (
@@ -857,14 +859,9 @@ impl BenchmarkRunner {
             if completed.contains(&key) {
                 continue;
             }
-            let initiator = rings
-                .online
-                .as_ref()
-                .expect("online PRE ring exists")
-                .members[(initiator_offset + stage_index) % rings.case.ring_size]
-                - 1;
+            let initiator =
+                ring.members[(initiator_offset + stage_index) % rings.case.ring_size] - 1;
             let client = clients.pre_client(initiator)?;
-            let before = scrape_committee(&committee).await;
             run_pre_load(
                 client.clone(),
                 fixture.clone(),
@@ -872,6 +869,7 @@ impl BenchmarkRunner {
                 Duration::from_secs(self.experiment.load.warmup_secs),
             )
             .await;
+            let before = scrape_committee(&committee).await;
             let measurement = run_pre_load(
                 client,
                 fixture.clone(),
@@ -879,8 +877,8 @@ impl BenchmarkRunner {
                 Duration::from_secs(self.experiment.load.measure_secs),
             )
             .await;
-            let failures = compose.container_failures().await.unwrap_or_default();
             let after = scrape_committee(&committee).await;
+            let failures = compose.container_failures().await.unwrap_or_default();
             viable &= measurement.failures == 0 && measurement.successes > 0 && failures.is_empty();
             let mut record = load_trial(
                 manifest,
@@ -913,15 +911,13 @@ impl BenchmarkRunner {
         clients: &mut DirectClients,
         endpoints: &[NodeEndpoint],
         rings: &CaseRings,
+        ring: &PlannedRing,
         completed: &HashSet<TrialKey>,
         rng: &mut StdRng,
         fixture: &SignFixture,
     ) -> Result<bool> {
         let mut viable = true;
-        let committee = committee_endpoints(
-            rings.online.as_ref().expect("online SIGN ring exists"),
-            endpoints,
-        );
+        let committee = committee_endpoints(ring, endpoints);
         let initiator_offset = (rng.next_u64() as usize) % rings.case.ring_size;
         for trial in 0..self.experiment.warmups + self.experiment.repetitions {
             let warmup = trial < self.experiment.warmups;
@@ -938,12 +934,7 @@ impl BenchmarkRunner {
                 continue;
             }
             let initiator_position = (initiator_offset + trial) % rings.case.ring_size;
-            let initiator = rings
-                .online
-                .as_ref()
-                .expect("online SIGN ring exists")
-                .members[initiator_position]
-                - 1;
+            let initiator = ring.members[initiator_position] - 1;
             let message = format!("orbis-bench-sign-{}-{trial}", manifest.run_id).into_bytes();
             let before = scrape_committee(&committee).await;
             let started = Instant::now();
@@ -953,8 +944,8 @@ impl BenchmarkRunner {
             )
             .await;
             let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-            let failures = compose.container_failures().await.unwrap_or_default();
             let after = scrape_committee(&committee).await;
+            let failures = compose.container_failures().await.unwrap_or_default();
             let (success, duration_ms, client_total_ms, verification_ms, class, error) =
                 match result {
                     Ok(Ok(result)) if failures.is_empty() => (
@@ -1020,14 +1011,9 @@ impl BenchmarkRunner {
             if completed.contains(&key) {
                 continue;
             }
-            let initiator = rings
-                .online
-                .as_ref()
-                .expect("online SIGN ring exists")
-                .members[(initiator_offset + stage_index) % rings.case.ring_size]
-                - 1;
+            let initiator =
+                ring.members[(initiator_offset + stage_index) % rings.case.ring_size] - 1;
             let client = clients.sign_client(initiator)?;
-            let before = scrape_committee(&committee).await;
             run_sign_load(
                 client.clone(),
                 fixture.clone(),
@@ -1035,6 +1021,7 @@ impl BenchmarkRunner {
                 Duration::from_secs(self.experiment.load.warmup_secs),
             )
             .await;
+            let before = scrape_committee(&committee).await;
             let measurement = run_sign_load(
                 client,
                 fixture.clone(),
@@ -1042,8 +1029,8 @@ impl BenchmarkRunner {
                 Duration::from_secs(self.experiment.load.measure_secs),
             )
             .await;
-            let failures = compose.container_failures().await.unwrap_or_default();
             let after = scrape_committee(&committee).await;
+            let failures = compose.container_failures().await.unwrap_or_default();
             viable &= measurement.failures == 0 && measurement.successes > 0 && failures.is_empty();
             let mut record = load_trial(
                 manifest,
@@ -1863,10 +1850,11 @@ async fn controller_client(config: ChainConfig) -> Result<SourceHubClient> {
 }
 
 async fn scrape_committee(committee: &[NodeEndpoint]) -> Vec<MetricSnapshot> {
+    let client = reqwest::Client::new();
     join_all(
         committee
             .iter()
-            .map(|endpoint| scrape(&endpoint.metrics_url, Duration::from_secs(2))),
+            .map(|endpoint| scrape(&client, &endpoint.metrics_url, Duration::from_secs(2))),
     )
     .await
     .into_iter()
@@ -2006,7 +1994,10 @@ async fn wait_reshare_finalized(
     }
 }
 
-async fn read_ring_with_retry(controller: &SourceHubClient, ring_id: &str) -> Result<Option<Ring>> {
+pub(crate) async fn read_ring_with_retry(
+    controller: &SourceHubClient,
+    ring_id: &str,
+) -> Result<Option<Ring>> {
     const MAX_ATTEMPTS: usize = 3;
     let mut backoff = Duration::from_millis(250);
     for attempt in 1..=MAX_ATTEMPTS {
@@ -2074,13 +2065,24 @@ async fn stop_resource_sampler(
     let Some(ResourceSampler {
         stop_tx,
         mut sample_rx,
-        task,
+        mut task,
     }) = sampler
     else {
         return Ok(());
     };
     stop_tx.send(true).ok();
-    let task_result = task.await;
+    // The sampler task blocks on a bounded `sample_tx.send(...).await` once
+    // the channel fills, so it must keep draining here as it awaits the
+    // task's exit — awaiting the task alone, with nothing draining, can
+    // deadlock the two sides against each other.
+    let task_result = loop {
+        tokio::select! {
+            result = &mut task => break result,
+            Some(sample) = sample_rx.recv() => {
+                store.append_resource(&sample)?;
+            }
+        }
+    };
     let drain_result = drain_resource_samples(store, &mut sample_rx);
     task_result.context("resource sampler task failed")?;
     drain_result

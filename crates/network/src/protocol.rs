@@ -41,20 +41,30 @@ mod tests {
 
     #[test]
     fn v0_alpns_are_stable() {
-        assert_eq!(V0.dkg_control_alpn, b"orbis/dkg-control/0");
-        assert_eq!(V0.dkg_private_alpn, b"orbis/dkg-private/0");
-        assert_eq!(V0.reencrypt_alpn, b"orbis/reencrypt/0");
-        assert_eq!(V0.sign_alpn, b"orbis/sign/0");
-        assert_eq!(V0.reporting_health_alpn, b"orbis/reporting/health/0");
+        // Destructured, not dot-accessed: adding a field to `ProtocolRoutes`
+        // must fail to compile here until this test accounts for it, rather
+        // than silently leaving a new route untested.
+        let ProtocolRoutes {
+            version: _,
+            dkg_control_alpn,
+            dkg_private_alpn,
+            reencrypt_alpn,
+            sign_alpn,
+            reporting_health_alpn,
+        } = V0;
+        assert_eq!(dkg_control_alpn, b"orbis/dkg-control/0");
+        assert_eq!(dkg_private_alpn, b"orbis/dkg-private/0");
+        assert_eq!(reencrypt_alpn, b"orbis/reencrypt/0");
+        assert_eq!(sign_alpn, b"orbis/sign/0");
+        assert_eq!(reporting_health_alpn, b"orbis/reporting/health/0");
         let installed = [
-            V0.dkg_control_alpn,
-            V0.dkg_private_alpn,
-            V0.reencrypt_alpn,
-            V0.sign_alpn,
-            V0.reporting_health_alpn,
+            dkg_control_alpn,
+            dkg_private_alpn,
+            reencrypt_alpn,
+            sign_alpn,
+            reporting_health_alpn,
         ];
-        let removed_dkg_route = [b"orbis/dkg".as_slice(), b"/0"].concat();
-        assert!(!installed.contains(&removed_dkg_route.as_slice()));
+        assert!(!installed.contains(&b"orbis/dkg/0".as_slice()));
     }
 
     #[test]
