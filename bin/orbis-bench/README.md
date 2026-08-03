@@ -94,3 +94,21 @@ Every run directory contains:
 - targeted logs for failed setup/cases.
 
 The report explicitly warns about incomplete runs, small samples, host saturation, and the limitations of single-host Docker and synthetic WAN emulation. Keep the raw directory with any number quoted from the report.
+
+## Debugging a running or failed stack
+
+While a run is in progress, or after `--keep-network` preserves a failed stack, tail live container logs directly through the generated Compose file. Its `name:` field already sets the project, so no `--project-name` is needed:
+
+```console
+docker compose -f bench-results/<run-dir>/stacks/<stack-name>/compose.yaml logs -f
+docker compose -f bench-results/<run-dir>/stacks/<stack-name>/compose.yaml logs -f sourcehub-001 node-013
+```
+
+Every container also carries `dev.orbis.bench.run`, `dev.orbis.bench.stack`, `dev.orbis.bench.role`, and `dev.orbis.bench.node-index` labels, so you can find or follow one without knowing the exact Compose file path:
+
+```console
+docker ps --filter "label=dev.orbis.bench.run=<run-id>"
+docker logs -f orbis-bench-<stack-suffix>-node-013-1
+```
+
+`cleanup bench-results/<run-dir>` tears the stack down when you are done inspecting it.

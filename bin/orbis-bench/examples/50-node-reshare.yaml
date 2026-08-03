@@ -34,7 +34,7 @@ resources:
   cpus_per_node: null
   memory_per_node: null
 
-sourcehub_ref: 392d69c6f8c10c2f9f9bf45eda882d2da2ab854c
+sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
 setup_batch_size: 25
 pss_interval_secs: 15
 pss_poll_interval_secs: 1
