@@ -185,80 +185,61 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
     let network = common::IntegrationTestNetwork::builder()
         .with_production_node_build()
         .build();
-    let endpoints = network.all_endpoints();
+
+    // Whether `UnsafeTestingService` is registered is decided once, uniformly,
+    // by the image that was built and the `ORBIS_ENABLE_INTEGRATION_TEST`
+    // env var passed to the whole `docker compose up` invocation (see
+    // `runtime.rs`'s `#[cfg(feature = "unsafe-testing")]` gate) — it cannot
+    // differ between node1/node2/node3, so checking one node fully covers all
+    // of them. No need to query, fund, or wait on the others.
+    let endpoint = network.node1_endpoint().to_string();
 
     // Production builds do not contain the integration-test faucet hook or
-    // deterministic signing-key override, so fund each generated node address
+    // deterministic signing-key override, so fund the generated node address
     // through the test account before waiting for the full server to replace
     // the bootstrap information server.
+    //
+    // No restart needed: the node's own `with_signer` blocks on a balance
+    // check and, once that observes this funding land, resyncs the signer's
+    // account_number/sequence from chain immediately before registering
+    // on-chain (see `BulletinImpl::with_signer`) — so the same never-
+    // restarted process picks up the funded account correctly on its own.
     let chain_config = network.chain_config();
-    let mut addresses = Vec::with_capacity(endpoints.len());
-    for (index, endpoint) in endpoints.iter().enumerate() {
-        addresses.push(
-            cli_tool::query_node_info((*endpoint).to_string())
-                .await
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "query production node {} bootstrap info: {error}",
-                        index + 1
-                    )
-                })
-                .public_address,
-        );
-    }
-    for (index, address) in addresses.into_iter().enumerate() {
-        cli_tool::fund(address, chain_config.clone())
-            .await
-            .unwrap_or_else(|error| panic!("fund production node {}: {error}", index + 1));
-    }
+    let address = cli_tool::query_node_info(endpoint.clone())
+        .await
+        .unwrap_or_else(|error| panic!("query production node bootstrap info: {error}"))
+        .public_address;
+    cli_tool::fund(address, chain_config)
+        .await
+        .unwrap_or_else(|error| panic!("fund production node: {error}"));
 
-    // The first process initialized its signer before the newly funded account
-    // existed. Restart against the persisted signing key so the production
-    // node initializes with the account metadata now present on-chain.
-    let restarted_endpoints = network.restart_nodes();
-    let endpoints = [
-        restarted_endpoints[0].as_str(),
-        restarted_endpoints[1].as_str(),
-        restarted_endpoints[2].as_str(),
-    ];
     crate::helpers::test_helpers::wait_for_nodes_ready(
-        &endpoints,
+        &[endpoint.as_str()],
         90,
         std::time::Duration::from_secs(1),
     )
     .await;
 
-    for (index, endpoint) in endpoints.iter().enumerate() {
-        let mut client = UnsafeTestingServiceClient::connect((*endpoint).to_string())
-            .await
-            .unwrap_or_else(|error| {
-                panic!(
-                    "connect to production node {} unsafe testing client: {error}",
-                    index + 1
-                )
-            });
-        let result = client
-            .get_local_storage(GetLocalStorageRequest {
-                key: Some(key(LocalStorageKeyType::RingIndex, "")),
-                access_mode: LocalStorageAccessMode::Plain as i32,
-            })
-            .await;
-        let error = match result {
-            Ok(_) => {
-                panic!(
-                    "production node {} unexpectedly exposed unsafe testing service",
-                    index + 1
-                )
-            }
-            Err(error) => error,
-        };
-        assert_eq!(
-            error.code(),
-            Code::Unimplemented,
-            "production node {} returned an unexpected status: {error}",
-            index + 1
-        );
-    }
+    let mut client = UnsafeTestingServiceClient::connect(endpoint.clone())
+        .await
+        .unwrap_or_else(|error| {
+            panic!("connect to production node unsafe testing client: {error}")
+        });
+    let result = client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(key(LocalStorageKeyType::RingIndex, "")),
+            access_mode: LocalStorageAccessMode::Plain as i32,
+        })
+        .await;
+    let error = match result {
+        Ok(_) => panic!("production node unexpectedly exposed unsafe testing service"),
+        Err(error) => error,
+    };
+    assert_eq!(
+        error.code(),
+        Code::Unimplemented,
+        "production node returned an unexpected status: {error}",
+    );
 }
 
 #[cfg(feature = "integration-test")]

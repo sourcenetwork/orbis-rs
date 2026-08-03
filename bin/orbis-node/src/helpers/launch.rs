@@ -18,6 +18,23 @@ use std::path::{Path, PathBuf};
 use std::{env, fs};
 use zeroize::Zeroizing;
 
+/// Parses `--chain-gas-multiplier`, rejecting anything that couldn't be a
+/// sane safety margin: it only ever multiplies the simulated gas estimate
+/// upward before broadcasting, so a non-finite, zero, or sub-1.0 value would
+/// silently under-fund (or corrupt) every transaction instead of adding
+/// headroom.
+fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
+    let parsed: f64 = value
+        .parse()
+        .map_err(|_| format!("invalid gas multiplier {value:?}: not a number"))?;
+    if !parsed.is_finite() || parsed < 1.0 {
+        return Err(format!(
+            "invalid gas multiplier {value:?}: must be a finite number that is at least 1.0"
+        ));
+    }
+    Ok(parsed)
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
@@ -43,6 +60,10 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Safety multiplier applied to simulated chain gas before broadcasting transactions.
+    /// Increase this when concurrent writers can change state between simulation and delivery.
+    #[arg(long, value_parser = parse_gas_multiplier)]
+    pub chain_gas_multiplier: Option<f64>,
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,
@@ -56,6 +77,14 @@ pub struct Args {
     /// Set to 0 to disable automatic resharing. Defaults to 86400 (24 hours).
     #[arg(long, default_value_t = crate::constants::DEFAULT_RESHARE_INTERVAL_SECS)]
     pub reshare_interval_secs: u64,
+    /// Disable public Iroh relays, NAT hole-punch assistance, and discovery.
+    /// Only safe when every peer has an authoritative AND directly
+    /// UDP-reachable route with no NAT/firewall in the path (e.g. a generated
+    /// Docker network). Do not enable in production unless you have verified
+    /// every committee member is directly reachable without relay — SourceHub
+    /// supplying an address does not guarantee that address is dialable.
+    #[arg(long, default_value_t = false)]
+    pub network_private_routes_only: bool,
     /// Hex-encoded public key of the external controller allowed to update node info.
     #[arg(long)]
     pub node_controller_key: String,

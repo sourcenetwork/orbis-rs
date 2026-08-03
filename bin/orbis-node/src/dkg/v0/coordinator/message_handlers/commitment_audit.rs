@@ -27,41 +27,53 @@ fn bounded_unique_reveals(
     accepted
 }
 
-/// Handle a `DkgMessage::CommitmentAudit` — the on-failure equivocation audit.
+pub(crate) async fn preflight_commitment_audit_message<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let is_fresh = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| matches!(state.kind, SessionKind::Fresh))
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if is_fresh {
+        return Err(DkgError::ProtocolError(
+            "CommitmentAudit is only valid for Refresh/Reshare DKG sessions".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Apply a typed public commitment audit contribution.
 ///
 /// A peer whose refresh/reshare ceremony failed an equivocation-consistent phase4 check
 /// reveals the signed commitments it received. We re-verify each dealer signature and
 /// compare against the commitments we received; if any dealer signed two different
 /// commitments (same session nonce, different bytes) that dealer equivocated → we log it
 /// and queue/relay a threshold-signed equivocation report. We never abort here (the
-/// ceremony is already aborting via the phase4 check) and always return `Ok(None)`. Trust
+/// ceremony is already aborting via the phase4 check) and always return `Ok(())`. Trust
 /// is per-commitment (the dealer's signature), so a lying revealer cannot forge attribution.
 pub async fn handle_commitment_audit_message<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     revealed: Vec<SignedDkgCommitment>,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let (is_fresh, committee_size) = coord
+    let session_id = attempt.session_id();
+    preflight_commitment_audit_message(coord, attempt).await?;
+    let committee_size = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
-            (
-                matches!(state.kind, SessionKind::Fresh),
-                state.node.total_nodes(),
-            )
-        })
+        .with_attempt_state(attempt, |state| state.node.total_nodes())
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
-
-    if is_fresh {
-        return Err(DkgError::ProtocolError(
-            "CommitmentAudit is only valid for Refresh/Reshare DKG sessions".to_string(),
-        ));
-    }
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     // Keep only reveals that are genuinely signed by the claimed dealer and bound to this
     // session/ring; a reveal that fails verification is not evidence of anything.
@@ -70,8 +82,7 @@ where
     for reveal in bounded_reveals {
         let dealer_id = reveal.statement.from_node_id;
         let commitment = reveal.statement.commitment.clone();
-        match verify_commitment_evidence(coord, session_id, dealer_id, &commitment, Some(reveal))
-            .await
+        match verify_commitment_evidence(coord, attempt, dealer_id, &commitment, Some(reveal)).await
         {
             Ok(Some(evidence)) => verified.push(evidence),
             Ok(None) => {}
@@ -89,8 +100,9 @@ where
     if let Some((dealer_node_id, ours, reveal)) = coord
         .app_state
         .dkg_session_state
-        .find_conflicting_commitment_pair(&session_id, &verified)
+        .find_conflicting_commitment_pair_for_attempt(attempt, &verified)
         .await
+        .map_err(|error| attempt_state_error(attempt, error))?
     {
         tracing::error!(
             session_id = session_id,
@@ -100,7 +112,7 @@ where
         );
         // Report it on-chain (threshold-signed). `ours` (locally received) anchors the
         // envelope. Best-effort: log-not-propagate so the ceremony's abort is unchanged.
-        if let Err(error) = queue_or_relay_equivocation(coord, session_id, ours, reveal).await {
+        if let Err(error) = queue_or_relay_equivocation(coord, attempt, ours, reveal).await {
             tracing::warn!(
                 session_id = session_id,
                 dealer_node_id = dealer_node_id,
@@ -110,7 +122,7 @@ where
         }
     }
 
-    Ok(None)
+    Ok(())
 }
 
 #[cfg(test)]

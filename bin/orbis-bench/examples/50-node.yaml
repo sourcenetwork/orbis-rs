@@ -1,0 +1,54 @@
+schema_version: 1
+name: orbis-50-node-capacity
+crypto: bls12-381
+
+networks:
+  - network_size: 50
+    cases:
+      - { ring_size: 25, threshold: 15 }
+
+operations: [dkg, pre, sign]
+# pss_refresh is disabled here: SourceHub enforces a hard 86400s (24h)
+# minimum on every ring's pss_interval (creation and update alike), which is
+# now actually validated since rings are created via a live MsgCreateRing
+# transaction instead of being seeded directly into genesis. A short
+# pss_interval that triggers refresh within a normal bench trial window is no
+# longer achievable without a chain-side change.
+profiles:
+  - name: lan
+    kind: lan
+  - name: wan-50ms
+    kind: wan
+    delay_ms: 25
+    jitter_ms: 5
+    loss_percent: 0.1
+
+warmups: 1
+repetitions: 1
+seed: 185974508
+output_dir: bench-results
+
+load:
+  concurrency: [1]
+  warmup_secs: 10
+  measure_secs: 30
+
+timeouts:
+  setup_secs: 1800
+  dkg_secs: 900
+  pre_secs: 120
+  sign_secs: 120
+  pss_refresh_secs: 900
+
+resources:
+  cpus_per_node: null
+  memory_per_node: null
+
+sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
+sourcehub_replicas: 3
+setup_batch_size: 25
+# Retained for reference: SourceHub's 86400s floor (see the pss_refresh note
+# above) means this value has no observable effect on any operation actually
+# run here — restore it once refresh can be exercised again.
+pss_interval_secs: 15
+pss_poll_interval_secs: 1

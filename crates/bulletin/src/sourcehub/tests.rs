@@ -275,6 +275,13 @@ async fn test_bulletin_ring() {
         ..payload
     };
     assert_eq!(read_payload, expected, "Read payload should match");
+
+    let finalization = bulletin
+        .ring_finalization_status(ring_id)
+        .await
+        .expect("read pending finalization status");
+    assert!(finalization.ring_pk.is_empty());
+    assert_eq!(finalization.confirmation_node_keys, Some(Vec::new()));
 }
 
 #[tokio::test]
@@ -471,4 +478,34 @@ async fn test_bulletin_cancel_pending_ring() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// Regression test: `with_signer`'s one-time self-registration transfer must
+/// tolerate racing against another boot of the same node registering the
+/// same address concurrently (e.g. a process restart racing its own
+/// predecessor's still-in-flight registration transaction). Before the fix,
+/// the second registration's gas simulation would fail with an account
+/// sequence mismatch and `with_signer` would return that as a fatal error.
+#[tokio::test]
+#[serial_test::serial]
+async fn with_signer_tolerates_a_racing_duplicate_registration() {
+    let container = SourceHubTestContainer::new();
+    let config = container.chain_config();
+
+    // Two independent signers and chain clients for the same underlying
+    // account, exactly as two separate node processes (an old one still
+    // finishing up and a freshly restarted one) would each construct their
+    // own `SourceHubClient` around the same persisted signing key.
+    let signer_a =
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("construct signer a");
+    let signer_b =
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("construct signer b");
+
+    let (result_a, result_b) = tokio::join!(
+        SourceHubBulletin::with_signer(container.chain_config_builder(), signer_a, None),
+        SourceHubBulletin::with_signer(container.chain_config_builder(), signer_b, None),
+    );
+
+    result_a.expect("first concurrent registration must succeed");
+    result_b.expect("second concurrent registration must succeed");
 }

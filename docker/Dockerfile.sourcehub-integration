@@ -1,5 +1,5 @@
 FROM golang:1.26.2 AS builder
-ARG SOURCEHUB_REF=392d69c6f8c10c2f9f9bf45eda882d2da2ab854c
+ARG SOURCEHUB_REF=c67e328382ab55d69318ed6e7778d4827996429f
 RUN git init /app \
     && cd /app \
     && git remote add origin https://github.com/sourcenetwork/sourcehub.git \

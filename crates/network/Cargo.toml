@@ -7,31 +7,29 @@ license.workspace = true
 
 [dependencies]
 iroh = "0.95"
+iroh-gossip = "0.95"
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+bincode = { workspace = true }
 async-trait = { workspace = true }
 hex = "0.4"
 futures = "0.3"
-bytes = "1.5"
+bytes = { workspace = true }
 prometheus = { workspace = true }
 lazy_static = { workspace = true }
 tracing = "0.1"
+rand = { workspace = true }
 
 [features]
 default = ["iroh"]
 iroh = []
-gossip = ["dep:iroh-gossip"]
 fault-injection = []
-
-[dependencies.iroh-gossip]
-version = "0.95"
-optional = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
-bytes = "1.5"
+bytes = { workspace = true }
 serial_test = "3.2.0"
 [lints]
 workspace = true

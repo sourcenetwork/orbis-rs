@@ -40,6 +40,10 @@ pub enum DkgError {
     #[error("DKG session not found: {0}")]
     SessionNotFound(String),
 
+    /// Work belongs to an attempt that no longer owns the ceremony ID.
+    #[error("stale DKG attempt: ceremony {ceremony_id}")]
+    StaleAttempt { ceremony_id: u128 },
+
     /// DKG protocol error (violations of protocol rules)
     #[error("DKG protocol error: {0}")]
     ProtocolError(String),
@@ -118,6 +122,9 @@ impl GrpcServiceError for DkgError {
             }
             DkgError::SessionNotFound(_) => {
                 GrpcErrorClassification::new(Code::NotFound, Level::TRACE, false)
+            }
+            DkgError::StaleAttempt { .. } => {
+                GrpcErrorClassification::new(Code::FailedPrecondition, Level::TRACE, false)
             }
             DkgError::SessionAlreadyExists => {
                 GrpcErrorClassification::new(Code::AlreadyExists, Level::TRACE, false)
@@ -223,6 +230,12 @@ mod tests {
             (
                 DkgError::SessionNotFound("test".into()),
                 Code::NotFound,
+                Level::TRACE,
+                false,
+            ),
+            (
+                DkgError::StaleAttempt { ceremony_id: 7 },
+                Code::FailedPrecondition,
                 Level::TRACE,
                 false,
             ),

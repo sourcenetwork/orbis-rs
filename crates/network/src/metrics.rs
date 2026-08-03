@@ -24,6 +24,20 @@ lazy_static! {
     )
     .expect("failed to register p2p_active_connections");
 
+    pub static ref P2P_GOSSIP_NEIGHBORS: GaugeVec = register_gauge_vec!(
+        "p2p_gossip_neighbors",
+        "Number of currently connected Gossip neighbors",
+        &["protocol"]
+    )
+    .expect("failed to register p2p_gossip_neighbors");
+
+    pub static ref P2P_GOSSIP_REJECTED_FRAMES_TOTAL: CounterVec = register_counter_vec!(
+        "p2p_gossip_rejected_frames_total",
+        "Gossip frames rejected without terminating the subscription",
+        &["protocol", "reason"]
+    )
+    .expect("failed to register p2p_gossip_rejected_frames_total");
+
     // Message metrics
     pub static ref P2P_MESSAGES_SENT_TOTAL: CounterVec = register_counter_vec!(
         "p2p_messages_sent_total",
@@ -89,7 +103,7 @@ lazy_static! {
     // Ingress-limiting metrics (expected/normal — separate from errors)
     pub static ref P2P_INGRESS_DROPPED_TOTAL: CounterVec = register_counter_vec!(
         "p2p_ingress_dropped_total",
-        "Inbound streams dropped by the router before handler execution, by limiting reason",
+        "Inbound direct streams and PubSub frames dropped before application processing, by limiting reason",
         &["protocol", "reason"]
     )
     .expect("failed to register p2p_ingress_dropped_total");
@@ -100,6 +114,8 @@ lazy_static! {
 pub fn init() {
     lazy_static::initialize(&P2P_CONNECTIONS_TOTAL);
     lazy_static::initialize(&P2P_ACTIVE_CONNECTIONS);
+    lazy_static::initialize(&P2P_GOSSIP_NEIGHBORS);
+    lazy_static::initialize(&P2P_GOSSIP_REJECTED_FRAMES_TOTAL);
     lazy_static::initialize(&P2P_MESSAGES_SENT_TOTAL);
     lazy_static::initialize(&P2P_MESSAGES_RECEIVED_TOTAL);
     lazy_static::initialize(&P2P_BYTES_SENT_TOTAL);
@@ -185,7 +201,16 @@ pub fn record_recv_error(protocol: &[u8]) {
     P2P_ERRORS_TOTAL.with_label_values(&[&label, "recv"]).inc();
 }
 
-/// Record an inbound stream dropped by the router before handler execution.
+/// Record a malformed or unauthenticated Gossip frame. `reason` must be a
+/// bounded static label supplied by the pub-sub adapter.
+pub fn record_gossip_frame_rejected(protocol: &[u8], reason: &'static str) {
+    let label = protocol_label(protocol);
+    P2P_GOSSIP_REJECTED_FRAMES_TOTAL
+        .with_label_values(&[&label, reason])
+        .inc();
+}
+
+/// Record an inbound work item dropped before application processing.
 /// `reason` is one of `"rate_limit"` or `"concurrency_limit"`.
 pub fn record_ingress_dropped(protocol: &[u8], reason: &'static str) {
     let label = protocol_label(protocol);

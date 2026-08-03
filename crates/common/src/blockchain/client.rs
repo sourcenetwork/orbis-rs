@@ -26,6 +26,19 @@ const TX_POLL_MAX_ATTEMPTS: u32 = 30;
 const TX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 // ============================================================================
+// ABCI Query Retry Constants
+// ============================================================================
+
+/// Maximum attempts for an ABCI query before giving up. Only transport-level
+/// failures (e.g. a brief Docker/DNS blip between containers) are retried -
+/// a response the chain actually returned (including "not found") is
+/// authoritative and returned immediately.
+const ABCI_QUERY_MAX_ATTEMPTS: u32 = 4;
+
+/// Base delay between ABCI query retries, scaled linearly by attempt number.
+const ABCI_QUERY_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+
+// ============================================================================
 // Gas Simulation Constants
 // ============================================================================
 
@@ -204,7 +217,39 @@ impl SourceHubClient {
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        // Match `resync_account`'s locking order: without it, this could race
+        // an in-progress broadcast (which holds `tx_lock` across its own
+        // read-sign-send-bump sequence) and overwrite the nonce with a stale
+        // value read before that broadcast's own update lands, or have its
+        // own update immediately clobbered by that broadcast's bump.
+        let _guard = self.tx_lock.lock().await;
         self.resync_nonce_inner(signer).await
+    }
+
+    /// Resync both the signer's account number and nonce from the chain.
+    ///
+    /// `with_signer` fetches account info once at construction time. If the
+    /// account did not exist yet at that point (a brand-new address with no
+    /// prior transactions), the chain returns account_number 0 as a
+    /// placeholder — but once something else (e.g. a funding transfer) creates
+    /// the account, it gets a real, non-zero account_number. Unlike a sequence
+    /// drift, `resync_nonce` alone can't recover from this: it only re-fetches
+    /// sequence, so a signer constructed before the account existed keeps
+    /// signing with the wrong account_number forever. Call this once after
+    /// confirming the account now exists (e.g. after a balance-check retry
+    /// loop succeeds) and before this signer's first outgoing transaction.
+    ///
+    /// Returns `(account_number, sequence)`, or an error if no signer is
+    /// configured or the chain query fails.
+    pub async fn resync_account(&self) -> Result<(u64, u64)> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let _guard = self.tx_lock.lock().await;
+        let account_info = self.get_account(&signer.address()).await?;
+        signer.set_account_number(account_info.account_number);
+        signer.set_nonce(account_info.sequence);
+        Ok((account_info.account_number, account_info.sequence))
     }
 
     /// Resync nonce given an already-resolved signer reference. Used internally
@@ -312,7 +357,21 @@ impl SourceHubClient {
         )?;
 
         // Submit to mempool (CheckTx) - releases lock after this
-        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+        let sync_result = match self.broadcast_tx_sync(tx_bytes).await {
+            Ok(result) => result,
+            Err(error @ BlockchainError::TxFailed { .. }) => {
+                // CheckTx rejected the transaction, so the chain did not consume
+                // this sequence. Restore the signer's view before a caller
+                // retries with a smaller batch.
+                self.resync_nonce_inner(signer).await.map_err(|resync_err| {
+                    BlockchainError::Signing(format!(
+                        "Transaction was rejected before broadcast: {error}; additionally failed to resync nonce: {resync_err}"
+                    ))
+                })?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
 
         // Lock is released here, allowing next tx to submit
         drop(_guard);
@@ -484,10 +543,21 @@ impl SourceHubClient {
             .transpose()
             .map_err(|e| BlockchainError::Query(format!("Invalid block height: {}", e)))?;
 
-        let response = self
-            .rpc_client
-            .abci_query(Some(path.to_string()), data, height, prove)
-            .await?;
+        let mut attempt = 0;
+        let response = loop {
+            attempt += 1;
+            match self
+                .rpc_client
+                .abci_query(Some(path.to_string()), data.clone(), height, prove)
+                .await
+            {
+                Ok(response) => break response,
+                Err(_) if attempt < ABCI_QUERY_MAX_ATTEMPTS => {
+                    sleep(ABCI_QUERY_RETRY_BASE_DELAY * attempt).await;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
 
         if response.code.is_err() {
             let log = response.log.to_lowercase();
@@ -706,17 +776,41 @@ impl SourceHubClient {
         msg: &T,
         gas_multiplier: f64,
     ) -> Result<BroadcastResult> {
+        let any_msg = Any {
+            type_url: type_url.to_string(),
+            value: msg.encode_to_vec(),
+        };
+
+        self.broadcast_proto_msgs_with_gas(vec![any_msg], gas_multiplier)
+            .await
+    }
+
+    /// Broadcast several protobuf messages in one Cosmos transaction with
+    /// automatic gas estimation.
+    ///
+    /// Cosmos executes messages in order and rolls the transaction back if any
+    /// message fails. Callers should keep batches bounded by the chain's block
+    /// gas and transaction-size limits. This method intentionally accepts
+    /// [`Any`] values so a batch may contain different message types.
+    pub async fn broadcast_proto_msgs_with_gas(
+        &self,
+        messages: Vec<Any>,
+        gas_multiplier: f64,
+    ) -> Result<BroadcastResult> {
+        if messages.is_empty() {
+            return Err(BlockchainError::Config(
+                "Cannot broadcast an empty transaction".to_string(),
+            ));
+        }
+        if !gas_multiplier.is_finite() || gas_multiplier < 1.0 {
+            return Err(BlockchainError::Config(format!(
+                "Gas multiplier must be finite and at least 1.0, got {gas_multiplier}"
+            )));
+        }
+
         let signer = self
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
-
-        // Encode message as protobuf (can do outside lock)
-        let msg_bytes = msg.encode_to_vec();
-
-        let any_msg = Any {
-            type_url: type_url.to_string(),
-            value: msg_bytes,
-        };
 
         // Acquire lock to ensure txs reach mempool in nonce order
         let _guard = self.tx_lock.lock().await;
@@ -727,7 +821,7 @@ impl SourceHubClient {
 
         // Build tx with high gas limit for simulation
         let sim_tx_bytes = signer.sign_tx(
-            vec![any_msg.clone()],
+            messages.clone(),
             account_number,
             sequence,
             Some(SIMULATION_GAS_LIMIT),
@@ -762,16 +856,25 @@ impl SourceHubClient {
 
         // Rebuild transaction with accurate gas limit
         // Note: We use the same sequence number - simulation doesn't change chain state
-        let tx_bytes = signer.sign_tx(
-            vec![any_msg],
-            account_number,
-            sequence,
-            Some(gas_limit),
-            None,
-        )?;
+        let tx_bytes = signer.sign_tx(messages, account_number, sequence, Some(gas_limit), None)?;
 
         // Submit to mempool
-        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+        let sync_result = match self.broadcast_tx_sync(tx_bytes).await {
+            Ok(result) => result,
+            Err(error @ BlockchainError::TxFailed { .. }) => {
+                // CheckTx rejected the transaction, so the chain did not consume
+                // this sequence. Restore the signer's view before a caller
+                // retries with a smaller batch, matching `broadcast_proto_msg`'s
+                // handling of the same failure.
+                self.resync_nonce_inner(signer).await.map_err(|resync_err| {
+                    BlockchainError::Signing(format!(
+                        "Transaction was rejected before broadcast: {error}; additionally failed to resync nonce: {resync_err}"
+                    ))
+                })?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
 
         // Lock is released here
         drop(_guard);
@@ -833,7 +936,7 @@ struct GasInfo {
 #[cfg(test)]
 mod tests {
     use super::{SourceHubClient, RPC_POOL_IDLE_TIMEOUT};
-    use crate::blockchain::ChainConfig;
+    use crate::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
     use serde_json::Value;
     use std::io;
     use std::sync::Arc;
@@ -954,5 +1057,64 @@ mod tests {
 
         shutdown.notify_one();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resync_account_holds_the_transaction_lock_during_query_and_update() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let config = ChainConfig::builder()
+            .rpc_url(Some(endpoint.clone()))
+            .rest_url(Some(endpoint))
+            .build();
+        let mut client = SourceHubClient::new(config.clone()).await.unwrap();
+        client.signer = Some(TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).unwrap());
+        let client = Arc::new(client);
+        let tx_guard = client.tx_lock.lock().await;
+        let resync_client = client.clone();
+        let resync = tokio::spawn(async move { resync_client.resync_account().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "account query must wait for an in-flight transaction"
+        );
+        drop(tx_guard);
+
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("account query should start after transaction unlock")
+            .unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let count = stream.read(&mut chunk).await.unwrap();
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let address = client.signer().unwrap().address();
+        let body = serde_json::json!({
+            "account": {
+                "@type": "/cosmos.auth.v1beta1.BaseAccount",
+                "address": address,
+                "account_number": "42",
+                "sequence": "7"
+            }
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+
+        assert_eq!(resync.await.unwrap().unwrap(), (42, 7));
+        let signer = client.signer().unwrap();
+        assert_eq!(signer.account_number(), 42);
+        assert_eq!(signer.nonce(), 7);
     }
 }

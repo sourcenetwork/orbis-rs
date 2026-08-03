@@ -1,0 +1,52 @@
+[package]
+name = "orbis-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+authn = { path = "../../crates/authn" }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["sourcehub"] }
+bs58 = "0.5"
+clap = { version = "4.5", features = ["derive"] }
+cli-tool = { path = "../cli-tool", default-features = false }
+common = { path = "../../crates/common" }
+cosmrs = { workspace = true }
+crypto = { path = "../../crates/crypto", default-features = false }
+did-key = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+prost = { workspace = true }
+proto = { path = "../../crates/proto" }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { package = "yaml_serde", version = "0.10" }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["bls12-381"]
+bls12-381 = [
+    "bulletin/bls12-381",
+    "cli-tool/bls12-381",
+    "common/bls12-381",
+    "crypto/bls12-381",
+]
+decaf377 = [
+    "bulletin/decaf377",
+    "cli-tool/decaf377",
+    "common/decaf377",
+    "crypto/decaf377",
+]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }

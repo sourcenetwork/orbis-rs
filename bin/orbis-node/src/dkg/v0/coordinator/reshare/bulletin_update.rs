@@ -11,6 +11,7 @@ use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{effective_new_peer_node_keys, peer_node_keys_match};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
+use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
@@ -23,7 +24,7 @@ use crate::sign::v0::messages::{
 };
 
 use super::super::types::{CoordinatorDkg, CoordinatorReportSigner};
-use super::super::DkgCoordinator;
+use super::super::{attempt_state_error, DkgCoordinator};
 
 #[derive(Clone)]
 struct PreparedReshareUpdate {
@@ -39,7 +40,7 @@ struct PreparedReshareUpdate {
 
 pub async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     kind: &SessionKind,
     dkg_role: DkgRole,
     storage_key: &str,
@@ -52,6 +53,7 @@ where
     D: CoordinatorDkg + Send + Sync,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    let session_id = attempt.session_id();
     let SessionKind::Reshare {
         ring_pk_hex,
         new_peer_node_keys,
@@ -68,7 +70,7 @@ where
         Some(
             prepare_reshare_update(
                 coord,
-                session_id,
+                attempt,
                 storage_key,
                 new_peer_node_keys,
                 *new_threshold,
@@ -166,6 +168,12 @@ where
     })?;
     coord
         .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |_| ())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    coord
+        .app_state
         .bulletin
         .update(
             prepared.ring_id.clone(),
@@ -189,7 +197,7 @@ where
 
 async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     storage_key: &str,
     new_peer_node_keys: &[String],
     new_threshold: u32,
@@ -199,12 +207,13 @@ async fn prepare_reshare_update<D>(
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let sorted_new_peer_node_keys = reshare_new_peer_node_keys
         .map(|peers| peers.to_vec())
         .unwrap_or_else(|| new_peer_node_keys.to_vec());
     let new_committee_size = sorted_new_peer_node_keys.len();
     let new_route_peer_ids =
-        new_committee_peer_ids_from_session(coord, session_id, new_committee_size).await?;
+        new_committee_peer_ids_from_session(coord, attempt, new_committee_size).await?;
     let ring_id = reshare_bulletin_post_id.ok_or_else(|| {
         DkgError::Bulletin("Reshare: missing ring id for updated RingPayload".to_string())
     })?;
@@ -249,17 +258,26 @@ where
         finalized_ring_payload_reshare_sign_state_sha256_hex(&current_ring_payload);
     let chain_id = coord.app_state.bulletin.chain_id();
 
-    coord
+    if !coord
         .app_state
         .dkg_session_state
-        .mark_reshare_signature_ready(ReshareSignatureReadyKey {
-            ring_key: storage_key.to_string(),
-            session_id,
-            ring_id: ring_id.to_string(),
-            current_ring_sha256: current_ring_sha256.clone(),
-            finalized_ring_sha256: finalized_ring_sha256.clone(),
-        })
-        .await;
+        .mark_reshare_signature_ready_for_attempt(
+            attempt,
+            ReshareSignatureReadyKey {
+                ring_key: storage_key.to_string(),
+                session_id,
+                attempt_id: attempt.attempt_id,
+                ring_id: ring_id.to_string(),
+                current_ring_sha256: current_ring_sha256.clone(),
+                finalized_ring_sha256: finalized_ring_sha256.clone(),
+            },
+        )
+        .await
+    {
+        return Err(DkgError::StaleAttempt {
+            ceremony_id: session_id,
+        });
+    }
 
     Ok(PreparedReshareUpdate {
         sorted_new_peer_node_keys,
@@ -275,7 +293,7 @@ where
 
 async fn new_committee_peer_ids_from_session<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     new_committee_size: usize,
 ) -> Result<Vec<String>>
 where
@@ -284,7 +302,7 @@ where
     let peer_ids = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             (1..=new_committee_size as u32)
                 .filter_map(|node_id| {
                     state
@@ -296,9 +314,7 @@ where
                 .collect::<Vec<_>>()
         })
         .await
-        .ok_or_else(|| {
-            DkgError::SessionNotFound(format!("DKG session {} not found", session_id))
-        })?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     if peer_ids.len() != new_committee_size {
         return Err(DkgError::ProtocolError(format!(

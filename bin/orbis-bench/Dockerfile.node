@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+
+FROM rust:latest AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler cmake golang build-essential libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+ARG CRYPTO_FEATURE=bls12-381
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/app/target,sharing=locked \
+    cargo build --release --bin orbis-node --no-default-features \
+        --features "redb,authz-sourcehub,bulletin-sourcehub,iroh,${CRYPTO_FEATURE}" \
+    && cp /app/target/release/orbis-node /orbis-node-bin
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates iproute2 netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /data/dbs
+COPY --from=builder /orbis-node-bin /usr/local/bin/orbis-node
+WORKDIR /app
+EXPOSE 50051 9090
+ENTRYPOINT ["orbis-node"]

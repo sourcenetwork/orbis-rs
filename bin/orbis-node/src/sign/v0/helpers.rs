@@ -1,5 +1,9 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
-use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, SessionStateManager};
+#[cfg(test)]
+use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
+use crate::dkg::v0::session_state::SessionStateManager;
+#[cfg(test)]
+use crate::dkg::v0::transport::{AttemptId, CeremonyId};
 use crate::helpers::protocol_version::{
     ensure_ring_protocol_route, resolve_ring_protocol_decision,
 };
@@ -303,15 +307,22 @@ pub async fn validate_ring_reshare_update_statement(
         ));
     }
 
-    let ready_key = ReshareSignatureReadyKey {
-        ring_key: statement_storage_key,
-        session_id: statement.session_id,
-        ring_id: statement.ring_id.clone(),
-        current_ring_sha256: statement.current_ring_sha256.clone(),
-        finalized_ring_sha256: statement.finalized_ring_sha256.clone(),
-    };
+    // Deliberately not looking up `transport_attempt(&statement.session_id)`
+    // here: this node's transport attempt for the reshare is often already
+    // gone by the time a co-signer sign request arrives (e.g. a retry of a
+    // lost request, arriving after this node's own bulletin-finalization poll
+    // already completed local cleanup). Readiness is looked up by the exact
+    // bulletin pre/post-state this statement attests to, which already binds
+    // it to one ceremony result independent of the (possibly stale) attempt
+    // ID; see `ReshareSignatureReadyKey`'s docs.
     if !dkg_session_state
-        .is_reshare_signature_ready(&ready_key)
+        .is_reshare_signature_ready_for_update(
+            &statement_storage_key,
+            statement.session_id,
+            &statement.ring_id,
+            &statement.current_ring_sha256,
+            &statement.finalized_ring_sha256,
+        )
         .await
     {
         return Err(SignError::ReshareInProgress);
@@ -765,6 +776,7 @@ mod ring_reshare_update_tests {
     use super::*;
     use bulletin::dummy::DummyBulletin;
     use bulletin::r#trait::Bulletin;
+    use crypto::r#trait::{Dkg, DkgRole};
     use crypto::{CryptoSerialize, DkgImpl};
 
     async fn fixture(
@@ -801,6 +813,7 @@ mod ring_reshare_update_tests {
             .set_ring(ring_id.clone(), current_payload.clone())
             .expect("seed current payload");
         let session_id = 77;
+        let attempt_id = AttemptId([0x77; 32]);
         let current_ring_sha256 = ring_payload_reshare_sign_state_sha256_hex(&current_payload);
         let finalized_ring_sha256 =
             finalized_ring_payload_reshare_sign_state_sha256_hex(&current_payload);
@@ -817,17 +830,23 @@ mod ring_reshare_update_tests {
         let ready_key = ReshareSignatureReadyKey {
             ring_key,
             session_id,
+            attempt_id,
             ring_id,
             current_ring_sha256,
             finalized_ring_sha256,
         };
 
-        (
-            bulletin,
-            SessionStateManager::<DkgImpl>::new(),
-            statement,
-            ready_key,
-        )
+        let state = SessionStateManager::<DkgImpl>::new();
+        let node =
+            *DkgImpl::new(1, 1, 1, session_id, DkgRole::Standard).expect("create DKG test node");
+        state
+            .create_session(session_id, node, 1, |session| {
+                session.transport.ceremony_id = Some(CeremonyId(session_id));
+                session.transport.attempt_id = Some(attempt_id);
+            })
+            .await;
+
+        (bulletin, state, statement, ready_key)
     }
 
     #[test]

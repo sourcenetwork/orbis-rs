@@ -60,6 +60,67 @@ pub fn peer_ids_from_routes(routes: &[NodeRoute]) -> Vec<String> {
     routes.iter().map(|route| route.peer_id.clone()).collect()
 }
 
+/// Validate the exact `node_key -> peer route` bindings supplied on the wire
+/// against routes independently resolved from SourceHub `NodeInfo` records.
+/// Vector ordering may differ, but a route may not be reassigned to another
+/// node key and the full authoritative route (including direct addresses) must
+/// match.
+pub fn validate_node_route_bindings(
+    node_keys: &[String],
+    peer_routes: &[String],
+    resolved_routes: &[NodeRoute],
+) -> Result<(), String> {
+    if node_keys.len() != peer_routes.len() {
+        return Err(format!(
+            "supplied node-key count {} does not match route count {}",
+            node_keys.len(),
+            peer_routes.len()
+        ));
+    }
+
+    let mut expected = HashMap::with_capacity(resolved_routes.len());
+    for route in resolved_routes {
+        if expected
+            .insert(route.node_key.as_str(), route.peer_id.as_str())
+            .is_some()
+        {
+            return Err(format!(
+                "resolved SourceHub routes contain duplicate node key {}",
+                route.node_key
+            ));
+        }
+    }
+
+    let mut supplied_keys = HashSet::with_capacity(node_keys.len());
+    for (node_key, peer_route) in node_keys.iter().zip(peer_routes) {
+        if !supplied_keys.insert(node_key.as_str()) {
+            return Err(format!(
+                "supplied transport routes contain duplicate node key {node_key}"
+            ));
+        }
+        let Some(expected_route) = expected.get(node_key.as_str()) else {
+            return Err(format!(
+                "supplied transport route names unexpected node key {node_key}"
+            ));
+        };
+        if peer_route != expected_route {
+            return Err(format!(
+                "supplied transport route for node key {node_key} does not match SourceHub NodeInfo"
+            ));
+        }
+    }
+
+    if supplied_keys.len() != expected.len()
+        || expected
+            .keys()
+            .any(|node_key| !supplied_keys.contains(node_key))
+    {
+        return Err("supplied transport routes do not cover the resolved committee".to_string());
+    }
+
+    Ok(())
+}
+
 pub fn canonical_node_id_assignments_from_node_keys(
     peer_node_keys: &[String],
 ) -> Result<HashMap<String, u32>, String> {
@@ -222,6 +283,67 @@ mod tests {
         assert_eq!(assignments["node-a"], 1);
         assert_eq!(assignments["node-b"], 2);
         assert_eq!(assignments["node-c"], 3);
+    }
+
+    #[test]
+    fn route_bindings_accept_reordered_exact_pairs() {
+        let resolved = vec![
+            NodeRoute {
+                node_key: "node-a".to_string(),
+                peer_id: "route-a@127.0.0.1:9001".to_string(),
+            },
+            NodeRoute {
+                node_key: "node-b".to_string(),
+                peer_id: "route-b@127.0.0.1:9002".to_string(),
+            },
+        ];
+
+        validate_node_route_bindings(
+            &["node-b".to_string(), "node-a".to_string()],
+            &[
+                "route-b@127.0.0.1:9002".to_string(),
+                "route-a@127.0.0.1:9001".to_string(),
+            ],
+            &resolved,
+        )
+        .expect("paired reordering must preserve exact route bindings");
+    }
+
+    #[test]
+    fn route_bindings_reject_swapped_routes_and_altered_direct_addresses() {
+        let resolved = vec![
+            NodeRoute {
+                node_key: "node-a".to_string(),
+                peer_id: "route-a@127.0.0.1:9001".to_string(),
+            },
+            NodeRoute {
+                node_key: "node-b".to_string(),
+                peer_id: "route-b@127.0.0.1:9002".to_string(),
+            },
+        ];
+        let node_keys = ["node-a".to_string(), "node-b".to_string()];
+
+        let swapped = validate_node_route_bindings(
+            &node_keys,
+            &[
+                "route-b@127.0.0.1:9002".to_string(),
+                "route-a@127.0.0.1:9001".to_string(),
+            ],
+            &resolved,
+        )
+        .expect_err("an unchanged route set with swapped key bindings must fail");
+        assert!(swapped.contains("node key node-a"));
+
+        let altered = validate_node_route_bindings(
+            &node_keys,
+            &[
+                "route-a@127.0.0.1:9999".to_string(),
+                "route-b@127.0.0.1:9002".to_string(),
+            ],
+            &resolved,
+        )
+        .expect_err("a changed direct address must fail exact binding validation");
+        assert!(altered.contains("node key node-a"));
     }
 
     #[test]

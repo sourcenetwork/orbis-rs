@@ -7,6 +7,7 @@ members = [
     "crates/crypto",
     "crates/local-storage",
     "bin/cli-tool",
+    "bin/orbis-bench",
     "crates/authn", 
     "crates/authz", 
     "crates/common", 
@@ -39,6 +40,7 @@ zeroize = { version = "1", features = ["derive"] }
 # Networking
 iroh = "0.95"
 iroh-gossip = "0.95"
+bytes = "1.5"
 
 # Enable alloc feature for form_urlencoded to fix compatibility with did-key
 form_urlencoded = { version = "1.2", features = ["alloc"] }

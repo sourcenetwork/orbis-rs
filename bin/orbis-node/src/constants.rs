@@ -71,6 +71,13 @@ pub const MAX_COMMITMENT_COEFFICIENTS: usize = 256;
 // DKG Session Management Constants
 // ============================================================================
 
+/// Maximum supported members in either side of a DKG committee.
+///
+/// This bounds ceremony state, pairwise networking, and the number of pages
+/// required to repair a public phase. Reshare may have up to this many members
+/// in each of its current and next committees.
+pub const MAX_DKG_COMMITTEE_SIZE: usize = 50;
+
 /// Maximum number of concurrent DKG sessions allowed per node
 ///
 /// This limit prevents unbounded memory growth and resource exhaustion. Each
@@ -79,20 +86,18 @@ pub const MAX_COMMITMENT_COEFFICIENTS: usize = 256;
 /// activity while maintaining reasonable resource usage.
 pub const MAX_DKG_SESSIONS: usize = 100;
 
+/// Maximum number of cached point-to-point QUIC connections across protocols.
+///
+/// Large rings can otherwise leave one connection per peer and protocol resident
+/// indefinitely. The LRU pool reconnects transparently after eviction.
+pub const MAX_CACHED_PEER_CONNECTIONS: usize = 256;
+
 /// Maximum number of persisted rings this node will manage locally.
 ///
 /// PSS scans the local `RingIndex` linearly on each scheduler tick, so this
 /// bounds the steady-state work a node can accumulate through fresh DKG and
 /// reshare receiver participation. Existing ring entries may still be updated.
 pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
-
-/// Time-to-live for DKG sessions before they are eligible for cleanup
-///
-/// Sessions older than this duration are automatically cleaned up to prevent
-/// memory leaks from abandoned sessions. This is set to 30 minutes, which
-/// provides ample time for DKG protocols to complete while ensuring stale
-/// sessions don't accumulate indefinitely.
-pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 
 /// Interval between session expiration checks
 ///
@@ -101,22 +106,35 @@ pub const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 /// Set to 1 minute for reasonable responsiveness without excessive overhead.
 pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
-/// Timeout for a single DKG phase before the session is considered stalled
-///
-/// If a DKG session remains in the same phase for longer than this duration
-/// (including `Initializing`) it is removed by the expiration worker. This
-/// catches cases where the initiator crashes before Phase 1 starts, or where
-/// a peer never sends its commitment or share, without waiting the full
-/// SESSION_TTL. Set to 2 minutes, which gives ample headroom over
-/// PEER_RESPONSE_TIMEOUT (10s) even when all peers need to respond.
-pub const DKG_PHASE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Hard deadline for one DKG attempt. Missing-message repair continues until
+/// this deadline, unless the attempt explicitly completes or aborts first.
+pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-/// Timeout for the durable Phase 4 completion step before cleanup considers the
-/// session abandoned.
-///
-/// Reshare completion can include threshold-signature retries and bulletin
-/// confirmation work, so this must exceed the normal phase timeout.
-pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
+/// Deadline for prepare/join/topology-probe coordination.
+pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
+/// Interval between retransmissions of the exact preparation topology probe.
+pub const DKG_TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A Gossip topic is considered isolated only after it has remained without a
+/// neighbor for this long. Individual neighbor changes are normal mesh churn.
+pub const DKG_GOSSIP_ISOLATION_GRACE: Duration = Duration::from_secs(3);
+
+/// Maximum retry backoff for preparation control messages and acknowledgements.
+pub const DKG_PREPARATION_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
+
+/// A forwarded StartFresh request waits slightly longer than the leader's
+/// preparation deadline so the leader's specific failure can reach the caller.
+pub const DKG_FORWARDED_START_RESPONSE_GRACE: Duration = Duration::from_secs(30);
+
+/// Lack of progress that triggers explicit public/private repair.
+pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Maximum backoff between repair attempts.
+pub const DKG_MAX_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Maximum simultaneous private pair exchanges per node.
+pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 
 /// Maximum time a completed DKG session may remain in memory.
 ///
@@ -126,22 +144,35 @@ pub const DKG_PHASE4_COMPLETION_TIMEOUT: Duration = Duration::from_secs(240);
 /// cleanup never runs.
 pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
 
-/// How often to re-check session existence when an early message arrives before
-/// the session has been created (e.g. a peer's commitment races with our own
-/// SessionInit bulletin validation).  Kept small so the ceremony proceeds as
-/// soon as the session appears.
-pub const DKG_SESSION_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+// ============================================================================
+// Ring Finalization Constants
+// ============================================================================
 
-/// Maximum grace period for a non-SessionInit message whose session has not
-/// appeared locally yet.
-///
-/// PSS refresh/reshare sessions are deterministic, so several old-committee
-/// nodes can legitimately begin the same session at almost the same time. In
-/// Docker CI the receiver may spend more than a few seconds validating or
-/// creating the corresponding SessionInit while commitments and shares are
-/// already queued behind it. Keep this shorter than a phase timeout, but long
-/// enough that valid early messages are not dropped before the session appears.
-pub const DKG_UNKNOWN_SESSION_MESSAGE_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum retries for both halves of `post_and_verify_fresh_ring_finalization`:
+/// reposting a `FinalizeRing` transaction whose confirmation is missing on-chain,
+/// and retrying a failed `ring_finalization_status` query. Shared between the two
+/// because both represent the same underlying condition (SourceHub is not yet
+/// reflecting this node's confirmation) and should give up after comparable effort.
+pub const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
+
+/// Initial backoff before retrying a failed `FinalizeRing` post/status query.
+/// Also the value `retry_delay` resets to once this node's own confirmation
+/// reappears mid-loop, since that clears the condition the backoff was for.
+pub const FINALIZATION_PERSISTENCE_RETRY_INITIAL: Duration = Duration::from_millis(250);
+
+/// Upper bound for the exponential backoff between finalization retries.
+pub const FINALIZATION_PERSISTENCE_RETRY_CAP: Duration = Duration::from_secs(2);
+
+/// Poll interval used while this node's own confirmation is already visible
+/// on-chain but the full confirmation set is still being observed. Distinct
+/// from the retry backoff above: this is a steady cadence, not exponential,
+/// since there's no failure to back off from.
+pub const FINALIZATION_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Hard deadline for the whole post-and-verify finalization loop. Bounds how
+/// long a node will wait for every participant's `FinalizeRing` confirmation
+/// to land on-chain before giving up on this ring.
+pub const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 // ============================================================================
 // PRE (Proxy Re-Encryption) Constants
@@ -203,22 +234,25 @@ pub const SIGN_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// a clean CLOSE) keeps the pool slot occupied and causes `open_stream()` to
 /// hang until Quinn exhausts its retransmission backoff. On timeout the
 /// connection closes, `open_stream()` fails, and the pool reconnects.
-pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 30_000;
+/// QUIC idle timeout. DKG control and repair traffic can legitimately pause while
+/// large commitments are computed, so keep the underlying connection longer than
+/// an individual phase stall interval.
+pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1_000;
 
-/// Maximum concurrently executing inbound P2P handler tasks per protocol.
-///
-/// The iroh router accepts one QUIC stream per node-to-node request/session.
-/// This cap prevents a single protocol from spawning unbounded handler tasks
-/// under flood or retry storms. Excess streams are dropped before protocol
-/// deserialization.
-pub const NETWORK_MAX_CONCURRENT_INBOUND_STREAMS: usize = 1024;
+/// QUIC keep-alive interval for active peer connections.
+pub const NETWORK_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 
-/// Maximum inbound P2P streams accepted from one peer per protocol per second.
+/// Maximum concurrently executing inbound P2P application work items.
 ///
-/// DKG, PRE, and Sign traffic should stay well below this in normal operation;
-/// the limit primarily protects handler allocation and downstream crypto work
-/// from cheap stream-open floods.
-pub const NETWORK_MAX_INBOUND_STREAMS_PER_PEER_PER_SECOND: usize = 512;
+/// Direct QUIC streams and authenticated Gossip frames share this node-wide
+/// budget. Excess work is dropped before protocol deserialization.
+pub const NETWORK_MAX_CONCURRENT_INGRESS_WORK: usize = 1024;
+
+/// Maximum inbound P2P work items accepted from one immediate peer per second.
+///
+/// Direct streams and Gossip frames count against the same peer budget. DKG,
+/// PRE, and Sign traffic should stay well below this in normal operation.
+pub const NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND: usize = 512;
 
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;

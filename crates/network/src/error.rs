@@ -23,6 +23,9 @@ pub enum NetworkError {
 
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
+
+    #[error("Invalid config: {0}")]
+    InvalidConfig(String),
 }
 
 /// Result type for network operations

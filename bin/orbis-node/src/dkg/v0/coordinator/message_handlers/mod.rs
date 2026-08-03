@@ -4,17 +4,17 @@ use crate::constants::{
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    effective_new_peer_node_keys, fresh_commitment_hash, serialize_commitment_coefficients,
-    session_not_found, validate_dkg_claims, validate_dkg_node_authorization_for_committee,
-    validate_fresh_dkg_ring_payload, validate_fresh_session_init_params,
-    validate_refresh_session_init_for_version, validate_reshare_session_init_for_version,
+    effective_new_peer_node_keys, fresh_commitment_hash, validate_dkg_claims,
+    validate_dkg_node_authorization_for_committee, validate_fresh_dkg_ring_payload,
+    validate_fresh_session_init_params, validate_refresh_session_init_for_version,
+    validate_reshare_session_init_for_version,
 };
-use crate::dkg::v0::messages::{DkgMessage, SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
-use crate::helpers::identity::is_self_peer_id;
+use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
-    node_key_for_peer, peer_ids_from_routes, resolve_node_routes,
+    node_key_for_peer, peer_ids_from_routes, resolve_node_routes, validate_node_route_bindings,
 };
 use crate::ring_state::RingShareBundle;
 
@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
-    peers, phases,
+    attempt_state_error, peers, phases,
     state_machine::DkgEvent,
     types::{CoordinatorDkg, CoordinatorReportSigner},
     DkgCoordinator,
@@ -43,11 +43,17 @@ mod commitment_hash;
 mod session_init;
 mod share;
 
+pub(crate) use crate::dkg::v0::coordinator::reshare::selection::preflight_reshare_participant_set;
 pub use crate::dkg::v0::coordinator::reshare::selection::{
     handle_reshare_participant_set, handle_reshare_share_ack,
 };
 pub use commitment::handle_commitment_message;
+pub(crate) use commitment::preflight_commitment_message;
 pub use commitment_audit::handle_commitment_audit_message;
+pub(crate) use commitment_audit::preflight_commitment_audit_message;
 pub use commitment_hash::handle_commitment_hash_message;
+pub(crate) use commitment_hash::preflight_commitment_hash_message;
 pub use session_init::handle_session_init;
+#[cfg(test)]
 pub use share::handle_share_message;
+pub(crate) use share::{accept_share_message, drive_accepted_share};

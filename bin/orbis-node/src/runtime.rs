@@ -1,5 +1,6 @@
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
+use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
@@ -128,10 +129,23 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Initialize network for node-to-node communication
         tracing::info!("Initializing network");
+        let mut network_builder = network::NetworkImpl::builder()
+            .secret_key(secret_key)
+            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+            .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
+            .max_concurrent_ingress_work(constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK)
+            .max_ingress_events_per_peer_per_second(
+                constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+            );
+        if args.network_private_routes_only {
+            tracing::info!(
+                "Public Iroh relay and default discovery disabled; \
+                 using authoritative direct peer routes"
+            );
+            network_builder = network_builder.private_routes_only();
+        }
         let network: Arc<dyn Network> = Arc::new(
-            network::NetworkImpl::builder()
-                .secret_key(secret_key)
-                .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+            network_builder
                 .build()
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
@@ -140,7 +154,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .grpc_url(args.authz_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone());
+            .denom(args.denom.clone())
+            .gas_multiplier(args.chain_gas_multiplier);
 
         let authz: Arc<dyn Authz> = Arc::new(
             AuthzImpl::new(authz_chain_config)
@@ -152,7 +167,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .grpc_url(args.bulletin_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone());
+            .denom(args.denom.clone())
+            .gas_multiplier(args.chain_gas_multiplier);
         let chain_config = bulletin_chain_config.clone().build();
         let signer =
             create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
@@ -180,6 +196,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .rpc_url(args.chain_rpc.clone())
                     .rest_url(args.chain_rest.clone())
                     .grpc_url(args.bulletin_grpc.clone())
+                    .gas_multiplier(args.chain_gas_multiplier)
                     .build();
                 cli_tool::fund(signer.address(), fund_config)
                     .await
@@ -370,12 +387,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .app_state
         .dkg_session_state
         .take_stall_report_receiver()
-        .map(|rx| {
-            crate::dkg::v0::coordinator::network::spawn_pss_stall_reporter(
-                node.app_state.clone(),
-                rx,
-            )
-        });
+        .map(|rx| spawn_pss_stall_reporter(node.app_state.clone(), rx));
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");

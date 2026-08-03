@@ -3,23 +3,24 @@ use crate::dkg::v0::coordinator::evidence::build_and_store_commitment_evidence;
 
 pub async fn initiate_phase1_commitments<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let already_started = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             matches!(
                 state.phase,
                 DkgPhase::Phase2Shares | DkgPhase::Phase4Completing | DkgPhase::Phase4Complete
             )
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     if already_started {
         tracing::debug!(
@@ -32,12 +33,12 @@ where
     let is_reshare_receiver = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             matches!(state.kind, SessionKind::Reshare { .. })
                 && state.node.role() == DkgRole::Receiver
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
 
     if is_reshare_receiver {
         tracing::debug!(
@@ -50,11 +51,11 @@ where
     let fresh_phase = coord
         .app_state
         .dkg_session_state
-        .with_state(&session_id, |state| {
+        .with_attempt_state(attempt, |state| {
             matches!(state.kind, SessionKind::Fresh).then_some(state.phase)
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))?;
+        .map_err(|error| attempt_state_error(attempt, error))?;
     if matches!(
         fresh_phase,
         Some(DkgPhase::Initializing | DkgPhase::Phase0CommitmentHashes)
@@ -65,10 +66,10 @@ where
         ));
     }
 
-    let (commitment_bytes, node_id, threshold, is_reshare, role) = coord
+    let (commitment_bytes, node_id, is_reshare, role) = coord
         .app_state
         .dkg_session_state
-        .with_state_mut(&session_id, |state| {
+        .with_attempt_state_mut(attempt, |state| {
             if state.node.commitment().coefficients.is_empty() {
                 state.generate_polynomial()?;
             }
@@ -76,94 +77,43 @@ where
             Ok::<_, DkgError>((
                 bytes,
                 state.node.node_id(),
-                state.node.threshold(),
                 matches!(state.kind, SessionKind::Reshare { .. }),
                 state.node.role(),
             ))
         })
         .await
-        .ok_or_else(|| session_not_found(session_id))??;
+        .map_err(|error| attempt_state_error(attempt, error))??;
 
     coord
         .app_state
         .dkg_session_state
-        .update_phase(&session_id, DkgPhase::Phase1Commitments)
-        .await;
+        .update_phase_for_attempt(attempt, DkgPhase::Phase1Commitments)
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
     let report_evidence =
-        build_and_store_commitment_evidence(coord, session_id, node_id, commitment_bytes.clone())
+        build_and_store_commitment_evidence(coord, attempt, node_id, commitment_bytes.clone())
             .await?;
 
-    let mut peers_sent = 0;
-    let mut expected_peers = 0;
-    for peer_id_str in peer_ids {
-        if is_self_peer_id(&coord.app_state.network, peer_id_str) {
-            tracing::debug!(peer_id = %peer_id_str, "Skipping self when broadcasting commitment");
-            continue;
-        }
-        expected_peers += 1;
-
-        let commitment_msg = DkgMessage::Commitment {
-            session_id,
-            from_node_id: node_id,
-            commitment: commitment_bytes.clone(),
-            report_evidence: report_evidence.clone(),
-        };
-
-        if coord
-            .send_message_to_peer(peer_id_str, commitment_msg, Some(session_id))
-            .await
-            .inspect_err(|error| {
-                tracing::error!(
-                    peer_id = %peer_id_str,
-                    error = %error,
-                    "Failed to send commitment to peer"
-                );
-            })
-            .is_ok()
-        {
-            peers_sent += 1;
-        }
-    }
-
-    tracing::info!(
-        peers_sent = peers_sent,
-        expected_peers = expected_peers,
-        "Phase 1: Broadcasted commitment to peers"
-    );
-
-    if peers_sent < expected_peers && !is_reshare {
-        tracing::error!(
-            sent = peers_sent,
-            expected = expected_peers,
-            session_id = session_id,
-            "DKG Coordinator: Could not broadcast commitment to all peers - failing DKG to preserve expected redundancy"
-        );
-        coord.remove_session(session_id).await;
-        tracing::debug!(
-            session_id = session_id,
-            "Cleaned up session after Phase 1 broadcast failure"
-        );
-        return Err(DkgError::InsufficientPeers {
-            successful: peers_sent,
-            total: expected_peers,
-            threshold,
-        });
-    }
-
-    if peers_sent < expected_peers {
-        tracing::warn!(
-            sent = peers_sent,
-            expected = expected_peers,
-            session_id = session_id,
-            "Reshare: commitment broadcast did not reach every new-committee peer; continuing until threshold selection or timeout"
-        );
-    }
+    submit_public_contribution(
+        coord,
+        attempt,
+        DkgPublicPayload::Commitment {
+            commitment: commitment_bytes,
+            report_evidence,
+        },
+    )
+    .await?;
 
     if is_reshare && role != DkgRole::Receiver {
-        initiate_phase2_shares(coord, session_id, peer_ids).await?;
+        return initiate_phase2_shares(coord, attempt, peer_ids).await;
     }
 
-    Ok(())
+    // Gossip delivery is not phase-ordered. Remote commitments may have
+    // arrived and been validated while this fresh session was still in the
+    // hash-reveal phase. Re-evaluate Phase 1 after publishing our own
+    // commitment so those already-recorded contributions can advance the
+    // session without requiring another network message.
+    check_and_trigger_phase2(coord, attempt, peer_ids).await
 }
 
 /// Check if Phase 1 is complete and trigger Phase 2 if so.
@@ -171,17 +121,11 @@ where
 /// Called after each incoming commitment message.
 pub async fn check_and_trigger_phase2<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     peer_ids: &[String],
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    drive_event(
-        coord,
-        session_id,
-        DkgEvent::CommitmentRecorded,
-        Some(peer_ids),
-    )
-    .await
+    drive_event(coord, attempt, DkgEvent::CommitmentRecorded, Some(peer_ids)).await
 }

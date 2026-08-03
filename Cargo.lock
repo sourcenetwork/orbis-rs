@@ -3326,6 +3326,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libyaml-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3657,6 +3663,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bincode",
  "bytes",
  "futures",
  "hex",
@@ -3664,6 +3671,7 @@ dependencies = [
  "iroh-gossip",
  "lazy_static",
  "prometheus",
+ "rand 0.8.6",
  "serde",
  "serial_test",
  "thiserror 1.0.69",
@@ -3835,6 +3843,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "orbis-bench"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "authn",
+ "bs58 0.5.1",
+ "bulletin",
+ "clap",
+ "cli-tool",
+ "common",
+ "cosmrs",
+ "crypto",
+ "did-key",
+ "futures",
+ "hex",
+ "prost 0.14.3",
+ "proto",
+ "rand 0.8.6",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tonic",
+ "uuid",
+ "yaml_serde",
+]
+
+[[package]]
 name = "orbis-node"
 version = "0.0.1"
 dependencies = [
@@ -3848,11 +3886,13 @@ dependencies = [
  "base64 0.22.1",
  "bs58 0.5.1",
  "bulletin",
+ "bytes",
  "clap",
  "cli-tool",
  "common",
  "crypto",
  "dirs",
+ "futures",
  "getrandom 0.2.17",
  "hex",
  "http-body-util",
@@ -7489,6 +7529,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d8a75eaf6557bb84a65ace8609883db44a29951042ada9b393151532e41fcb"
 dependencies = [
  "xml-rs",
+]
+
+[[package]]
+name = "yaml_serde"
+version = "0.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08c7c1b1a6a7c8a6b2741a6c21a4f8918e51899b111cfa08d1288202656e3975"
+dependencies = [
+ "indexmap",
+ "itoa",
+ "libyaml-rs",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

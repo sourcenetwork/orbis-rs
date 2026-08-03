@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// Coordinator behaviour needed by the generic network handler loop.
 #[async_trait]
 pub trait MessageCoordinator: Send + Sync + 'static {
-    /// The protocol-level message type (e.g. `DkgMessage`, `PreMessage`).
+    /// The protocol-level message type (for example `PreMessage`).
     type Msg: DeserializeOwned + Serialize + Send + Sync + 'static;
 
     /// Short protocol name used in tracing output (e.g. `"DKG"`, `"PRE"`, `"Sign"`).

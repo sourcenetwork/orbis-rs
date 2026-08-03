@@ -1,0 +1,43 @@
+schema_version: 1
+name: orbis-50-node-reshare-acceptance
+crypto: bls12-381
+
+networks:
+  - network_size: 50
+    cases:
+      - { ring_size: 34, threshold: 23 }
+
+operations: [pss_reshare]
+reshare_overlap: 18
+profiles:
+  - name: lan
+    kind: lan
+  - name: wan-50ms
+    kind: wan
+    delay_ms: 25
+    jitter_ms: 5
+    loss_percent: 0.1
+
+warmups: 1
+repetitions: 5
+seed: 185974508
+output_dir: bench-results
+
+timeouts:
+  setup_secs: 1800
+  dkg_secs: 900
+  pre_secs: 120
+  sign_secs: 120
+  pss_refresh_secs: 900
+
+resources:
+  cpus_per_node: null
+  memory_per_node: null
+
+sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
+setup_batch_size: 25
+# Retained for reference: SourceHub enforces a hard 86400s floor on every
+# ring's pss_interval, so this value has no observable effect here (this
+# file's only operation is pss_reshare, not pss_refresh).
+pss_interval_secs: 15
+pss_poll_interval_secs: 1

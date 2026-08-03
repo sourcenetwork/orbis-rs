@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 
 use crate::constants::{REFRESH_HEALTH_CHECK_MAX_ATTEMPTS, REFRESH_HEALTH_CHECK_RETRY_DELAY};
 use crate::dkg::v0::error::{DkgError, Result};
-use crate::dkg::v0::helpers::session_not_found;
-use crate::dkg::v0::messages::DkgMessage;
-use crate::dkg::v0::session_state::{PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate};
-use crate::helpers::identity::is_self_peer_id;
+use crate::dkg::v0::network::submit_public_contribution;
+use crate::dkg::v0::session_state::{
+    DkgPhase, PendingRefreshHealthCheckResult, RefreshHealthCheckCandidate, TopicTaskDisposition,
+};
+use crate::dkg::v0::transport::{AttemptKey, DkgPublicPayload};
 use crate::helpers::ring::RingConfig;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
@@ -23,14 +24,11 @@ use crate::sign::v0::messages::{
 };
 
 use super::types::{CoordinatorDkg, CoordinatorReportSigner};
-use super::DkgCoordinator;
-
-const REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS: usize = 3;
-const REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY: Duration = Duration::from_millis(250);
+use super::{attempt_state_error, DkgCoordinator};
 
 pub async fn run_selector<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     ring_pk_bytes: &[u8],
     candidate: &RefreshHealthCheckCandidate,
 ) -> Result<()>
@@ -38,14 +36,15 @@ where
     D: CoordinatorDkg + Send + Sync,
     SignImpl: CoordinatorReportSigner<D>,
 {
+    let session_id = attempt.session_id();
     if candidate.peer_ids.is_empty() {
-        rollback_candidate(coord, session_id, &candidate.ring_key).await;
+        rollback_candidate(coord, attempt, &candidate.ring_key).await;
         return Err(DkgError::InvalidInput(
             "Refresh health check requires a non-empty peer set".to_string(),
         ));
     }
     if candidate.threshold == 0 || candidate.threshold > candidate.peer_ids.len() {
-        rollback_candidate(coord, session_id, &candidate.ring_key).await;
+        rollback_candidate(coord, attempt, &candidate.ring_key).await;
         return Err(DkgError::InvalidInput(format!(
             "Refresh health check threshold {} is invalid for committee size {}",
             candidate.threshold,
@@ -56,7 +55,7 @@ where
     let pub_poly_bytes = match hex::decode(&candidate.bundle.public_polynomial) {
         Ok(bytes) => bytes,
         Err(e) => {
-            rollback_candidate(coord, session_id, &candidate.ring_key).await;
+            rollback_candidate(coord, attempt, &candidate.ring_key).await;
             return Err(DkgError::Deserialization(format!(
                 "Refresh health check: failed to decode staged polynomial: {}",
                 e
@@ -78,7 +77,7 @@ where
     let message_to_sign = match refresh_health_check_message(&statement) {
         Ok(message) => message,
         Err(e) => {
-            rollback_candidate(coord, session_id, &candidate.ring_key).await;
+            rollback_candidate(coord, attempt, &candidate.ring_key).await;
             return Err(DkgError::Serialization(format!(
                 "Refresh health check: failed to serialize signing statement: {}",
                 e
@@ -140,84 +139,38 @@ where
         })
         .ok();
 
-    if let Err(e) = broadcast_result(
-        coord,
-        session_id,
-        &candidate.peer_ids,
-        &statement,
-        signature.clone(),
-    )
-    .await
-    {
+    if let Err(e) = broadcast_result(coord, attempt, &statement, signature.clone()).await {
         tracing::warn!(
             session_id = session_id,
             error = %e,
             "Refresh health check: failed to distribute result to every peer; rolling back locally"
         );
-        apply_result(coord, session_id, 1, statement, None).await?;
+        apply_result(coord, attempt, 1, statement, None).await?;
         return Err(e);
     }
-    apply_result(coord, session_id, 1, statement, signature).await?;
+    apply_result(coord, attempt, 1, statement, signature).await?;
 
     Ok(())
 }
 
 async fn broadcast_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
-    peer_ids: &[String],
+    attempt: AttemptKey,
     statement: &RefreshHealthCheckStatement,
     signature: Option<String>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    for peer_id in peer_ids {
-        if is_self_peer_id(&coord.app_state.network, peer_id) {
-            continue;
-        }
-
-        let mut last_error = None;
-        for attempt in 1..=REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS {
-            let msg = DkgMessage::RefreshHealthCheckResult {
-                session_id,
-                from_node_id: 1,
-                statement: statement.clone(),
-                signature: signature.clone(),
-            };
-            match coord
-                .send_message_to_peer(peer_id, msg, Some(session_id))
-                .await
-            {
-                Ok(()) => {
-                    last_error = None;
-                    break;
-                }
-                Err(e) => {
-                    last_error = Some(e.to_string());
-                    tracing::warn!(
-                        session_id = session_id,
-                        peer_id = %peer_id,
-                        attempt = attempt,
-                        error = %e,
-                        "Refresh health check: failed to deliver result"
-                    );
-                    if attempt < REFRESH_HEALTH_CHECK_RESULT_SEND_ATTEMPTS {
-                        tokio::time::sleep(REFRESH_HEALTH_CHECK_RESULT_RETRY_DELAY).await;
-                    }
-                }
-            }
-        }
-
-        if let Some(error) = last_error {
-            return Err(DkgError::NetworkCommunication(format!(
-                "Refresh health check: failed to deliver result to {}: {}",
-                peer_id, error
-            )));
-        }
-    }
-
-    Ok(())
+    submit_public_contribution(
+        coord,
+        attempt,
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement: statement.clone(),
+            signature,
+        },
+    )
+    .await
 }
 
 fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
@@ -229,55 +182,46 @@ fn is_retryable_refresh_health_check_error(error: &SignError) -> bool {
 
 pub async fn handle_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
     statement: RefreshHealthCheckStatement,
     signature: Option<String>,
-) -> Result<Option<DkgMessage>>
-where
-    D: CoordinatorDkg,
-{
-    apply_result(coord, session_id, from_node_id, statement, signature).await?;
-    Ok(None)
-}
-
-pub async fn apply_pending_result_if_present<D>(
-    coord: &DkgCoordinator<D>,
-    session_id: u128,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
-    let Some(result) = coord
-        .app_state
-        .dkg_session_state
-        .take_pending_refresh_health_check_result(&session_id)
-        .await
-    else {
-        return Ok(());
-    };
-
-    tracing::debug!(
-        session_id = session_id,
-        from_node_id = result.from_node_id,
-        "Refresh health check: applying queued result after candidate was staged"
-    );
-    apply_result(
-        coord,
-        session_id,
-        result.from_node_id,
-        result.statement,
-        result.signature,
-    )
-    .await
+    apply_result(coord, attempt, from_node_id, statement, signature).await?;
+    Ok(())
 }
 
-async fn apply_result<D>(
+pub(crate) async fn preflight_result<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     from_node_id: u32,
-    statement: RefreshHealthCheckStatement,
-    signature: Option<String>,
+    statement: &RefreshHealthCheckStatement,
+    signature: Option<&str>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    validate_result_scope(coord, attempt, from_node_id, statement).await?;
+    let candidate = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| state.refresh.candidate.clone())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    if let (Some(candidate), Some(signature)) = (candidate, signature) {
+        verify_result_signature::<D>(&candidate, statement, signature)?;
+    }
+    Ok(())
+}
+
+async fn validate_result_scope<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    from_node_id: u32,
+    statement: &RefreshHealthCheckStatement,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
@@ -288,32 +232,96 @@ where
             from_node_id
         )));
     }
-    if statement.session_id != session_id {
+    if statement.session_id != attempt.session_id() {
         return Err(DkgError::Unauthorized(format!(
             "Refresh health-check statement session_id {} does not match routed session {}",
-            statement.session_id, session_id
+            statement.session_id,
+            attempt.session_id()
         )));
     }
-
-    let Some(candidate) = coord
+    if statement.domain != REFRESH_HEALTH_CHECK_DOMAIN {
+        return Err(DkgError::Unauthorized(
+            "Refresh health-check statement has the wrong domain".to_string(),
+        ));
+    }
+    coord
         .app_state
         .dkg_session_state
-        .refresh_health_check_candidate(&session_id)
+        .with_attempt_state(attempt, |_| ())
         .await
-    else {
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    Ok(())
+}
+
+pub async fn apply_pending_result_if_present<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let session_id = attempt.session_id();
+    let result = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state_mut(attempt, |state| state.refresh.pending_result.take())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    let Some(result) = result else {
+        return Ok(());
+    };
+
+    tracing::debug!(
+        session_id = session_id,
+        from_node_id = result.from_node_id,
+        "Refresh health check: applying queued result after candidate was staged"
+    );
+    apply_result(
+        coord,
+        attempt,
+        result.from_node_id,
+        result.statement,
+        result.signature,
+    )
+    .await
+}
+
+async fn apply_result<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    from_node_id: u32,
+    statement: RefreshHealthCheckStatement,
+    signature: Option<String>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let session_id = attempt.session_id();
+    validate_result_scope(coord, attempt, from_node_id, &statement).await?;
+
+    let candidate = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| state.refresh.candidate.clone())
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    let Some(candidate) = candidate else {
         let inserted = coord
             .app_state
             .dkg_session_state
-            .store_pending_refresh_health_check_result(
-                &session_id,
-                PendingRefreshHealthCheckResult {
+            .with_attempt_state_mut(attempt, |state| {
+                if state.refresh.pending_result.is_some() {
+                    return false;
+                }
+                state.refresh.pending_result = Some(PendingRefreshHealthCheckResult {
                     from_node_id,
                     statement,
                     signature,
-                },
-            )
+                });
+                true
+            })
             .await
-            .ok_or_else(|| session_not_found(session_id))?;
+            .map_err(|error| attempt_state_error(attempt, error))?;
 
         tracing::debug!(
             session_id = session_id,
@@ -345,9 +353,9 @@ where
     // a partial broadcast failure can leave peers in inconsistent staged state;
     // this is tolerated because the health check is diagnostic and the underlying key material is already persisted independently
     if should_promote {
-        promote_candidate(coord, session_id, candidate).await?;
+        promote_candidate(coord, attempt, candidate).await?;
     } else {
-        rollback_candidate(coord, session_id, &candidate.ring_key).await;
+        rollback_candidate(coord, attempt, &candidate.ring_key).await;
     }
 
     Ok(())
@@ -425,12 +433,18 @@ where
 
 async fn promote_candidate<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     candidate: RefreshHealthCheckCandidate,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
+    // Write the promoted bundle to encrypted storage before taking the
+    // session-state lock: `with_attempt_state_mut` holds a write lock over
+    // the whole session map for the closure's duration, and this is a
+    // synchronous disk write — doing it inside the closure would stall every
+    // other session's state access for as long as the write takes.
     candidate
         .bundle
         .save_by_ring_key(&coord.app_state.local_storage, &candidate.ring_key)
@@ -443,17 +457,21 @@ where
     coord
         .app_state
         .dkg_session_state
-        .clear_refresh_health_check_candidate(&session_id)
+        .with_attempt_state_mut(attempt, |state| {
+            state.refresh.candidate = None;
+            state.transition_phase(DkgPhase::Phase4Complete);
+        })
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    coord
+        .app_state
+        .dkg_session_state
+        .unmark_ring_pss_for_attempt(&candidate.ring_key, attempt)
         .await;
     coord
         .app_state
         .dkg_session_state
-        .unmark_ring_pss(&candidate.ring_key)
-        .await;
-    coord
-        .app_state
-        .dkg_session_state
-        .complete_session(&session_id)
+        .complete_transport_attempt(attempt, TopicTaskDisposition::DetachCurrent)
         .await;
 
     tracing::info!(
@@ -465,21 +483,23 @@ where
     Ok(())
 }
 
-async fn rollback_candidate<D>(coord: &DkgCoordinator<D>, session_id: u128, ring_key: &str)
+async fn rollback_candidate<D>(coord: &DkgCoordinator<D>, attempt: AttemptKey, ring_key: &str)
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     coord
         .app_state
         .dkg_session_state
-        .clear_refresh_health_check_candidate(&session_id)
-        .await;
+        .with_attempt_state_mut(attempt, |state| state.refresh.candidate = None)
+        .await
+        .ok();
     coord
         .app_state
         .dkg_session_state
-        .unmark_ring_pss(ring_key)
+        .unmark_ring_pss_for_attempt(ring_key, attempt)
         .await;
-    coord.remove_session(session_id).await;
+    coord.abort_attempt(attempt).await;
 
     tracing::warn!(
         session_id = session_id,
@@ -576,17 +596,24 @@ mod tests {
         let ring_key = "rollback-ring";
 
         coord
-            .create_session(session_id, 1, 1, 1, DkgRole::Standard, |state| {
-                state.kind = SessionKind::Refresh {
-                    ring_pk_hex: ring_key.to_string(),
-                };
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                1,
+                1,
+                DkgRole::Standard,
+                |state| {
+                    state.kind = SessionKind::Refresh {
+                        ring_pk_hex: ring_key.to_string(),
+                    };
+                },
+            )
             .await
             .expect("create refresh session");
         coord
             .app_state
             .dkg_session_state
-            .claim_ring_pss_session(ring_key, session_id)
+            .claim_ring_pss_attempt(ring_key, AttemptKey::test(session_id))
             .await;
 
         let old_bundle = RingShareBundle {
@@ -628,7 +655,7 @@ mod tests {
             total_participants: 1,
         };
 
-        apply_result(&coord, session_id, 1, statement, None)
+        apply_result(&coord, AttemptKey::test(session_id), 1, statement, None)
             .await
             .expect("rollback result should apply");
 
@@ -673,11 +700,18 @@ mod tests {
         let session_id = 5151;
 
         coord
-            .create_session(session_id, 1, 1, 1, DkgRole::Standard, |state| {
-                state.kind = SessionKind::Refresh {
-                    ring_pk_hex: "queued-ring".to_string(),
-                };
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                1,
+                1,
+                DkgRole::Standard,
+                |state| {
+                    state.kind = SessionKind::Refresh {
+                        ring_pk_hex: "queued-ring".to_string(),
+                    };
+                },
+            )
             .await
             .expect("create refresh session");
 
@@ -691,9 +725,15 @@ mod tests {
             total_participants: 1,
         };
 
-        apply_result(&coord, session_id, 1, statement.clone(), None)
-            .await
-            .expect("early result should queue");
+        apply_result(
+            &coord,
+            AttemptKey::test(session_id),
+            1,
+            statement.clone(),
+            None,
+        )
+        .await
+        .expect("early result should queue");
 
         let queued = coord
             .app_state
@@ -718,17 +758,24 @@ mod tests {
         let ring_key = "queued-rollback-ring";
 
         coord
-            .create_session(session_id, 1, 1, 1, DkgRole::Standard, |state| {
-                state.kind = SessionKind::Refresh {
-                    ring_pk_hex: ring_key.to_string(),
-                };
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                1,
+                1,
+                DkgRole::Standard,
+                |state| {
+                    state.kind = SessionKind::Refresh {
+                        ring_pk_hex: ring_key.to_string(),
+                    };
+                },
+            )
             .await
             .expect("create refresh session");
         coord
             .app_state
             .dkg_session_state
-            .claim_ring_pss_session(ring_key, session_id)
+            .claim_ring_pss_attempt(ring_key, AttemptKey::test(session_id))
             .await;
 
         let old_bundle = RingShareBundle {
@@ -749,7 +796,7 @@ mod tests {
             threshold: 1,
             total_participants: 1,
         };
-        apply_result(&coord, session_id, 1, statement, None)
+        apply_result(&coord, AttemptKey::test(session_id), 1, statement, None)
             .await
             .expect("early rollback result should queue");
 
@@ -773,7 +820,7 @@ mod tests {
             )
             .await;
 
-        apply_pending_result_if_present(&coord, session_id)
+        apply_pending_result_if_present(&coord, AttemptKey::test(session_id))
             .await
             .expect("queued rollback should apply");
 
@@ -809,11 +856,18 @@ mod tests {
         let session_id = 7171;
 
         coord
-            .create_session(session_id, 1, 1, 1, DkgRole::Standard, |state| {
-                state.kind = SessionKind::Refresh {
-                    ring_pk_hex: "sender-ring".to_string(),
-                };
-            })
+            .create_session(
+                AttemptKey::test(session_id),
+                1,
+                1,
+                1,
+                DkgRole::Standard,
+                |state| {
+                    state.kind = SessionKind::Refresh {
+                        ring_pk_hex: "sender-ring".to_string(),
+                    };
+                },
+            )
             .await
             .expect("create refresh session");
 
@@ -827,7 +881,7 @@ mod tests {
             total_participants: 1,
         };
 
-        let err = apply_result(&coord, session_id, 2, statement, None)
+        let err = apply_result(&coord, AttemptKey::test(session_id), 2, statement, None)
             .await
             .expect_err("non-selector result should be rejected");
         assert!(matches!(err, DkgError::Unauthorized(_)));

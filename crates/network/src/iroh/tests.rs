@@ -6,7 +6,8 @@
 use super::IrohNetwork;
 use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
-use crate::{PeerId, Result, SecretKey};
+use crate::{AuthenticatedMessage, PeerId, Result, SecretKey, Topic};
+use crate::{PubSubEvent, TopicId};
 use async_trait::async_trait;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
@@ -30,10 +31,54 @@ fn peer_addr(network: &IrohNetwork) -> PeerId {
 async fn new_test_network() -> IrohNetwork {
     IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network")
+}
+
+async fn wait_for_neighbor(topic: &Arc<dyn Topic>) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::NeighborUp(_) = topic.recv().await.expect("topic event") {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("topic should gain a neighbor");
+}
+
+async fn receive_authenticated(topic: &Arc<dyn Topic>) -> AuthenticatedMessage {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::Received(message) = topic.recv().await.expect("topic event") {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("topic should receive an authenticated message")
+}
+
+fn ingress_drop_count(reason: &'static str) -> f64 {
+    let protocol = std::str::from_utf8(iroh_gossip::ALPN).expect("Gossip ALPN is UTF-8");
+    crate::metrics::P2P_INGRESS_DROPPED_TOTAL
+        .with_label_values(&[protocol, reason])
+        .get()
+}
+
+async fn wait_for_ingress_drop(reason: &'static str, previous: f64) {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if ingress_drop_count(reason) > previous {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Gossip ingress drop should be recorded");
 }
 // ============================================================================
 // Run Generic Trait Tests Against IrohNetwork
@@ -108,6 +153,514 @@ async fn iroh_concurrent_connections() {
     trait_tests::test_concurrent_connections(&net1, &net2, &net3).await;
 }
 
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_authenticated_pubsub_roundtrip() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn first gossip router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn second gossip router");
+
+    let topic_id = TopicId::new([7u8; 32]);
+    let topic1 = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open topic");
+    let topic2 = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic");
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::NeighborUp(_) = topic1.recv().await.expect("topic event") {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("publisher should see the subscriber as a neighbor");
+
+    for _ in 0..2 {
+        topic1
+            .broadcast(bytes::Bytes::from_static(b"signed payload"))
+            .await
+            .expect("broadcast identical semantic bytes");
+    }
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut received = Vec::new();
+        while received.len() < 2 {
+            if let PubSubEvent::Received(message) = topic2.recv().await.expect("topic event") {
+                received.push(message);
+            }
+        }
+        received
+    })
+    .await
+    .expect("receive both authenticated retransmissions");
+    assert_eq!(received.len(), 2);
+    for message in received {
+        assert_eq!(message.origin, net1.local_peer_id());
+        assert_eq!(&message.data[..], b"signed payload");
+    }
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_pubsub_applies_configured_concurrency_limit_and_recovers() {
+    let publisher = new_test_network().await;
+    let subscriber = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_concurrent_ingress_work(1)
+        .build()
+        .await
+        .expect("create concurrency-limited subscriber");
+    let publisher_router = publisher
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn publisher router");
+    let subscriber_router = subscriber
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn subscriber router");
+
+    let topic_id = TopicId::new([27; 32]);
+    let publisher_topic = publisher
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open publisher topic");
+    let subscriber_topic = subscriber
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&publisher)])
+        .await
+        .expect("join subscriber topic");
+    wait_for_neighbor(&publisher_topic).await;
+
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"first holds the permit"))
+        .await
+        .expect("broadcast first frame");
+    let first = receive_authenticated(&subscriber_topic).await;
+    assert_eq!(&first.data[..], b"first holds the permit");
+
+    let drops_before = ingress_drop_count("concurrency_limit");
+    let receive_task = tokio::spawn({
+        let topic = Arc::clone(&subscriber_topic);
+        async move { receive_authenticated(&topic).await }
+    });
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"second must be dropped"))
+        .await
+        .expect("broadcast over-capacity frame");
+    wait_for_ingress_drop("concurrency_limit", drops_before).await;
+
+    drop(first);
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"third after release"))
+        .await
+        .expect("broadcast after permit release");
+    let third = tokio::time::timeout(std::time::Duration::from_secs(10), receive_task)
+        .await
+        .expect("receive task should complete")
+        .expect("receive task should not panic");
+    assert_eq!(&third.data[..], b"third after release");
+
+    publisher_router.shutdown().await.unwrap();
+    subscriber_router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_pubsub_applies_configured_peer_rate_limit_and_recovers() {
+    let publisher = new_test_network().await;
+    let subscriber = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_ingress_events_per_peer_per_second(1)
+        .build()
+        .await
+        .expect("create rate-limited subscriber");
+    let publisher_router = publisher
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn publisher router");
+    let subscriber_router = subscriber
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn subscriber router");
+
+    let topic_id = TopicId::new([28; 32]);
+    let publisher_topic = publisher
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open publisher topic");
+    let subscriber_topic = subscriber
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&publisher)])
+        .await
+        .expect("join subscriber topic");
+    wait_for_neighbor(&publisher_topic).await;
+
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"first in rate window"))
+        .await
+        .expect("broadcast first frame");
+    let first = receive_authenticated(&subscriber_topic).await;
+    assert_eq!(&first.data[..], b"first in rate window");
+    drop(first);
+
+    let drops_before = ingress_drop_count("rate_limit");
+    let receive_task = tokio::spawn({
+        let topic = Arc::clone(&subscriber_topic);
+        async move { receive_authenticated(&topic).await }
+    });
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"second must be rate limited"))
+        .await
+        .expect("broadcast over-rate frame");
+    wait_for_ingress_drop("rate_limit", drops_before).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"third in next window"))
+        .await
+        .expect("broadcast in next rate window");
+    let third = tokio::time::timeout(std::time::Duration::from_secs(10), receive_task)
+        .await
+        .expect("receive task should complete")
+        .expect("receive task should not panic");
+    assert_eq!(&third.data[..], b"third in next window");
+
+    publisher_router.shutdown().await.unwrap();
+    subscriber_router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_direct_stream_and_pubsub_share_the_concurrency_budget() {
+    struct HoldingHandler {
+        started: mpsc::Sender<()>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl ProtocolHandler for HoldingHandler {
+        async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            let _ = connection.recv().await?;
+            let _ = self.started.send(()).await;
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    const SHARED_PROTOCOL: &[u8] = b"test/shared-ingress";
+    let publisher = new_test_network().await;
+    let subscriber = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_concurrent_ingress_work(1)
+        .build()
+        .await
+        .expect("create concurrency-limited subscriber");
+    let (started_tx, mut started_rx) = mpsc::channel(1);
+    let release = Arc::new(Notify::new());
+    let publisher_router = publisher
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn publisher router");
+    let subscriber_router = subscriber
+        .create_router_builder()
+        .unwrap()
+        .accept(
+            SHARED_PROTOCOL.to_vec(),
+            Arc::new(HoldingHandler {
+                started: started_tx,
+                release: Arc::clone(&release),
+            }),
+        )
+        .spawn()
+        .expect("spawn subscriber router");
+
+    let topic_id = TopicId::new([29; 32]);
+    let publisher_topic = publisher
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open publisher topic");
+    let subscriber_topic = subscriber
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&publisher)])
+        .await
+        .expect("join subscriber topic");
+    wait_for_neighbor(&publisher_topic).await;
+
+    let connection = publisher
+        .connect(&peer_addr(&subscriber), SHARED_PROTOCOL)
+        .await
+        .expect("connect direct protocol");
+    let stream = connection.open_stream().await.expect("open direct stream");
+    stream
+        .send(Message::new(
+            bytes::Bytes::from_static(b"hold shared permit"),
+            SHARED_PROTOCOL,
+        ))
+        .await
+        .expect("send direct request");
+    tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
+        .await
+        .expect("direct handler should start")
+        .expect("direct handler signal");
+
+    let drops_before = ingress_drop_count("concurrency_limit");
+    let receive_task = tokio::spawn({
+        let topic = Arc::clone(&subscriber_topic);
+        async move { receive_authenticated(&topic).await }
+    });
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"dropped while direct is busy"))
+        .await
+        .expect("broadcast while direct handler holds permit");
+    wait_for_ingress_drop("concurrency_limit", drops_before).await;
+
+    release.notify_waiters();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    publisher_topic
+        .broadcast(bytes::Bytes::from_static(b"accepted after direct finishes"))
+        .await
+        .expect("broadcast after direct handler releases permit");
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), receive_task)
+        .await
+        .expect("receive task should complete")
+        .expect("receive task should not panic");
+    assert_eq!(&received.data[..], b"accepted after direct finishes");
+
+    connection.close().await.unwrap();
+    publisher_router.shutdown().await.unwrap();
+    subscriber_router.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn malformed_gossip_frame_does_not_end_the_subscription() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn raw gossip publisher router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn authenticated subscriber router");
+
+    let topic_id = TopicId::new([19u8; 32]);
+    let raw_topic = net1
+        .gossip_for_tests()
+        .subscribe(
+            iroh_gossip::TopicId::from_bytes(*topic_id.as_bytes()),
+            vec![],
+        )
+        .await
+        .expect("open raw Gossip topic");
+    let (raw_sender, _raw_receiver) = raw_topic.split();
+    let authenticated_topic = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join authenticated topic");
+
+    raw_sender
+        .broadcast(bytes::Bytes::from_static(b"malformed outer envelope"))
+        .await
+        .expect("broadcast malformed frame");
+
+    let rejection = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::Rejected {
+                delivered_from,
+                reason,
+            } = authenticated_topic.recv().await.expect("topic event")
+            {
+                return (delivered_from, reason);
+            }
+        }
+    })
+    .await
+    .expect("malformed frame should be surfaced without ending the stream");
+    assert_eq!(rejection.0, net1.local_peer_id());
+    assert_eq!(rejection.1, crate::PubSubRejectReason::MalformedEnvelope);
+
+    let valid_frame = super::pubsub::encode_topic_frame_for_test(
+        net1.endpoint(),
+        topic_id,
+        b"valid frame after rejection",
+    );
+    raw_sender
+        .broadcast(valid_frame.into())
+        .await
+        .expect("broadcast valid frame");
+
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let PubSubEvent::Received(message) =
+                authenticated_topic.recv().await.expect("topic event")
+            {
+                return message;
+            }
+        }
+    })
+    .await
+    .expect("the same subscription should receive a later valid frame");
+    assert_eq!(received.origin, net1.local_peer_id());
+    assert_eq!(&received.data[..], b"valid frame after rejection");
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_pubsub_sign_and_verify_roundtrip() {
+    let net1 = new_test_network().await;
+    let pubsub = net1.pubsub().expect("pubsub enabled");
+
+    let domain = b"test-sign-verify-domain";
+    let data = bytes::Bytes::from_static(b"authenticated payload");
+    let payload = pubsub
+        .sign(domain, data.clone())
+        .await
+        .expect("sign with local endpoint identity");
+
+    let authenticated = pubsub
+        .verify(domain, &payload)
+        .await
+        .expect("verify a correctly signed payload");
+    assert_eq!(authenticated.origin, net1.local_peer_id());
+    assert_eq!(authenticated.delivered_from, net1.local_peer_id());
+    assert_eq!(&authenticated.data[..], &data[..]);
+
+    // Wrong domain must be rejected — the signature binds the domain.
+    assert!(pubsub.verify(b"wrong-domain", &payload).await.is_err());
+
+    // Tampering with the signed data must be rejected too.
+    let mut tampered = payload.clone();
+    tampered.data[0] ^= 1;
+    assert!(pubsub.verify(domain, &tampered).await.is_err());
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_gossip_fans_out_to_multiple_subscribers() {
+    let net1 = new_test_network().await;
+    let net2 = new_test_network().await;
+    let net3 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn first gossip router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn second gossip router");
+    let router3 = net3
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn third gossip router");
+
+    let topic_id = TopicId::new([9u8; 32]);
+    let topic1 = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("open topic");
+    let topic2 = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic from net2");
+    let topic3 = net3
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("join topic from net3");
+
+    // Wait for both subscribers to become neighbors of the publisher before
+    // broadcasting, so the single broadcast below isn't lost to mesh churn.
+    for topic in [&topic2, &topic3] {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let PubSubEvent::NeighborUp(_) = topic.recv().await.expect("topic event") {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("subscriber should see the publisher as a neighbor");
+    }
+
+    topic1
+        .broadcast(bytes::Bytes::from_static(b"fan-out payload"))
+        .await
+        .expect("broadcast to all subscribers");
+
+    for topic in [&topic2, &topic3] {
+        let received = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let PubSubEvent::Received(message) = topic.recv().await.expect("topic event") {
+                    return message;
+                }
+            }
+        })
+        .await
+        .expect("each subscriber should receive the fan-out broadcast");
+        assert_eq!(received.origin, net1.local_peer_id());
+        assert_eq!(&received.data[..], b"fan-out payload");
+    }
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
+    router3.shutdown().await.unwrap();
+}
+
 #[test]
 fn message_construction() {
     trait_tests::test_message_construction();
@@ -136,6 +689,8 @@ async fn iroh_builder_default_config() {
         1024 * 1024,
         "Default max message size should be 1MB"
     );
+    assert_eq!(config.ingress_limits.max_concurrent_work, 1024);
+    assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 512);
 }
 
 #[tokio::test]
@@ -144,12 +699,16 @@ async fn iroh_builder_custom_max_message_size() {
     let custom_size = 512 * 1024; // 512KB
     let network = IrohNetwork::builder()
         .max_message_size(custom_size)
+        .max_concurrent_ingress_work(17)
+        .max_ingress_events_per_peer_per_second(23)
         .build()
         .await
         .expect("Should build with custom config");
 
     let config = network.config();
     assert_eq!(config.max_message_size, custom_size);
+    assert_eq!(config.ingress_limits.max_concurrent_work, 17);
+    assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 23);
 }
 
 #[tokio::test]
@@ -229,14 +788,14 @@ async fn iroh_router_builder_max_message_size() {
     let large_size = 2 * 1024 * 1024; // 2MB
     let net1 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .max_message_size(large_size)
         .build()
         .await
         .expect("Should create network 1");
     let net2 = IrohNetwork::builder()
         .bind_addr_v4(loopback())
-        .no_relay()
+        .private_routes_only()
         .build()
         .await
         .expect("Should create network 2");
@@ -313,14 +872,19 @@ async fn iroh_router_builder_limits_concurrent_inbound_streams() {
     }
 
     let net1 = new_test_network().await;
-    let net2 = new_test_network().await;
+    let net2 = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_concurrent_ingress_work(1)
+        .build()
+        .await
+        .expect("Should create limited network");
     let (started_tx, mut started_rx) = mpsc::channel(4);
     let release = Arc::new(Notify::new());
 
     let router = net2
         .create_router_builder()
         .expect("Should create router builder")
-        .max_concurrent_streams(1)
         .accept(
             b"test/concurrency-limit".to_vec(),
             Arc::new(HoldingHandler {

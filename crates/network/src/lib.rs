@@ -5,8 +5,10 @@
 //! iroh's QUIC-based networking.
 
 pub mod error;
+mod ingress;
 pub mod metrics;
 pub mod protocol;
+pub mod pubsub;
 pub mod r#trait;
 
 #[cfg(feature = "iroh")]
@@ -14,9 +16,12 @@ pub mod iroh;
 
 pub use error::{NetworkError, Result};
 pub use protocol::{routes_for_version, ProtocolRoutes, SUPPORTED_PROTOCOL_VERSIONS, V0};
+pub use pubsub::{
+    AuthenticatedMessage, PubSub, PubSubEvent, PubSubRejectReason, SignedPayload, Topic, TopicId,
+};
 pub use r#trait::{
-    Connection, Message, Network, PeerConnection, PeerId, ProtocolHandler, Router, RouterBuilder,
-    RouterIngressLimits,
+    Connection, IngressDropReason, Message, Network, NetworkIngressLimits, PeerConnection, PeerId,
+    ProtocolHandler, Router, RouterBuilder,
 };
 
 // Export the selected implementation

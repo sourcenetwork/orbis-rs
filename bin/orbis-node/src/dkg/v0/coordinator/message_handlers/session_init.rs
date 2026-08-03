@@ -1,8 +1,8 @@
 use super::*;
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
+use crate::dkg::v0::transport::canonical_leader;
 use crate::helpers::protocol_version::read_ring_for_protocol;
 use bulletin::r#trait::RingPayload;
-
 /// Peer routing resolved and validated for one SessionInit, ready to seed session state.
 ///
 /// Produced by the per-kind validation functions (`validate_fresh_init`,
@@ -98,13 +98,14 @@ where
     let routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Refresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let route_peer_ids = peer_ids_from_routes(&routes);
-    if !peers::same_peer_set(peer_ids, &route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Refresh peer_ids do not match NodeInfo routes for ring {}",
-            ring_pk_hex
-        )));
-    }
     let local_node_peer_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
     if node_key_for_peer(&routes, &local_node_peer_hex) != Some(coord.app_state.node_key.as_str()) {
         return Err(DkgError::Unauthorized(format!(
@@ -233,19 +234,14 @@ where
     let old_routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Reshare old current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let old_route_peer_ids = peer_ids_from_routes(&old_routes);
-    if !peers::same_peer_set(peer_ids, &old_route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare old peer_ids do not match NodeInfo routes for ring {}",
-            ring_pk_hex
-        )));
-    }
-    if node_key_for_peer(&old_routes, sender_hex).is_none() {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare initiator {} is not a member of ring {}",
-            sender_hex, ring_pk_hex
-        )));
-    }
     let old_route_assignments =
         canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
             .map_err(DkgError::InvalidInput)?;
@@ -258,6 +254,14 @@ where
     let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    let expected_leader =
+        canonical_leader(reshare_new_peer_node_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
+    if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare initiator {} is not the canonical next-committee leader for ring {}",
+            sender_hex, ring_pk_hex
+        )));
+    }
     let new_route_peer_ids = peer_ids_from_routes(&new_routes);
     let new_route_assignments =
         canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)
@@ -355,13 +359,14 @@ where
     let routes = resolve_node_routes(&coord.app_state.bulletin, peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
+        // TODO(reporting): retain the authenticated Prepare when its current-
+        // committee route bindings contradict SourceHub NodeInfo.
+        DkgError::Unauthorized(format!(
+            "Fresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+        ))
+    })?;
     let route_peer_ids = peer_ids_from_routes(&routes);
-    if !peers::same_peer_set(peer_ids, &route_peer_ids) {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh peer_ids do not match NodeInfo routes for ring {}",
-            ring_id
-        )));
-    }
     let route_assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
         .map_err(DkgError::InvalidInput)?;
     let route_map =
@@ -376,17 +381,16 @@ where
     })
 }
 
-/// Handle a `DkgMessage::SessionInit`.
+/// Validate and create state for a typed transport Prepare.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
 /// and node_id, and creates the session if it does not already exist.
-/// For Fresh/Refresh, when this handler creates the session and this node is
-/// `node_id == 1`, it also calls `initiate_phase1_commitments` so the protocol
-/// starts even if the gRPC initiator is not a participant.
-/// Returns `Ok(None)` — the caller should return this directly from `handle_message`.
+/// Cryptographic work starts later, once `begin_cryptographic_attempt` observes
+/// an activation acknowledgement from every active participant.
+/// Returns `Ok(())` — the caller should return this directly from `handle_message`.
 pub async fn handle_session_init<D>(
     coord: &DkgCoordinator<D>,
-    session_id: u128,
+    attempt: AttemptKey,
     threshold: u32,
     total_participants: u32,
     peer_ids: &[String],
@@ -398,10 +402,11 @@ pub async fn handle_session_init<D>(
     policy_id: Option<String>,
     ring_id: String,
     sender_peer_id: &PeerId,
-) -> Result<Option<DkgMessage>>
+) -> Result<()>
 where
     D: CoordinatorDkg,
 {
+    let session_id = attempt.session_id();
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
 
     let resolved = match kind {
@@ -500,7 +505,7 @@ where
         match coord
             .app_state
             .dkg_session_state
-            .claim_ring_pss_session(ring_key, session_id)
+            .claim_ring_pss_attempt(ring_key, attempt)
             .await
         {
             RingPssClaimOutcome::Claimed => {
@@ -566,7 +571,6 @@ where
 
     // If session doesn't exist, create it.
     // Idempotent: treat "session already exists" from a concurrent handler as success.
-    let mut session_created_here = false;
     if !coord
         .app_state
         .dkg_session_state
@@ -575,12 +579,14 @@ where
     {
         match coord
             .create_session(
-                session_id,
+                attempt,
                 assigned_node_id,
                 threshold as usize,
                 total_participants as usize,
                 dkg_role,
                 move |state| {
+                    state.transport.ceremony_id = Some(attempt.ceremony_id);
+                    state.transport.attempt_id = Some(attempt.attempt_id);
                     state.kind = init_kind;
                     state.policy_id = init_policy_id;
                     state.pss_interval = pss_interval;
@@ -599,9 +605,7 @@ where
             )
             .await
         {
-            Ok(()) => {
-                session_created_here = true;
-            }
+            Ok(()) => {}
             Err(DkgError::SessionAlreadyExists) => {
                 tracing::debug!(
                     session_id = session_id,
@@ -616,7 +620,7 @@ where
                     coord
                         .app_state
                         .dkg_session_state
-                        .unmark_ring_pss_if_matches(ring_key, session_id)
+                        .unmark_ring_pss_for_attempt(ring_key, attempt)
                         .await;
                     tracing::warn!(
                         session_id = session_id,
@@ -631,44 +635,11 @@ where
                     coord
                         .app_state
                         .dkg_session_state
-                        .unmark_ring_pss_if_matches(ring_key, session_id)
+                        .unmark_ring_pss_for_attempt(ring_key, attempt)
                         .await;
                 }
                 return Err(e);
             }
-        }
-    }
-
-    // When the gRPC initiator is not a participant, nobody calls the local start path
-    // from `service.rs`:
-    // - Fresh: every participant starts Phase 0 so all commitment hashes arrive before
-    //   any commitment reveal.
-    // - Refresh: node 1 (lowest sorted peer, agreed via `node_id_assignments`)
-    //   starts Phase 1 so peers are not stuck waiting for the first commitment.
-    // - Reshare: dealers do not need to wait for commitments from other old dealers.
-    //   Remote old-committee nodes start as soon as their SessionInit is processed,
-    //   broadcasting their commitment to the new committee and then sending shares.
-    let session_init_from_self = *sender_peer_id == coord.app_state.network.local_peer_id();
-    let starts_phase = match kind {
-        SessionKind::Fresh => true,
-        SessionKind::Refresh { .. } => assigned_node_id == 1,
-        SessionKind::Reshare { .. } => !session_init_from_self,
-    };
-    if session_created_here && starts_phase && dkg_role != DkgRole::Receiver {
-        let peer_ids_for_phase1 = coord
-            .app_state
-            .dkg_session_state
-            .get_peer_ids(&session_id)
-            .await
-            .unwrap_or_default();
-        if matches!(kind, SessionKind::Fresh) {
-            coord
-                .initiate_phase0_commitment_hashes(session_id, &peer_ids_for_phase1)
-                .await?;
-        } else {
-            coord
-                .initiate_phase1_commitments(session_id, &peer_ids_for_phase1)
-                .await?;
         }
     }
 
@@ -682,5 +653,5 @@ where
         "DKG Coordinator: Session init"
     );
 
-    Ok(None)
+    Ok(())
 }
