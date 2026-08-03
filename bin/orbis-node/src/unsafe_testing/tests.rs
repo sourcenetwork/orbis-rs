@@ -198,8 +198,14 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
     // deterministic signing-key override, so fund the generated node address
     // through the test account before waiting for the full server to replace
     // the bootstrap information server.
+    //
+    // No restart needed: the node's own `with_signer` blocks on a balance
+    // check and, once that observes this funding land, resyncs the signer's
+    // account_number/sequence from chain immediately before registering
+    // on-chain (see `BulletinImpl::with_signer`) — so the same never-
+    // restarted process picks up the funded account correctly on its own.
     let chain_config = network.chain_config();
-    let address = cli_tool::query_node_info(endpoint)
+    let address = cli_tool::query_node_info(endpoint.clone())
         .await
         .unwrap_or_else(|error| panic!("query production node bootstrap info: {error}"))
         .public_address;
@@ -207,19 +213,14 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
         .await
         .unwrap_or_else(|error| panic!("fund production node: {error}"));
 
-    // The process initialized its signer before the newly funded account
-    // existed. Restart against the persisted signing key so the production
-    // node initializes with the account metadata now present on-chain.
-    let restarted_endpoints = network.restart_nodes();
-    let restarted_endpoint = restarted_endpoints[0].as_str();
     crate::helpers::test_helpers::wait_for_nodes_ready(
-        &[restarted_endpoint],
+        &[endpoint.as_str()],
         90,
         std::time::Duration::from_secs(1),
     )
     .await;
 
-    let mut client = UnsafeTestingServiceClient::connect(restarted_endpoint.to_string())
+    let mut client = UnsafeTestingServiceClient::connect(endpoint.clone())
         .await
         .unwrap_or_else(|error| {
             panic!("connect to production node unsafe testing client: {error}")
