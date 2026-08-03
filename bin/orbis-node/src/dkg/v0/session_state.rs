@@ -765,8 +765,12 @@ pub struct SessionStateManager<D: Dkg> {
     /// session IDs. Cleared on Phase 4 success or session cleanup/expiration so
     /// that a new ceremony can be initiated after failure.
     rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
-    /// Exact reshare bulletin updates this node is ready to sign.
-    reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
+    /// Exact reshare bulletin updates this node is ready to sign, with the
+    /// time each became ready. A successfully completed attempt's marker
+    /// deliberately outlives its session (see `finish_removed_session`), so
+    /// entries are aged out by `expiration_worker` on a timer rather than
+    /// tied to any session's lifecycle.
+    reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: StdMutex<Vec<JoinHandle<()>>>,
     /// Receiver for stalled refresh/reshare sessions published by the expiration sweep for
@@ -780,7 +784,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     pub fn new() -> Self {
         let states = Arc::new(RwLock::new(HashMap::new()));
         let rings_pss = Arc::new(RwLock::new(HashMap::new()));
-        let reshare_signature_ready = Arc::new(RwLock::new(HashSet::new()));
+        let reshare_signature_ready = Arc::new(RwLock::new(HashMap::new()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let mut background_tasks = Vec::new();
 
@@ -831,7 +835,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
-        reshare_signature_ready: Arc<RwLock<HashSet<ReshareSignatureReadyKey>>>,
+        reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
         mut shutdown_rx: watch::Receiver<bool>,
         stall_report_tx: mpsc::UnboundedSender<AbandonedPssSession>,
     ) {
@@ -956,11 +960,24 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
 
             if !removed_ids.is_empty() {
-                reshare_signature_ready.write().await.retain(|k| {
+                reshare_signature_ready.write().await.retain(|k, _| {
                     !removed_attempts.contains(&(k.session_id, k.attempt_id))
                         && !removed_unconfigured_ids.contains(&k.session_id)
                 });
             }
+
+            // Markers for a *successfully completed* attempt are deliberately not
+            // cleared above (or in `finish_removed_session`) so a late or retried
+            // co-signer sign request still validates after this node's own
+            // transport attempt is gone — see `is_reshare_signature_ready_for_update`.
+            // That session is no longer in `states` by then, so nothing else ever
+            // revisits its marker. Age those out independently, on the same TTL
+            // used to bound retained completed sessions, so this set can't grow
+            // without bound over a node's lifetime.
+            reshare_signature_ready
+                .write()
+                .await
+                .retain(|_, inserted_at| now.duration_since(*inserted_at) < DKG_COMPLETED_SESSION_TTL);
 
             let removed = initial_count - states.len();
             if removed > 0 {
@@ -1055,7 +1072,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Mark one exact reshare bulletin update as ready to sign.
     #[cfg(test)]
     pub async fn mark_reshare_signature_ready(&self, key: ReshareSignatureReadyKey) {
-        self.reshare_signature_ready.write().await.insert(key);
+        self.reshare_signature_ready
+            .write()
+            .await
+            .insert(key, Instant::now());
     }
 
     pub(crate) async fn mark_reshare_signature_ready_for_attempt(
@@ -1069,7 +1089,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.reshare_signature_ready
             .write()
             .await
-            .insert(key.clone());
+            .insert(key.clone(), Instant::now());
         if self.with_attempt_state(attempt, |_| ()).await.is_ok() {
             true
         } else {
@@ -1081,7 +1101,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     /// Returns true iff this node has locally completed the exact reshare update.
     #[cfg(test)]
     pub async fn is_reshare_signature_ready(&self, key: &ReshareSignatureReadyKey) -> bool {
-        self.reshare_signature_ready.read().await.contains(key)
+        self.reshare_signature_ready.read().await.contains_key(key)
     }
 
     /// Returns true iff this node has locally completed the exact reshare
@@ -1100,13 +1120,17 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         current_ring_sha256: &str,
         finalized_ring_sha256: &str,
     ) -> bool {
-        self.reshare_signature_ready.read().await.iter().any(|key| {
-            key.ring_key == ring_key
-                && key.session_id == session_id
-                && key.ring_id == ring_id
-                && key.current_ring_sha256 == current_ring_sha256
-                && key.finalized_ring_sha256 == finalized_ring_sha256
-        })
+        self.reshare_signature_ready
+            .read()
+            .await
+            .keys()
+            .any(|key| {
+                key.ring_key == ring_key
+                    && key.session_id == session_id
+                    && key.ring_id == ring_id
+                    && key.current_ring_sha256 == current_ring_sha256
+                    && key.finalized_ring_sha256 == finalized_ring_sha256
+            })
     }
 
     /// Clear the in-progress PSS claim for a ring (called on setup failure before a
@@ -2831,7 +2855,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         // any, is cleared here — there is nothing valid to sign for a
         // ceremony that never finished.
         if !completed {
-            self.reshare_signature_ready.write().await.retain(|k| {
+            self.reshare_signature_ready.write().await.retain(|k, _| {
                 removed_attempt.is_none_or(|attempt| {
                     k.session_id != attempt.session_id() || k.attempt_id != attempt.attempt_id
                 })
