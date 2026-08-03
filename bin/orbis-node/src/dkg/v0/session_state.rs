@@ -1079,8 +1079,34 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Returns true iff this node has locally completed the exact reshare update.
+    #[cfg(test)]
     pub async fn is_reshare_signature_ready(&self, key: &ReshareSignatureReadyKey) -> bool {
         self.reshare_signature_ready.read().await.contains(key)
+    }
+
+    /// Returns true iff this node has locally completed the exact reshare
+    /// update, matched without requiring the live transport attempt to still
+    /// exist. The bulletin pre/post-state hashes already bind readiness to
+    /// one exact ceremony result (see [`ReshareSignatureReadyKey`]'s docs), so
+    /// a late or retried sign request does not need to look up an `attempt_id`
+    /// via `transport_attempt` — which may already be gone once this node's
+    /// own ceremony work finished successfully and its transport attempt was
+    /// cleaned up.
+    pub async fn is_reshare_signature_ready_for_update(
+        &self,
+        ring_key: &str,
+        session_id: u128,
+        ring_id: &str,
+        current_ring_sha256: &str,
+        finalized_ring_sha256: &str,
+    ) -> bool {
+        self.reshare_signature_ready.read().await.iter().any(|key| {
+            key.ring_key == ring_key
+                && key.session_id == session_id
+                && key.ring_id == ring_id
+                && key.current_ring_sha256 == current_ring_sha256
+                && key.finalized_ring_sha256 == finalized_ring_sha256
+        })
     }
 
     /// Clear the in-progress PSS claim for a ring (called on setup failure before a
@@ -2795,11 +2821,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             );
         }
 
-        self.reshare_signature_ready.write().await.retain(|k| {
-            removed_attempt.is_none_or(|attempt| {
-                k.session_id != attempt.session_id() || k.attempt_id != attempt.attempt_id
-            })
-        });
+        // A successfully completed attempt's readiness marker must survive
+        // this cleanup: `validate_ring_reshare_update_statement` needs it to
+        // accept a late or retried co-signer sign request after this node's
+        // own transport attempt is gone (e.g. `wait_for_reshare_bulletin_finalized`
+        // already called `complete_transport_attempt` once its local bulletin
+        // poll confirmed finalization, which can race ahead of a delayed sign
+        // request from the selector). Only an aborted attempt's marker, if
+        // any, is cleared here — there is nothing valid to sign for a
+        // ceremony that never finished.
+        if !completed {
+            self.reshare_signature_ready.write().await.retain(|k| {
+                removed_attempt.is_none_or(|attempt| {
+                    k.session_id != attempt.session_id() || k.attempt_id != attempt.attempt_id
+                })
+            });
+        }
     }
 }
 

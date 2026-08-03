@@ -986,11 +986,65 @@ fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPhase] {
     }
 }
 
-fn wire_error(error: impl ToString) -> DkgControlMessage {
+/// Stable, non-revealing category for a [`DkgError`] sent back to a peer over
+/// the control plane. The full error (which frequently interpolates ceremony
+/// IDs, attempt IDs, peer prefixes, thresholds, or other internal state) is
+/// logged locally instead; only this fixed category name crosses the wire.
+/// `retryable_control_error` classifies wire-crossing errors purely by their
+/// `DkgError::ProtocolError` wrapper type, not by message content, so
+/// coarsening this text does not change retry behavior.
+fn dkg_error_category(error: &DkgError) -> &'static str {
+    match error {
+        DkgError::Unauthorized(_) => "unauthorized",
+        DkgError::SessionNotFound(_) => "session_not_found",
+        DkgError::StaleAttempt { .. } => "stale_attempt",
+        DkgError::SessionAlreadyExists => "session_already_exists",
+        DkgError::MaxSessionsReached => "max_sessions_reached",
+        DkgError::MaxLocalRingsReached { .. } => "max_local_rings_reached",
+        DkgError::InvalidInput(_) | DkgError::InvalidParticipantCount(_) => "invalid_input",
+        DkgError::InvalidState(_) => "invalid_state",
+        DkgError::ProtocolError(_) => "protocol_error",
+        DkgError::CommitmentVerificationFailed(_) => "commitment_verification_failed",
+        DkgError::ShareVerificationFailed(_) => "share_verification_failed",
+        DkgError::InsufficientPeers { .. } => "insufficient_peers",
+        DkgError::NetworkConnection(_) | DkgError::NetworkCommunication(_) => "network_error",
+        DkgError::Serialization(_) | DkgError::Deserialization(_) => "serialization_error",
+        DkgError::Crypto(_)
+        | DkgError::Storage(_)
+        | DkgError::Bulletin(_)
+        | DkgError::Generic(_)
+        | DkgError::SystemTime(_)
+        | DkgError::HashConversion(_) => "internal_error",
+    }
+}
+
+fn wire_error(peer: &PeerId, error: &DkgError) -> DkgControlMessage {
+    tracing::warn!(
+        peer = %hex::encode(peer.as_bytes()),
+        %error,
+        "DKG control request failed"
+    );
     DkgControlMessage::Error {
         ceremony_id: None,
         attempt_id: None,
-        message: error.to_string(),
+        message: dkg_error_category(error).to_string(),
+    }
+}
+
+/// Sibling of [`wire_error`] for a request that failed to decode before it
+/// could even be dispatched to `handle_control`; there is no typed
+/// [`DkgError`] to categorize, so the raw decode failure is logged locally
+/// and a single fixed category crosses the wire.
+fn wire_decode_error(peer: &PeerId, error: String) -> DkgControlMessage {
+    tracing::warn!(
+        peer = %hex::encode(peer.as_bytes()),
+        error = %error,
+        "failed to decode DKG control request"
+    );
+    DkgControlMessage::Error {
+        ceremony_id: None,
+        attempt_id: None,
+        message: "malformed_request".to_string(),
     }
 }
 
@@ -1340,9 +1394,9 @@ where
                 );
                 handle_control(self.state.clone(), self.routes, request, &peer)
                     .await
-                    .unwrap_or_else(wire_error)
+                    .unwrap_or_else(|error| wire_error(&peer, &error))
             }
-            Err(error) => wire_error(error),
+            Err(error) => wire_decode_error(&peer, error),
         };
         let bytes =
             transport::encode(&response).map_err(network::error::NetworkError::Serialization)?;
@@ -3347,12 +3401,11 @@ where
             .cloned()
             .collect();
         // TODO: this only logs today. `missing_routes` already has everything
-        // `queue_pss_offline_report_task` needs (peer route, prepare.kind,
-        // prepare.ring_id, session_id) — that function doesn't require a live
-        // session and already no-ops for SessionKind::Fresh, so reporting a
-        // participant that never acknowledges the topology probe during
-        // preparation should be a small addition (spawn a report per missing
-        // peer here, same pattern as `report_abandoned_pss_session`), not a
+        // `coordinator::reporting::resolve_pss_offline_report_context` plus
+        // `queue_pss_offline_report_for_peer` need (peer route, prepare.kind,
+        // prepare.ring_id, session_id) — resolving the context once and then
+        // spawning a report per missing peer here, same pattern as
+        // `report_abandoned_pss_session`, should be a small addition, not a
         // new detection mechanism. Needed because refresh/reshare require
         // every current member (refresh) or every next-committee receiver
         // (reshare) to ack before activation, and today only the later
@@ -5434,7 +5487,29 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     if prepare.leader_node_key == state.node_key {
-        return Ok(());
+        // The leader ACKs a directly-submitted contribution once it is
+        // durably retained, before applying it to its own local state
+        // machine (see the `PublicContribution` control handler's spawned
+        // `dispatch_public_contribution` call). If that local application
+        // fails, nothing else ever retries it: the leader already told the
+        // sender it is done, so the sender never re-submits, and this
+        // function was otherwise a complete no-op for the leader.
+        // `dispatch_retained_public_repair` re-verifies and redispatches
+        // every retained contribution for the phase; `dispatch_public_contribution`
+        // is attempt-scoped and idempotent, so this is a safe no-op for
+        // anything already successfully applied.
+        return match dispatch_retained_public_repair(&state, routes, &prepare, phase).await {
+            Ok(_) => Ok(()),
+            Err(PublicRepairFailure::Violation(violation)) => {
+                abort_public_protocol_violation(&state, &prepare, &violation, violation_topic_task)
+                    .await;
+                Err(DkgError::ProtocolError(format!(
+                    "authenticated public repair violation {:?}: {}",
+                    violation.kind, violation.detail
+                )))
+            }
+            Err(PublicRepairFailure::Error(error)) => Err(error),
+        };
     }
     let activated = state
         .dkg_session_state
@@ -6790,28 +6865,76 @@ where
     }
     let leader_peer =
         leader_peer.ok_or_else(|| DkgError::InvalidState("leader peer route is missing".into()))?;
-    match control_request_with_timeout(
-        &coord.app_state,
-        coord.routes,
-        &leader_peer,
-        DkgControlMessage::PublicContribution(signed),
-        PEER_RESPONSE_TIMEOUT,
-    )
-    .await?
-    {
-        DkgControlMessage::PublicContributionAck {
-            ceremony_id: got_ceremony,
-            attempt_id: got_attempt,
-            message_id,
-        } if got_ceremony == ceremony_id
-            && got_attempt == attempt_id
-            && message_id == contribution.message_id =>
-        {
-            Ok(())
+    let hard_deadline = coord
+        .app_state
+        .dkg_session_state
+        .transport_hard_deadline(&session_id, attempt_id)
+        .await
+        .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?
+        .into();
+    let request = DkgControlMessage::PublicContribution(signed);
+    // Deadline-bounded retry, following the pattern used by
+    // `send_refresh_result_barrier`: a lost ACK or a transient control
+    // failure must not permanently drop this contribution before the leader
+    // ever sees it.
+    let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
+    let mut retry_attempt = 0u32;
+    loop {
+        retry_attempt = retry_attempt.saturating_add(1);
+        let now = Instant::now();
+        if now >= hard_deadline {
+            return Err(DkgError::NetworkCommunication(format!(
+                "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
+            )));
         }
-        response => Err(DkgError::ProtocolError(format!(
-            "invalid public contribution ACK: {response:?}"
-        ))),
+        let remaining = hard_deadline.saturating_duration_since(now);
+        let response = timeout(
+            remaining,
+            control_request_with_timeout(
+                &coord.app_state,
+                coord.routes,
+                &leader_peer,
+                request.clone(),
+                PEER_RESPONSE_TIMEOUT,
+            ),
+        )
+        .await;
+        match response {
+            Ok(Ok(DkgControlMessage::PublicContributionAck {
+                ceremony_id: got_ceremony,
+                attempt_id: got_attempt,
+                message_id,
+            })) if got_ceremony == ceremony_id
+                && got_attempt == attempt_id
+                && message_id == contribution.message_id =>
+            {
+                return Ok(());
+            }
+            Ok(Ok(other)) => tracing::warn!(
+                peer = %leader_peer,
+                attempt = retry_attempt,
+                response = ?other,
+                "public contribution submission received an invalid acknowledgement"
+            ),
+            Ok(Err(error)) => tracing::warn!(
+                peer = %leader_peer,
+                attempt = retry_attempt,
+                %error,
+                "public contribution submission control request failed; retrying"
+            ),
+            Err(_) => {
+                return Err(DkgError::NetworkCommunication(format!(
+                    "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
+                )));
+            }
+        }
+        crate::metrics::record_dkg_transport_event("control", "retry");
+        let remaining = hard_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            continue;
+        }
+        sleep(backoff.min(remaining)).await;
+        backoff = (backoff * 2).min(DKG_MAX_REPAIR_BACKOFF);
     }
 }
 

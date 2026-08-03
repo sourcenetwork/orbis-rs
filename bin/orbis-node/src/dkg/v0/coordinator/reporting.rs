@@ -20,14 +20,30 @@ use tokio::task::JoinHandle;
 
 use super::types::CoordinatorReportSigner;
 
-pub(crate) async fn queue_pss_offline_report_task<D>(
-    app_state: Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    peer_id: String,
-    kind: SessionKind,
+/// Ring, committee-route, and signing-scope context shared by every accused peer
+/// within one PSS offline-report event. Resolving this once per event (instead of
+/// once per missing peer) avoids redundant bulletin reads and SourceHub route
+/// resolutions when a stalled session has multiple silent dealers.
+struct PssOfflineReportContext {
+    origin_protocol: &'static str,
+    ring_id: String,
+    ring: RingPayload,
+    is_reshare: bool,
+    current_peer_ids: Vec<String>,
+    pending_node_keys: Vec<String>,
+    pending_peer_ids: Vec<String>,
+    signing_scope: ReportCommitteeScope,
+}
+
+/// Resolve the shared reporting context for `kind`/`stored_ring_id`, or `Ok(None)`
+/// when there is nothing reportable for this event: a fresh-DKG session, no
+/// authoritative ring ID, this node not a member of either committee, or — for a
+/// pending-new reporter — no local reshare bundle yet.
+async fn resolve_pss_offline_report_context<D>(
+    app_state: &Arc<AppState<D>>,
+    kind: &SessionKind,
     stored_ring_id: String,
-    session_id: String,
-) -> Result<()>
+) -> Result<Option<PssOfflineReportContext>>
 where
     D: Dkg<
             ShareValue = Fr,
@@ -38,11 +54,10 @@ where
         + Send
         + Sync
         + 'static,
-    SignImpl: CoordinatorReportSigner<D>,
 {
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
-    let (origin_protocol, ring_id) = match &kind {
-        SessionKind::Fresh => return Ok(()),
+    let (origin_protocol, ring_id) = match kind {
+        SessionKind::Fresh => return Ok(None),
         SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
         SessionKind::Reshare {
             bulletin_post_id, ..
@@ -56,11 +71,8 @@ where
         ),
     };
     if ring_id.is_empty() {
-        tracing::debug!(
-            peer_id = %peer_id,
-            "Skipping PSS offline report because session has no authoritative ring ID"
-        );
-        return Ok(());
+        tracing::debug!("Skipping PSS offline report because session has no authoritative ring ID");
+        return Ok(None);
     }
 
     let ring_post = app_state
@@ -104,28 +116,6 @@ where
         Vec::new()
     };
 
-    let (accused_scope, accused_peer_ids, accused_node_keys) =
-        if is_reshare && peer_id_matches_any(&peer_id, &pending_peer_ids) {
-            (
-                ReportCommitteeScope::PendingNew,
-                pending_peer_ids.as_slice(),
-                pending_node_keys.as_slice(),
-            )
-        } else if peer_id_matches_any(&peer_id, &current_peer_ids) {
-            (
-                ReportCommitteeScope::Current,
-                current_peer_ids.as_slice(),
-                ring.peer_node_keys.as_slice(),
-            )
-        } else {
-            tracing::debug!(
-                ring_id = %ring_id,
-                peer_id = %peer_id,
-                "Skipping PSS offline report because failed peer is not in reportable committee"
-            );
-            return Ok(());
-        };
-
     let signing_scope = if ring
         .peer_node_keys
         .iter()
@@ -141,11 +131,10 @@ where
     } else {
         tracing::debug!(
             ring_id = %ring_id,
-            peer_id = %peer_id,
             reporter_node_key = %app_state.node_key,
             "Skipping PSS offline report because reporter is not in current or pending-new committee"
         );
-        return Ok(());
+        return Ok(None);
     };
 
     if signing_scope == ReportCommitteeScope::PendingNew {
@@ -154,25 +143,81 @@ where
         {
             tracing::debug!(
                 ring_id = %ring_id,
-                peer_id = %peer_id,
                 reporter_node_key = %app_state.node_key,
                 error = %error,
                 "Skipping PSS offline report because pending-new reporter has no local reshare bundle yet"
             );
-            return Ok(());
+            return Ok(None);
         }
     }
 
+    Ok(Some(PssOfflineReportContext {
+        origin_protocol,
+        ring_id,
+        ring,
+        is_reshare,
+        current_peer_ids,
+        pending_node_keys,
+        pending_peer_ids,
+        signing_scope,
+    }))
+}
+
+/// Queue a `node_offline` report for one accused peer using an already-resolved
+/// [`PssOfflineReportContext`]. Only accused-scope selection and report queuing are
+/// peer specific; everything else in the context was resolved once for the whole
+/// event.
+async fn queue_pss_offline_report_for_peer<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    context: &PssOfflineReportContext,
+    peer_id: String,
+    session_id: &str,
+) -> Result<()>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let (accused_scope, accused_peer_ids, accused_node_keys) =
+        if context.is_reshare && peer_id_matches_any(&peer_id, &context.pending_peer_ids) {
+            (
+                ReportCommitteeScope::PendingNew,
+                context.pending_peer_ids.as_slice(),
+                context.pending_node_keys.as_slice(),
+            )
+        } else if peer_id_matches_any(&peer_id, &context.current_peer_ids) {
+            (
+                ReportCommitteeScope::Current,
+                context.current_peer_ids.as_slice(),
+                context.ring.peer_node_keys.as_slice(),
+            )
+        } else {
+            tracing::debug!(
+                ring_id = %context.ring_id,
+                peer_id = %peer_id,
+                "Skipping PSS offline report because failed peer is not in reportable committee"
+            );
+            return Ok(());
+        };
+
     let Some(observation) = offline_observation_from_peer_routes(
-        &ring_id,
+        &context.ring_id,
         accused_peer_ids,
         accused_node_keys,
         &peer_id,
-        origin_protocol,
+        context.origin_protocol,
         routes.version,
         accused_scope,
-        signing_scope,
-        &session_id,
+        context.signing_scope,
+        session_id,
     ) else {
         return Ok(());
     };
@@ -267,14 +312,31 @@ pub(crate) async fn report_abandoned_pss_session<D>(
         );
         return;
     };
+
+    let context =
+        match resolve_pss_offline_report_context(app_state, &event.kind, event.ring_id.clone())
+            .await
+        {
+            Ok(Some(context)) => context,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %event.session_id,
+                    error = %error,
+                    "PSS stall reporter: failed to resolve reporting context for abandoned session"
+                );
+                return;
+            }
+        };
+
+    let session_id = event.session_id.to_string();
     for peer_id in event.missing_peer_ids {
-        if let Err(error) = queue_pss_offline_report_task(
+        if let Err(error) = queue_pss_offline_report_for_peer(
             app_state.clone(),
             routes,
+            &context,
             peer_id.clone(),
-            event.kind.clone(),
-            event.ring_id.clone(),
-            event.session_id.to_string(),
+            &session_id,
         )
         .await
         {

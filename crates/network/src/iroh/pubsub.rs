@@ -235,7 +235,7 @@ impl Drop for IrohTopic {
             .unwrap_or_default();
         if count > 0 {
             metrics::P2P_GOSSIP_NEIGHBORS
-                .with_label_values(&[std::str::from_utf8(iroh_gossip::ALPN).unwrap_or("gossip")])
+                .with_label_values(&[metrics::protocol_label(iroh_gossip::ALPN).as_str()])
                 .sub(count as f64);
         }
     }

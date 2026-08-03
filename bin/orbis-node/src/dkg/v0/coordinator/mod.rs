@@ -48,6 +48,13 @@ use std::sync::Arc;
 
 use self::types::CoordinatorReportSigner;
 
+/// Bounds how long `accept_transport_share` waits for a concurrent claim on the
+/// same private share to finish before giving up. Without this, a claim that
+/// never releases (e.g. a bug elsewhere, not just ordinary contention) would
+/// spin the 10ms poll forever instead of surfacing a retryable error to the
+/// caller.
+const TRANSPORT_MESSAGE_CLAIM_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// DKG Session Manager
 ///
 /// Each node has its own instance that manages this node's participation
@@ -99,6 +106,7 @@ where
         SignImpl: CoordinatorReportSigner<D>,
     {
         let session_id = attempt.session_id();
+        let claim_deadline = tokio::time::Instant::now() + TRANSPORT_MESSAGE_CLAIM_MAX_WAIT;
         let guard = loop {
             match self
                 .app_state
@@ -127,6 +135,13 @@ where
                         .map_err(|error| attempt_state_error(attempt, error));
                 }
                 MessageProcessingClaim::AlreadyProcessing => {
+                    if tokio::time::Instant::now() >= claim_deadline {
+                        return Err(DkgError::NetworkCommunication(format!(
+                            "timed out after {}ms waiting for a concurrent claim on private share {} to finish",
+                            TRANSPORT_MESSAGE_CLAIM_MAX_WAIT.as_millis(),
+                            hex::encode(message_id.0),
+                        )));
+                    }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
                 MessageProcessingClaim::MissingSession => {

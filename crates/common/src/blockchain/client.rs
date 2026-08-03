@@ -853,7 +853,22 @@ impl SourceHubClient {
         let tx_bytes = signer.sign_tx(messages, account_number, sequence, Some(gas_limit), None)?;
 
         // Submit to mempool
-        let sync_result = self.broadcast_tx_sync(tx_bytes).await?;
+        let sync_result = match self.broadcast_tx_sync(tx_bytes).await {
+            Ok(result) => result,
+            Err(error @ BlockchainError::TxFailed { .. }) => {
+                // CheckTx rejected the transaction, so the chain did not consume
+                // this sequence. Restore the signer's view before a caller
+                // retries with a smaller batch, matching `broadcast_proto_msg`'s
+                // handling of the same failure.
+                self.resync_nonce_inner(signer).await.map_err(|resync_err| {
+                    BlockchainError::Signing(format!(
+                        "Transaction was rejected before broadcast: {error}; additionally failed to resync nonce: {resync_err}"
+                    ))
+                })?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
 
         // Lock is released here
         drop(_guard);

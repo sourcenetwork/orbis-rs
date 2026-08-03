@@ -440,25 +440,29 @@ where
     D: CoordinatorDkg,
 {
     let session_id = attempt.session_id();
+    // Write the promoted bundle to encrypted storage before taking the
+    // session-state lock: `with_attempt_state_mut` holds a write lock over
+    // the whole session map for the closure's duration, and this is a
+    // synchronous disk write — doing it inside the closure would stall every
+    // other session's state access for as long as the write takes.
+    candidate
+        .bundle
+        .save_by_ring_key(&coord.app_state.local_storage, &candidate.ring_key)
+        .map_err(|e| {
+            DkgError::Storage(format!(
+                "Refresh health check: failed to promote staged bundle: {}",
+                e
+            ))
+        })?;
     coord
         .app_state
         .dkg_session_state
         .with_attempt_state_mut(attempt, |state| {
-            candidate
-                .bundle
-                .save_by_ring_key(&coord.app_state.local_storage, &candidate.ring_key)
-                .map_err(|e| {
-                    DkgError::Storage(format!(
-                        "Refresh health check: failed to promote staged bundle: {}",
-                        e
-                    ))
-                })?;
             state.refresh.candidate = None;
             state.transition_phase(DkgPhase::Phase4Complete);
-            Ok::<_, DkgError>(())
         })
         .await
-        .map_err(|error| attempt_state_error(attempt, error))??;
+        .map_err(|error| attempt_state_error(attempt, error))?;
     coord
         .app_state
         .dkg_session_state

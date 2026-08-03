@@ -265,23 +265,28 @@ where
         refresh_health_check::apply_pending_result_if_present(coord, attempt).await?;
         Some(candidate)
     } else {
+        // Confirm the attempt is still live before doing the write, but don't
+        // hold the session-state lock across it: `persist_ring_bundle` is a
+        // synchronous encrypted-storage write, and `with_attempt_state` holds
+        // a read lock over the whole session map for the closure's duration,
+        // which would stall every other session's write-lock acquisition for
+        // as long as the disk write takes.
         coord
             .app_state
             .dkg_session_state
-            .with_attempt_state(attempt, |_| {
-                persist_ring_bundle(
-                    &coord.app_state.local_storage,
-                    &kind,
-                    &final_share_bytes,
-                    &pub_poly_bytes,
-                    &aggregate_pk,
-                    now_secs,
-                    session_id,
-                    |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
-                )
-            })
+            .with_attempt_state(attempt, |_| ())
             .await
-            .map_err(|error| attempt_state_error(attempt, error))??;
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        persist_ring_bundle(
+            &coord.app_state.local_storage,
+            &kind,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            &aggregate_pk,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
 
         tracing::debug!(
             session_id = session_id,
