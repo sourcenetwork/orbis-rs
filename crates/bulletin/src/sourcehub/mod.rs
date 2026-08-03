@@ -332,68 +332,64 @@ impl SourceHubBulletin {
                 })?;
         }
 
-        // The signer was initialized (account_number captured) when this
-        // client was constructed above, which can be before this address had
-        // ever received funds — the chain reports account_number 0 for an
-        // account that doesn't exist yet. If something else (e.g. an external
-        // funder) created the account in the meantime, that cached
-        // account_number is now wrong and every signature this signer
-        // produces will fail verification. Resync before the first outgoing
-        // transaction below.
-        let (_, sequence) = client
-            .chain_client
-            .resync_account()
-            .await
-            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        // Transfer to self to register account on-chain (registers public
+        // key). This is this signing key's first-ever transaction, so a
+        // nonzero resynced sequence means an earlier boot of this same node
+        // (e.g. a process restart) already sent it — either already
+        // committed, or still landing on chain right as this process
+        // started. Either way the account is already registered, or about
+        // to be, so there is nothing left to do here.
+        //
+        // Two independent boots of this same node can race this exact
+        // registration transfer within the same block window in two ways:
+        // - Cosmos SDK signing is deterministic, so two attempts at the same
+        //   (account_number, sequence) produce a byte-identical signed
+        //   transaction: if the other boot's copy is already sitting in
+        //   CometBFT's mempool cache, ours is rejected as a literal
+        //   duplicate before either lands on chain ("tx already exists in
+        //   cache").
+        // - The other boot's transaction can instead have already been
+        //   simulated/broadcast (but not yet committed) by the time ours is
+        //   simulated, which the chain rejects as a sequence mismatch rather
+        //   than a mempool duplicate.
+        // In both cases a resync taken immediately afterwards can still read
+        // sequence 0 (nothing has committed yet), so a single resync-and-
+        // check is not enough to tell "genuinely failed" apart from "still
+        // landing" — retry a few times, giving the other boot's transaction
+        // a chance to commit, before treating it as fatal.
+        const MAX_REGISTRATION_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+        for attempt in 1..=MAX_REGISTRATION_ATTEMPTS {
+            // The signer was initialized (account_number captured) when this
+            // client was constructed above, which can be before this address
+            // had ever received funds — the chain reports account_number 0
+            // for an account that doesn't exist yet. If something else (e.g.
+            // an external funder, or another boot of this node) created the
+            // account in the meantime, that cached account_number is now
+            // wrong and every signature this signer produces will fail
+            // verification. Resync before every registration attempt below.
+            let (_, sequence) = client
+                .chain_client
+                .resync_account()
+                .await
+                .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+            if sequence != 0 {
+                break;
+            }
 
-        // Transfer to self to register account on-chain (registers public key).
-        // This is this signing key's first-ever transaction, so a nonzero
-        // resynced sequence means an earlier boot of this same node (e.g. a
-        // process restart) already sent it — most likely still landing on
-        // chain right as this process started. Sending it again would either
-        // be a redundant duplicate or, if the earlier transaction had not yet
-        // committed when we resynced, collide on the same sequence number and
-        // fail outright. Either way the account is already registered, so
-        // there is nothing left to do here.
-        if sequence == 0 {
             match client.chain_client.transfer(&address, 1u64, &denom).await {
-                Ok(result) => check_result(result, "register account self-transfer")?,
+                Ok(result) => {
+                    check_result(result, "register account self-transfer")?;
+                    break;
+                }
                 Err(error) => {
-                    // Two independent boots of this same node can race this
-                    // exact registration transfer within the same block
-                    // window. Cosmos SDK signing is deterministic, so two
-                    // attempts at the same (account_number, sequence) produce
-                    // a byte-identical signed transaction: if the other
-                    // boot's copy is already sitting in CometBFT's mempool
-                    // cache, ours is rejected as a literal duplicate before
-                    // either lands on chain. Re-checking the account's
-                    // sequence at that point would still show 0 (neither has
-                    // committed yet), so this specific rejection has to be
-                    // recognized directly rather than resolved by resyncing.
-                    let message = error.to_string();
-                    let already_pending = message
-                        .to_lowercase()
-                        .contains("tx already exists in cache");
-                    if !already_pending {
-                        // The initial check above is also not atomic with
-                        // this transfer: an earlier boot's registration can
-                        // instead land on chain between the resync and this
-                        // call, which surfaces as a sequence-mismatch failure
-                        // here rather than a mempool duplicate. Re-check
-                        // before treating it as fatal.
-                        let (_, sequence_after_failure) = client
-                            .chain_client
-                            .resync_account()
-                            .await
-                            .map_err(|resync_err| {
-                                BulletinError::ChainError(format!(
-                                    "register account self-transfer failed: {error}; additionally failed to resync account: {resync_err}"
-                                ))
-                            })?;
-                        if sequence_after_failure == 0 {
-                            return Err(BulletinError::ChainError(error.to_string()));
-                        }
+                    let message = error.to_string().to_lowercase();
+                    let racing_registration = message.contains("tx already exists in cache")
+                        || message.contains("account sequence mismatch");
+                    if !racing_registration || attempt == MAX_REGISTRATION_ATTEMPTS {
+                        return Err(BulletinError::ChainError(error.to_string()));
                     }
+                    tokio::time::sleep(RETRY_DELAY).await;
                 }
             }
         }
