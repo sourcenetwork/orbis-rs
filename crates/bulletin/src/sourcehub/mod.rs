@@ -359,22 +359,40 @@ impl SourceHubBulletin {
             match client.chain_client.transfer(&address, 1u64, &denom).await {
                 Ok(result) => check_result(result, "register account self-transfer")?,
                 Err(error) => {
-                    // The check above is not atomic with this transfer: an
-                    // earlier boot's still-in-flight registration can still
-                    // land between the resync and this call, so this failure
-                    // may be that same race rather than a real problem.
-                    // Re-check before treating it as fatal.
-                    let (_, sequence_after_failure) = client
-                        .chain_client
-                        .resync_account()
-                        .await
-                        .map_err(|resync_err| {
-                            BulletinError::ChainError(format!(
-                                "register account self-transfer failed: {error}; additionally failed to resync account: {resync_err}"
-                            ))
-                        })?;
-                    if sequence_after_failure == 0 {
-                        return Err(BulletinError::ChainError(error.to_string()));
+                    // Two independent boots of this same node can race this
+                    // exact registration transfer within the same block
+                    // window. Cosmos SDK signing is deterministic, so two
+                    // attempts at the same (account_number, sequence) produce
+                    // a byte-identical signed transaction: if the other
+                    // boot's copy is already sitting in CometBFT's mempool
+                    // cache, ours is rejected as a literal duplicate before
+                    // either lands on chain. Re-checking the account's
+                    // sequence at that point would still show 0 (neither has
+                    // committed yet), so this specific rejection has to be
+                    // recognized directly rather than resolved by resyncing.
+                    let message = error.to_string();
+                    let already_pending = message
+                        .to_lowercase()
+                        .contains("tx already exists in cache");
+                    if !already_pending {
+                        // The initial check above is also not atomic with
+                        // this transfer: an earlier boot's registration can
+                        // instead land on chain between the resync and this
+                        // call, which surfaces as a sequence-mismatch failure
+                        // here rather than a mempool duplicate. Re-check
+                        // before treating it as fatal.
+                        let (_, sequence_after_failure) = client
+                            .chain_client
+                            .resync_account()
+                            .await
+                            .map_err(|resync_err| {
+                                BulletinError::ChainError(format!(
+                                    "register account self-transfer failed: {error}; additionally failed to resync account: {resync_err}"
+                                ))
+                            })?;
+                        if sequence_after_failure == 0 {
+                            return Err(BulletinError::ChainError(error.to_string()));
+                        }
                     }
                 }
             }
