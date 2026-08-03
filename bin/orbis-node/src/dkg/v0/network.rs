@@ -1031,6 +1031,43 @@ fn wire_error(peer: &PeerId, error: &DkgError) -> DkgControlMessage {
     }
 }
 
+/// `StartFresh`/`StartReshare`/`StartRefresh` are not ceremony-internal
+/// peer traffic like Prepare or SessionInit: a nonleader forwards one of
+/// these to the canonical leader on behalf of its own API caller and relays
+/// the leader's response straight back as that caller's `StartDkg`/etc.
+/// result. Coarsening the leader's error here would silently turn a concrete,
+/// actionable preparation failure into an opaque category for the client
+/// that asked for it, with no ceremony-internal peer ever seeing the detail
+/// either way — so these keep the full error text on the wire.
+fn is_client_forwarded_start_request(request: &DkgControlMessage) -> bool {
+    matches!(
+        request,
+        DkgControlMessage::StartFresh { .. }
+            | DkgControlMessage::StartReshare { .. }
+            | DkgControlMessage::StartRefresh { .. }
+    )
+}
+
+fn wire_error_for_request(
+    peer: &PeerId,
+    request: &DkgControlMessage,
+    error: &DkgError,
+) -> DkgControlMessage {
+    if !is_client_forwarded_start_request(request) {
+        return wire_error(peer, error);
+    }
+    tracing::warn!(
+        peer = %hex::encode(peer.as_bytes()),
+        %error,
+        "DKG ceremony-start forwarding failed"
+    );
+    DkgControlMessage::Error {
+        ceremony_id: None,
+        attempt_id: None,
+        message: error.to_string(),
+    }
+}
+
 /// Sibling of [`wire_error`] for a request that failed to decode before it
 /// could even be dispatched to `handle_control`; there is no typed
 /// [`DkgError`] to categorize, so the raw decode failure is logged locally
@@ -1392,9 +1429,12 @@ where
                     request.metric_label(),
                     "received",
                 );
+                let request_for_error = request.clone();
                 handle_control(self.state.clone(), self.routes, request, &peer)
                     .await
-                    .unwrap_or_else(|error| wire_error(&peer, &error))
+                    .unwrap_or_else(|error| {
+                        wire_error_for_request(&peer, &request_for_error, &error)
+                    })
             }
             Err(error) => wire_decode_error(&peer, error),
         };
