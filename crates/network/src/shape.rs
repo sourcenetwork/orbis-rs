@@ -107,15 +107,10 @@ impl Connection for ShapedConnection {
         self.inner.send(message).await
     }
 
+    // Egress-only (see module docs): shaping applies once, at whichever side
+    // sends a given message, not again when the other side receives it.
     async fn recv(&self) -> Result<Message> {
-        let message = self.inner.recv().await?;
-        self.profile.delay().await;
-        if self.profile.should_drop() {
-            return Err(NetworkError::Connection(
-                "ShapedNetwork: simulated WAN packet loss on recv".to_string(),
-            ));
-        }
-        Ok(message)
+        self.inner.recv().await
     }
 
     fn peer_id(&self) -> &PeerId {
@@ -240,15 +235,10 @@ impl Topic for ShapedTopic {
         self.inner.broadcast(data).await
     }
 
+    // Egress-only (see module docs): shaping applies once, at the
+    // publisher's `broadcast`, not again when a subscriber receives it.
     async fn recv(&self) -> Result<PubSubEvent> {
-        let event = self.inner.recv().await?;
-        if matches!(event, PubSubEvent::Received(_)) {
-            self.profile.delay().await;
-            if self.profile.should_drop() {
-                return Ok(PubSubEvent::Lagged);
-            }
-        }
-        Ok(event)
+        self.inner.recv().await
     }
 }
 
