@@ -559,12 +559,27 @@ impl BenchmarkRunner {
         completed: &HashSet<TrialKey>,
         interrupt_rx: &mut watch::Receiver<bool>,
     ) -> Result<StackRunOutcome> {
+        let shaping = network::NetworkShapingProfile {
+            delay_ms: stack.profile.delay_ms,
+            jitter_ms: stack.profile.jitter_ms,
+            loss_percent: stack.profile.loss_percent,
+        };
         eprintln!(
-            "[{stack_id}] starting {} in-process nodes (no Docker, no chain)",
-            stack.network_size
+            "[{stack_id}] starting {} in-process nodes (no Docker, no chain, profile={}{})",
+            stack.network_size,
+            stack.profile.name,
+            if shaping.is_noop() {
+                String::new()
+            } else {
+                format!(
+                    " delay={}ms jitter={}ms loss={}%",
+                    shaping.delay_ms, shaping.jitter_ms, shaping.loss_percent
+                )
+            }
         );
         let stack_work = async {
-            let harness = HarnessNetwork::spin_up(stack.network_size, stack_id).await?;
+            let harness =
+                HarnessNetwork::spin_up(stack.network_size, stack_id, shaping).await?;
             eprintln!(
                 "[{stack_id}] {} in-process nodes ready",
                 harness.endpoints.len()

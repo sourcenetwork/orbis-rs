@@ -73,6 +73,12 @@ pub struct HarnessNodeParams<'a> {
     pub policy_id: String,
     /// Hex-encoded controller public key allowed to update this node's info.
     pub node_controller_key: String,
+    /// Software delay/jitter/loss applied to this node's own outbound
+    /// traffic — the in-process approximation of the Docker backend's
+    /// per-container `tc netem` WAN shaping (see `network::shape`'s module
+    /// docs for exactly what's approximated). `None` or a no-op profile
+    /// skips wrapping entirely.
+    pub network_shaping: Option<network::NetworkShapingProfile>,
 }
 
 /// Spawn one in-process orbis node against a caller-provided, shared
@@ -115,16 +121,38 @@ pub async fn spawn_harness_node(
             .map_err(|error| anyhow::anyhow!("DummyAuthZ: {error}"))?,
     );
 
-    // Real Iroh P2P, same as the production binary and the existing in-process
-    // Layer 2 test harness (`setup_live_three_node_network`) — no special
-    // loopback/relay configuration needed: peers exchange direct addresses via
-    // NodeInfo, so connections establish directly without depending on relay
-    // or discovery infrastructure.
-    let network: Arc<dyn Network> = Arc::new(
-        NetworkImpl::new()
-            .await
-            .map_err(|error| anyhow::anyhow!("network: {error}"))?,
-    );
+    // Real Iroh P2P, bound explicitly to loopback. At small scale (the
+    // 3-node Layer 2 test harness) `NetworkImpl::new()`'s bare defaults
+    // (binds 0.0.0.0) work fine. At harness scale (dozens of real iroh
+    // endpoints in one process) that default measurably degrades the whole
+    // network: iroh's magicsock queues start dropping ping/pong packets
+    // ("failed to queue pong", "queues full") under the aggregate relay/STUN
+    // discovery load across that many endpoints, and a peer that loses path
+    // validation stops accepting new DKG control connections entirely,
+    // cascading into whole-ceremony aborts after ~2 minutes per attempt
+    // (DKG_PREPARATION_TIMEOUT). Explicitly binding to loopback narrows what
+    // magicsock needs to probe and clears this up in practice, even with
+    // relay/discovery still nominally enabled.
+    //
+    // Tried and reverted: also passing `.private_routes_only()` (disables
+    // relay + clears discovery) — that stops the degradation too, but
+    // iroh's own `connect()` then fails immediately with "No addressing
+    // information available" even though this harness always dials a fully
+    // resolved `hex@127.0.0.1:port` peer address, never a bare node ID.
+    // Worth revisiting if `bind_addr_v4` alone ever proves insufficient at
+    // larger scale, but don't reintroduce it without re-diagnosing why
+    // `with_ip_addr` addressing needs the default discovery.
+    let unshaped_network = NetworkImpl::builder()
+        .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+        .build()
+        .await
+        .map_err(|error| anyhow::anyhow!("network: {error}"))?;
+    let network: Arc<dyn Network> = match params.network_shaping {
+        Some(profile) if !profile.is_noop() => {
+            Arc::new(network::ShapedNetwork::new(Arc::new(unshaped_network), profile))
+        }
+        _ => Arc::new(unshaped_network),
+    };
     let local_address = network
         .local_address()
         .map_err(|error| anyhow::anyhow!("network local_address: {error}"))?;

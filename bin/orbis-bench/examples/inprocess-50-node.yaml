@@ -1,6 +1,6 @@
 schema_version: 1
 name: orbis-inprocess-50-node
-crypto: bls12-381
+crypto: decaf377
 
 # In-process backend: real orbis-node instances run as tokio tasks in this
 # process over real loopback Iroh P2P, backed by a shared in-memory mock
@@ -18,12 +18,20 @@ backend: in-process
 networks:
   - network_size: 50
     cases:
+      - { ring_size: 5, threshold: 3 }
+      - { ring_size: 20, threshold: 15 }
+      - { ring_size: 30, threshold: 20 }
       - { ring_size: 50, threshold: 34 }
 
 operations: [dkg, pre, sign]
 profiles:
   - name: lan
     kind: lan
+  # - name: wan-50ms
+  #   kind: wan
+  #   delay_ms: 25
+  #   jitter_ms: 5
+  #   loss_percent: 0.1
 
 warmups: 1
 repetitions: 5

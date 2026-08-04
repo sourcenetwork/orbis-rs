@@ -10,6 +10,12 @@
 //! network; the results/report/manifest pipeline (`results.rs`/`report.rs`)
 //! is unchanged and shared with the Docker backend.
 //!
+//! WAN profiles (`delay_ms`/`jitter_ms`/`loss_percent`) are approximated in
+//! software via `network::ShapedNetwork` instead of the Docker backend's
+//! per-container `tc netem` — there's no network namespace here to shape.
+//! See that module's docs for exactly what's approximated (loss is a hard
+//! per-message failure, not transparent QUIC-level retransmission).
+//!
 //! PRE/SIGN need no chain-side ACP setup here (unlike the Docker backend's
 //! `register_object_to_chain_with_config`/`set_relationship_on_chain_with_config`):
 //! `DummyAuthZ` authorizes unconditionally, so orbis-node's `authz.check(...)`
@@ -30,11 +36,27 @@ use bulletin::error::BulletinError;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, SignImpl};
+use network::NetworkShapingProfile;
 use orbis_node::harness::{spawn_harness_node, HarnessNodeHandle, HarnessNodeParams};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::Duration;
 use tokio::time::sleep;
+
+static INIT_TRACING: Once = Once::new();
+
+/// Install a `tracing` subscriber for harness node logs, controlled by
+/// `RUST_LOG` (defaults to `warn` if unset). Safe to call from every
+/// `spin_up` — only the first call takes effect. Off by default in effect
+/// (warn-only) so normal runs stay quiet; set `RUST_LOG=orbis_node=debug` (or
+/// similar) to see per-node DKG/network tracing during an in-process run.
+fn init_tracing_once() {
+    INIT_TRACING.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    });
+}
 
 /// ACP policy id every harness node whitelists on boot and every
 /// harness-seeded ring/document/key-derivation references. There's no real
@@ -67,7 +89,15 @@ pub struct HarnessNetwork {
 impl HarnessNetwork {
     /// Boot `network_size` in-process nodes on sequential loopback ports
     /// starting at [`HARNESS_BASE_PORT`], sharing one fresh `DummyBulletin`.
-    pub async fn spin_up(network_size: usize, stack_id: &str) -> Result<Self> {
+    /// `shaping` is applied to every node's own outbound traffic — pass
+    /// `NetworkShapingProfile::NONE` (or any no-op profile) for an unshaped
+    /// LAN-equivalent network.
+    pub async fn spin_up(
+        network_size: usize,
+        stack_id: &str,
+        shaping: NetworkShapingProfile,
+    ) -> Result<Self> {
+        init_tracing_once();
         let bulletin = Arc::new(DummyBulletin::default());
         let runtime_base_path =
             std::env::temp_dir().join("orbis-bench-harness").join(stack_id);
@@ -94,6 +124,7 @@ impl HarnessNetwork {
                 runtime_base_path: &runtime_base_path,
                 policy_id: HARNESS_POLICY_ID.to_string(),
                 node_controller_key: HARNESS_CONTROLLER_KEY.to_string(),
+                network_shaping: (!shaping.is_noop()).then_some(shaping),
             };
             let handle = spawn_harness_node(params, bulletin.clone())
                 .await

@@ -75,7 +75,7 @@ unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead
 # of SourceHub. Not used by the production binary.
-harness = ["authz/test-helpers"]
+harness = ["authz/test-helpers", "network/shaping"]
 fault-injection = ["network/fault-injection"]
 [lints]
 workspace = true

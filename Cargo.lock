@@ -3858,6 +3858,7 @@ dependencies = [
  "did-key",
  "futures",
  "hex",
+ "network",
  "orbis-node",
  "prost 0.14.3",
  "proto",
@@ -3869,6 +3870,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "tonic",
+ "tracing",
+ "tracing-subscriber 0.3.23",
  "uuid",
  "yaml_serde",
 ]

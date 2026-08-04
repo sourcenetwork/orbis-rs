@@ -35,5 +35,10 @@ pub mod fault;
 #[cfg(feature = "fault-injection")]
 pub use fault::{FaultNetwork, FaultNetworkController};
 
+#[cfg(feature = "shaping")]
+pub mod shape;
+#[cfg(feature = "shaping")]
+pub use shape::{NetworkShapingProfile, ShapedNetwork};
+
 #[cfg(test)]
 mod tests;

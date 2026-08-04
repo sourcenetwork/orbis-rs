@@ -18,7 +18,14 @@ crypto = { path = "../../crates/crypto", default-features = false }
 did-key = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
-orbis-node = { path = "../orbis-node", features = ["harness"] }
+network = { path = "../../crates/network", features = ["shaping"] }
+orbis-node = { path = "../orbis-node", default-features = false, features = [
+    "redb",
+    "authz-sourcehub",
+    "bulletin-sourcehub",
+    "iroh",
+    "harness",
+] }
 prost = { workspace = true }
 proto = { path = "../../crates/proto" }
 rand = { workspace = true }
@@ -29,6 +36,8 @@ serde_yaml = { package = "yaml_serde", version = "0.10" }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+tracing = "0.1.16"
+tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
 [features]

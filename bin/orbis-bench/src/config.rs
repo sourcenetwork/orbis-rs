@@ -78,8 +78,10 @@ pub enum ExecutionBackend {
     /// of SourceHub. No Docker, no chain, no external network dependency —
     /// trades chain/container realism for immunity to infrastructure
     /// flakiness unrelated to orbis's own protocol correctness. v1 supports
-    /// only `dkg`, `pre`, and `sign` operations on `lan`-kind profiles (no
-    /// `pss_refresh`/`pss_reshare` yet); see `Experiment::validate`.
+    /// only `dkg`, `pre`, and `sign` operations (no `pss_refresh`/
+    /// `pss_reshare` yet; see `Experiment::validate`). WAN profiles are
+    /// supported, approximated in software (`network::ShapedNetwork`)
+    /// instead of Docker's per-container `tc netem`.
     InProcess,
 }
 
@@ -489,24 +491,15 @@ impl Experiment {
                 bail!("load concurrency values must be at least 1");
             }
         }
-        if self.backend == ExecutionBackend::InProcess {
-            if self.operations.iter().any(|operation| {
+        if self.backend == ExecutionBackend::InProcess
+            && self.operations.iter().any(|operation| {
                 !matches!(operation, Operation::Dkg | Operation::Pre | Operation::Sign)
-            }) {
-                bail!(
-                    "backend 'in-process' supports only dkg, pre, and sign operations in v1; got {:?}",
-                    self.operations
-                );
-            }
-            if self
-                .profiles
-                .iter()
-                .any(|profile| profile.kind != NetworkProfileKind::Lan)
-            {
-                bail!(
-                    "backend 'in-process' runs every node on loopback in one process and cannot apply WAN network shaping"
-                );
-            }
+            })
+        {
+            bail!(
+                "backend 'in-process' supports only dkg, pre, and sign operations in v1; got {:?}",
+                self.operations
+            );
         }
         Ok(())
     }
