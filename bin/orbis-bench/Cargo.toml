@@ -18,6 +18,7 @@ crypto = { path = "../../crates/crypto", default-features = false }
 did-key = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
+orbis-node = { path = "../orbis-node", features = ["harness"] }
 prost = { workspace = true }
 proto = { path = "../../crates/proto" }
 rand = { workspace = true }

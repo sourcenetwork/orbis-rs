@@ -156,7 +156,7 @@ chmod -R a+rX /handoff
 touch /handoff/ready
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
 "#;
-    json!({
+    let mut value = json!({
         "image": sourcehub_image_tag(input.sourcehub_ref),
         "build": {
             "context": sourcehub_context,
@@ -184,7 +184,21 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
             "retries": 60,
             "start_period": "20s",
         },
-    })
+    });
+    apply_sourcehub_resource_limits(&mut value, input);
+    value
+}
+
+fn apply_sourcehub_resource_limits(value: &mut Value, input: &ComposeInput<'_>) {
+    let object = value
+        .as_object_mut()
+        .expect("sourcehub service is an object");
+    if let Some(cpus) = input.resources.cpus_per_sourcehub {
+        object.insert("cpus".to_string(), json!(cpus));
+    }
+    if let Some(memory) = &input.resources.memory_per_sourcehub {
+        object.insert("mem_limit".to_string(), json!(memory));
+    }
 }
 
 /// A non-validating SourceHub full node: syncs the validator's chain via P2P
@@ -225,7 +239,7 @@ done
 cp /handoff/genesis.json /home/node/.sourcehub/config/genesis.json
 exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@sourcehub:26656"
 "#;
-    json!({
+    let mut value = json!({
         "image": sourcehub_image_tag(input.sourcehub_ref),
         "build": {
             "context": sourcehub_context,
@@ -249,7 +263,9 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
             "retries": 60,
             "start_period": "20s",
         },
-    })
+    });
+    apply_sourcehub_resource_limits(&mut value, input);
+    value
 }
 
 fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {

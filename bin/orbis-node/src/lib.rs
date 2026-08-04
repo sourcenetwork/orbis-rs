@@ -2,6 +2,8 @@ mod app_state;
 mod constants;
 mod dkg;
 mod error;
+#[cfg(feature = "harness")]
+pub mod harness;
 mod helpers;
 mod info;
 mod metrics;

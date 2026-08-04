@@ -65,6 +65,24 @@ pub enum NetworkProfileKind {
     Wan,
 }
 
+/// Where an experiment's nodes actually run.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionBackend {
+    /// Docker Compose: SourceHub + N `orbis-node` containers. Supports every
+    /// operation and network profile.
+    #[default]
+    Docker,
+    /// Real `orbis-node` instances as tokio tasks in this process, over real
+    /// loopback Iroh P2P, backed by a shared in-memory mock bulletin instead
+    /// of SourceHub. No Docker, no chain, no external network dependency —
+    /// trades chain/container realism for immunity to infrastructure
+    /// flakiness unrelated to orbis's own protocol correctness. v1 supports
+    /// only `dkg`, `pre`, and `sign` operations on `lan`-kind profiles (no
+    /// `pss_refresh`/`pss_reshare` yet); see `Experiment::validate`.
+    InProcess,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkProfile {
@@ -159,6 +177,14 @@ impl Default for TimeoutConfig {
 pub struct ResourceLimits {
     pub cpus_per_node: Option<f64>,
     pub memory_per_node: Option<String>,
+    /// Applied to every SourceHub container (the validator and any
+    /// replicas). Only the validator (replica index 0) proposes and
+    /// executes blocks, so it is the one actually bottlenecked by DKG
+    /// finalization traffic — but capping replicas the same way is harmless
+    /// (a cap just bounds what a container *may* use) and keeps this
+    /// consistent with `cpus_per_node`/`memory_per_node`'s single shared value.
+    pub cpus_per_sourcehub: Option<f64>,
+    pub memory_per_sourcehub: Option<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -240,6 +266,8 @@ pub struct Experiment {
     /// `pss_reshare` trial. Reshare is opt-in and therefore has no default.
     #[serde(default)]
     pub reshare_overlap: Option<usize>,
+    #[serde(default)]
+    pub backend: ExecutionBackend,
 }
 
 fn default_profiles() -> Vec<NetworkProfile> {
@@ -283,6 +311,7 @@ impl Experiment {
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
             reshare_overlap: None,
+            backend: ExecutionBackend::default(),
         }
     }
 
@@ -458,6 +487,25 @@ impl Experiment {
         for concurrency in &self.load.concurrency {
             if *concurrency == 0 {
                 bail!("load concurrency values must be at least 1");
+            }
+        }
+        if self.backend == ExecutionBackend::InProcess {
+            if self.operations.iter().any(|operation| {
+                !matches!(operation, Operation::Dkg | Operation::Pre | Operation::Sign)
+            }) {
+                bail!(
+                    "backend 'in-process' supports only dkg, pre, and sign operations in v1; got {:?}",
+                    self.operations
+                );
+            }
+            if self
+                .profiles
+                .iter()
+                .any(|profile| profile.kind != NetworkProfileKind::Lan)
+            {
+                bail!(
+                    "backend 'in-process' runs every node on loopback in one process and cannot apply WAN network shaping"
+                );
             }
         }
         Ok(())

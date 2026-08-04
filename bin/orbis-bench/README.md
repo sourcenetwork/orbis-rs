@@ -2,6 +2,8 @@
 
 `orbis-bench` is a workspace binary for measuring Orbis ceremonies on generated, isolated Docker networks. It is deliberately separate from `orbis-node`: the benchmark runtime image builds and copies only the production-feature `orbis-node` executable, while the host-side benchmark process owns orchestration and evidence collection.
 
+For DKG/PRE/SIGN measurements, an [in-process backend](#in-process-backend-no-docker-no-chain) runs nodes as tasks in the `orbis-bench` process itself, with no Docker and no chain involved at all.
+
 The result is the largest reliable ring observed on the recorded host and emulated network profile. It is not a universal protocol limit.
 
 ## Quick start
@@ -45,6 +47,19 @@ cargo run -p orbis-bench -- report bench-results/<run-dir>
 ```
 
 `cleanup` refuses non-`orbis-bench-*` project names and removes only the exact Compose projects listed in that run's manifest. `--keep-network` leaves a failed or completed stack available for inspection.
+
+## In-process backend (no Docker, no chain)
+
+For DKG/PRE/SIGN measurements, `backend: in-process` runs every node as a real `orbis-node` instance inside the `orbis-bench` process itself — real Iroh P2P over loopback, real protocol code, but backed by a shared in-memory mock bulletin instead of a Dockerized SourceHub. There are no containers, no chain, and no external network dependency, so a run can't fail on SourceHub RPC hiccups, Iroh relay reachability, or Docker host contention — only on orbis's own protocol and networking code. The trade-off is realism: it measures orbis in isolation, not the full containerized/chain-backed deployment.
+
+```console
+cargo run -p orbis-bench -- plan --config bin/orbis-bench/examples/inprocess-50-node.yaml
+cargo run --release -p orbis-bench -- run --config bin/orbis-bench/examples/inprocess-50-node.yaml
+```
+
+Build in `--release`; the cryptography is CPU-heavy and a debug build makes 50 nodes sharing one process's scheduler noticeably slower than a real deployment would be. No Docker daemon is required for either command.
+
+This backend is v1: `Experiment::validate` rejects `backend: in-process` combined with any operation other than `dkg`/`pre`/`sign` (no `pss_refresh`/`pss_reshare` yet), or with a non-`lan`-kind profile (there's no container to shape traffic on). PRE/SIGN need no chain-side ACP setup — the mock authz backend authorizes unconditionally — so there's no analogue of the Docker backend's policy/object/relationship registration transactions; a document is stored and a key derivation posted directly, same as the real protocol path minus the chain round trip. Evidence lands in the same `report.html`/`manifest.json`/`trials.jsonl`/`summary.csv` shape as the Docker backend — see [Evidence](#evidence) — except there are no `resource-samples.csv` values (no containers to sample) or `stacks/<project>/compose.yaml` artifacts.
 
 ## Doctor and images
 

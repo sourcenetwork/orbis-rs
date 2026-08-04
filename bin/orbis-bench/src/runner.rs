@@ -4,7 +4,10 @@ use crate::compose::{
 };
 #[cfg(test)]
 use crate::config::NetworkProfile;
-use crate::config::{Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS};
+use crate::config::{
+    ExecutionBackend, Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS,
+};
+use crate::harness::{HarnessNetwork, HARNESS_POLICY_ID};
 use crate::docker::{image_digest, DockerCompose};
 use crate::metrics::{aggregate, delta, retain_benchmark_metrics, scrape, MetricSnapshot};
 use crate::protocol::{
@@ -148,9 +151,10 @@ impl BenchmarkRunner {
                 stack_projects: Vec::new(),
                 profile_calibration: BTreeMap::new(),
                 setup_batch_evidence: BTreeMap::new(),
-                warnings: vec![
-                    "Single-host Docker measurements include host scheduling and resource contention; they are not a universal protocol maximum.".into(),
-                ],
+                warnings: vec![match self.experiment.backend {
+                    ExecutionBackend::Docker => "Single-host Docker measurements include host scheduling and resource contention; they are not a universal protocol maximum.".into(),
+                    ExecutionBackend::InProcess => "In-process measurements run every node as a task in one process on one host, sharing its scheduler and CPU cores; they are not a universal protocol maximum and do not include container or chain overhead.".into(),
+                }],
             };
             (ResultStore::create(run_dir, &manifest)?, manifest)
         };
@@ -305,6 +309,11 @@ impl BenchmarkRunner {
         completed: &HashSet<TrialKey>,
         interrupt_rx: &mut watch::Receiver<bool>,
     ) -> Result<StackRunOutcome> {
+        if self.experiment.backend == ExecutionBackend::InProcess {
+            return self
+                .run_stack_in_process(store, manifest, stack, stack_id, completed, interrupt_rx)
+                .await;
+        }
         let stack_dir = store.root().join("stacks").join(stack_id);
         let run_id = manifest.run_id.clone();
         let input = ComposeInput {
@@ -532,6 +541,476 @@ impl BenchmarkRunner {
             Some(Err(error)) => Err(error),
             None => Ok(StackRunOutcome::Interrupted),
         }
+    }
+
+    /// In-process counterpart of `run_stack`: real orbis-node instances as
+    /// tokio tasks over loopback Iroh, backed by a shared `DummyBulletin`
+    /// instead of a Dockerized SourceHub. No Compose project, no chain setup,
+    /// no resource sampling (there are no containers to sample). `validate()`
+    /// restricts this backend to `dkg`/`pre`/`sign` operations on `lan`-kind
+    /// profiles — see `run_dkg_trials_in_process`,
+    /// `run_pre_trials_in_process`, `run_sign_trials_in_process`.
+    async fn run_stack_in_process(
+        &self,
+        store: &mut ResultStore,
+        manifest: &mut RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        completed: &HashSet<TrialKey>,
+        interrupt_rx: &mut watch::Receiver<bool>,
+    ) -> Result<StackRunOutcome> {
+        eprintln!(
+            "[{stack_id}] starting {} in-process nodes (no Docker, no chain)",
+            stack.network_size
+        );
+        let stack_work = async {
+            let harness = HarnessNetwork::spin_up(stack.network_size, stack_id).await?;
+            eprintln!(
+                "[{stack_id}] {} in-process nodes ready",
+                harness.endpoints.len()
+            );
+            let mut clients = DirectClients::connect(&harness.endpoints).await?;
+            let mut rng = StdRng::seed_from_u64(
+                self.experiment.seed ^ (stack.stack_index as u64).rotate_left(17),
+            );
+            let mut all_cases_viable = true;
+            for case in &stack.cases {
+                if self.experiment.operations.contains(&Operation::Dkg) {
+                    eprintln!(
+                        "[{stack_id}] measuring ring={} threshold={} (in-process, dkg)",
+                        case.ring_size, case.threshold
+                    );
+                    let viable = self
+                        .run_dkg_trials_in_process(
+                            store, manifest, stack, stack_id, &harness, &mut clients, case,
+                            completed, &mut rng,
+                        )
+                        .await?;
+                    all_cases_viable &= viable;
+                }
+
+                let wants_online = self.experiment.operations.contains(&Operation::Pre)
+                    || self.experiment.operations.contains(&Operation::Sign);
+                if wants_online {
+                    eprintln!(
+                        "[{stack_id}] establishing online ring={} threshold={} (in-process, pre/sign)",
+                        case.ring_size, case.threshold
+                    );
+                    let (ring_id, members, ring_pk) = establish_ring_in_process(
+                        &harness,
+                        &mut clients,
+                        case.ring_size,
+                        case.threshold,
+                        stack.network_size,
+                        Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                        &mut rng,
+                    )
+                    .await?;
+                    let fixtures = prepare_online_fixtures_in_process(
+                        &harness,
+                        &harness.endpoints[members[0] - 1],
+                        &ring_id,
+                        &ring_pk,
+                        case.ring_size,
+                    )
+                    .await?;
+
+                    if self.experiment.operations.contains(&Operation::Pre) {
+                        let viable = self
+                            .run_pre_trials_in_process(
+                                store, manifest, stack, stack_id, &mut clients, case, &ring_id,
+                                &members, completed, &mut rng, &fixtures.pre,
+                            )
+                            .await?;
+                        all_cases_viable &= viable;
+                    }
+                    if self.experiment.operations.contains(&Operation::Sign) {
+                        let viable = self
+                            .run_sign_trials_in_process(
+                                store, manifest, stack, stack_id, &mut clients, case, &ring_id,
+                                &members, completed, &mut rng, &fixtures.sign,
+                            )
+                            .await?;
+                        all_cases_viable &= viable;
+                    }
+                }
+            }
+            Ok::<_, anyhow::Error>(all_cases_viable)
+        };
+
+        let stack_result = tokio::select! {
+            biased;
+            _ = wait_for_interrupt(interrupt_rx) => None,
+            result = stack_work => Some(result),
+        };
+
+        match stack_result {
+            Some(Ok(viable)) => Ok(StackRunOutcome::Completed(viable)),
+            Some(Err(error)) => Err(error),
+            None => {
+                eprintln!("[{stack_id}] Ctrl-C received; tearing down in-process network");
+                Ok(StackRunOutcome::Interrupted)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_dkg_trials_in_process(
+        &self,
+        store: &mut ResultStore,
+        manifest: &RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        harness: &HarnessNetwork,
+        clients: &mut DirectClients,
+        case: &RingCase,
+        completed: &HashSet<TrialKey>,
+        rng: &mut StdRng,
+    ) -> Result<bool> {
+        let mut viable = true;
+        let initiator_offset = (rng.next_u64() as usize) % case.ring_size;
+        for trial in 0..self.experiment.warmups + self.experiment.repetitions {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::Dkg,
+                trial_index,
+                warmup,
+            );
+            if completed.contains(&key) {
+                continue;
+            }
+            let mut members: Vec<usize> = (1..=stack.network_size).collect();
+            members.shuffle(rng);
+            members.truncate(case.ring_size);
+            members.sort_unstable();
+            let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
+            harness.seed_pending_ring(&ring_id, &members, case.threshold)?;
+            let initiator_position = (initiator_offset + trial) % members.len();
+            let initiator = members[initiator_position] - 1;
+            let started_at = unix_ms();
+            let started = Instant::now();
+            let result = timeout(
+                Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                async {
+                    let acknowledgement = clients.start_dkg(initiator, &ring_id).await?;
+                    let ring_pk = harness
+                        .wait_ring_finalized_everywhere(
+                            clients,
+                            &ring_id,
+                            &members,
+                            Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                        )
+                        .await?;
+                    Ok::<_, anyhow::Error>((acknowledgement, ring_pk))
+                },
+            )
+            .await;
+            let (success, error_class, error, acknowledgement_ms, ring_pk) = match result {
+                Ok(Ok((ack, ring_pk))) => {
+                    (true, None, None, Some(ack.acknowledgement_ms), Some(ring_pk))
+                }
+                Ok(Err(error)) => (
+                    false,
+                    Some("protocol_failure".into()),
+                    Some(format!("{error:#}")),
+                    None,
+                    None,
+                ),
+                Err(_) => (
+                    false,
+                    Some("timeout".into()),
+                    Some("DKG deadline exceeded".into()),
+                    None,
+                    None,
+                ),
+            };
+            viable &= success || warmup;
+            store.append_trial(&TrialRecord {
+                run_id: manifest.run_id.clone(),
+                stack_id: stack_id.into(),
+                profile: stack.profile.name.clone(),
+                network_size: stack.network_size,
+                case: case.clone(),
+                operation: Operation::Dkg,
+                trial_index,
+                warmup,
+                concurrency: None,
+                started_at_unix_ms: started_at,
+                duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                client_total_ms: None,
+                acknowledgement_ms,
+                verification_ms: None,
+                scheduler_delay_ms: None,
+                throughput_per_sec: None,
+                successful_requests: None,
+                failed_requests: None,
+                latency_p50_ms: None,
+                latency_p95_ms: None,
+                latency_p99_ms: None,
+                success,
+                error_class,
+                error,
+                ring_id: Some(ring_id),
+                ring_pk,
+                metric_deltas: BTreeMap::new(),
+            })?;
+        }
+        Ok(viable)
+    }
+
+    /// In-process counterpart of `run_pre_trials`: same request/measurement
+    /// logic (`clients.pre` is backend-agnostic — a plain gRPC call), minus
+    /// `compose.container_failures()` (no containers) and metric scraping (no
+    /// Prometheus endpoint on harness nodes, see `harness.rs`).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_pre_trials_in_process(
+        &self,
+        store: &mut ResultStore,
+        manifest: &RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        clients: &mut DirectClients,
+        case: &RingCase,
+        ring_id: &str,
+        members: &[usize],
+        completed: &HashSet<TrialKey>,
+        rng: &mut StdRng,
+        fixture: &PreFixture,
+    ) -> Result<bool> {
+        let mut viable = true;
+        let initiator_offset = (rng.next_u64() as usize) % case.ring_size;
+        for trial in 0..self.experiment.warmups + self.experiment.repetitions {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::Pre,
+                trial_index,
+                warmup,
+            );
+            if completed.contains(&key) {
+                continue;
+            }
+            let initiator_position = (initiator_offset + trial) % members.len();
+            let initiator = members[initiator_position] - 1;
+            let started = Instant::now();
+            let result = timeout(
+                Duration::from_secs(self.experiment.timeouts.pre_secs),
+                clients.pre(initiator, fixture),
+            )
+            .await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let (success, duration_ms, client_total_ms, verification_ms, class, error) =
+                match result {
+                    Ok(Ok(result)) => (
+                        true,
+                        result.rpc_ms,
+                        Some(result.total_ms),
+                        Some(result.decrypt_ms),
+                        None,
+                        None,
+                    ),
+                    Ok(Err(error)) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("correctness_or_protocol_failure".into()),
+                        Some(format!("{error:#}")),
+                    ),
+                    Err(_) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("timeout".into()),
+                        Some("PRE deadline exceeded".into()),
+                    ),
+                };
+            viable &= success || warmup;
+            let mut record = base_trial_in_process(
+                manifest,
+                stack,
+                stack_id,
+                case,
+                ring_id,
+                Operation::Pre,
+                trial_index,
+                warmup,
+                duration_ms,
+                verification_ms,
+                success,
+                class,
+                error,
+            );
+            record.client_total_ms = client_total_ms;
+            store.append_trial(&record)?;
+        }
+        for (stage_index, &concurrency) in self.experiment.load.concurrency.iter().enumerate() {
+            let key = TrialKey::load(stack_id, &stack.profile.name, case, Operation::Pre, concurrency);
+            if completed.contains(&key) {
+                continue;
+            }
+            let initiator = members[(initiator_offset + stage_index) % members.len()] - 1;
+            let client = clients.pre_client(initiator)?;
+            run_pre_load(
+                client.clone(),
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.warmup_secs),
+            )
+            .await;
+            let measurement = run_pre_load(
+                client,
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.measure_secs),
+            )
+            .await;
+            viable &= measurement.failures == 0 && measurement.successes > 0;
+            store.append_trial(&load_trial_in_process(
+                manifest,
+                stack,
+                stack_id,
+                case,
+                ring_id,
+                Operation::Pre,
+                concurrency,
+                measurement,
+            ))?;
+        }
+        Ok(viable)
+    }
+
+    /// In-process counterpart of `run_sign_trials` — see
+    /// `run_pre_trials_in_process` for what's omitted and why.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_sign_trials_in_process(
+        &self,
+        store: &mut ResultStore,
+        manifest: &RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        clients: &mut DirectClients,
+        case: &RingCase,
+        ring_id: &str,
+        members: &[usize],
+        completed: &HashSet<TrialKey>,
+        rng: &mut StdRng,
+        fixture: &SignFixture,
+    ) -> Result<bool> {
+        let mut viable = true;
+        let initiator_offset = (rng.next_u64() as usize) % case.ring_size;
+        for trial in 0..self.experiment.warmups + self.experiment.repetitions {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::Sign,
+                trial_index,
+                warmup,
+            );
+            if completed.contains(&key) {
+                continue;
+            }
+            let initiator_position = (initiator_offset + trial) % members.len();
+            let initiator = members[initiator_position] - 1;
+            let message = format!("orbis-bench-sign-{}-{trial}", manifest.run_id).into_bytes();
+            let started = Instant::now();
+            let result = timeout(
+                Duration::from_secs(self.experiment.timeouts.sign_secs),
+                clients.sign(initiator, fixture, message),
+            )
+            .await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let (success, duration_ms, client_total_ms, verification_ms, class, error) =
+                match result {
+                    Ok(Ok(result)) => (
+                        true,
+                        result.rpc_ms,
+                        Some(result.total_ms),
+                        Some(result.verification_ms),
+                        None,
+                        None,
+                    ),
+                    Ok(Err(error)) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("correctness_or_protocol_failure".into()),
+                        Some(format!("{error:#}")),
+                    ),
+                    Err(_) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("timeout".into()),
+                        Some("SIGN deadline exceeded".into()),
+                    ),
+                };
+            viable &= success || warmup;
+            let mut record = base_trial_in_process(
+                manifest,
+                stack,
+                stack_id,
+                case,
+                ring_id,
+                Operation::Sign,
+                trial_index,
+                warmup,
+                duration_ms,
+                verification_ms,
+                success,
+                class,
+                error,
+            );
+            record.client_total_ms = client_total_ms;
+            store.append_trial(&record)?;
+        }
+        for (stage_index, &concurrency) in self.experiment.load.concurrency.iter().enumerate() {
+            let key = TrialKey::load(stack_id, &stack.profile.name, case, Operation::Sign, concurrency);
+            if completed.contains(&key) {
+                continue;
+            }
+            let initiator = members[(initiator_offset + stage_index) % members.len()] - 1;
+            let client = clients.sign_client(initiator)?;
+            run_sign_load(
+                client.clone(),
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.warmup_secs),
+            )
+            .await;
+            let measurement = run_sign_load(
+                client,
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.measure_secs),
+            )
+            .await;
+            viable &= measurement.failures == 0 && measurement.successes > 0;
+            store.append_trial(&load_trial_in_process(
+                manifest,
+                stack,
+                stack_id,
+                case,
+                ring_id,
+                Operation::Sign,
+                concurrency,
+                measurement,
+            ))?;
+        }
+        Ok(viable)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1612,6 +2091,116 @@ async fn prepare_online_fixtures(
     })
 }
 
+/// In-process counterpart of `establish_ring`: picks a fresh, random
+/// `ring_size`-member committee out of the harness network, seeds it as a
+/// pending ring on the shared bulletin, runs DKG, and waits for it to
+/// converge. Always fresh (unlike `establish_ring`, which reuses an
+/// already-finalized on-chain ring across a resumed run) since in-process
+/// state is ephemeral per run to begin with. Returns `(ring_id, members,
+/// ring_pk)`.
+async fn establish_ring_in_process(
+    harness: &HarnessNetwork,
+    clients: &mut DirectClients,
+    ring_size: usize,
+    threshold: usize,
+    network_size: usize,
+    deadline: Duration,
+    rng: &mut StdRng,
+) -> Result<(String, Vec<usize>, String)> {
+    let mut members: Vec<usize> = (1..=network_size).collect();
+    members.shuffle(rng);
+    members.truncate(ring_size);
+    members.sort_unstable();
+    let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
+    harness.seed_pending_ring(&ring_id, &members, threshold)?;
+    let initiator = members[(rng.next_u64() as usize) % members.len()] - 1;
+    clients.start_dkg(initiator, &ring_id).await?;
+    let ring_pk = harness
+        .wait_ring_finalized_everywhere(clients, &ring_id, &members, deadline)
+        .await?;
+    Ok((ring_id, members, ring_pk))
+}
+
+/// In-process counterpart of `prepare_online_fixtures`. `prepare_secret` and
+/// `store_prepared_secret` are already chain-independent (local encryption +
+/// a direct `StoreSecretService` gRPC call), so they're reused as-is; the
+/// chain-only ACP registration calls (`register_object_to_chain_with_config`,
+/// `set_relationship_on_chain_with_config`, `add_policy_to_chain_with_config`)
+/// are dropped entirely rather than replaced — see `harness.rs`'s module docs
+/// for why `DummyAuthZ` makes them unnecessary — and
+/// `post_key_derivation_with_config` is replaced by
+/// `HarnessNetwork::post_key_derivation`, which posts to the shared bulletin
+/// directly instead of building a real chain client.
+async fn prepare_online_fixtures_in_process(
+    harness: &HarnessNetwork,
+    endpoint: &NodeEndpoint,
+    ring_id: &str,
+    ring_pk: &str,
+    ring_size: usize,
+) -> Result<OnlineFixtures> {
+    let policy_id = HARNESS_POLICY_ID.to_string();
+    let reader_identity = format!("orbis-bench-reader-{ring_size}");
+    let (reader_sk, reader_pk) = generate_keypair()?;
+    let reader_pk_bytes = reader_pk.to_bytes()?;
+    let plaintext = format!("orbis benchmark plaintext for ring {ring_size}").into_bytes();
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+    let prepared = cli_tool::prepare_secret(
+        &plaintext,
+        ring_pk,
+        None,
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        None,
+        None,
+        None,
+    )?;
+    let stored = cli_tool::store_prepared_secret(
+        endpoint.grpc_url.clone(),
+        &prepared,
+        ring_id.to_string(),
+        policy_id.clone(),
+        resource.clone(),
+        permission.clone(),
+        Some(reader_identity.clone()),
+        true,
+        None,
+        None,
+    )
+    .await?;
+
+    let sign_identity = format!("orbis-bench-signer-{ring_size}");
+    let (derivation_id, derived_public_key) = harness
+        .post_key_derivation(
+            ring_id,
+            ring_pk,
+            &format!("benchmark-sign-derivation-{ring_size}"),
+            &policy_id,
+            &resource,
+            &permission,
+        )
+        .await?;
+
+    Ok(OnlineFixtures {
+        pre: PreFixture {
+            ring_pk: ring_pk.to_string(),
+            reader_pk: reader_pk_bytes,
+            reader_sk,
+            object_id: stored.object_id,
+            reader_identity,
+            derivation: None,
+            salt: None,
+            expected_plaintext: plaintext,
+        },
+        sign: SignFixture {
+            derivation_id,
+            derived_public_key,
+            reader_identity: sign_identity,
+        },
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 struct LoadMeasurement {
     duration_ms: f64,
@@ -1783,6 +2372,102 @@ fn load_trial(
         error: (measurement.failures > 0)
             .then(|| format!("{} of {total} requests failed", measurement.failures)),
         ring_id: rings.online.as_ref().map(|ring| ring.definition.id.clone()),
+        ring_pk: None,
+        metric_deltas: BTreeMap::new(),
+    }
+}
+
+/// In-process counterpart of `base_trial`: same shape, but takes `case`/
+/// `ring_id` directly since the in-process trial loops don't build a
+/// `CaseRings`/`PlannedRing` (there's no chain-assigned `RingDefinition` to
+/// wrap — see `run_dkg_trials_in_process`).
+#[allow(clippy::too_many_arguments)]
+fn base_trial_in_process(
+    manifest: &RunManifest,
+    stack: &StackPlan,
+    stack_id: &str,
+    case: &RingCase,
+    ring_id: &str,
+    operation: Operation,
+    trial_index: usize,
+    warmup: bool,
+    duration_ms: f64,
+    verification_ms: Option<f64>,
+    success: bool,
+    error_class: Option<String>,
+    error: Option<String>,
+) -> TrialRecord {
+    TrialRecord {
+        run_id: manifest.run_id.clone(),
+        stack_id: stack_id.into(),
+        profile: stack.profile.name.clone(),
+        network_size: stack.network_size,
+        case: case.clone(),
+        operation,
+        trial_index,
+        warmup,
+        concurrency: None,
+        started_at_unix_ms: unix_ms(),
+        duration_ms,
+        client_total_ms: None,
+        acknowledgement_ms: None,
+        verification_ms,
+        scheduler_delay_ms: None,
+        throughput_per_sec: None,
+        successful_requests: None,
+        failed_requests: None,
+        latency_p50_ms: None,
+        latency_p95_ms: None,
+        latency_p99_ms: None,
+        success,
+        error_class,
+        error,
+        ring_id: Some(ring_id.to_string()),
+        ring_pk: None,
+        metric_deltas: BTreeMap::new(),
+    }
+}
+
+/// In-process counterpart of `load_trial` — see `base_trial_in_process`.
+fn load_trial_in_process(
+    manifest: &RunManifest,
+    stack: &StackPlan,
+    stack_id: &str,
+    case: &RingCase,
+    ring_id: &str,
+    operation: Operation,
+    concurrency: usize,
+    mut measurement: LoadMeasurement,
+) -> TrialRecord {
+    measurement.latencies.sort_by(f64::total_cmp);
+    let total = measurement.successes + measurement.failures;
+    TrialRecord {
+        run_id: manifest.run_id.clone(),
+        stack_id: stack_id.into(),
+        profile: stack.profile.name.clone(),
+        network_size: stack.network_size,
+        case: case.clone(),
+        operation,
+        trial_index: 0,
+        warmup: false,
+        concurrency: Some(concurrency),
+        started_at_unix_ms: unix_ms(),
+        duration_ms: measurement.duration_ms,
+        client_total_ms: None,
+        acknowledgement_ms: None,
+        verification_ms: None,
+        scheduler_delay_ms: None,
+        throughput_per_sec: Some(measurement.successes as f64 / (measurement.duration_ms / 1000.0)),
+        successful_requests: Some(measurement.successes),
+        failed_requests: Some(measurement.failures),
+        latency_p50_ms: percentile_sorted(&measurement.latencies, 0.50),
+        latency_p95_ms: percentile_sorted(&measurement.latencies, 0.95),
+        latency_p99_ms: percentile_sorted(&measurement.latencies, 0.99),
+        success: measurement.failures == 0 && total > 0,
+        error_class: (measurement.failures > 0).then(|| "load_request_failures".into()),
+        error: (measurement.failures > 0)
+            .then(|| format!("{} of {total} requests failed", measurement.failures)),
+        ring_id: Some(ring_id.to_string()),
         ring_pk: None,
         metric_deltas: BTreeMap::new(),
     }

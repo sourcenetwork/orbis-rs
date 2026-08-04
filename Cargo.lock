@@ -3858,6 +3858,7 @@ dependencies = [
  "did-key",
  "futures",
  "hex",
+ "orbis-node",
  "prost 0.14.3",
  "proto",
  "rand 0.8.6",

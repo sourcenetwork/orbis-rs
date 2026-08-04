@@ -5,7 +5,7 @@ crypto: bls12-381
 networks:
   - network_size: 50
     cases:
-      - { ring_size: 25, threshold: 15 }
+      - { ring_size: 35, threshold: 25 }
 
 operations: [dkg, pre, sign]
 # pss_refresh is disabled here: SourceHub enforces a hard 86400s (24h)
@@ -43,9 +43,18 @@ timeouts:
 resources:
   cpus_per_node: null
   memory_per_node: null
+  # The SourceHub validator (replica index 0) is the only container that
+  # proposes/executes blocks, so it's the one that bottlenecks under a burst
+  # of near-simultaneous FinalizeRing transactions as all 50 nodes clear
+  # Phase 4. Applied uniformly to the validator and its replicas (a cap just
+  # bounds what a container *may* use, so capping replicas too is harmless).
+  # This is a starting point, not a measured value — tune it against your
+  # own host's total Docker capacity (`docker system info`).
+  cpus_per_sourcehub: 4.0
+  memory_per_sourcehub: 4g
 
 sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
-sourcehub_replicas: 3
+sourcehub_replicas: 7
 setup_batch_size: 25
 # Retained for reference: SourceHub's 86400s floor (see the pss_refresh note
 # above) means this value has no observable effect on any operation actually

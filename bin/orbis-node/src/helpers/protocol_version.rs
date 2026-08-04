@@ -80,22 +80,50 @@ pub async fn read_ring_for_protocol(
     Ok((ring_payload, routes.0))
 }
 
+// A transient chain-read hiccup here is otherwise a single point of failure
+// for every caller (DKG prepare/session-init, PRE, SIGN all read the ring
+// through this one function): one node hitting one momentary network blip
+// fails immediately with no retry, which for DKG prepare specifically can
+// cascade into aborting the whole committee's ceremony over a blip that
+// would have cleared on its own within a second or two. Bounded and short
+// (not the many-minute budget `with_signer`'s balance check uses) so it
+// stays well inside callers' own deadlines (e.g. DKG's ~120s prepare
+// window) while still absorbing a brief transient failure.
+const MAX_RING_READ_ATTEMPTS: u32 = 3;
+const RING_READ_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
 async fn read_ring_payload(
     bulletin: &(dyn bulletin::r#trait::Bulletin + Send + Sync),
     ring_id: &str,
 ) -> Result<bulletin::r#trait::RingPayload, String> {
-    let ring_post = bulletin
-        .read(
-            ring_id.to_string(),
-            bulletin::r#trait::BulletinKind::Ring,
-        )
-        .await
-        .map_err(|error| {
-            format!(
-                "failed to read protocol state for ring {ring_id}: effective_version=unknown installed_versions={} current_time=unknown activation_time=unknown: {error}",
-                installed_versions_label()
+    let mut attempt = 0u32;
+    let ring_post = loop {
+        attempt += 1;
+        match bulletin
+            .read(
+                ring_id.to_string(),
+                bulletin::r#trait::BulletinKind::Ring,
             )
-        })?;
+            .await
+        {
+            Ok(ring_post) => break ring_post,
+            Err(error) if attempt < MAX_RING_READ_ATTEMPTS => {
+                tracing::warn!(
+                    ring_id,
+                    attempt,
+                    %error,
+                    "transient failure reading ring for protocol state; retrying"
+                );
+                tokio::time::sleep(RING_READ_RETRY_DELAY).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "failed to read protocol state for ring {ring_id} after {MAX_RING_READ_ATTEMPTS} attempts: effective_version=unknown installed_versions={} current_time=unknown activation_time=unknown: {error}",
+                    installed_versions_label()
+                ));
+            }
+        }
+    };
     bulletin::r#trait::RingPayload::try_from(ring_post).map_err(|error| {
         format!(
             "malformed ring payload for ring {ring_id}: effective_version=invalid installed_versions={} current_time=unknown activation_time=unknown: {error}",
