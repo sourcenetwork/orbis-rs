@@ -99,8 +99,9 @@ impl HarnessNetwork {
     ) -> Result<Self> {
         init_tracing_once();
         let bulletin = Arc::new(DummyBulletin::default());
-        let runtime_base_path =
-            std::env::temp_dir().join("orbis-bench-harness").join(stack_id);
+        let runtime_base_path = std::env::temp_dir()
+            .join("orbis-bench-harness")
+            .join(stack_id);
         std::fs::create_dir_all(&runtime_base_path).with_context(|| {
             format!(
                 "create harness runtime directory {}",
@@ -153,7 +154,12 @@ impl HarnessNetwork {
     /// Seed a pending (unfinalized) ring directly on the shared bulletin —
     /// the in-process equivalent of a live `MsgCreateRing`. `members` are
     /// 1-based indices into this network, matching `NodeEndpoint::index`.
-    pub fn seed_pending_ring(&self, ring_id: &str, members: &[usize], threshold: usize) -> Result<()> {
+    pub fn seed_pending_ring(
+        &self,
+        ring_id: &str,
+        members: &[usize],
+        threshold: usize,
+    ) -> Result<()> {
         let peer_node_keys = members
             .iter()
             .map(|&index| {
@@ -196,8 +202,9 @@ impl HarnessNetwork {
         let ring_pk_point =
             GroupAffine::from_bytes(&ring_pk_bytes).context("parse ring_pk point")?;
         let metadata = SignImpl::encode_metadata(policy_id, resource, permission);
-        let derived_pk = SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
-            .map_err(|error| anyhow::anyhow!("derive SIGN public key: {error}"))?;
+        let derived_pk =
+            SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
+                .map_err(|error| anyhow::anyhow!("derive SIGN public key: {error}"))?;
         let derived_pk_hex = hex::encode(
             derived_pk
                 .to_bytes()
@@ -211,8 +218,7 @@ impl HarnessNetwork {
             resource: resource.to_string(),
             permission: permission.to_string(),
         };
-        let payload =
-            serde_json::to_vec(&key_derivation).context("serialize KeyDerivation")?;
+        let payload = serde_json::to_vec(&key_derivation).context("serialize KeyDerivation")?;
         let derivation_id = self
             .bulletin
             .post(BulletinWriteKind::KeyDerivation, payload)

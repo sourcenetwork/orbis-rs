@@ -100,10 +100,7 @@ async fn read_ring_payload(
     let ring_post = loop {
         attempt += 1;
         match bulletin
-            .read(
-                ring_id.to_string(),
-                bulletin::r#trait::BulletinKind::Ring,
-            )
+            .read(ring_id.to_string(), bulletin::r#trait::BulletinKind::Ring)
             .await
         {
             Ok(ring_post) => break ring_post,

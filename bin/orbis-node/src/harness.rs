@@ -19,8 +19,8 @@ use crate::helpers::launch::{
 };
 use crate::info::InfoServiceImpl;
 use crate::pre::v0::service::PreServiceImpl;
-use crate::sign::v0::service::SignServiceImpl;
 use crate::runtime::{init_node, NodeConfig};
+use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use authz::dummy::DummyAuthZ;
 use authz::r#trait::Authz;
@@ -148,9 +148,10 @@ pub async fn spawn_harness_node(
         .await
         .map_err(|error| anyhow::anyhow!("network: {error}"))?;
     let network: Arc<dyn Network> = match params.network_shaping {
-        Some(profile) if !profile.is_noop() => {
-            Arc::new(network::ShapedNetwork::new(Arc::new(unshaped_network), profile))
-        }
+        Some(profile) if !profile.is_noop() => Arc::new(network::ShapedNetwork::new(
+            Arc::new(unshaped_network),
+            profile,
+        )),
         _ => Arc::new(unshaped_network),
     };
     let local_address = network

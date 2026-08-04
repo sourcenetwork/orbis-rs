@@ -70,8 +70,7 @@ impl NetworkShapingProfile {
     }
 
     fn should_drop(&self) -> bool {
-        self.loss_percent > 0.0
-            && rand::thread_rng().gen_range(0.0..100.0) < self.loss_percent
+        self.loss_percent > 0.0 && rand::thread_rng().gen_range(0.0..100.0) < self.loss_percent
     }
 }
 

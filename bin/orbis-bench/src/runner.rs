@@ -7,8 +7,8 @@ use crate::config::NetworkProfile;
 use crate::config::{
     ExecutionBackend, Experiment, Operation, RingCase, StackPlan, PSS_GRACE_PERIOD_SECS,
 };
-use crate::harness::{HarnessNetwork, HARNESS_POLICY_ID};
 use crate::docker::{image_digest, DockerCompose};
+use crate::harness::{HarnessNetwork, HARNESS_POLICY_ID};
 use crate::metrics::{aggregate, delta, retain_benchmark_metrics, scrape, MetricSnapshot};
 use crate::protocol::{
     discover_node_identity, sign_call, wait_nodes_ready, DirectClients, NodeEndpoint, NodeIdentity,
@@ -578,8 +578,7 @@ impl BenchmarkRunner {
             }
         );
         let stack_work = async {
-            let harness =
-                HarnessNetwork::spin_up(stack.network_size, stack_id, shaping).await?;
+            let harness = HarnessNetwork::spin_up(stack.network_size, stack_id, shaping).await?;
             eprintln!(
                 "[{stack_id}] {} in-process nodes ready",
                 harness.endpoints.len()
@@ -597,8 +596,15 @@ impl BenchmarkRunner {
                     );
                     let viable = self
                         .run_dkg_trials_in_process(
-                            store, manifest, stack, stack_id, &harness, &mut clients, case,
-                            completed, &mut rng,
+                            store,
+                            manifest,
+                            stack,
+                            stack_id,
+                            &harness,
+                            &mut clients,
+                            case,
+                            completed,
+                            &mut rng,
                         )
                         .await?;
                     all_cases_viable &= viable;
@@ -633,8 +639,17 @@ impl BenchmarkRunner {
                     if self.experiment.operations.contains(&Operation::Pre) {
                         let viable = self
                             .run_pre_trials_in_process(
-                                store, manifest, stack, stack_id, &mut clients, case, &ring_id,
-                                &members, completed, &mut rng, &fixtures.pre,
+                                store,
+                                manifest,
+                                stack,
+                                stack_id,
+                                &mut clients,
+                                case,
+                                &ring_id,
+                                &members,
+                                completed,
+                                &mut rng,
+                                &fixtures.pre,
                             )
                             .await?;
                         all_cases_viable &= viable;
@@ -642,8 +657,17 @@ impl BenchmarkRunner {
                     if self.experiment.operations.contains(&Operation::Sign) {
                         let viable = self
                             .run_sign_trials_in_process(
-                                store, manifest, stack, stack_id, &mut clients, case, &ring_id,
-                                &members, completed, &mut rng, &fixtures.sign,
+                                store,
+                                manifest,
+                                stack,
+                                stack_id,
+                                &mut clients,
+                                case,
+                                &ring_id,
+                                &members,
+                                completed,
+                                &mut rng,
+                                &fixtures.sign,
                             )
                             .await?;
                         all_cases_viable &= viable;
@@ -725,9 +749,13 @@ impl BenchmarkRunner {
             )
             .await;
             let (success, error_class, error, acknowledgement_ms, ring_pk) = match result {
-                Ok(Ok((ack, ring_pk))) => {
-                    (true, None, None, Some(ack.acknowledgement_ms), Some(ring_pk))
-                }
+                Ok(Ok((ack, ring_pk))) => (
+                    true,
+                    None,
+                    None,
+                    Some(ack.acknowledgement_ms),
+                    Some(ring_pk),
+                ),
                 Ok(Err(error)) => (
                     false,
                     Some("protocol_failure".into()),
@@ -868,7 +896,13 @@ impl BenchmarkRunner {
             store.append_trial(&record)?;
         }
         for (stage_index, &concurrency) in self.experiment.load.concurrency.iter().enumerate() {
-            let key = TrialKey::load(stack_id, &stack.profile.name, case, Operation::Pre, concurrency);
+            let key = TrialKey::load(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::Pre,
+                concurrency,
+            );
             if completed.contains(&key) {
                 continue;
             }
@@ -993,7 +1027,13 @@ impl BenchmarkRunner {
             store.append_trial(&record)?;
         }
         for (stage_index, &concurrency) in self.experiment.load.concurrency.iter().enumerate() {
-            let key = TrialKey::load(stack_id, &stack.profile.name, case, Operation::Sign, concurrency);
+            let key = TrialKey::load(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::Sign,
+                concurrency,
+            );
             if completed.contains(&key) {
                 continue;
             }
