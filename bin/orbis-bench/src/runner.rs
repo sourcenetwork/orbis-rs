@@ -704,8 +704,17 @@ impl BenchmarkRunner {
                     .await?;
                     let viable = self
                         .run_pss_trials_in_process(
-                            store, manifest, stack, stack_id, &harness, &mut clients, case,
-                            &ring_id, &members, &ring_pk, completed,
+                            store,
+                            manifest,
+                            stack,
+                            stack_id,
+                            &harness,
+                            &mut clients,
+                            case,
+                            &ring_id,
+                            &members,
+                            &ring_pk,
+                            completed,
                         )
                         .await?;
                     all_cases_viable &= viable;

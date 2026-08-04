@@ -279,8 +279,10 @@ async fn run_scale_test(
     // Fully-qualified: decaf377's underlying scalar/point types have inherent
     // `to_bytes` methods that shadow `CryptoSerialize::to_bytes` (see
     // `cli_tool::do_generate_reader_key` for the same workaround).
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
+    let reader_pk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
+    let reader_sk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
     let plaintext = b"orbis-node scale test plaintext".to_vec();
 
     let prepared = cli_tool::prepare_secret(
@@ -340,8 +342,9 @@ async fn run_scale_test(
     // derive the SIGN public key locally, then post the `KeyDerivation`
     // record straight to the shared bulletin (no chain in this backend).
     let metadata = SignImpl::encode_metadata(POLICY_ID, resource, permission);
-    let derived_pk = SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
-        .expect("derive SIGN public key");
+    let derived_pk =
+        SignImpl::derive_public_key(&ring_pk_point, derivation.as_bytes(), Some(&metadata))
+            .expect("derive SIGN public key");
     let key_derivation = KeyDerivation {
         ring_id: ring_id.clone(),
         derivation: derivation.to_string(),
