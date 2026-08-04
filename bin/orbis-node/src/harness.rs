@@ -19,6 +19,7 @@ use crate::helpers::launch::{
 };
 use crate::info::InfoServiceImpl;
 use crate::pre::v0::service::PreServiceImpl;
+use crate::pss;
 use crate::runtime::{init_node, NodeConfig};
 use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
@@ -40,8 +41,10 @@ use std::sync::Arc;
 
 /// A single in-process orbis node, spawned as a tokio task.
 ///
-/// Dropping this aborts the node's gRPC server task and removes its local
-/// storage file.
+/// Dropping this aborts the node's gRPC server task, removes its local
+/// storage file, and stops its PSS scheduler (dropping `PssSchedulerHandle`
+/// closes its internal shutdown channel, which the scheduler's own select
+/// loop observes and exits on — no explicit shutdown call needed here).
 pub struct HarnessNodeHandle {
     pub grpc_endpoint: String,
     pub peer_addr: String,
@@ -49,6 +52,7 @@ pub struct HarnessNodeHandle {
     pub public_address: String,
     task: tokio::task::JoinHandle<()>,
     db_path: String,
+    _pss_scheduler: Option<pss::PssSchedulerHandle>,
 }
 
 impl Drop for HarnessNodeHandle {
@@ -79,6 +83,12 @@ pub struct HarnessNodeParams<'a> {
     /// docs for exactly what's approximated). `None` or a no-op profile
     /// skips wrapping entirely.
     pub network_shaping: Option<network::NetworkShapingProfile>,
+    /// How often this node's background PSS scheduler wakes up to check
+    /// whether any of its local rings are due for a refresh/reshare
+    /// ceremony (`pss::spawn_pss_scheduler`'s `check_interval`). `0`
+    /// disables the scheduler entirely — PSS ceremonies then never trigger
+    /// for this node, matching production's `--reshare-interval-secs 0`.
+    pub pss_poll_interval_secs: u64,
 }
 
 /// Spawn one in-process orbis node against a caller-provided, shared
@@ -177,7 +187,7 @@ pub async fn spawn_harness_node(
         metrics_addr: None,
         loki_url: None,
         runtime_base_path: None,
-        reshare_interval_secs: 0,
+        reshare_interval_secs: params.pss_poll_interval_secs,
         network_private_routes_only: false,
         node_controller_key: params.node_controller_key,
         node_peer_id: None,
@@ -208,6 +218,16 @@ pub async fn spawn_harness_node(
     let node = init_node(config)
         .await
         .map_err(|error| anyhow::anyhow!("init_node: {error}"))?;
+
+    // Not started by `init_node` itself — production's `run()` starts this
+    // separately (in `run_server`, which the harness doesn't call, since it
+    // also does things this backend deliberately skips like metrics
+    // registration). Without this, a ring's `pss_interval` elapsing would
+    // never actually trigger a refresh/reshare ceremony for this node.
+    let pss_scheduler = pss::spawn_pss_scheduler(
+        node.app_state.clone(),
+        std::time::Duration::from_secs(params.pss_poll_interval_secs),
+    );
 
     // Mirrors `spawn_test_grpc_server` in tests::concurrent — the same set of
     // gRPC services the production server registers.
@@ -259,5 +279,6 @@ pub async fn spawn_harness_node(
         public_address,
         task,
         db_path: params.db_path,
+        _pss_scheduler: pss_scheduler,
     })
 }

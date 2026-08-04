@@ -85,10 +85,12 @@ pub enum ExecutionBackend {
     /// of SourceHub. No Docker, no chain, no external network dependency —
     /// trades chain/container realism for immunity to infrastructure
     /// flakiness unrelated to orbis's own protocol correctness. v1 supports
-    /// only `dkg`, `pre`, and `sign` operations (no `pss_refresh`/
-    /// `pss_reshare` yet; see `Experiment::validate`). WAN profiles are
-    /// supported, approximated in software (`network::ShapedNetwork`)
-    /// instead of Docker's per-container `tc netem`.
+    /// `dkg`, `pre`, `sign`, and `pss_refresh` operations (no `pss_reshare`
+    /// yet; see `Experiment::validate`). WAN profiles are supported,
+    /// approximated in software (`network::ShapedNetwork`) instead of
+    /// Docker's per-container `tc netem`. Unlike Docker's SourceHub-backed
+    /// rings, `DummyBulletin` enforces no floor on `pss_interval_secs`, so
+    /// `pss_refresh` isn't limited to SourceHub's 86400s minimum here.
     InProcess,
 }
 
@@ -500,11 +502,14 @@ impl Experiment {
         }
         if self.backend == ExecutionBackend::InProcess
             && self.operations.iter().any(|operation| {
-                !matches!(operation, Operation::Dkg | Operation::Pre | Operation::Sign)
+                !matches!(
+                    operation,
+                    Operation::Dkg | Operation::Pre | Operation::Sign | Operation::PssRefresh
+                )
             })
         {
             bail!(
-                "backend 'in-process' supports only dkg, pre, and sign operations in v1; got {:?}",
+                "backend 'in-process' supports only dkg, pre, sign, and pss_refresh operations in v1; got {:?}",
                 self.operations
             );
         }

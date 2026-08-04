@@ -91,11 +91,14 @@ impl HarnessNetwork {
     /// starting at [`HARNESS_BASE_PORT`], sharing one fresh `DummyBulletin`.
     /// `shaping` is applied to every node's own outbound traffic — pass
     /// `NetworkShapingProfile::NONE` (or any no-op profile) for an unshaped
-    /// LAN-equivalent network.
+    /// LAN-equivalent network. `pss_poll_interval_secs` sets every node's PSS
+    /// scheduler wake-up interval (`0` disables PSS entirely for this
+    /// network — cheaper when no case in this stack needs it).
     pub async fn spin_up(
         network_size: usize,
         stack_id: &str,
         shaping: NetworkShapingProfile,
+        pss_poll_interval_secs: u64,
     ) -> Result<Self> {
         init_tracing_once();
         let bulletin = Arc::new(DummyBulletin::default());
@@ -126,6 +129,7 @@ impl HarnessNetwork {
                 policy_id: HARNESS_POLICY_ID.to_string(),
                 node_controller_key: HARNESS_CONTROLLER_KEY.to_string(),
                 network_shaping: (!shaping.is_noop()).then_some(shaping),
+                pss_poll_interval_secs,
             };
             let handle = spawn_harness_node(params, bulletin.clone())
                 .await
@@ -154,11 +158,16 @@ impl HarnessNetwork {
     /// Seed a pending (unfinalized) ring directly on the shared bulletin —
     /// the in-process equivalent of a live `MsgCreateRing`. `members` are
     /// 1-based indices into this network, matching `NodeEndpoint::index`.
+    /// `pss_interval_secs` is the ring's own due-for-refresh interval
+    /// (`RingPayload.pss_interval`) — unlike Docker's SourceHub-backed
+    /// rings, `DummyBulletin` enforces no floor on this, so callers are free
+    /// to use a short interval for PSS refresh trials.
     pub fn seed_pending_ring(
         &self,
         ring_id: &str,
         members: &[usize],
         threshold: usize,
+        pss_interval_secs: u64,
     ) -> Result<()> {
         let peer_node_keys = members
             .iter()
@@ -173,7 +182,7 @@ impl HarnessNetwork {
             ring_pk: String::new(),
             peer_node_keys,
             threshold: threshold as u32,
-            pss_interval: 86_400,
+            pss_interval: pss_interval_secs,
             policy_id: Some(HARNESS_POLICY_ID.to_string()),
             ..Default::default()
         };
@@ -253,7 +262,7 @@ impl HarnessNetwork {
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(tokio::time::Instant::now);
             loop {
-                if let Some(ring_pk) = self.read_ring_pk(ring_id).await? {
+                if let Some(ring_pk) = self.ring_pk(ring_id).await? {
                     match clients.ring_states(members, &ring_pk).await {
                         Ok(states) => {
                             let expected_polynomial = states
@@ -297,7 +306,10 @@ impl HarnessNetwork {
         })?
     }
 
-    async fn read_ring_pk(&self, ring_id: &str) -> Result<Option<String>> {
+    /// Current ring public key on the shared bulletin, if the ring exists
+    /// and has finalized (fresh DKG) or refreshed at least once. `None`
+    /// while still pending, or if `ring_id` doesn't exist at all.
+    pub async fn ring_pk(&self, ring_id: &str) -> Result<Option<String>> {
         match self
             .bulletin
             .read(ring_id.to_string(), BulletinKind::Ring)

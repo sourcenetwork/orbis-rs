@@ -577,8 +577,19 @@ impl BenchmarkRunner {
                 )
             }
         );
+        let wants_pss_refresh = self.experiment.operations.contains(&Operation::PssRefresh);
         let stack_work = async {
-            let harness = HarnessNetwork::spin_up(stack.network_size, stack_id, shaping).await?;
+            let harness = HarnessNetwork::spin_up(
+                stack.network_size,
+                stack_id,
+                shaping,
+                if wants_pss_refresh {
+                    self.experiment.pss_poll_interval_secs
+                } else {
+                    0
+                },
+            )
+            .await?;
             eprintln!(
                 "[{stack_id}] {} in-process nodes ready",
                 harness.endpoints.len()
@@ -623,6 +634,7 @@ impl BenchmarkRunner {
                         case.ring_size,
                         case.threshold,
                         stack.network_size,
+                        86_400,
                         Duration::from_secs(self.experiment.timeouts.dkg_secs),
                         &mut rng,
                     )
@@ -672,6 +684,31 @@ impl BenchmarkRunner {
                             .await?;
                         all_cases_viable &= viable;
                     }
+                }
+
+                if wants_pss_refresh {
+                    eprintln!(
+                        "[{stack_id}] establishing refresh ring={} threshold={} (in-process, pss_refresh)",
+                        case.ring_size, case.threshold
+                    );
+                    let (ring_id, members, ring_pk) = establish_ring_in_process(
+                        &harness,
+                        &mut clients,
+                        case.ring_size,
+                        case.threshold,
+                        stack.network_size,
+                        self.experiment.pss_interval_secs,
+                        Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                        &mut rng,
+                    )
+                    .await?;
+                    let viable = self
+                        .run_pss_trials_in_process(
+                            store, manifest, stack, stack_id, &harness, &mut clients, case,
+                            &ring_id, &members, &ring_pk, completed,
+                        )
+                        .await?;
+                    all_cases_viable &= viable;
                 }
             }
             Ok::<_, anyhow::Error>(all_cases_viable)
@@ -727,7 +764,10 @@ impl BenchmarkRunner {
             members.truncate(case.ring_size);
             members.sort_unstable();
             let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
-            harness.seed_pending_ring(&ring_id, &members, case.threshold)?;
+            // Not a PSS-tested ring: a long interval keeps it effectively
+            // never-due, matching Docker's DKG/online rings (`plan_rings`'s
+            // `make(86_400)`).
+            harness.seed_pending_ring(&ring_id, &members, case.threshold, 86_400)?;
             let initiator_position = (initiator_offset + trial) % members.len();
             let initiator = members[initiator_position] - 1;
             let started_at = unix_ms();
@@ -1064,6 +1104,125 @@ impl BenchmarkRunner {
                 concurrency,
                 measurement,
             ))?;
+        }
+        Ok(viable)
+    }
+
+    /// In-process counterpart of `run_pss_trials`. `DirectClients::wait_pss_refresh`
+    /// is already backend-agnostic (pure gRPC `GetRingState` polling), so
+    /// it's reused as-is; the check that the ring's public key survived the
+    /// refresh reads `harness.ring_pk(ring_id)` directly instead of
+    /// `read_ring_with_retry(controller, ...)`. No metrics endpoint on this
+    /// backend (see `harness.rs`'s module docs), so `pss_timing` is called
+    /// with `None` for the metrics-derived scheduler delay — it already
+    /// falls back to the client-observed value (always `0.0` from
+    /// `wait_pss_refresh`) in that case, same as Docker trials where the
+    /// metric happened to be unavailable.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_pss_trials_in_process(
+        &self,
+        store: &mut ResultStore,
+        manifest: &RunManifest,
+        stack: &StackPlan,
+        stack_id: &str,
+        harness: &HarnessNetwork,
+        clients: &mut DirectClients,
+        case: &RingCase,
+        ring_id: &str,
+        members: &[usize],
+        ring_pk: &str,
+        completed: &HashSet<TrialKey>,
+    ) -> Result<bool> {
+        let original_ring_pk = ring_pk.to_string();
+        let mut viable = true;
+        for trial in 0..self.experiment.warmups + self.experiment.repetitions {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                stack_id,
+                &stack.profile.name,
+                case,
+                Operation::PssRefresh,
+                trial_index,
+                warmup,
+            );
+            if completed.contains(&key) {
+                continue;
+            }
+            let baseline = clients.ring_states(members, &original_ring_pk).await?;
+            let due = baseline
+                .iter()
+                .map(|state| state.last_pss)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(
+                    self.experiment
+                        .pss_interval_secs
+                        .saturating_sub(PSS_GRACE_PERIOD_SECS),
+                );
+            let started = Instant::now();
+            let result = clients
+                .wait_pss_refresh(
+                    members,
+                    &original_ring_pk,
+                    &baseline,
+                    due,
+                    Duration::from_secs(self.experiment.timeouts.pss_refresh_secs),
+                )
+                .await;
+            let current_ring_pk = harness.ring_pk(ring_id).await?;
+            let (success, duration_ms, scheduler_delay_ms, class, error) = match result {
+                Ok(measurement)
+                    if current_ring_pk.as_deref() == Some(original_ring_pk.as_str()) =>
+                {
+                    let (ceremony_ms, scheduler_delay_ms) = pss_timing(
+                        measurement.ceremony_ms,
+                        measurement.scheduler_delay_ms,
+                        None,
+                    );
+                    (true, ceremony_ms, Some(scheduler_delay_ms), None, None)
+                }
+                Ok(_) => (
+                    false,
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    None,
+                    Some("correctness_failure".into()),
+                    Some("ring public key changed during refresh".into()),
+                ),
+                Err(error) => {
+                    let class = if error.is::<PssRefreshTimeout>() {
+                        "timeout"
+                    } else {
+                        "protocol_failure"
+                    };
+                    (
+                        false,
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        None,
+                        Some(class.into()),
+                        Some(format!("{error:#}")),
+                    )
+                }
+            };
+            viable &= success || warmup;
+            let mut record = base_trial_in_process(
+                manifest,
+                stack,
+                stack_id,
+                case,
+                ring_id,
+                Operation::PssRefresh,
+                trial_index,
+                warmup,
+                duration_ms,
+                None,
+                success,
+                class,
+                error,
+            );
+            record.scheduler_delay_ms = scheduler_delay_ms;
+            record.ring_pk = Some(original_ring_pk.clone());
+            store.append_trial(&record)?;
         }
         Ok(viable)
     }
@@ -2159,6 +2318,7 @@ async fn establish_ring_in_process(
     ring_size: usize,
     threshold: usize,
     network_size: usize,
+    pss_interval_secs: u64,
     deadline: Duration,
     rng: &mut StdRng,
 ) -> Result<(String, Vec<usize>, String)> {
@@ -2167,7 +2327,7 @@ async fn establish_ring_in_process(
     members.truncate(ring_size);
     members.sort_unstable();
     let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
-    harness.seed_pending_ring(&ring_id, &members, threshold)?;
+    harness.seed_pending_ring(&ring_id, &members, threshold, pss_interval_secs)?;
     let initiator = members[(rng.next_u64() as usize) % members.len()] - 1;
     clients.start_dkg(initiator, &ring_id).await?;
     let ring_pk = harness
