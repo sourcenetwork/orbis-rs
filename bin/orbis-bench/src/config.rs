@@ -9,6 +9,13 @@ pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 /// Mirrors the production scheduler's early-due grace window. Benchmark PSS
 /// intervals must exceed it so due-to-start and ceremony time remain separable.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
+/// SourceHub commit every example config, `Experiment::single`/sweep-built
+/// experiment, and (via `docker/Dockerfile.sourcehub-integration`'s own
+/// fallback read of the same file) every raw `docker-compose-*.yml` that
+/// doesn't pass `SOURCEHUB_REF` explicitly all pin by default. Single source
+/// of truth across both Rust and Docker — bump `docker/SOURCEHUB_REF` to
+/// move every default-using caller at once instead of hunting down each copy.
+pub const DEFAULT_SOURCEHUB_REF: &str = include_str!("../../../docker/SOURCEHUB_REF");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -208,7 +215,7 @@ fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
 }
 fn default_sourcehub_ref() -> String {
-    "c67e328382ab55d69318ed6e7778d4827996429f".to_string()
+    DEFAULT_SOURCEHUB_REF.to_string()
 }
 fn default_sourcehub_replicas() -> usize {
     1

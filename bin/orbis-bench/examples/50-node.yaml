@@ -53,7 +53,6 @@ resources:
   cpus_per_sourcehub: 4.0
   memory_per_sourcehub: 4g
 
-sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
 sourcehub_replicas: 7
 setup_batch_size: 25
 # Retained for reference: SourceHub's 86400s floor (see the pss_refresh note
