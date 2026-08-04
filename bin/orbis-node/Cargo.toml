@@ -77,5 +77,8 @@ unsafe-testing = []
 # of SourceHub. Not used by the production binary.
 harness = ["authz/test-helpers", "network/shaping"]
 fault-injection = ["network/fault-injection"]
+# Native in-process scale test (tests::scale_testing): many real orbis-node
+# instances running a full DKG ceremony in one process. Implies `harness`.
+scale-testing = ["harness"]
 [lints]
 workspace = true

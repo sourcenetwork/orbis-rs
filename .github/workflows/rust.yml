@@ -35,9 +35,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection
+            cargo_flags: --features=integration-test,fault-injection,scale-testing
           - crypto: decaf377
-            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -57,9 +57,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection
+            cargo_flags: --features=integration-test,fault-injection,scale-testing
           - crypto: decaf377
-            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
