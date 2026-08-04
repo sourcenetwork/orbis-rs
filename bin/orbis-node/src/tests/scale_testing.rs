@@ -9,6 +9,17 @@
 //! binary. PRE/SIGN reuse `cli_tool`'s own request-building/decrypt/verify
 //! helpers (already a dev-dependency) instead of reimplementing them.
 //!
+//! Two variants share the same [`run_scale_test`]: a LAN one (no shaping,
+//! larger committee) and a WAN one (software-shaped latency/jitter/loss, via
+//! `network::ShapedNetwork` — see that module's docs for what's approximated
+//! — kept to a much smaller committee, since WAN-shaped traffic was the
+//! flakier case at scale in the orbis-bench in-process investigation). Both
+//! are tagged `#[serial_test::serial(scale_test)]` so they never run
+//! concurrently with each other — two of these networks' worth of real iroh
+//! endpoints competing for the same process's sockets at once would erode
+//! the reliability work behind both individually — without serializing them
+//! against unrelated tests.
+//!
 //! Gated behind `scale-testing` (implies `harness`) — not part of the default
 //! test run: it boots dozens of real iroh endpoints in one process, which is
 //! slower and noisier than the rest of the suite.
@@ -24,6 +35,7 @@ use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, SignImpl};
+use network::NetworkShapingProfile;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetRingStateRequest, GetRingStateResponse,
 };
@@ -32,39 +44,86 @@ use std::sync::Arc;
 use std::time::Duration;
 use tonic::transport::Channel;
 
-/// Every node is in the ring's committee — full-mesh DKG at scale is the
-/// harshest case for the iroh contention `crate::harness` works around.
-const NETWORK_SIZE: usize = 20;
-/// ~68%, matching the ratio orbis-bench's own 50-node scale profile uses.
-const THRESHOLD: usize = 15;
-/// Away from Layer 2's 51051-51074 and orbis-bench's 61000+ harness ranges,
-/// so this can run alongside either without port collisions.
-const BASE_PORT: u16 = 56_000;
 const POLICY_ID: &str = "orbis-node-scale-test-policy";
 const CONTROLLER_KEY: &str = "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
 /// Generous headroom over the hardcoded `DKG_PREPARATION_TIMEOUT` (2 minutes)
 /// so a single retried attempt still has room to finish before we time out.
 const DKG_DEADLINE: Duration = Duration::from_secs(180);
 
-#[tokio::test]
-async fn test_scale_dkg_pre_sign_refresh() {
-    let bulletin = Arc::new(DummyBulletin::default());
-    let runtime_base_path = std::env::temp_dir().join("orbis-node-scale-test");
-    std::fs::create_dir_all(&runtime_base_path).expect("create scale-test runtime dir");
+/// LAN: no shaping, full-mesh committee — the harshest case for the iroh
+/// contention `crate::harness` works around, sized to what's proven CI-stable.
+const LAN_NETWORK_SIZE: usize = 20;
+const LAN_THRESHOLD: usize = 15;
+/// Away from Layer 2's 51051-51074 and orbis-bench's 61000+ harness ranges,
+/// so this can run alongside either without port collisions.
+const LAN_BASE_PORT: u16 = 56_000;
 
-    let mut nodes: Vec<HarnessNodeHandle> = Vec::with_capacity(NETWORK_SIZE);
-    let mut node_keys: Vec<String> = Vec::with_capacity(NETWORK_SIZE);
-    for index in 1..=NETWORK_SIZE {
-        let port = BASE_PORT + u16::try_from(index - 1).expect("NETWORK_SIZE fits in u16");
+/// WAN: same delay/jitter/loss as the commented-out WAN profile in
+/// `orbis-bench/examples/inprocess-50-node.yaml`. Kept to a much smaller
+/// committee than the LAN variant — WAN-shaped in-process networks were the
+/// less reliable case at scale in the orbis-bench investigation, and this
+/// exists as a nice-to-have correctness check, not a load-bearing CI gate.
+const WAN_NETWORK_SIZE: usize = 8;
+const WAN_THRESHOLD: usize = 6;
+/// Clear of the LAN range above (56_000..56_020).
+const WAN_BASE_PORT: u16 = 56_100;
+const WAN_SHAPING: NetworkShapingProfile = NetworkShapingProfile {
+    delay_ms: 25.0,
+    jitter_ms: 5.0,
+    loss_percent: 0.1,
+};
+
+#[tokio::test]
+#[serial_test::serial(scale_test)]
+async fn test_scale_dkg_pre_sign_refresh() {
+    run_scale_test(
+        "lan",
+        LAN_NETWORK_SIZE,
+        LAN_THRESHOLD,
+        LAN_BASE_PORT,
+        NetworkShapingProfile::NONE,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial_test::serial(scale_test)]
+async fn test_scale_dkg_pre_sign_refresh_wan() {
+    run_scale_test(
+        "wan",
+        WAN_NETWORK_SIZE,
+        WAN_THRESHOLD,
+        WAN_BASE_PORT,
+        WAN_SHAPING,
+    )
+    .await;
+}
+
+async fn run_scale_test(
+    label: &str,
+    network_size: usize,
+    threshold: usize,
+    base_port: u16,
+    shaping: NetworkShapingProfile,
+) {
+    let bulletin = Arc::new(DummyBulletin::default());
+    let runtime_base_path = std::env::temp_dir().join(format!("orbis-node-scale-test-{label}"));
+    std::fs::create_dir_all(&runtime_base_path).expect("create scale-test runtime dir");
+    let network_shaping = (!shaping.is_noop()).then_some(shaping);
+
+    let mut nodes: Vec<HarnessNodeHandle> = Vec::with_capacity(network_size);
+    let mut node_keys: Vec<String> = Vec::with_capacity(network_size);
+    for index in 1..=network_size {
+        let port = base_port + u16::try_from(index - 1).expect("network_size fits in u16");
         let db_path = runtime_base_path.join(format!("node-{index:03}.redb"));
         let params = HarnessNodeParams {
             grpc_addr: format!("127.0.0.1:{port}"),
             db_path: db_path.to_string_lossy().into_owned(),
-            password: format!("orbis-node-scale-test-{index}"),
+            password: format!("orbis-node-scale-test-{label}-{index}"),
             runtime_base_path: &runtime_base_path,
             policy_id: POLICY_ID.to_string(),
             node_controller_key: CONTROLLER_KEY.to_string(),
-            network_shaping: None,
+            network_shaping,
             // Scheduler runs from boot (production behavior) but stays
             // quiet: the ring's own `pss_interval` is seeded high below and
             // only lowered once we're ready to trigger a refresh.
@@ -72,7 +131,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
         };
         let handle = spawn_harness_node(params, bulletin.clone())
             .await
-            .unwrap_or_else(|error| panic!("spawn scale-test node {index}: {error:#}"));
+            .unwrap_or_else(|error| panic!("[{label}] spawn scale-test node {index}: {error:#}"));
         node_keys.push(handle.node_key.clone());
         nodes.push(handle);
     }
@@ -81,7 +140,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
     let payload = RingPayload {
         ring_pk: String::new(),
         peer_node_keys: node_keys,
-        threshold: THRESHOLD as u32,
+        threshold: threshold as u32,
         pss_interval: 86_400,
         policy_id: Some(POLICY_ID.to_string()),
         ..Default::default()
@@ -90,20 +149,20 @@ async fn test_scale_dkg_pre_sign_refresh() {
         .set_ring(ring_id.clone(), payload)
         .expect("seed pending scale-test ring");
 
-    let mut info_clients = Vec::with_capacity(NETWORK_SIZE);
+    let mut info_clients = Vec::with_capacity(network_size);
     for node in &nodes {
         let channel = connect_with_retry(&node.grpc_endpoint, Duration::from_secs(30))
             .await
             .expect("connect info client");
         info_clients.push(InfoServiceClient::new(channel));
     }
-    // All of this network's iroh endpoints just bound in quick succession; give magicsock's
-    // background discovery a moment to settle before StartDkg forwards to
-    // the (single, unretried) canonical leader dial — without this, that
-    // first dial reliably raced discovery and failed outright with "No
-    // addressing information available" (reproduced consistently without
-    // this delay; every gRPC connect above already retries past the
-    // equivalent race, but this one dial doesn't).
+    // All of this network's iroh endpoints just bound in quick succession;
+    // give magicsock's background discovery a moment to settle before
+    // StartDkg forwards to the (single, unretried) canonical leader dial —
+    // without this, that first dial reliably raced discovery and failed
+    // outright with "No addressing information available" (reproduced
+    // consistently without this delay; every gRPC connect above already
+    // retries past the equivalent race, but this one dial doesn't).
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let initiator_channel = connect_with_retry(&nodes[0].grpc_endpoint, Duration::from_secs(30))
@@ -139,11 +198,11 @@ async fn test_scale_dkg_pre_sign_refresh() {
                     && tokio::time::Instant::now() < start_dkg_deadline =>
             {
                 eprintln!(
-                    "scale test: StartDkg attempt {attempt} hit transient error, retrying: {status}"
+                    "[{label}] StartDkg attempt {attempt} hit transient error, retrying: {status}"
                 );
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
-            Err(status) => panic!("start DKG (attempt {attempt}): {status}"),
+            Err(status) => panic!("[{label}] start DKG (attempt {attempt}): {status}"),
         }
     }
 
@@ -188,7 +247,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
             }
             if last_progress.elapsed() >= Duration::from_secs(10) {
                 eprintln!(
-                    "scale test: waiting for {NETWORK_SIZE}-node DKG to finalize and converge ({:?} elapsed)",
+                    "[{label}] waiting for {network_size}-node DKG to finalize and converge ({:?} elapsed)",
                     started.elapsed()
                 );
                 last_progress = tokio::time::Instant::now();
@@ -199,13 +258,13 @@ async fn test_scale_dkg_pre_sign_refresh() {
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "scale test: {NETWORK_SIZE}-node DKG (threshold={THRESHOLD}) did not finalize and \
+            "[{label}] {network_size}-node DKG (threshold={threshold}) did not finalize and \
              converge within {DKG_DEADLINE:?}"
         )
     });
 
     eprintln!(
-        "scale test: {NETWORK_SIZE}-node DKG (threshold={THRESHOLD}) finalized in {:?}, ring_pk={ring_pk}",
+        "[{label}] {network_size}-node DKG (threshold={threshold}) finalized in {:?}, ring_pk={ring_pk}",
         started.elapsed()
     );
 
@@ -220,12 +279,8 @@ async fn test_scale_dkg_pre_sign_refresh() {
     // Fully-qualified: decaf377's underlying scalar/point types have inherent
     // `to_bytes` methods that shadow `CryptoSerialize::to_bytes` (see
     // `cli_tool::do_generate_reader_key` for the same workaround).
-    let reader_pk_hex = hex::encode(
-        CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"),
-    );
-    let reader_sk_hex = hex::encode(
-        CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"),
-    );
+    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
+    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
     let plaintext = b"orbis-node scale test plaintext".to_vec();
 
     let prepared = cli_tool::prepare_secret(
@@ -273,7 +328,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
         decrypted, plaintext,
         "PRE round-trip returned the wrong plaintext"
     );
-    eprintln!("scale test: PRE round-trip verified across {NETWORK_SIZE} nodes");
+    eprintln!("[{label}] PRE round-trip verified across {network_size} nodes");
 
     // ---- SIGN ceremony ----
     let sign_identity = "orbis-node-scale-test-signer".to_string();
@@ -317,7 +372,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
     SignImpl::new()
         .verify(&derived_pk, &message, &signature)
         .expect("SIGN signature failed verification");
-    eprintln!("scale test: SIGN ceremony verified across {NETWORK_SIZE} nodes");
+    eprintln!("[{label}] SIGN ceremony verified across {network_size} nodes");
 
     // ---- PSS refresh ----
     // Reuses the same nodes and the same finalized ring from DKG/PRE/SIGN
@@ -350,7 +405,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
         .expect("at least one baseline ring state");
     assert!(
         baseline_last_pss - baseline_min_last_pss <= 2,
-        "ring's last_pss should be closely converged across nodes right after DKG \
+        "[{label}] ring's last_pss should be closely converged across nodes right after DKG \
          (min={baseline_min_last_pss}, max={baseline_last_pss})"
     );
     let baseline_polynomial = baseline_states[0].public_polynomial.clone();
@@ -391,7 +446,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
             }
             if last_progress.elapsed() >= Duration::from_secs(10) {
                 eprintln!(
-                    "scale test: waiting for PSS refresh to complete and converge ({:?} elapsed)",
+                    "[{label}] waiting for PSS refresh to complete and converge ({:?} elapsed)",
                     pss_started.elapsed()
                 );
                 last_progress = tokio::time::Instant::now();
@@ -400,7 +455,7 @@ async fn test_scale_dkg_pre_sign_refresh() {
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("PSS refresh did not complete and converge within 60s"));
+    .unwrap_or_else(|_| panic!("[{label}] PSS refresh did not complete and converge within 60s"));
 
     // Refresh must not change the ring's public key, only its shares.
     let post_refresh_ring_pk = RingPayload::try_from(
@@ -413,10 +468,10 @@ async fn test_scale_dkg_pre_sign_refresh() {
     .ring_pk;
     assert_eq!(
         post_refresh_ring_pk, ring_pk,
-        "PSS refresh must not change the ring public key"
+        "[{label}] PSS refresh must not change the ring public key"
     );
     eprintln!(
-        "scale test: PSS refresh verified across {NETWORK_SIZE} nodes in {:?}",
+        "[{label}] PSS refresh verified across {network_size} nodes in {:?}",
         pss_started.elapsed()
     );
 
