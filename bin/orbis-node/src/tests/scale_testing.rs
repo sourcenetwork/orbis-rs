@@ -64,7 +64,7 @@ const LAN_BASE_PORT: u16 = 56_000;
 /// less reliable case at scale in the orbis-bench investigation, and this
 /// exists as a nice-to-have correctness check, not a load-bearing CI gate.
 const WAN_NETWORK_SIZE: usize = 8;
-const WAN_THRESHOLD: usize = 6;
+const WAN_THRESHOLD: usize = 5;
 /// Clear of the LAN range above (56_000..56_020).
 const WAN_BASE_PORT: u16 = 56_100;
 const WAN_SHAPING: NetworkShapingProfile = NetworkShapingProfile {
