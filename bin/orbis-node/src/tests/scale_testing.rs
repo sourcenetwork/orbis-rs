@@ -152,9 +152,7 @@ async fn test_scale_dkg_pre_sign() {
                 if status.code() == tonic::Code::Unavailable
                     && tokio::time::Instant::now() < start_dkg_deadline =>
             {
-                eprintln!(
-                    "StartDkg attempt {attempt} hit transient error, retrying: {status}"
-                );
+                eprintln!("StartDkg attempt {attempt} hit transient error, retrying: {status}");
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
             Err(status) => panic!("start DKG (attempt {attempt}): {status}"),
