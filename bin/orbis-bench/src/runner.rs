@@ -547,9 +547,11 @@ impl BenchmarkRunner {
     /// tokio tasks over loopback Iroh, backed by a shared `DummyBulletin`
     /// instead of a Dockerized SourceHub. No Compose project, no chain setup,
     /// no resource sampling (there are no containers to sample). `validate()`
-    /// restricts this backend to `dkg`/`pre`/`sign` operations on `lan`-kind
-    /// profiles — see `run_dkg_trials_in_process`,
-    /// `run_pre_trials_in_process`, `run_sign_trials_in_process`.
+    /// restricts this backend to the `dkg`, `pre`, `sign`, and `pss_refresh`
+    /// operations; `pss_reshare` is rejected. WAN profiles are supported and
+    /// approximated in software by `network::ShapedNetwork` — see
+    /// `run_dkg_trials_in_process`, `run_pre_trials_in_process`,
+    /// `run_sign_trials_in_process`, and `run_pss_trials_in_process`.
     async fn run_stack_in_process(
         &self,
         store: &mut ResultStore,
