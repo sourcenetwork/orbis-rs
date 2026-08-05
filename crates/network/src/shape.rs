@@ -235,10 +235,21 @@ impl Topic for ShapedTopic {
         self.inner.broadcast(data).await
     }
 
-    // Egress-only (see module docs): shaping applies once, at the
-    // publisher's `broadcast`, not again when a subscriber receives it.
     async fn recv(&self) -> Result<PubSubEvent> {
-        self.inner.recv().await
+        loop {
+            let event = self.inner.recv().await?;
+            if matches!(event, PubSubEvent::Received(_)) {
+                self.profile.delay().await;
+                if self.profile.should_drop() {
+                    // Simulated loss: the event never arrived, so keep
+                    // waiting for the next one rather than surfacing a
+                    // synthetic `Lagged` — a dropped gossip message isn't
+                    // observable to the subscriber as a distinct event.
+                    continue;
+                }
+            }
+            return Ok(event);
+        }
     }
 }
 

@@ -73,8 +73,8 @@ const LAN_BASE_PORT: u16 = 56_000;
 /// `sign/v0/coordinator/mod.rs`), roughly doubling the WAN-loss-exposed
 /// messages per ceremony versus bls12-381, so it needs more absolute slack
 /// against `WAN_SHAPING`'s loss to hit the same reliability.
-const WAN_NETWORK_SIZE: usize = 6;
-const WAN_THRESHOLD: usize = 3;
+const WAN_NETWORK_SIZE: usize = 5;
+const WAN_THRESHOLD: usize = 2;
 /// Clear of the LAN range above (56_000..56_020).
 const WAN_BASE_PORT: u16 = 56_100;
 const WAN_SHAPING: NetworkShapingProfile = NetworkShapingProfile {
