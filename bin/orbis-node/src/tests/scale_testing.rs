@@ -5,23 +5,16 @@
 //! deliberately not covered here: it was consistently harder to get
 //! reliable at scale than DKG (or a reshare would be) even after several
 //! rounds of tuning, so it was dropped from this suite rather than left as a
-//! flaky gate. Uses the same `crate::harness` building blocks as
-//! orbis-bench's in-process backend (`bind_addr_v4("127.0.0.1:0")` to avoid
-//! iroh magicsock contention at this scale — see that module's docs), driven
+//! flaky gate. WAN (software-shaped latency/jitter/loss, via
+//! `network::ShapedNetwork`) was tried too and dropped for the same reason —
+//! it was consistently the less reliable case at scale in the orbis-bench
+//! in-process investigation, and never got as stable as this LAN case.
+//! Uses the same `crate::harness` building blocks as orbis-bench's
+//! in-process backend (`bind_addr_v4("127.0.0.1:0")` to avoid iroh
+//! magicsock contention at this scale — see that module's docs), driven
 //! directly here so this can run in CI without pulling in the orbis-bench
 //! binary. PRE/SIGN reuse `cli_tool`'s own request-building/decrypt/verify
 //! helpers (already a dev-dependency) instead of reimplementing them.
-//!
-//! Two variants share the same [`run_scale_test`]: a LAN one (no shaping,
-//! larger committee) and a WAN one (software-shaped latency/jitter/loss, via
-//! `network::ShapedNetwork` — see that module's docs for what's approximated
-//! — kept to a much smaller committee, since WAN-shaped traffic was the
-//! flakier case at scale in the orbis-bench in-process investigation). Both
-//! are tagged `#[serial_test::serial(scale_test)]` so they never run
-//! concurrently with each other — two of these networks' worth of real iroh
-//! endpoints competing for the same process's sockets at once would erode
-//! the reliability work behind both individually — without serializing them
-//! against unrelated tests.
 //!
 //! Gated behind `scale-testing` (implies `harness`) — not part of the default
 //! test run: it boots dozens of real iroh endpoints in one process, which is
@@ -37,7 +30,6 @@ use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, SignImpl};
-use network::NetworkShapingProfile;
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 use std::sync::Arc;
@@ -50,77 +42,21 @@ const CONTROLLER_KEY: &str = "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97
 /// so a single retried attempt still has room to finish before we time out.
 const DKG_DEADLINE: Duration = Duration::from_secs(180);
 
-/// LAN: no shaping, full-mesh committee — the harshest case for the iroh
+/// No shaping, full-mesh committee — the harshest case for the iroh
 /// contention `crate::harness` works around, sized to what's proven CI-stable.
-const LAN_NETWORK_SIZE: usize = 20;
-const LAN_THRESHOLD: usize = 15;
+const NETWORK_SIZE: usize = 20;
+const THRESHOLD: usize = 15;
 /// Away from Layer 2's 51051-51074 and orbis-bench's 61000+ harness ranges,
 /// so this can run alongside either without port collisions.
-const LAN_BASE_PORT: u16 = 56_000;
-
-/// WAN: same delay/jitter/loss as the commented-out WAN profile in
-/// `orbis-bench/examples/inprocess-50-node.yaml`. Kept to a much smaller
-/// committee than the LAN variant — WAN-shaped in-process networks were the
-/// less reliable case at scale in the orbis-bench investigation, and this
-/// exists as a nice-to-have correctness check, not a load-bearing CI gate.
-/// The DKG-stall failures seen at `WAN_NETWORK_SIZE = 8` matched the same
-/// iroh connection-setup contention pattern LAN needed a node-count
-/// reduction to avoid (not the shaped delay/loss itself — that's cheap next
-/// to the 120s DKG prep budget); shrinking further here rather than
-/// loosening the shaping profile keeps this an actual WAN check. 3 spare
-/// nodes (not 2, as `5/3` gave): decaf377's signing scheme is interactive
-/// (an extra nonce-commitment round before signing, see
-/// `sign/v0/coordinator/mod.rs`), roughly doubling the WAN-loss-exposed
-/// messages per ceremony versus bls12-381, so it needs more absolute slack
-/// against `WAN_SHAPING`'s loss to hit the same reliability.
-const WAN_NETWORK_SIZE: usize = 5;
-const WAN_THRESHOLD: usize = 2;
-/// Clear of the LAN range above (56_000..56_020).
-const WAN_BASE_PORT: u16 = 56_100;
-const WAN_SHAPING: NetworkShapingProfile = NetworkShapingProfile {
-    delay_ms: 25.0,
-    jitter_ms: 5.0,
-    loss_percent: 0.1,
-};
+const BASE_PORT: u16 = 56_000;
 
 #[tokio::test]
 #[serial_test::serial(scale_test)]
 async fn test_scale_dkg_pre_sign() {
-    run_scale_test(
-        "lan",
-        LAN_NETWORK_SIZE,
-        LAN_THRESHOLD,
-        LAN_BASE_PORT,
-        NetworkShapingProfile::NONE,
-    )
-    .await;
-}
-
-#[tokio::test]
-#[serial_test::serial(scale_test)]
-async fn test_scale_dkg_pre_sign_wan() {
-    run_scale_test(
-        "wan",
-        WAN_NETWORK_SIZE,
-        WAN_THRESHOLD,
-        WAN_BASE_PORT,
-        WAN_SHAPING,
-    )
-    .await;
-}
-
-async fn run_scale_test(
-    label: &str,
-    network_size: usize,
-    threshold: usize,
-    base_port: u16,
-    shaping: NetworkShapingProfile,
-) {
     let bulletin = Arc::new(DummyBulletin::default());
-    let runtime_base_path = std::env::temp_dir().join(format!("orbis-node-scale-test-{label}"));
+    let runtime_base_path = std::env::temp_dir().join("orbis-node-scale-test");
     let _ = std::fs::remove_dir_all(&runtime_base_path);
     std::fs::create_dir_all(&runtime_base_path).expect("create scale-test runtime dir");
-    let network_shaping = (!shaping.is_noop()).then_some(shaping);
     // A fixed base port can collide with an unrelated process, or a leftover
     // process from a killed prior run of this same test — the gRPC bind
     // failure that would cause is swallowed inside `spawn_harness_node`'s
@@ -128,29 +64,29 @@ async fn run_scale_test(
     // stale port otherwise surfaces only as a 30s connect timeout with no
     // useful diagnostic. Resolve to an actually-free block up front instead.
     let base_port = find_free_port_block(
-        base_port,
-        u16::try_from(network_size).expect("network_size fits in u16"),
+        BASE_PORT,
+        u16::try_from(NETWORK_SIZE).expect("NETWORK_SIZE fits in u16"),
     );
 
-    let mut nodes: Vec<HarnessNodeHandle> = Vec::with_capacity(network_size);
-    let mut node_keys: Vec<String> = Vec::with_capacity(network_size);
-    for index in 1..=network_size {
-        let port = base_port + u16::try_from(index - 1).expect("network_size fits in u16");
+    let mut nodes: Vec<HarnessNodeHandle> = Vec::with_capacity(NETWORK_SIZE);
+    let mut node_keys: Vec<String> = Vec::with_capacity(NETWORK_SIZE);
+    for index in 1..=NETWORK_SIZE {
+        let port = base_port + u16::try_from(index - 1).expect("NETWORK_SIZE fits in u16");
         let db_path = runtime_base_path.join(format!("node-{index:03}.redb"));
         let params = HarnessNodeParams {
             grpc_addr: format!("127.0.0.1:{port}"),
             db_path: db_path.to_string_lossy().into_owned(),
-            password: format!("orbis-node-scale-test-{label}-{index}"),
+            password: format!("orbis-node-scale-test-{index}"),
             runtime_base_path: &runtime_base_path,
             policy_id: POLICY_ID.to_string(),
             node_controller_key: CONTROLLER_KEY.to_string(),
-            network_shaping,
+            network_shaping: None,
             // No PSS scheduler needed — this test only exercises DKG/PRE/SIGN.
             pss_poll_interval_secs: 0,
         };
         let handle = spawn_harness_node(params, bulletin.clone())
             .await
-            .unwrap_or_else(|error| panic!("[{label}] spawn scale-test node {index}: {error:#}"));
+            .unwrap_or_else(|error| panic!("spawn scale-test node {index}: {error:#}"));
         node_keys.push(handle.node_key.clone());
         nodes.push(handle);
     }
@@ -159,7 +95,7 @@ async fn run_scale_test(
     let payload = RingPayload {
         ring_pk: String::new(),
         peer_node_keys: node_keys,
-        threshold: threshold as u32,
+        threshold: THRESHOLD as u32,
         pss_interval: 86_400,
         policy_id: Some(POLICY_ID.to_string()),
         ..Default::default()
@@ -168,7 +104,7 @@ async fn run_scale_test(
         .set_ring(ring_id.clone(), payload)
         .expect("seed pending scale-test ring");
 
-    let mut info_clients = Vec::with_capacity(network_size);
+    let mut info_clients = Vec::with_capacity(NETWORK_SIZE);
     for node in &nodes {
         let channel = connect_with_retry(&node.grpc_endpoint, Duration::from_secs(30))
             .await
@@ -217,11 +153,11 @@ async fn run_scale_test(
                     && tokio::time::Instant::now() < start_dkg_deadline =>
             {
                 eprintln!(
-                    "[{label}] StartDkg attempt {attempt} hit transient error, retrying: {status}"
+                    "StartDkg attempt {attempt} hit transient error, retrying: {status}"
                 );
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
-            Err(status) => panic!("[{label}] start DKG (attempt {attempt}): {status}"),
+            Err(status) => panic!("start DKG (attempt {attempt}): {status}"),
         }
     }
 
@@ -266,7 +202,7 @@ async fn run_scale_test(
             }
             if last_progress.elapsed() >= Duration::from_secs(10) {
                 eprintln!(
-                    "[{label}] waiting for {network_size}-node DKG to finalize and converge ({:?} elapsed)",
+                    "waiting for {NETWORK_SIZE}-node DKG to finalize and converge ({:?} elapsed)",
                     started.elapsed()
                 );
                 last_progress = tokio::time::Instant::now();
@@ -277,13 +213,13 @@ async fn run_scale_test(
     .await
     .unwrap_or_else(|_| {
         panic!(
-            "[{label}] {network_size}-node DKG (threshold={threshold}) did not finalize and \
+            "{NETWORK_SIZE}-node DKG (threshold={THRESHOLD}) did not finalize and \
              converge within {DKG_DEADLINE:?}"
         )
     });
 
     eprintln!(
-        "[{label}] {network_size}-node DKG (threshold={threshold}) finalized in {:?}, ring_pk={ring_pk}",
+        "{NETWORK_SIZE}-node DKG (threshold={THRESHOLD}) finalized in {:?}, ring_pk={ring_pk}",
         started.elapsed()
     );
 
@@ -349,7 +285,7 @@ async fn run_scale_test(
         decrypted, plaintext,
         "PRE round-trip returned the wrong plaintext"
     );
-    eprintln!("[{label}] PRE round-trip verified across {network_size} nodes");
+    eprintln!("PRE round-trip verified across {NETWORK_SIZE} nodes");
 
     // ---- SIGN ceremony ----
     let sign_identity = "orbis-node-scale-test-signer".to_string();
@@ -394,7 +330,7 @@ async fn run_scale_test(
     SignImpl::new()
         .verify(&derived_pk, &message, &signature)
         .expect("SIGN signature failed verification");
-    eprintln!("[{label}] SIGN ceremony verified across {network_size} nodes");
+    eprintln!("SIGN ceremony verified across {NETWORK_SIZE} nodes");
 
     drop(nodes);
     let _ = std::fs::remove_dir_all(&runtime_base_path);
