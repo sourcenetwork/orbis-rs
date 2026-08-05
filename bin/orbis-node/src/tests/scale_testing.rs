@@ -63,8 +63,18 @@ const LAN_BASE_PORT: u16 = 56_000;
 /// committee than the LAN variant — WAN-shaped in-process networks were the
 /// less reliable case at scale in the orbis-bench investigation, and this
 /// exists as a nice-to-have correctness check, not a load-bearing CI gate.
-const WAN_NETWORK_SIZE: usize = 8;
-const WAN_THRESHOLD: usize = 5;
+/// The DKG-stall failures seen at `WAN_NETWORK_SIZE = 8` matched the same
+/// iroh connection-setup contention pattern LAN needed a node-count
+/// reduction to avoid (not the shaped delay/loss itself — that's cheap next
+/// to the 120s DKG prep budget); shrinking further here rather than
+/// loosening the shaping profile keeps this an actual WAN check. 3 spare
+/// nodes (not 2, as `5/3` gave): decaf377's signing scheme is interactive
+/// (an extra nonce-commitment round before signing, see
+/// `sign/v0/coordinator/mod.rs`), roughly doubling the WAN-loss-exposed
+/// messages per ceremony versus bls12-381, so it needs more absolute slack
+/// against `WAN_SHAPING`'s loss to hit the same reliability.
+const WAN_NETWORK_SIZE: usize = 6;
+const WAN_THRESHOLD: usize = 3;
 /// Clear of the LAN range above (56_000..56_020).
 const WAN_BASE_PORT: u16 = 56_100;
 const WAN_SHAPING: NetworkShapingProfile = NetworkShapingProfile {
