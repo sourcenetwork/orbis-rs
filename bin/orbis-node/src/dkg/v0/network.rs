@@ -15,7 +15,7 @@ use std::sync::{Arc, Weak};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
     DKG_ATTEMPT_TIMEOUT, DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
     DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
@@ -32,6 +32,9 @@ use crate::dkg::v0::coordinator::message_handlers::{
     preflight_commitment_message, preflight_reshare_participant_set,
 };
 use crate::dkg::v0::coordinator::refresh_health_check::{handle_result, preflight_result};
+use crate::dkg::v0::coordinator::reporting::{
+    spawn_pss_offline_observations, PssOfflineObservationSeed,
+};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -50,8 +53,8 @@ use crate::dkg::v0::session_state::{
 use crate::dkg::v0::transport::{
     self, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
     DkgControlMessage, DkgPrivateMessage, DkgPublicContribution, DkgPublicMessage,
-    DkgPublicPayload, MessageId, ParticipantRef, PhaseManifest, PrepareSession, PublicPhase,
-    PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
+    DkgPublicPayload, MessageId, ParticipantRef, PhaseManifest, PrepareSession, PssOfflineStage,
+    PublicPhase, PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::identity::{extract_node_part, is_self_peer_id, validate_peer_id};
@@ -76,6 +79,7 @@ const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 /// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
 const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
 const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
+const MAX_OFFLINE_RELAY_RECEIPTS: usize = 4096;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const PRIVATE_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
@@ -1089,6 +1093,285 @@ fn peer_matches_route(peer: &PeerId, route: &str) -> bool {
     hex::encode(peer.as_bytes()) == extract_node_part(route).to_lowercase()
 }
 
+fn participant_for_peer_route(
+    committees: &CeremonyConfig,
+    scope: CommitteeScope,
+    peer: &str,
+) -> Option<ParticipantRef> {
+    let peer = extract_node_part(peer).to_lowercase();
+    let committee = committees.committee(scope)?;
+    committee
+        .peer_routes
+        .iter()
+        .position(|route| extract_node_part(route).to_lowercase() == peer)
+        .and_then(|index| committee.node_keys.get(index))
+        .and_then(|node_key| committee.participant(scope, node_key))
+}
+
+fn participant_for_transport_peer(
+    committees: &CeremonyConfig,
+    peer: &str,
+) -> Option<ParticipantRef> {
+    participant_for_peer_route(committees, CommitteeScope::Next, peer)
+        .or_else(|| participant_for_peer_route(committees, CommitteeScope::Current, peer))
+}
+
+struct OfflineRelayRejectionGuard {
+    stage: PssOfflineStage,
+    accepted: bool,
+}
+
+impl OfflineRelayRejectionGuard {
+    fn new(stage: PssOfflineStage) -> Self {
+        Self {
+            stage,
+            accepted: false,
+        }
+    }
+
+    fn accept(&mut self) {
+        self.accepted = true;
+    }
+}
+
+impl Drop for OfflineRelayRejectionGuard {
+    fn drop(&mut self) {
+        if !self.accepted {
+            crate::metrics::record_pss_offline_observation(
+                self.stage.as_metric_label(),
+                "relay_rejected",
+            );
+        }
+    }
+}
+
+fn validate_offline_relay_claim(
+    committees: &CeremonyConfig,
+    leader_node_key: &str,
+    recipient_node_key: &str,
+    sender: &PeerId,
+    stage: PssOfflineStage,
+    accused: &[ParticipantRef],
+) -> Result<String> {
+    if !committees
+        .current
+        .node_keys
+        .iter()
+        .any(|key| key == recipient_node_key)
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay recipient is not a current signer".into(),
+        ));
+    }
+    let next = committees
+        .next
+        .as_ref()
+        .ok_or_else(|| DkgError::InvalidState("reshare relay has no next committee".into()))?;
+    let sender_node_key = next
+        .node_keys
+        .iter()
+        .zip(&next.peer_routes)
+        .find_map(|(node_key, route)| peer_matches_route(sender, route).then_some(node_key.clone()))
+        .ok_or_else(|| {
+            DkgError::Unauthorized("offline-candidate observer is not in the next committee".into())
+        })?;
+    if committees
+        .current
+        .node_keys
+        .iter()
+        .any(|key| key == &sender_node_key)
+    {
+        return Err(DkgError::Unauthorized(
+            "current committee members must report offline candidates directly".into(),
+        ));
+    }
+    if stage.requires_canonical_leader() && leader_node_key != sender_node_key {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate observer is not entitled to the leader-only stage".into(),
+        ));
+    }
+    if matches!(
+        stage,
+        PssOfflineStage::StartForward
+            | PssOfflineStage::RefreshResultStage
+            | PssOfflineStage::RefreshResultCommit
+    ) {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate stage is inconsistent with a pure-new reshare observer".into(),
+        ));
+    }
+    if accused.is_empty() || accused.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay size is outside the committee bound".into(),
+        ));
+    }
+    let mut canonical_accused = accused.to_vec();
+    canonical_accused.sort_unstable();
+    canonical_accused.dedup();
+    if canonical_accused != accused
+        || canonical_accused
+            .iter()
+            .any(|participant| committees.route(*participant).is_none())
+        || canonical_accused
+            .iter()
+            .any(|participant| committees.node_key(*participant) == Some(&sender_node_key))
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate participants are noncanonical or outside the ceremony".into(),
+        ));
+    }
+    let leader = next
+        .participant(CommitteeScope::Next, leader_node_key)
+        .ok_or_else(|| DkgError::InvalidState("reshare leader assignment is missing".into()))?;
+    match stage {
+        PssOfflineStage::TopologyAck
+        | PssOfflineStage::PublicContribution
+        | PssOfflineStage::PublicRepairLeader
+            if canonical_accused.as_slice() != [leader] =>
+        {
+            return Err(DkgError::Unauthorized(
+                "offline-candidate stage may accuse only the canonical leader".into(),
+            ));
+        }
+        PssOfflineStage::ReshareShareAck
+            if canonical_accused.as_slice() != [ParticipantRef::next(1)] =>
+        {
+            return Err(DkgError::Unauthorized(
+                "reshare share-ACK observation may accuse only the selector".into(),
+            ));
+        }
+        _ => {}
+    }
+    Ok(sender_node_key)
+}
+
+async fn validate_offline_relay_transition<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ceremony_id: CeremonyId,
+    kind: &SessionKind,
+    ring_id: &str,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let SessionKind::Reshare {
+        ring_pk_hex,
+        new_peer_node_keys,
+        new_threshold,
+        bulletin_post_id,
+    } = kind
+    else {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay is only valid for reshare".into(),
+        ));
+    };
+    if bulletin_post_id != ring_id {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay ring binding is inconsistent".into(),
+        ));
+    }
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (pending_keys, pending_threshold) = pending_reshare_parameters(&ring, ring_pk_hex)?;
+    if pending_keys != *new_peer_node_keys || pending_threshold != *new_threshold {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay targets a superseded reshare transition".into(),
+        ));
+    }
+    let expected_ceremony = CeremonyId(derive_reshare_session_id(
+        ring_pk_hex,
+        ring_id,
+        &ring.peer_node_keys,
+        &pending_keys,
+        pending_threshold,
+    )?);
+    if expected_ceremony != ceremony_id {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay ceremony binding is stale".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn private_failure_is_unreachable(io_failed: bool, busy_retry_after: Option<Duration>) -> bool {
+    io_failed && busy_retry_after.is_none()
+}
+
+fn terminal_offline_candidate(
+    last_failure_was_unreachable: bool,
+    peer_proved_reachable: bool,
+) -> bool {
+    last_failure_was_unreachable && !peer_proved_reachable
+}
+
+pub(crate) async fn spawn_pss_offline_for_attempt<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    stage: PssOfflineStage,
+    accused: impl IntoIterator<Item = ParticipantRef>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let accused: Vec<_> = accused.into_iter().collect();
+    if accused.is_empty() {
+        return;
+    }
+    let snapshot = state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            (
+                session.kind.clone(),
+                session.routing.ring_id.clone(),
+                session.protocol_version,
+                session.transport.committees.clone(),
+            )
+        })
+        .await;
+    let Ok((kind, ring_id, protocol_version, Some(committees))) = snapshot else {
+        crate::metrics::record_pss_offline_observation(stage.as_metric_label(), "seed_missing");
+        return;
+    };
+    spawn_pss_offline_observations(
+        state.clone(),
+        routes,
+        PssOfflineObservationSeed::new(
+            attempt.ceremony_id,
+            Some(attempt.attempt_id),
+            kind,
+            ring_id,
+            protocol_version,
+            stage,
+            committees,
+            accused,
+        ),
+    );
+}
+
+#[derive(Debug)]
+pub(crate) struct PeerDeliveryFailure {
+    error: DkgError,
+    unreachable: bool,
+    reachable: bool,
+}
+
+impl PeerDeliveryFailure {
+    pub(crate) fn is_unreachable(&self) -> bool {
+        self.unreachable
+    }
+
+    pub(crate) fn error(&self) -> &DkgError {
+        &self.error
+    }
+
+    pub(crate) fn proves_reachable(&self) -> bool {
+        self.reachable
+    }
+}
+
 fn leader_bootstrap(
     local_node_key: &str,
     leader_node_key: &str,
@@ -1248,8 +1531,59 @@ async fn control_request_with_timeout<D>(
 where
     D: CoordinatorDkg,
 {
+    control_request_with_timeout_classified(state, routes, peer, request, response_timeout)
+        .await
+        .map_err(PeerRequestFailure::into_error)
+}
+
+/// A direct request can fail before a peer is reached, after the peer has
+/// demonstrably replied, or because of local work. Keeping those cases typed
+/// prevents terminal PSS paths from treating protocol errors or local pressure
+/// as evidence that a peer is offline.
+#[derive(Debug)]
+enum PeerRequestFailure {
+    Unreachable(DkgError),
+    Reachable(DkgError),
+    Local(DkgError),
+}
+
+impl PeerRequestFailure {
+    fn is_unreachable(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
+
+    fn error(&self) -> &DkgError {
+        match self {
+            Self::Unreachable(error) | Self::Reachable(error) | Self::Local(error) => error,
+        }
+    }
+
+    fn proves_reachable(&self) -> bool {
+        matches!(self, Self::Reachable(_))
+    }
+
+    fn into_error(self) -> DkgError {
+        match self {
+            Self::Unreachable(error) | Self::Reachable(error) | Self::Local(error) => error,
+        }
+    }
+}
+
+async fn control_request_with_timeout_classified<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    peer: &str,
+    request: DkgControlMessage,
+    response_timeout: Duration,
+) -> std::result::Result<DkgControlMessage, PeerRequestFailure>
+where
+    D: CoordinatorDkg,
+{
     crate::metrics::record_dkg_transport_message("control", request.metric_label(), "sent");
     let timeout_error = control_timeout_message(peer, &request, response_timeout);
+    let encoded = transport::encode(&request)
+        .map_err(DkgError::Serialization)
+        .map_err(PeerRequestFailure::Local)?;
     let mut attempt_connection = None;
     let exchange = timeout(response_timeout, async {
         let (stream, parent_connection) = state
@@ -1258,7 +1592,6 @@ where
             .await
             .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
         attempt_connection = Some(parent_connection);
-        let encoded = transport::encode(&request).map_err(DkgError::Serialization)?;
         stream
             .send(Message::new(encoded, routes.dkg_control_alpn.to_vec()))
             .await
@@ -1280,7 +1613,7 @@ where
                 &error,
             )
             .await;
-            return Err(error);
+            return Err(PeerRequestFailure::Unreachable(error));
         }
         Err(_) => {
             let error = DkgError::NetworkConnection(timeout_error);
@@ -1292,13 +1625,16 @@ where
                 &error,
             )
             .await;
-            return Err(error);
+            return Err(PeerRequestFailure::Unreachable(error));
         }
     };
     let response = transport::decode(&response.data, MAX_CONTROL_MESSAGE_BYTES)
-        .map_err(DkgError::Deserialization)?;
+        .map_err(DkgError::Deserialization)
+        .map_err(PeerRequestFailure::Reachable)?;
     match response {
-        DkgControlMessage::Error { message, .. } => Err(DkgError::ProtocolError(message)),
+        DkgControlMessage::Error { message, .. } => Err(PeerRequestFailure::Reachable(
+            DkgError::ProtocolError(message),
+        )),
         response => Ok(response),
     }
 }
@@ -1339,13 +1675,13 @@ fn retryable_control_error(error: &DkgError) -> bool {
     )
 }
 
-async fn retry_preparation_control<D>(
+async fn retry_preparation_control_classified<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     peer: &str,
     request: DkgControlMessage,
     deadline: Instant,
-) -> Result<DkgControlMessage>
+) -> std::result::Result<DkgControlMessage, PeerRequestFailure>
 where
     D: CoordinatorDkg,
 {
@@ -1354,15 +1690,17 @@ where
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Err(DkgError::NetworkCommunication(format!(
+            return Err(PeerRequestFailure::Unreachable(
+                DkgError::NetworkCommunication(format!(
                 "{operation} exceeded the preparation deadline for peer {} ceremony={} attempt={}",
                 extract_node_part(peer),
                 ceremony_id.map_or_else(|| "-".into(), |id| id.0.to_string()),
                 attempt_id.map_or_else(|| "-".into(), |id| hex::encode(&id.0[..6])),
-            )));
+                )),
+            ));
         }
         let remaining = deadline.saturating_duration_since(now);
-        match control_request_with_timeout(
+        match control_request_with_timeout_classified(
             state,
             routes,
             peer,
@@ -1372,10 +1710,10 @@ where
         .await
         {
             Ok(response) => return Ok(response),
-            Err(error) if retryable_control_error(&error) => {
+            Err(error @ PeerRequestFailure::Unreachable(_)) => {
                 crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
-                    %error,
+                    error = %error.error(),
                     operation,
                     peer = %extract_node_part(peer),
                     "preparation control request failed; retrying"
@@ -2122,6 +2460,95 @@ where
                 idempotency_key,
             })
         }
+        DkgControlMessage::RelayOfflineCandidates {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            stage,
+            accused,
+        } => {
+            let mut relay_rejection = OfflineRelayRejectionGuard::new(stage);
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let receipt = {
+                let now = Instant::now();
+                let mut receipts = state.dkg_offline_relay_receipts.lock().await;
+                receipts.retain(|_, receipt| {
+                    now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT
+                });
+                receipts.get(&attempt).cloned().ok_or_else(|| {
+                    DkgError::Unauthorized(
+                        "offline-candidate relay targets an unknown or expired attempt".into(),
+                    )
+                })?
+            };
+            let kind = receipt.kind;
+            let ring_id = receipt.ring_id;
+            let protocol_version = receipt.protocol_version;
+            let committees = receipt.committees;
+            let leader_node_key = receipt.leader_node_key;
+            validate_offline_relay_transition(&state, routes, ceremony_id, &kind, &ring_id).await?;
+            validate_offline_relay_claim(
+                &committees,
+                &leader_node_key,
+                &state.node_key,
+                sender,
+                stage,
+                &accused,
+            )?;
+            let canonical_accused = accused;
+            let expected_key = transport::derive_offline_candidates_id(
+                ceremony_id,
+                attempt_id,
+                sender.as_bytes(),
+                stage,
+                &canonical_accused,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate idempotency key mismatch".into(),
+                ));
+            }
+            let claimed = {
+                let mut receipts = state.dkg_offline_relay_receipts.lock().await;
+                let receipt = receipts.get_mut(&attempt).ok_or_else(|| {
+                    DkgError::Unauthorized("offline-candidate relay receipt expired".into())
+                })?;
+                receipt.processed.insert(idempotency_key)
+            };
+            if !claimed {
+                relay_rejection.accept();
+                return Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            spawn_pss_offline_observations(
+                state.clone(),
+                routes,
+                PssOfflineObservationSeed::new(
+                    ceremony_id,
+                    Some(attempt_id),
+                    kind,
+                    ring_id,
+                    protocol_version,
+                    stage,
+                    committees,
+                    canonical_accused,
+                ),
+            );
+            crate::metrics::record_pss_offline_observation(
+                stage.as_metric_label(),
+                "relay_accepted",
+            );
+            relay_rejection.accept();
+            Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
         DkgControlMessage::GetPublicContribution {
             ceremony_id,
             attempt_id,
@@ -2572,7 +2999,7 @@ where
         .map_err(DkgError::Unauthorized)?;
     let leader_peer = next_routes
         .iter()
-        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.as_str()))
+        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.clone()))
         .ok_or_else(|| DkgError::InvalidState("next-committee leader route is missing".into()))?;
     crate::metrics::record_dkg_transport_event("control", "reshare_start_forwarded");
     tracing::info!(
@@ -2580,20 +3007,53 @@ where
         leader = %leader,
         "forwarding pending reshare to canonical next-committee leader"
     );
+    let next_assignments =
+        canonical_node_id_assignments_from_node_keys(&next_keys).map_err(DkgError::InvalidInput)?;
+    let leader_participant = next_assignments
+        .get(&leader)
+        .copied()
+        .map(ParticipantRef::next)
+        .ok_or_else(|| DkgError::InvalidState("next leader assignment is missing".into()))?;
+    let kind = SessionKind::Reshare {
+        ring_pk_hex: ring_pk.clone(),
+        new_peer_node_keys: next_keys,
+        new_threshold: next_threshold,
+        bulletin_post_id: ring_id.clone(),
+    };
     let forwarding_deadline =
         Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
-    match retry_preparation_control(
+    let response = retry_preparation_control_classified(
         &state,
         routes,
-        leader_peer,
+        &leader_peer,
         DkgControlMessage::StartReshare {
-            ring_id,
+            ring_id: ring_id.clone(),
             expected_ring_pk: ring_pk,
         },
         forwarding_deadline,
     )
-    .await?
-    {
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        kind,
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, leader, leader_peer)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
         DkgControlMessage::ReshareStartAccepted {
             ceremony_id,
             attempt_id,
@@ -2931,36 +3391,72 @@ where
         return coordinate_refresh(state, routes, ring_id, ring_pk).await;
     }
 
-    let leader_routes =
-        resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
-            .await
-            .map_err(DkgError::Unauthorized)?;
-    let leader_route = leader_routes
-        .first()
-        .map(|route| route.peer_id.as_str())
+    let resolved = resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_route = resolved
+        .iter()
+        .find_map(|route| (route.node_key == canonical_leader).then_some(route.peer_id.clone()))
         .ok_or_else(|| {
             DkgError::InvalidState("canonical refresh leader route is missing".into())
         })?;
+    let bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &ring_pk)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let ceremony = CeremonyId(derive_refresh_session_id(
+        &ring_pk,
+        &ring.peer_node_keys,
+        ring.threshold,
+        &bundle.public_polynomial,
+    )?);
+    let assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let leader_participant = assignments
+        .get(&canonical_leader)
+        .copied()
+        .map(ParticipantRef::current)
+        .ok_or_else(|| DkgError::InvalidState("refresh leader assignment is missing".into()))?;
     crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
     let forwarding_deadline =
         Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
-    match retry_preparation_control(
+    let response = retry_preparation_control_classified(
         &state,
         routes,
-        leader_route,
+        &leader_route,
         DkgControlMessage::StartRefresh {
-            ring_id,
-            expected_ring_pk: ring_pk,
+            ring_id: ring_id.clone(),
+            expected_ring_pk: ring_pk.clone(),
             requester_node_key: state.node_key.clone(),
         },
         forwarding_deadline,
     )
-    .await?
-    {
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        SessionKind::Refresh {
+                            ring_pk_hex: ring_pk,
+                        },
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, canonical_leader, leader_route)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
         DkgControlMessage::RefreshStartAccepted {
             ceremony_id,
             attempt_id,
-        } => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        } if ceremony_id == ceremony => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
         DkgControlMessage::RefreshNotDue => Ok(RefreshStartOutcome::NotDue),
         other => Err(DkgError::ProtocolError(format!(
             "canonical refresh leader returned unexpected start response: {other:?}"
@@ -3083,6 +3579,36 @@ fn reshare_preparation_error_action(
     }
 }
 
+fn reshare_preparation_candidates(
+    prepare: &PrepareSession,
+    route_ids: impl IntoIterator<Item = String>,
+) -> Vec<ParticipantRef> {
+    let mut candidates = Vec::new();
+    for route_id in route_ids {
+        for scope in [CommitteeScope::Current, CommitteeScope::Next] {
+            if let Some(committee) = prepare.committees.committee(scope) {
+                if let Some((index, _)) = committee
+                    .peer_routes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, route)| extract_node_part(route).to_lowercase() == route_id)
+                {
+                    if let Some(participant) = committee
+                        .node_keys
+                        .get(index)
+                        .and_then(|node_key| committee.participant(scope, node_key))
+                    {
+                        candidates.push(participant);
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
 async fn prepare_transport_participants<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -3091,6 +3617,7 @@ async fn prepare_transport_participants<D>(
 ) -> Result<(Vec<String>, Vec<ParticipantRef>)>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let all_routes = prepare.participant_routes();
     if prepare.committees.next.is_none() {
@@ -3103,21 +3630,56 @@ where
             let peer = peer.clone();
             let prepare = prepare.clone();
             tasks.spawn(async move {
-                let response = retry_preparation_control(
+                let response = retry_preparation_control_classified(
                     &state,
                     routes,
                     &peer,
                     DkgControlMessage::Prepare(Box::new(prepare)),
                     deadline,
                 )
-                .await?;
-                Ok::<_, DkgError>((peer, response))
+                .await;
+                (peer, response)
             });
         }
+        let mut first_error = None;
+        let mut offline = Vec::new();
         while let Some(result) = tasks.join_next().await {
             let (peer, response) =
-                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
-            validate_prepared_response(prepare, &peer, response)?;
+                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            match response {
+                Ok(response) => {
+                    if let Err(error) = validate_prepared_response(prepare, &peer, response) {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                Err(error) => {
+                    if error.is_unreachable() {
+                        if let Some(participant) = participant_for_peer_route(
+                            &prepare.committees,
+                            CommitteeScope::Current,
+                            &peer,
+                        ) {
+                            offline.push(participant);
+                        }
+                    }
+                    first_error.get_or_insert_with(|| error.into_error());
+                }
+            }
+        }
+        if !offline.is_empty() {
+            spawn_pss_offline_observations(
+                state.clone(),
+                routes,
+                PssOfflineObservationSeed::from_prepare(
+                    prepare,
+                    routes.version,
+                    PssOfflineStage::Prepare,
+                    offline,
+                ),
+            );
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         let mut dealers: Vec<_> = prepare
             .committees
@@ -3165,6 +3727,7 @@ where
         .map(|route| normalize(route))
         .collect();
     let mut excluded_old = BTreeSet::new();
+    let mut unreachable = BTreeSet::new();
     let mut grace_started = None;
 
     loop {
@@ -3185,6 +3748,25 @@ where
         }
         if now >= deadline {
             let shortfall = (current.threshold as usize).saturating_sub(ready_old);
+            let candidates = reshare_preparation_candidates(
+                prepare,
+                unreachable
+                    .difference(&prepared)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            if !candidates.is_empty() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::from_prepare(
+                        prepare,
+                        routes.version,
+                        PssOfflineStage::Prepare,
+                        candidates,
+                    ),
+                );
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "reshare preparation expired: missing_new=[{}], old_dealer_shortfall={shortfall}",
                 missing_new
@@ -3209,16 +3791,34 @@ where
                 (
                     route_id,
                     peer.clone(),
-                    control_request_with_timeout(&state, routes, &peer, request, request_timeout)
-                        .await,
+                    control_request_with_timeout_classified(
+                        &state,
+                        routes,
+                        &peer,
+                        request,
+                        request_timeout,
+                    )
+                    .await,
                 )
             });
         }
         while let Some(result) = round.join_next().await {
             let (route_id, peer, response) =
                 result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response =
-                response.and_then(|response| validate_prepared_response(prepare, &peer, response));
+            let response = match response {
+                Ok(response) => {
+                    unreachable.remove(&route_id);
+                    validate_prepared_response(prepare, &peer, response)
+                }
+                Err(error) => {
+                    if error.is_unreachable() {
+                        unreachable.insert(route_id.clone());
+                    } else {
+                        unreachable.remove(&route_id);
+                    }
+                    Err(error.into_error())
+                }
+            };
             match response {
                 Ok(()) => {
                     prepared.insert(route_id);
@@ -3247,6 +3847,26 @@ where
         }
         sleep(DKG_TOPOLOGY_PROBE_INTERVAL.min(deadline.saturating_duration_since(Instant::now())))
             .await;
+    }
+
+    let tolerated_offline = reshare_preparation_candidates(
+        prepare,
+        unreachable
+            .difference(&prepared)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    if !tolerated_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                prepare,
+                routes.version,
+                PssOfflineStage::Prepare,
+                tolerated_offline,
+            ),
+        );
     }
 
     let mut active_dealers: Vec<_> = current_routes
@@ -3435,23 +4055,34 @@ where
         }
     };
     if !missing.is_empty() {
+        let responded = state
+            .dkg_session_state
+            .topology_probe_responses(&session_id, attempt_id)
+            .await
+            .ok_or_else(|| DkgError::InvalidState("topology probe attempt disappeared".into()))?;
         let missing_routes: Vec<String> = peer_ids
             .iter()
             .filter(|peer| missing.contains(&extract_node_part(peer).to_lowercase()))
             .cloned()
             .collect();
-        // TODO: this only logs today. `missing_routes` already has everything
-        // `coordinator::reporting::resolve_pss_offline_report_context` plus
-        // `queue_pss_offline_report_for_peer` need (peer route, prepare.kind,
-        // prepare.ring_id, session_id) — resolving the context once and then
-        // spawning a report per missing peer here, same pattern as
-        // `report_abandoned_pss_session`, should be a small addition, not a
-        // new detection mechanism. Needed because refresh/reshare require
-        // every current member (refresh) or every next-committee receiver
-        // (reshare) to ack before activation, and today only the later
-        // Phase1Commitments/Phase2Shares stall path (G1) produces a
-        // `node_offline` report — a member unreachable from the very start
-        // never gets past this barrier, so it's never reported at all.
+        let offline_participants = missing_routes.iter().filter_map(|peer| {
+            if responded.contains(&extract_node_part(peer).to_lowercase()) {
+                return None;
+            }
+            participant_for_peer_route(&prepare.committees, CommitteeScope::Next, peer).or_else(
+                || participant_for_peer_route(&prepare.committees, CommitteeScope::Current, peer),
+            )
+        });
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::TopologyProbe,
+                offline_participants,
+            ),
+        );
         tracing::error!(
             session_id,
             attempt_id = %hex::encode(attempt_id.0),
@@ -3497,7 +4128,7 @@ where
         let peer = peer.clone();
         let active_dealers = active_dealers.clone();
         activations.spawn(async move {
-            retry_preparation_control(
+            let result = retry_preparation_control_classified(
                 &state,
                 routes,
                 &peer,
@@ -3509,24 +4140,54 @@ where
                 },
                 deadline,
             )
-            .await
+            .await;
+            (peer, result)
         });
     }
+    let mut activation_error = None;
+    let mut activation_offline = Vec::new();
     while let Some(result) = activations.join_next().await {
-        match result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?? {
-            DkgControlMessage::Activated {
+        let (peer, response) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        match response {
+            Ok(DkgControlMessage::Activated {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
-            } if got_ceremony == ceremony_id
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
                 && got_activation == activation_digest => {}
-            response => {
-                return Err(DkgError::ProtocolError(format!(
-                    "invalid activation response: {response:?}"
-                )))
+            Ok(response) => {
+                activation_error.get_or_insert_with(|| {
+                    DkgError::ProtocolError(format!("invalid activation response: {response:?}"))
+                });
+            }
+            Err(error) => {
+                if error.is_unreachable() {
+                    if let Some(participant) =
+                        participant_for_transport_peer(&prepare.committees, &peer)
+                    {
+                        activation_offline.push(participant);
+                    }
+                }
+                activation_error.get_or_insert_with(|| error.into_error());
             }
         }
+    }
+    if !activation_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::Activate,
+                activation_offline,
+            ),
+        );
+    }
+    if let Some(error) = activation_error {
+        return Err(error);
     }
 
     match state
@@ -3559,7 +4220,7 @@ where
         let state = state.clone();
         let peer = peer.clone();
         beginnings.spawn(async move {
-            retry_preparation_control(
+            let result = retry_preparation_control_classified(
                 &state,
                 routes,
                 &peer,
@@ -3570,24 +4231,54 @@ where
                 },
                 deadline,
             )
-            .await
+            .await;
+            (peer, result)
         });
     }
+    let mut begin_error = None;
+    let mut begin_offline = Vec::new();
     while let Some(result) = beginnings.join_next().await {
-        match result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?? {
-            DkgControlMessage::Begun {
+        let (peer, response) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        match response {
+            Ok(DkgControlMessage::Begun {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
-            } if got_ceremony == ceremony_id
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
                 && got_activation == activation_digest => {}
-            response => {
-                return Err(DkgError::ProtocolError(format!(
-                    "invalid begin response: {response:?}"
-                )))
+            Ok(response) => {
+                begin_error.get_or_insert_with(|| {
+                    DkgError::ProtocolError(format!("invalid begin response: {response:?}"))
+                });
+            }
+            Err(error) => {
+                if error.is_unreachable() {
+                    if let Some(participant) =
+                        participant_for_transport_peer(&prepare.committees, &peer)
+                    {
+                        begin_offline.push(participant);
+                    }
+                }
+                begin_error.get_or_insert_with(|| error.into_error());
             }
         }
+    }
+    if !begin_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::Begin,
+                begin_offline,
+            ),
+        );
+    }
+    if let Some(error) = begin_error {
+        return Err(error);
     }
     crate::metrics::record_dkg_control_readiness(
         ceremony_kind,
@@ -3800,6 +4491,36 @@ where
         )));
     }
     if matches!(outcome, TransportConfigureOutcome::Configured) {
+        if !matches!(prepare.kind, SessionKind::Fresh) {
+            let now = Instant::now();
+            let mut receipts = state.dkg_offline_relay_receipts.lock().await;
+            receipts.retain(|attempt, receipt| {
+                now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT
+                    && (attempt.ceremony_id != prepare.ceremony_id
+                        || attempt.attempt_id == prepare.attempt_id)
+            });
+            if receipts.len() >= MAX_OFFLINE_RELAY_RECEIPTS {
+                if let Some(oldest) = receipts
+                    .iter()
+                    .min_by_key(|(_, receipt)| receipt.recorded_at)
+                    .map(|(attempt, _)| *attempt)
+                {
+                    receipts.remove(&oldest);
+                }
+            }
+            receipts.insert(
+                AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+                DkgOfflineRelayReceipt {
+                    kind: prepare.kind.clone(),
+                    ring_id: prepare.ring_id.clone(),
+                    protocol_version: routes.version,
+                    committees: prepare.committees.clone(),
+                    leader_node_key: prepare.leader_node_key.clone(),
+                    recorded_at: now,
+                    processed: Default::default(),
+                },
+            );
+        }
         let task = tokio::spawn(topic_listener(
             state.clone(),
             routes,
@@ -3827,6 +4548,7 @@ async fn send_topology_probe_ack<D>(
 ) -> Result<[u8; 32]>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let deadline = state
         .dkg_session_state
@@ -3840,6 +4562,7 @@ where
         nonce,
     };
     let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
+    let mut last_failure_was_unreachable = false;
     loop {
         if state
             .dkg_session_state
@@ -3853,12 +4576,28 @@ where
         }
         let now = Instant::now();
         if now >= deadline {
+            if last_failure_was_unreachable {
+                if let Some(leader) =
+                    participant_for_transport_peer(&prepare.committees, &leader_route)
+                {
+                    spawn_pss_offline_observations(
+                        state.clone(),
+                        routes,
+                        PssOfflineObservationSeed::from_prepare(
+                            &prepare,
+                            routes.version,
+                            PssOfflineStage::TopologyAck,
+                            [leader],
+                        ),
+                    );
+                }
+            }
             return Err(DkgError::NetworkCommunication(
                 "topology acknowledgement exceeded the preparation deadline".into(),
             ));
         }
         let remaining = deadline.saturating_duration_since(now);
-        match control_request_with_timeout(
+        match control_request_with_timeout_classified(
             &state,
             routes,
             &leader_route,
@@ -3882,15 +4621,16 @@ where
                     "leader returned invalid topology acknowledgement response: {response:?}"
                 )));
             }
-            Err(error) if retryable_control_error(&error) => {
+            Err(error @ PeerRequestFailure::Unreachable(_)) => {
+                last_failure_was_unreachable = true;
                 crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
-                    %error,
+                    error = %error.error(),
                     session_id = prepare.ceremony_id.0,
                     "topology acknowledgement failed; retrying identical bytes"
                 );
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into_error()),
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -4720,8 +5460,14 @@ type PublicRepairResult<T> = std::result::Result<T, PublicRepairFailure>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LeaderPublicRepairOutcome {
     Complete,
-    Incomplete { retained: usize },
-    Unavailable { retained: usize, detail: String },
+    Incomplete {
+        retained: usize,
+    },
+    Unavailable {
+        retained: usize,
+        detail: String,
+        offline: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -4733,6 +5479,7 @@ enum OriginPublicRepairOutcome {
     Unavailable {
         origin: ParticipantRef,
         detail: String,
+        offline: bool,
     },
     Violation(PublicProtocolViolation),
     Error(DkgError),
@@ -4746,7 +5493,12 @@ enum RepairContributionSource {
 
 #[async_trait]
 trait PublicRepairRequester: Send + Sync {
-    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage>;
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> PublicRepairRequestOutcome;
+}
+
+struct PublicRepairRequestOutcome {
+    result: Result<DkgControlMessage>,
+    offline: bool,
 }
 
 struct NetworkPublicRepairRequester<D>
@@ -4762,8 +5514,8 @@ impl<D> PublicRepairRequester for NetworkPublicRepairRequester<D>
 where
     D: CoordinatorDkg,
 {
-    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage> {
-        control_request_with_timeout(
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> PublicRepairRequestOutcome {
+        match control_request_with_timeout_classified(
             &self.state,
             self.routes,
             peer,
@@ -4771,6 +5523,16 @@ where
             PEER_RESPONSE_TIMEOUT,
         )
         .await
+        {
+            Ok(response) => PublicRepairRequestOutcome {
+                result: Ok(response),
+                offline: false,
+            },
+            Err(error) => PublicRepairRequestOutcome {
+                offline: error.is_unreachable(),
+                result: Err(error.into_error()),
+            },
+        }
     }
 }
 
@@ -5018,7 +5780,7 @@ where
                 ),
             ));
         }
-        let response = match requester
+        let request_outcome = requester
             .request(
                 leader_peer,
                 DkgControlMessage::GetPublicPhase {
@@ -5028,13 +5790,15 @@ where
                     after,
                 },
             )
-            .await
-        {
+            .await;
+        let offline = request_outcome.offline;
+        let response = match request_outcome.result {
             Ok(response) => response,
             Err(error) if retryable_public_repair_control_error(&error) => {
                 return Ok(LeaderPublicRepairOutcome::Unavailable {
                     retained: public_repair_retained_count(state, prepare, phase).await,
                     detail: error.to_string(),
+                    offline,
                 });
             }
             Err(DkgError::Deserialization(error)) => {
@@ -5194,7 +5958,7 @@ where
     D: CoordinatorDkg,
     R: PublicRepairRequester + ?Sized,
 {
-    let response = match requester
+    let request_outcome = requester
         .request(
             &origin_peer,
             DkgControlMessage::GetPublicContribution {
@@ -5204,13 +5968,15 @@ where
                 origin,
             },
         )
-        .await
-    {
+        .await;
+    let offline = request_outcome.offline;
+    let response = match request_outcome.result {
         Ok(response) => response,
         Err(error) if retryable_public_repair_control_error(&error) => {
             return OriginPublicRepairOutcome::Unavailable {
                 origin,
                 detail: error.to_string(),
+                offline,
             };
         }
         Err(DkgError::Deserialization(error)) => {
@@ -5355,6 +6121,7 @@ where
     }
 
     let mut verified = BTreeMap::new();
+    let mut unavailable_origins = Vec::new();
     while let Some(outcome) = requests.next().await {
         match outcome {
             OriginPublicRepairOutcome::Verified(contribution) => {
@@ -5370,7 +6137,14 @@ where
                     "origin has not retained the requested public contribution"
                 );
             }
-            OriginPublicRepairOutcome::Unavailable { origin, detail } => {
+            OriginPublicRepairOutcome::Unavailable {
+                origin,
+                detail,
+                offline,
+            } => {
+                if offline {
+                    unavailable_origins.push(origin);
+                }
                 crate::metrics::record_dkg_transport_event("public", "origin_repair_unavailable");
                 tracing::warn!(
                     session_id = prepare.ceremony_id.0,
@@ -5388,6 +6162,19 @@ where
                 return Err(PublicRepairFailure::Error(error));
             }
         }
+    }
+
+    if !unavailable_origins.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                prepare,
+                routes.version,
+                PssOfflineStage::PublicRepairOrigin,
+                unavailable_origins,
+            ),
+        );
     }
 
     let verified: Vec<_> = verified.into_values().collect();
@@ -5467,7 +6254,28 @@ where
                 "leader repair completed without every expected origin; using direct origins"
             );
         }
-        LeaderPublicRepairOutcome::Unavailable { retained, detail } => {
+        LeaderPublicRepairOutcome::Unavailable {
+            retained,
+            detail,
+            offline,
+        } => {
+            if *offline {
+                if let Some(leader) = participant_for_transport_peer(
+                    &prepare.committees,
+                    prepare.leader_route().unwrap_or_default(),
+                ) {
+                    spawn_pss_offline_observations(
+                        state.clone(),
+                        routes,
+                        PssOfflineObservationSeed::from_prepare(
+                            prepare,
+                            routes.version,
+                            PssOfflineStage::PublicRepairLeader,
+                            [leader],
+                        ),
+                    );
+                }
+            }
             crate::metrics::record_dkg_transport_event("public", "leader_repair_fallback");
             tracing::warn!(
                 session_id = prepare.ceremony_id.0,
@@ -6637,7 +7445,24 @@ async fn send_refresh_result_barrier<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
+    let attempt_key = AttemptKey::new(ceremony_id, attempt_id);
+    let stage = match step {
+        "stage" => PssOfflineStage::RefreshResultStage,
+        "commit" => PssOfflineStage::RefreshResultCommit,
+        _ => {
+            return Err(DkgError::InvalidInput(
+                "unknown refresh-result barrier step".into(),
+            ))
+        }
+    };
+    let committees = state
+        .dkg_session_state
+        .with_attempt_state(attempt_key, |session| session.transport.committees.clone())
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt_key, error))?
+        .ok_or_else(|| DkgError::InvalidState("refresh barrier committees are missing".into()))?;
     let mut requests = JoinSet::new();
     for peer in peers {
         let state = state.clone();
@@ -6645,55 +7470,64 @@ where
         requests.spawn(async move {
             let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
             let mut attempt = 0u32;
+            let mut last_failure_was_unreachable = false;
+            let mut peer_proved_reachable = false;
             loop {
                 attempt = attempt.saturating_add(1);
                 let now = Instant::now();
                 if now >= hard_deadline {
-                    return Err(DkgError::NetworkCommunication(format!(
-                        "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
-                    )));
+                    return (
+                        peer.clone(),
+                        Err(DkgError::NetworkCommunication(format!(
+                            "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
+                        ))),
+                        terminal_offline_candidate(
+                            last_failure_was_unreachable,
+                            peer_proved_reachable,
+                        ),
+                    );
                 }
                 let remaining = hard_deadline.saturating_duration_since(now);
-                let response = timeout(
-                    remaining,
-                    control_request_with_timeout(
-                        &state,
-                        routes,
-                        &peer,
-                        request.clone(),
-                        PEER_RESPONSE_TIMEOUT,
-                    ),
+                let response = control_request_with_timeout_classified(
+                    &state,
+                    routes,
+                    &peer,
+                    request.clone(),
+                    PEER_RESPONSE_TIMEOUT.min(remaining),
                 )
                 .await;
                 match response {
-                    Ok(Ok(DkgControlMessage::PublicContributionAck {
+                    Ok(DkgControlMessage::PublicContributionAck {
                         ceremony_id: got_ceremony,
                         attempt_id: got_attempt,
                         message_id: got_message,
-                    })) if got_ceremony == ceremony_id
+                    }) if got_ceremony == ceremony_id
                         && got_attempt == attempt_id
                         && got_message == message_id =>
                     {
-                        return Ok(())
+                        return (peer, Ok(()), false)
                     }
-                    Ok(Ok(other)) => tracing::warn!(
-                        peer = %peer,
-                        step,
-                        attempt,
-                        response = ?other,
-                        "refresh-result barrier received an invalid acknowledgement"
-                    ),
-                    Ok(Err(error)) => tracing::warn!(
-                        peer = %peer,
-                        step,
-                        attempt,
-                        %error,
-                        "refresh-result barrier control request failed; retrying"
-                    ),
-                    Err(_) => {
-                        return Err(DkgError::NetworkCommunication(format!(
-                            "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
-                        )))
+                    Ok(other) => {
+                        last_failure_was_unreachable = false;
+                        peer_proved_reachable = true;
+                        tracing::warn!(
+                            peer = %peer,
+                            step,
+                            attempt,
+                            response = ?other,
+                            "refresh-result barrier received an invalid acknowledgement"
+                        );
+                    }
+                    Err(error) => {
+                        last_failure_was_unreachable = error.is_unreachable();
+                        peer_proved_reachable |= error.proves_reachable();
+                        tracing::warn!(
+                            peer = %peer,
+                            step,
+                            attempt,
+                            error = %error.error(),
+                            "refresh-result barrier control request failed; retrying"
+                        );
                     }
                 }
                 crate::metrics::record_dkg_transport_event("control", "retry");
@@ -6706,8 +7540,25 @@ where
             }
         });
     }
+    let mut first_error = None;
+    let mut offline = Vec::new();
     while let Some(result) = requests.join_next().await {
-        result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
+        let (peer, result, unreachable) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        if unreachable {
+            if let Some(participant) = participant_for_transport_peer(&committees, &peer) {
+                offline.push(participant);
+            }
+        }
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    }
+    if !offline.is_empty() {
+        spawn_pss_offline_for_attempt(&state, routes, attempt_key, stage, offline).await;
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(())
 }
@@ -6802,6 +7653,7 @@ where
         is_reshare,
         next_node_id,
         ring_id,
+        leader_participant,
     ) = coord
         .app_state
         .dkg_session_state
@@ -6819,6 +7671,17 @@ where
                     .as_ref()
                     .and_then(|params| params.new_node_id),
                 session.routing.ring_id.clone(),
+                session
+                    .transport
+                    .committees
+                    .as_ref()
+                    .and_then(|committees| {
+                        session
+                            .transport
+                            .leader_peer_route
+                            .as_deref()
+                            .and_then(|peer| participant_for_transport_peer(committees, peer))
+                    }),
             )
         })
         .await
@@ -6919,53 +7782,67 @@ where
     // ever sees it.
     let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
     let mut retry_attempt = 0u32;
+    let mut last_failure_was_unreachable = false;
+    let mut leader_proved_reachable = false;
     loop {
         retry_attempt = retry_attempt.saturating_add(1);
         let now = Instant::now();
         if now >= hard_deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, leader_proved_reachable) {
+                if let Some(leader_participant) = leader_participant {
+                    spawn_pss_offline_for_attempt(
+                        &coord.app_state,
+                        coord.routes,
+                        attempt,
+                        PssOfflineStage::PublicContribution,
+                        [leader_participant],
+                    )
+                    .await;
+                }
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
             )));
         }
         let remaining = hard_deadline.saturating_duration_since(now);
-        let response = timeout(
-            remaining,
-            control_request_with_timeout(
-                &coord.app_state,
-                coord.routes,
-                &leader_peer,
-                request.clone(),
-                PEER_RESPONSE_TIMEOUT,
-            ),
+        let response = control_request_with_timeout_classified(
+            &coord.app_state,
+            coord.routes,
+            &leader_peer,
+            request.clone(),
+            PEER_RESPONSE_TIMEOUT.min(remaining),
         )
         .await;
         match response {
-            Ok(Ok(DkgControlMessage::PublicContributionAck {
+            Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 message_id,
-            })) if got_ceremony == ceremony_id
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
                 && message_id == contribution.message_id =>
             {
                 return Ok(());
             }
-            Ok(Ok(other)) => tracing::warn!(
-                peer = %leader_peer,
-                attempt = retry_attempt,
-                response = ?other,
-                "public contribution submission received an invalid acknowledgement"
-            ),
-            Ok(Err(error)) => tracing::warn!(
-                peer = %leader_peer,
-                attempt = retry_attempt,
-                %error,
-                "public contribution submission control request failed; retrying"
-            ),
-            Err(_) => {
-                return Err(DkgError::NetworkCommunication(format!(
-                    "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
-                )));
+            Ok(other) => {
+                last_failure_was_unreachable = false;
+                leader_proved_reachable = true;
+                tracing::warn!(
+                    peer = %leader_peer,
+                    attempt = retry_attempt,
+                    response = ?other,
+                    "public contribution submission received an invalid acknowledgement"
+                );
+            }
+            Err(error) => {
+                last_failure_was_unreachable = error.is_unreachable();
+                leader_proved_reachable |= error.proves_reachable();
+                tracing::warn!(
+                    peer = %leader_peer,
+                    attempt = retry_attempt,
+                    error = %error.error(),
+                    "public contribution submission control request failed; retrying"
+                );
             }
         }
         crate::metrics::record_dkg_transport_event("control", "retry");
@@ -6984,7 +7861,7 @@ pub(crate) async fn send_reshare_share_ack<D>(
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer: &str,
-) -> Result<()>
+) -> std::result::Result<(), PeerDeliveryFailure>
 where
     D: CoordinatorDkg,
 {
@@ -6993,7 +7870,11 @@ where
         .dkg_session_state
         .with_attempt_state(attempt, |_| ())
         .await
-        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
+        .map_err(|error| PeerDeliveryFailure {
+            error: crate::dkg::v0::coordinator::attempt_state_error(attempt, error),
+            unreachable: false,
+            reachable: false,
+        })?;
     let ceremony_id = attempt.ceremony_id;
     let attempt_id = attempt.attempt_id;
     let receiver = ParticipantRef::next(receiver_node_id);
@@ -7006,8 +7887,13 @@ where
         ParticipantRef::next(1),
         &dealer,
     )
-    .map_err(DkgError::Serialization)?;
-    match control_request_with_timeout(
+    .map_err(DkgError::Serialization)
+    .map_err(|error| PeerDeliveryFailure {
+        error,
+        unreachable: false,
+        reachable: false,
+    })?;
+    let response = control_request_with_timeout_classified(
         &coord.app_state,
         coord.routes,
         selector_peer,
@@ -7020,8 +7906,17 @@ where
         },
         PEER_RESPONSE_TIMEOUT,
     )
-    .await?
-    {
+    .await
+    .map_err(|failure| {
+        let unreachable = failure.is_unreachable();
+        let reachable = failure.proves_reachable();
+        PeerDeliveryFailure {
+            unreachable,
+            reachable,
+            error: failure.into_error(),
+        }
+    })?;
+    match response {
         DkgControlMessage::ReshareShareAcked {
             ceremony_id: got_ceremony,
             attempt_id: got_attempt,
@@ -7032,9 +7927,13 @@ where
         {
             Ok(())
         }
-        response => Err(DkgError::ProtocolError(format!(
-            "selector returned invalid reshare acknowledgement response: {response:?}"
-        ))),
+        response => Err(PeerDeliveryFailure {
+            error: DkgError::ProtocolError(format!(
+                "selector returned invalid reshare acknowledgement response: {response:?}"
+            )),
+            unreachable: false,
+            reachable: true,
+        }),
     }
 }
 
@@ -7165,6 +8064,108 @@ where
     Ok(())
 }
 
+/// Relay terminal transport-liveness candidates from a pure pending-new
+/// reshare participant to current-committee report signers. One authenticated
+/// acceptance is sufficient because the receiving signer drives the existing
+/// threshold-report workflow.
+pub(crate) async fn relay_pss_offline_candidates<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    stage: PssOfflineStage,
+    mut accused: Vec<ParticipantRef>,
+    committees: &CeremonyConfig,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    accused.sort_unstable();
+    accused.dedup();
+    if accused.is_empty() || accused.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay size is outside the committee bound".into(),
+        ));
+    }
+    if committees.current.node_keys.contains(&state.node_key)
+        || !committees
+            .next
+            .as_ref()
+            .is_some_and(|next| next.node_keys.contains(&state.node_key))
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay requires a pure pending-new reshare member".into(),
+        ));
+    }
+    if accused
+        .iter()
+        .any(|participant| committees.route(*participant).is_none())
+    {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay names a participant outside the ceremony".into(),
+        ));
+    }
+
+    let sender = state.network.local_peer_id();
+    let idempotency_key = transport::derive_offline_candidates_id(
+        ceremony_id,
+        attempt_id,
+        sender.as_bytes(),
+        stage,
+        &accused,
+    )
+    .map_err(DkgError::Serialization)?;
+    let accused_routes: BTreeSet<_> = accused
+        .iter()
+        .filter_map(|participant| committees.route(*participant))
+        .map(|route| extract_node_part(route).to_lowercase())
+        .collect();
+    let mut requests = FuturesUnordered::new();
+    for peer in &committees.current.peer_routes {
+        if is_self_peer_id(&state.network, peer)
+            || accused_routes.contains(&extract_node_part(peer).to_lowercase())
+        {
+            continue;
+        }
+        let state = state.clone();
+        let peer = peer.clone();
+        let accused = accused.clone();
+        requests.push(async move {
+            matches!(
+                control_request_with_timeout(
+                    &state,
+                    routes,
+                    &peer,
+                    DkgControlMessage::RelayOfflineCandidates {
+                        ceremony_id,
+                        attempt_id,
+                        idempotency_key,
+                        stage,
+                        accused,
+                    },
+                    PEER_RESPONSE_TIMEOUT,
+                )
+                .await,
+                Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                    ceremony_id: got_ceremony,
+                    attempt_id: got_attempt,
+                    idempotency_key: got_key,
+                }) if got_ceremony == ceremony_id
+                    && got_attempt == attempt_id
+                    && got_key == idempotency_key
+            )
+        });
+    }
+    while let Some(accepted) = requests.next().await {
+        if accepted {
+            return Ok(());
+        }
+    }
+    Err(DkgError::NetworkCommunication(
+        "offline candidates were not accepted by any current-committee member".into(),
+    ))
+}
+
 /// Inbound handler for one deterministic bidirectional private pair exchange.
 pub struct DkgPrivateHandler<D>
 where
@@ -7226,6 +8227,26 @@ where
             ));
         };
         let session_id = ceremony_id.0;
+        if let Some(committees) = self
+            .state
+            .dkg_session_state
+            .transport_committees(&session_id)
+            .await
+        {
+            let authenticated_route = hex::encode(peer.as_bytes());
+            if let Some(participant) =
+                participant_for_transport_peer(&committees, &authenticated_route)
+            {
+                let _ = self
+                    .state
+                    .dkg_session_state
+                    .record_private_peer_response(
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        participant,
+                    )
+                    .await;
+            }
+        }
         let is_reshare_delivery =
             from.scope == CommitteeScope::Current && to.scope == CommitteeScope::Next;
         if !is_reshare_delivery
@@ -7521,6 +8542,13 @@ where
                 "ceremony committee configuration is missing".into(),
             )
         })?;
+    let authenticated_route = hex::encode(peer.as_bytes());
+    if let Some(participant) = participant_for_transport_peer(&committees, &authenticated_route) {
+        let _ = state
+            .dkg_session_state
+            .record_private_peer_response(AttemptKey::new(ceremony_id, attempt_id), participant)
+            .await;
+    }
     if committees.node_key(responder) != Some(state.node_key.as_str())
         || committees
             .route(opener)
@@ -7905,8 +8933,20 @@ where
         .into();
     let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
     let mut retry_attempt = 0_u32;
+    let mut last_failure_was_unreachable = false;
+    let mut peer_proved_reachable = false;
     loop {
         if Instant::now() >= deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, peer_proved_reachable) {
+                spawn_pss_offline_for_attempt(
+                    &state,
+                    routes,
+                    AttemptKey::new(ceremony_id, attempt_id),
+                    PssOfflineStage::PrivatePair,
+                    [responder],
+                )
+                .await;
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "responder-only private pair exchange with {peer} exceeded hard attempt deadline"
             )));
@@ -7917,17 +8957,22 @@ where
             state.dkg_private_exchange_permits.clone().acquire_owned(),
         )
         .await
-        .map_err(|_| DkgError::NetworkCommunication("private pair permit timed out".into()))?
+        .map_err(|_| DkgError::InvalidState("private pair permit timed out".into()))?
         .map_err(|_| DkgError::InvalidState("private exchange semaphore closed".into()))?;
         let attempt_timeout = PEER_RESPONSE_TIMEOUT.min(remaining);
         let mut busy_retry_after = None;
         let mut attempt_connection = None;
+        let mut io_failed = false;
+        let mut received_response = false;
         let exchange = timeout(attempt_timeout, async {
             let (stream, parent) = state
                 .peer_connection_pool
                 .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
                 .await
-                .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkConnection(error.to_string())
+                })?;
             attempt_connection = Some(parent);
             stream
                 .send(Message::new(
@@ -7935,10 +8980,15 @@ where
                     routes.dkg_private_alpn.to_vec(),
                 ))
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let response = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
+            received_response = true;
             if let DkgPrivateMessage::Busy {
                 ceremony_id: busy_ceremony,
                 attempt_id: busy_attempt,
@@ -7969,15 +9019,22 @@ where
             let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
             send_private(&*stream, routes.dkg_private_alpn, &ack)
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
             Ok(completion)
         })
-        .await
-        .unwrap_or_else(|_| {
-            Err(DkgError::NetworkCommunication(format!(
-                "responder-only private pair exchange with {peer} timed out"
-            )))
-        });
+        .await;
+        let exchange = match exchange {
+            Ok(result) => result,
+            Err(_) => {
+                io_failed = true;
+                Err(DkgError::NetworkCommunication(format!(
+                    "responder-only private pair exchange with {peer} timed out"
+                )))
+            }
+        };
         drop(permit);
         match exchange {
             Ok(completion) => {
@@ -7986,6 +9043,9 @@ where
                 return Ok(());
             }
             Err(error) => {
+                last_failure_was_unreachable =
+                    private_failure_is_unreachable(io_failed, busy_retry_after);
+                peer_proved_reachable |= received_response;
                 if busy_retry_after.is_none() {
                     if let Some(connection) = attempt_connection.as_ref() {
                         state
@@ -8090,6 +9150,7 @@ where
         ceremony_id,
         attempt_id,
         message_id,
+        to: remote_participant,
         ..
     } = outgoing.clone()
     else {
@@ -8105,8 +9166,20 @@ where
         .into();
     let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
     let mut retry_attempt = 0_u32;
+    let mut last_failure_was_unreachable = false;
+    let mut peer_proved_reachable = false;
     loop {
         if Instant::now() >= deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, peer_proved_reachable) {
+                spawn_pss_offline_for_attempt(
+                    &state,
+                    routes,
+                    AttemptKey::new(ceremony_id, attempt_id),
+                    PssOfflineStage::PrivatePair,
+                    [remote_participant],
+                )
+                .await;
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "private pair exchange with {peer} exceeded hard attempt deadline"
             )));
@@ -8115,11 +9188,7 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         let permit = timeout(remaining, semaphore.acquire_owned())
             .await
-            .map_err(|_| {
-                DkgError::NetworkCommunication(format!(
-                    "private pair exchange with {peer} exceeded hard attempt deadline"
-                ))
-            })?
+            .map_err(|_| DkgError::InvalidState("private pair permit timed out".into()))?
             .map_err(|_| DkgError::InvalidState("private exchange semaphore closed".into()))?;
         let pair_metrics = PrivatePairMetricsGuard::new();
         tracing::info!(
@@ -8135,12 +9204,17 @@ where
             PEER_RESPONSE_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
         let mut busy_retry_after = None;
         let mut attempt_connection = None;
+        let mut io_failed = false;
+        let mut received_response = false;
         let exchange = timeout(attempt_timeout, async {
             let (stream, parent_connection) = state
                 .peer_connection_pool
                 .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
                 .await
-                .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkConnection(error.to_string())
+                })?;
             attempt_connection = Some(parent_connection);
             let remote = stream.peer_id().clone();
             stream
@@ -8149,10 +9223,15 @@ where
                     routes.dkg_private_alpn.to_vec(),
                 ))
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let response = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
+            received_response = true;
             if let DkgPrivateMessage::Busy {
                 ceremony_id: busy_ceremony_id,
                 attempt_id: busy_attempt_id,
@@ -8181,10 +9260,14 @@ where
             let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
             send_private(&*stream, routes.dkg_private_alpn, &ack)
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let final_ack = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let final_ack = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
             validate_share_ack(&outgoing, &final_ack).map_err(DkgError::ProtocolError)?;
             state
                 .dkg_session_state
@@ -8192,13 +9275,17 @@ where
                 .await;
             Ok(Some(completion))
         })
-        .await
-        .unwrap_or_else(|_| {
-            Err(DkgError::NetworkCommunication(format!(
-                "private pair exchange with {peer} timed out after {}ms",
-                attempt_timeout.as_millis()
-            )))
-        });
+        .await;
+        let exchange = match exchange {
+            Ok(result) => result,
+            Err(_) => {
+                io_failed = true;
+                Err(DkgError::NetworkCommunication(format!(
+                    "private pair exchange with {peer} timed out after {}ms",
+                    attempt_timeout.as_millis()
+                )))
+            }
+        };
         drop(permit);
         match exchange {
             Ok(completion) => {
@@ -8215,6 +9302,9 @@ where
                 return Ok(());
             }
             Err(error) => {
+                last_failure_was_unreachable =
+                    private_failure_is_unreachable(io_failed, busy_retry_after);
+                peer_proved_reachable |= received_response;
                 drop(pair_metrics);
                 // `open_stream` may succeed on a cached QUIC connection whose
                 // subsequent request/response path is no longer making progress.
@@ -8293,10 +9383,13 @@ where
     let deadline = deadline
         .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?;
     let mut openers = FuturesUnordered::new();
-    let all_message_ids: Vec<_> = outgoing.iter().map(|(_, _, id, _)| *id).collect();
+    let mut message_obligations = Vec::with_capacity(outgoing.len());
     for (to_node_id, peer, _, bytes) in outgoing {
         let decoded = transport::decode::<DkgPrivateMessage>(&bytes, MAX_CONTROL_MESSAGE_BYTES)
             .map_err(DkgError::Deserialization)?;
+        if let DkgPrivateMessage::ShareDelivery { message_id, to, .. } = &decoded {
+            message_obligations.push((*message_id, *to));
+        }
         let should_open = match decoded {
             DkgPrivateMessage::ShareDelivery { from, to, .. }
                 if to.scope == CommitteeScope::Next =>
@@ -8318,8 +9411,8 @@ where
         result?;
     }
     loop {
-        let mut missing = 0usize;
-        for message_id in &all_message_ids {
+        let mut missing_participants = Vec::new();
+        for (message_id, remote) in &message_obligations {
             if !coord
                 .app_state
                 .dkg_session_state
@@ -8327,13 +9420,31 @@ where
                 .await
                 .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
             {
-                missing += 1;
+                missing_participants.push(*remote);
             }
         }
-        if missing == 0 {
+        if missing_participants.is_empty() {
             return Ok(());
         }
         if Instant::now() >= deadline.into() {
+            let missing = missing_participants.len();
+            let reachable = coord
+                .app_state
+                .dkg_session_state
+                .private_peer_responses_for_attempt(attempt)
+                .await
+                .map_err(|error| {
+                    crate::dkg::v0::coordinator::attempt_state_error(attempt, error)
+                })?;
+            missing_participants.retain(|participant| !reachable.contains(participant));
+            spawn_pss_offline_for_attempt(
+                &coord.app_state,
+                coord.routes,
+                attempt,
+                PssOfflineStage::PrivateInbound,
+                missing_participants,
+            )
+            .await;
             return Err(DkgError::NetworkCommunication(format!(
                 "{missing} private pair exchanges were not acknowledged before hard deadline"
             )));
@@ -8482,6 +9593,168 @@ mod stability_tests {
             ]),
             threshold: 2,
         }
+    }
+
+    fn offline_relay_committees() -> CeremonyConfig {
+        let route = |byte: u8, port: u16| format!("{}@127.0.0.1:{port}", hex::encode([byte; 32]));
+        CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: vec!["current-a".into(), "current-b".into()],
+                peer_routes: vec![route(1, 9101), route(2, 9102)],
+                node_id_assignments: HashMap::from([
+                    ("current-a".into(), 1),
+                    ("current-b".into(), 2),
+                ]),
+                threshold: 2,
+            },
+            next: Some(CommitteeConfig {
+                node_keys: vec!["next-a".into(), "next-b".into()],
+                peer_routes: vec![route(3, 9201), route(4, 9202)],
+                node_id_assignments: HashMap::from([("next-a".into(), 1), ("next-b".into(), 2)]),
+                threshold: 2,
+            }),
+        }
+    }
+
+    #[test]
+    fn peer_request_failure_preserves_reachability() {
+        let unreachable =
+            PeerRequestFailure::Unreachable(DkgError::NetworkConnection("down".into()));
+        assert!(unreachable.is_unreachable());
+        assert!(!unreachable.proves_reachable());
+        let reachable = PeerRequestFailure::Reachable(DkgError::ProtocolError("bad ack".into()));
+        assert!(!reachable.is_unreachable());
+        assert!(reachable.proves_reachable());
+        assert!(
+            !PeerRequestFailure::Local(DkgError::Serialization("local".into())).is_unreachable()
+        );
+    }
+
+    #[test]
+    fn busy_and_local_private_failures_are_not_offline() {
+        assert!(private_failure_is_unreachable(true, None));
+        assert!(!private_failure_is_unreachable(
+            true,
+            Some(Duration::from_millis(10))
+        ));
+        assert!(!private_failure_is_unreachable(false, None));
+        assert!(terminal_offline_candidate(true, false));
+        assert!(
+            !terminal_offline_candidate(true, true),
+            "a prior Busy, error response, malformed response, or invalid ACK proves reachability"
+        );
+    }
+
+    #[test]
+    fn offline_relay_claim_enforces_observer_role_and_canonical_candidates() {
+        let committees = offline_relay_committees();
+        let leader = PeerId::from_bytes(&[3; 32]);
+        let follower = PeerId::from_bytes(&[4; 32]);
+        let accused = [ParticipantRef::current(2)];
+
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &accused,
+        )
+        .expect("pure-new canonical leader may relay a preparation observation");
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::Prepare,
+            &accused,
+        )
+        .is_err());
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::PrivatePair,
+            &accused,
+        )
+        .expect("a pure-new participant may relay its own private-pair observation");
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::TopologyAck,
+            &[ParticipantRef::next(1)],
+        )
+        .expect("a follower may report the unreachable canonical leader while returning an ACK");
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::TopologyAck,
+            &accused,
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::StartForward,
+            &accused,
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(2), ParticipantRef::current(2)],
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(99)],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reshare_preparation_candidates_preserve_committee_scope() {
+        let committees = offline_relay_committees();
+        let prepare = PrepareSession {
+            ceremony_id: CeremonyId(33),
+            attempt_id: AttemptId([5; 32]),
+            config_digest: [0; 32],
+            topic_id: [0; 32],
+            leader_node_key: "next-a".into(),
+            committees: committees.clone(),
+            token_string: String::new(),
+            kind: SessionKind::Reshare {
+                ring_pk_hex: "ring-pk".into(),
+                new_peer_node_keys: committees.next.as_ref().unwrap().node_keys.clone(),
+                new_threshold: 2,
+                bulletin_post_id: "ring-id".into(),
+            },
+            pss_interval: 60,
+            policy_id: None,
+            ring_id: "ring-id".into(),
+        };
+        let current_route = extract_node_part(&committees.current.peer_routes[1]).to_lowercase();
+        let next_route =
+            extract_node_part(&committees.next.as_ref().unwrap().peer_routes[1]).to_lowercase();
+
+        assert_eq!(
+            reshare_preparation_candidates(&prepare, [current_route, next_route]),
+            [ParticipantRef::current(2), ParticipantRef::next(2)]
+        );
     }
 
     #[test]
@@ -9271,12 +10544,13 @@ mod stability_tests {
             &self,
             peer: &str,
             request: DkgControlMessage,
-        ) -> Result<DkgControlMessage> {
+        ) -> PublicRepairRequestOutcome {
             self.requests
                 .lock()
                 .await
                 .push((peer.to_string(), request.metric_label()));
-            self.responses
+            let result = self
+                .responses
                 .lock()
                 .await
                 .get_mut(peer)
@@ -9285,7 +10559,12 @@ mod stability_tests {
                     Err(DkgError::NetworkConnection(format!(
                         "script has no response for {peer}"
                     )))
-                })
+                });
+            let offline = matches!(
+                &result,
+                Err(DkgError::NetworkConnection(_)) | Err(DkgError::NetworkCommunication(_))
+            );
+            PublicRepairRequestOutcome { result, offline }
         }
     }
 
@@ -9360,6 +10639,11 @@ mod stability_tests {
             .expect("active repair attempt");
         assert_eq!(retained.keys().copied().collect::<Vec<_>>(), vec![origin]);
         assert_eq!(
+            state.dkg_offline_candidate_dedup.lock().unwrap().len(),
+            1,
+            "leader fallback must retain its terminal liveness observation"
+        );
+        assert_eq!(
             requester.requests.lock().await.as_slice(),
             [
                 ("repair-route-1".to_string(), "get_public_phase"),
@@ -9402,6 +10686,10 @@ mod stability_tests {
         assert_eq!(
             requester.requests.lock().await.as_slice(),
             [("repair-route-1".to_string(), "get_public_phase")]
+        );
+        assert!(
+            state.dkg_offline_candidate_dedup.lock().unwrap().is_empty(),
+            "a reachable protocol rejection must not create an offline candidate"
         );
     }
 

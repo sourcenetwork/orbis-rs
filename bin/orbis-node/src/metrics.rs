@@ -100,6 +100,13 @@ lazy_static! {
     )
     .expect("failed to register dkg_transport_events_total");
 
+    pub static ref PSS_OFFLINE_OBSERVATIONS_TOTAL: CounterVec = register_counter_vec!(
+        "pss_offline_observations_total",
+        "Terminal PSS peer-liveness observations by bounded transport stage and outcome",
+        &["stage", "outcome"]
+    )
+    .expect("failed to register pss_offline_observations_total");
+
     pub static ref DKG_CONTROL_READINESS_DURATION_SECONDS: HistogramVec = register_histogram_vec!(
         "dkg_control_readiness_duration_seconds",
         "Time from canonical leader preparation start through all-member Begin acknowledgement",
@@ -549,6 +556,12 @@ pub fn record_pss_scheduler_delay(duration_secs: f64) {
 pub fn record_dkg_transport_event(plane: &str, event: &str) {
     DKG_TRANSPORT_EVENTS_TOTAL
         .with_label_values(&[plane, event])
+        .inc();
+}
+
+pub fn record_pss_offline_observation(stage: &str, outcome: &str) {
+    PSS_OFFLINE_OBSERVATIONS_TOTAL
+        .with_label_values(&[stage, outcome])
         .inc();
 }
 

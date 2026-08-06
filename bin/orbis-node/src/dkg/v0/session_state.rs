@@ -409,6 +409,11 @@ pub(crate) struct DkgSessionTransportState {
     pub topic: Option<Arc<dyn network::Topic>>,
     pub topology_probe_nonce: Option<[u8; 32]>,
     pub topology_probe_acknowledgements: BTreeSet<String>,
+    /// Authenticated peers that returned any topology ACK request for the
+    /// active attempt, including a wrong nonce. This is deliberately broader
+    /// than the valid-ACK set so protocol-invalid but reachable peers are not
+    /// later classified as offline.
+    pub topology_probe_responses: BTreeSet<String>,
     pub topology_probe_notify: Arc<Notify>,
     pub activated: bool,
     pub begun: bool,
@@ -427,6 +432,10 @@ pub(crate) struct DkgSessionTransportState {
     pub published_public_messages: HashSet<MessageId>,
     pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
     pub acknowledged_private_messages: HashSet<MessageId>,
+    /// Authenticated participants that opened an inbound private exchange for
+    /// this attempt. A later protocol or ACK failure must not turn that peer's
+    /// missing completion into an offline observation.
+    pub private_peer_responses: BTreeSet<ParticipantRef>,
     pub processing_message_ids: HashSet<MessageId>,
     pub processed_message_ids: HashSet<MessageId>,
     pub topic_task: Option<tokio::task::AbortHandle>,
@@ -449,6 +458,7 @@ impl Default for DkgSessionTransportState {
             topic: None,
             topology_probe_nonce: None,
             topology_probe_acknowledgements: BTreeSet::new(),
+            topology_probe_responses: BTreeSet::new(),
             topology_probe_notify: Arc::new(Notify::new()),
             activated: false,
             begun: false,
@@ -466,6 +476,7 @@ impl Default for DkgSessionTransportState {
             published_public_messages: HashSet::new(),
             outbound_private_messages: HashMap::new(),
             acknowledged_private_messages: HashSet::new(),
+            private_peer_responses: BTreeSet::new(),
             processing_message_ids: HashSet::new(),
             processed_message_ids: HashSet::new(),
             topic_task: None,
@@ -1670,7 +1681,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
             transport.topology_probe_nonce = Some(nonce);
             transport.topology_probe_acknowledgements.clear();
-            transport.topology_probe_acknowledgements.insert(self_peer);
+            transport.topology_probe_responses.clear();
+            transport
+                .topology_probe_acknowledgements
+                .insert(self_peer.clone());
+            transport.topology_probe_responses.insert(self_peer);
             transport.last_progress_at = Instant::now();
             Some(transport.topology_probe_notify.clone())
         })
@@ -1714,6 +1729,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             if transport.attempt_id != Some(attempt_id) {
                 return TopologyAckRecordOutcome::StaleAttempt;
             }
+            transport.topology_probe_responses.insert(peer.clone());
             if transport.topology_probe_nonce != Some(nonce) {
                 return TopologyAckRecordOutcome::WrongNonce;
             }
@@ -1739,6 +1755,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             (transport.attempt_id == Some(attempt_id)
                 && transport.topology_probe_nonce == Some(nonce))
             .then(|| transport.topology_probe_acknowledgements.clone())
+        })
+        .await
+        .flatten()
+    }
+
+    pub(crate) async fn topology_probe_responses(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+    ) -> Option<BTreeSet<String>> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            (transport.attempt_id == Some(attempt_id))
+                .then(|| transport.topology_probe_responses.clone())
         })
         .await
         .flatten()
@@ -2260,6 +2290,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 .transport
                 .acknowledged_private_messages
                 .contains(&message_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn record_private_peer_response(
+        &self,
+        attempt: AttemptKey,
+        participant: ParticipantRef,
+    ) -> std::result::Result<(), AttemptStateError> {
+        self.with_attempt_state_mut(attempt, |state| {
+            state.transport.private_peer_responses.insert(participant);
+        })
+        .await
+    }
+
+    pub(crate) async fn private_peer_responses_for_attempt(
+        &self,
+        attempt: AttemptKey,
+    ) -> std::result::Result<BTreeSet<ParticipantRef>, AttemptStateError> {
+        self.with_attempt_state(attempt, |state| {
+            state.transport.private_peer_responses.clone()
         })
         .await
     }
@@ -3715,7 +3766,7 @@ mod tests {
             TopologyAckRecordOutcome::WrongNonce
         );
         assert_eq!(
-            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-b".into(),)
+            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-c".into(),)
                 .await,
             TopologyAckRecordOutcome::StaleAttempt
         );
@@ -3724,6 +3775,17 @@ mod tests {
                 .await
                 .expect("ack set"),
             BTreeSet::from(["leader".to_string(), "peer-a".to_string()])
+        );
+        assert_eq!(
+            mgr.topology_probe_responses(&23, attempt)
+                .await
+                .expect("response set"),
+            BTreeSet::from([
+                "leader".to_string(),
+                "peer-a".to_string(),
+                "peer-b".to_string(),
+            ]),
+            "a wrong-nonce ACK proves reachability without satisfying the barrier"
         );
     }
 

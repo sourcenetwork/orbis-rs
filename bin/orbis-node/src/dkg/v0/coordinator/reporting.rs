@@ -1,7 +1,12 @@
 use crate::app_state::AppState;
+use crate::constants::DKG_ATTEMPT_TIMEOUT;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::AbandonedPssSession;
+use crate::dkg::v0::transport::{
+    AttemptId, CeremonyConfig, CeremonyId, CommitteeScope, ParticipantRef, PrepareSession,
+    PssOfflineStage,
+};
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::reporting::v0::observation::{offline_observation_from_peer_routes, ReportObservation};
@@ -14,11 +19,343 @@ use crypto::{
     GroupAffine as G1Affine, PolynomialCommitmentImpl as PolynomialCommitment,
     PubPolyImpl as PubPoly, ScalarField as Fr, SignImpl,
 };
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use super::types::CoordinatorReportSigner;
+
+/// Owned, attempt-scoped input captured at the transport failure boundary.
+/// It intentionally contains no raw error strings or protocol payloads.
+#[derive(Clone, Debug)]
+pub(crate) struct PssOfflineObservationSeed {
+    pub ceremony_id: CeremonyId,
+    pub attempt_id: Option<AttemptId>,
+    pub kind: SessionKind,
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub stage: PssOfflineStage,
+    /// Full committee context is retained only when a pure-new Reshare
+    /// observer may need to relay the candidates to a current signer.
+    pub committees: Option<CeremonyConfig>,
+    /// Direct forwarding can observe a peer before an attempt exists. Keep
+    /// the already-resolved route here so reporting never adds committee-wide
+    /// route resolution to the protocol's start path.
+    pub route_overrides: BTreeMap<ParticipantRef, String>,
+    pub subject_overrides: BTreeMap<ParticipantRef, String>,
+    pub accused: Vec<ParticipantRef>,
+}
+
+impl PssOfflineObservationSeed {
+    pub(crate) fn from_prepare(
+        prepare: &PrepareSession,
+        protocol_version: u64,
+        stage: PssOfflineStage,
+        accused: impl IntoIterator<Item = ParticipantRef>,
+    ) -> Self {
+        Self::new(
+            prepare.ceremony_id,
+            Some(prepare.attempt_id),
+            prepare.kind.clone(),
+            prepare.ring_id.clone(),
+            protocol_version,
+            stage,
+            prepare.committees.clone(),
+            accused,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        ceremony_id: CeremonyId,
+        attempt_id: Option<AttemptId>,
+        kind: SessionKind,
+        ring_id: String,
+        protocol_version: u64,
+        stage: PssOfflineStage,
+        committees: CeremonyConfig,
+        accused: impl IntoIterator<Item = ParticipantRef>,
+    ) -> Self {
+        let mut accused: Vec<_> = accused.into_iter().collect();
+        accused.sort_unstable();
+        accused.dedup();
+        Self {
+            ceremony_id,
+            attempt_id,
+            kind,
+            ring_id,
+            protocol_version,
+            stage,
+            committees: Some(committees),
+            route_overrides: BTreeMap::new(),
+            subject_overrides: BTreeMap::new(),
+            accused,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn direct(
+        ceremony_id: CeremonyId,
+        kind: SessionKind,
+        ring_id: String,
+        protocol_version: u64,
+        stage: PssOfflineStage,
+        accused: impl IntoIterator<Item = (ParticipantRef, String, String)>,
+    ) -> Self {
+        let mut route_overrides = BTreeMap::new();
+        let mut subject_overrides = BTreeMap::new();
+        for (participant, node_key, route) in accused {
+            route_overrides.insert(participant, route);
+            subject_overrides.insert(participant, node_key);
+        }
+        let accused = route_overrides.keys().copied().collect();
+        Self {
+            ceremony_id,
+            attempt_id: None,
+            kind,
+            ring_id,
+            protocol_version,
+            stage,
+            committees: None,
+            route_overrides,
+            subject_overrides,
+            accused,
+        }
+    }
+}
+
+const MAX_OFFLINE_CANDIDATE_CLAIMS: usize = 4096;
+
+fn claim_new_offline_candidates<D>(app_state: &AppState<D>, seed: &mut PssOfflineObservationSeed)
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let now = tokio::time::Instant::now();
+    let mut claims = app_state
+        .dkg_offline_candidate_dedup
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    claims.retain(|_, recorded_at| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+    seed.accused.retain(|participant| {
+        let subject = seed
+            .subject_overrides
+            .get(participant)
+            .cloned()
+            .or_else(|| {
+                seed.committees
+                    .as_ref()
+                    .and_then(|committees| committees.node_key(*participant))
+                    .map(str::to_owned)
+            });
+        subject.is_some_and(|subject| {
+            let key = (seed.ceremony_id, subject);
+            if let Some(recorded_at) = claims.get_mut(&key) {
+                *recorded_at = now;
+                return false;
+            }
+            if claims.len() >= MAX_OFFLINE_CANDIDATE_CLAIMS {
+                if let Some(oldest) = claims
+                    .iter()
+                    .min_by_key(|(_, recorded_at)| **recorded_at)
+                    .map(|(key, _)| key.clone())
+                {
+                    claims.remove(&oldest);
+                }
+            }
+            claims.insert(key, now);
+            true
+        })
+    });
+    seed.route_overrides
+        .retain(|participant, _| seed.accused.binary_search(participant).is_ok());
+    seed.subject_overrides
+        .retain(|participant, _| seed.accused.binary_search(participant).is_ok());
+}
+
+/// Capture a terminal peer-liveness observation without coupling report
+/// resolution, signing, or relay availability to the DKG outcome.
+pub(crate) fn spawn_pss_offline_observations<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    mut seed: PssOfflineObservationSeed,
+) where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if matches!(seed.kind, SessionKind::Fresh) || seed.accused.is_empty() {
+        return;
+    }
+    if seed.protocol_version != routes.version {
+        crate::metrics::record_pss_offline_observation(
+            seed.stage.as_metric_label(),
+            "version_mismatch",
+        );
+        return;
+    }
+    claim_new_offline_candidates(&app_state, &mut seed);
+    if seed.accused.is_empty() {
+        return;
+    }
+    crate::metrics::record_pss_offline_observation(seed.stage.as_metric_label(), "candidate");
+    tokio::spawn(async move {
+        report_or_relay_pss_offline_observations(app_state, routes, seed).await;
+    });
+}
+
+async fn report_or_relay_pss_offline_observations<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    seed: PssOfflineObservationSeed,
+) where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            PolynomialCommitment = PolynomialCommitment,
+            PubPoly = PubPoly,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let is_pure_next = matches!(seed.kind, SessionKind::Reshare { .. })
+        && seed.committees.as_ref().is_some_and(|committees| {
+            !committees.current.node_keys.contains(&app_state.node_key)
+                && committees
+                    .next
+                    .as_ref()
+                    .is_some_and(|next| next.node_keys.contains(&app_state.node_key))
+        });
+    if let Some(attempt_id) = seed.attempt_id.filter(|_| is_pure_next) {
+        crate::metrics::record_pss_offline_observation(
+            seed.stage.as_metric_label(),
+            "relay_candidate",
+        );
+        let Some(committees) = seed.committees.as_ref() else {
+            return;
+        };
+        match crate::dkg::v0::network::relay_pss_offline_candidates(
+            &app_state,
+            routes,
+            seed.ceremony_id,
+            attempt_id,
+            seed.stage,
+            seed.accused,
+            committees,
+        )
+        .await
+        {
+            Ok(()) => crate::metrics::record_pss_offline_observation(
+                seed.stage.as_metric_label(),
+                "relayed",
+            ),
+            Err(error) => {
+                crate::metrics::record_pss_offline_observation(
+                    seed.stage.as_metric_label(),
+                    "relay_failed",
+                );
+                tracing::warn!(
+                    session_id = seed.ceremony_id.0,
+                    stage = seed.stage.as_metric_label(),
+                    %error,
+                    "no current-committee signer accepted terminal PSS offline candidates"
+                );
+            }
+        }
+        return;
+    }
+
+    crate::metrics::record_pss_offline_observation(
+        seed.stage.as_metric_label(),
+        "direct_candidate",
+    );
+
+    let context = match resolve_pss_offline_report_context(
+        &app_state,
+        &seed.kind,
+        seed.ring_id.clone(),
+    )
+    .await
+    {
+        Ok(context) => context,
+        Err(error) => {
+            crate::metrics::record_pss_offline_observation(
+                seed.stage.as_metric_label(),
+                "report_failed",
+            );
+            tracing::warn!(
+                session_id = seed.ceremony_id.0,
+                stage = seed.stage.as_metric_label(),
+                %error,
+                "failed to resolve terminal PSS offline-report context"
+            );
+            return;
+        }
+    };
+
+    if let Some(context) = context {
+        let session_id = seed.ceremony_id.0.to_string();
+        for participant in seed.accused.iter().copied() {
+            let peer_id = seed.route_overrides.get(&participant).cloned().or_else(|| {
+                seed.committees
+                    .as_ref()
+                    .and_then(|committees| committees.route(participant))
+                    .map(str::to_owned)
+            });
+            let Some(peer_id) = peer_id else {
+                continue;
+            };
+            match queue_pss_offline_report_for_peer(
+                app_state.clone(),
+                routes,
+                &context,
+                peer_id.clone(),
+                Some(participant.scope),
+                &session_id,
+            )
+            .await
+            {
+                Ok(()) => crate::metrics::record_pss_offline_observation(
+                    seed.stage.as_metric_label(),
+                    "direct",
+                ),
+                Err(error) => {
+                    crate::metrics::record_pss_offline_observation(
+                        seed.stage.as_metric_label(),
+                        "report_failed",
+                    );
+                    tracing::warn!(
+                        session_id = seed.ceremony_id.0,
+                        stage = seed.stage.as_metric_label(),
+                        peer_id = %peer_id,
+                        %error,
+                        "failed to queue terminal PSS offline report"
+                    );
+                }
+            }
+        }
+        return;
+    }
+
+    crate::metrics::record_pss_offline_observation(seed.stage.as_metric_label(), "not_reportable");
+}
 
 /// Ring, committee-route, and signing-scope context shared by every accused peer
 /// within one PSS offline-report event. Resolving this once per event (instead of
@@ -172,6 +509,7 @@ async fn queue_pss_offline_report_for_peer<D>(
     routes: &'static network::ProtocolRoutes,
     context: &PssOfflineReportContext,
     peer_id: String,
+    accused_scope_hint: Option<CommitteeScope>,
     session_id: &str,
 ) -> Result<()>
 where
@@ -186,27 +524,44 @@ where
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let (accused_scope, accused_peer_ids, accused_node_keys) =
-        if context.is_reshare && peer_id_matches_any(&peer_id, &context.pending_peer_ids) {
+    let (accused_scope, accused_peer_ids, accused_node_keys) = match accused_scope_hint {
+        Some(CommitteeScope::Next)
+            if context.is_reshare && peer_id_matches_any(&peer_id, &context.pending_peer_ids) =>
+        {
             (
                 ReportCommitteeScope::PendingNew,
                 context.pending_peer_ids.as_slice(),
                 context.pending_node_keys.as_slice(),
             )
-        } else if peer_id_matches_any(&peer_id, &context.current_peer_ids) {
+        }
+        Some(CommitteeScope::Current)
+            if peer_id_matches_any(&peer_id, &context.current_peer_ids) =>
+        {
             (
                 ReportCommitteeScope::Current,
                 context.current_peer_ids.as_slice(),
                 context.ring.peer_node_keys.as_slice(),
             )
-        } else {
+        }
+        None if context.is_reshare && peer_id_matches_any(&peer_id, &context.pending_peer_ids) => (
+            ReportCommitteeScope::PendingNew,
+            context.pending_peer_ids.as_slice(),
+            context.pending_node_keys.as_slice(),
+        ),
+        None if peer_id_matches_any(&peer_id, &context.current_peer_ids) => (
+            ReportCommitteeScope::Current,
+            context.current_peer_ids.as_slice(),
+            context.ring.peer_node_keys.as_slice(),
+        ),
+        _ => {
             tracing::debug!(
                 ring_id = %context.ring_id,
                 peer_id = %peer_id,
                 "Skipping PSS offline report because failed peer is not in reportable committee"
             );
             return Ok(());
-        };
+        }
+    };
 
     let Some(observation) = offline_observation_from_peer_routes(
         &context.ring_id,
@@ -336,6 +691,7 @@ pub(crate) async fn report_abandoned_pss_session<D>(
             routes,
             &context,
             peer_id.clone(),
+            None,
             &session_id,
         )
         .await

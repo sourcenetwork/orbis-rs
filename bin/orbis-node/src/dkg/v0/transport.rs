@@ -62,6 +62,63 @@ impl AttemptId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct MessageId(pub [u8; 32]);
 
+/// Bounded attribution label for a peer-specific PSS transport failure.
+///
+/// These values are deliberately coarse: they are safe to put on the wire and
+/// use as metric labels, while raw transport errors remain local log data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PssOfflineStage {
+    StartForward,
+    Prepare,
+    TopologyProbe,
+    TopologyAck,
+    Activate,
+    Begin,
+    PublicContribution,
+    RefreshResultStage,
+    RefreshResultCommit,
+    PublicRepairLeader,
+    PublicRepairOrigin,
+    ReshareShareAck,
+    PrivatePair,
+    PrivateInbound,
+}
+
+impl PssOfflineStage {
+    pub const fn as_metric_label(self) -> &'static str {
+        match self {
+            Self::StartForward => "start_forward",
+            Self::Prepare => "prepare",
+            Self::TopologyProbe => "topology_probe",
+            Self::TopologyAck => "topology_ack",
+            Self::Activate => "activate",
+            Self::Begin => "begin",
+            Self::PublicContribution => "public_contribution",
+            Self::RefreshResultStage => "refresh_result_stage",
+            Self::RefreshResultCommit => "refresh_result_commit",
+            Self::PublicRepairLeader => "public_repair_leader",
+            Self::PublicRepairOrigin => "public_repair_origin",
+            Self::ReshareShareAck => "reshare_share_ack",
+            Self::PrivatePair => "private_pair",
+            Self::PrivateInbound => "private_inbound",
+        }
+    }
+
+    /// Stages observed only by the attempt's canonical leader.
+    pub const fn requires_canonical_leader(self) -> bool {
+        matches!(
+            self,
+            Self::Prepare
+                | Self::TopologyProbe
+                | Self::Activate
+                | Self::Begin
+                | Self::RefreshResultStage
+                | Self::RefreshResultCommit
+        )
+    }
+}
+
 /// Identifies which side of a committee transition owns a numeric node ID.
 /// Numeric IDs are only unique inside one scope during reshare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -718,6 +775,22 @@ pub enum DkgControlMessage {
         attempt_id: AttemptId,
         idempotency_key: MessageId,
     },
+    /// Relay an availability observation from a pending-new reshare member
+    /// that does not yet own a usable report-signing share to the current
+    /// committee. The receiver independently validates the active attempt,
+    /// authenticated observer, stage entitlement, and accused participants.
+    RelayOfflineCandidates {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        stage: PssOfflineStage,
+        accused: Vec<ParticipantRef>,
+    },
+    OfflineCandidatesAccepted {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+    },
     GetPublicContribution {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
@@ -776,6 +849,8 @@ impl DkgControlMessage {
             Self::RelayInvalidShareEvidence { .. } => "relay_invalid_share_evidence",
             Self::RelayInvalidCommitmentEvidence { .. } => "relay_invalid_commitment_evidence",
             Self::EvidenceAccepted { .. } => "evidence_accepted",
+            Self::RelayOfflineCandidates { .. } => "relay_offline_candidates",
+            Self::OfflineCandidatesAccepted { .. } => "offline_candidates_accepted",
             Self::GetPublicContribution { .. } => "get_public_contribution",
             Self::PublicContributionResponse { .. } => "public_contribution_response",
             Self::GetPublicPhase { .. } => "get_public_phase",
@@ -1099,6 +1174,31 @@ pub fn derive_control_message_id<T: Serialize>(
     Ok(MessageId(hasher.finalize().into()))
 }
 
+/// Derive one recipient-independent identity for an offline-candidate relay.
+/// Every current-committee recipient therefore claims and acknowledges the
+/// same logical observation, while the authenticated sender remains bound into
+/// the ID so another participant cannot replay it as its own observation.
+pub fn derive_offline_candidates_id(
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    sender_peer: &[u8],
+    stage: PssOfflineStage,
+    accused: &[ParticipantRef],
+) -> Result<MessageId, String> {
+    let mut accused = accused.to_vec();
+    accused.sort_unstable();
+    accused.dedup();
+    let mut hasher = Sha256::new();
+    hasher.update(b"orbis-dkg-offline-candidates-v1");
+    hasher.update(ceremony_id.0.to_be_bytes());
+    hasher.update(attempt_id.0);
+    hasher.update((sender_peer.len() as u64).to_be_bytes());
+    hasher.update(sender_peer);
+    hasher.update(encode(&stage)?);
+    hasher.update(encode(&accused)?);
+    Ok(MessageId(hasher.finalize().into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1119,6 +1219,41 @@ mod tests {
                 .collect(),
             threshold,
         }
+    }
+
+    #[test]
+    fn offline_candidate_ids_are_canonical_and_attempt_bound() {
+        let ceremony = CeremonyId(17);
+        let attempt = AttemptId([3; 32]);
+        let sender = [9; 32];
+        let first = derive_offline_candidates_id(
+            ceremony,
+            attempt,
+            &sender,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::next(2), ParticipantRef::current(1)],
+        )
+        .unwrap();
+        let reordered = derive_offline_candidates_id(
+            ceremony,
+            attempt,
+            &sender,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(1), ParticipantRef::next(2)],
+        )
+        .unwrap();
+        let another_attempt = derive_offline_candidates_id(
+            ceremony,
+            AttemptId([4; 32]),
+            &sender,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(1), ParticipantRef::next(2)],
+        )
+        .unwrap();
+        assert_eq!(first, reordered);
+        assert_ne!(first, another_attempt);
+        assert!(PssOfflineStage::Prepare.requires_canonical_leader());
+        assert!(!PssOfflineStage::PrivatePair.requires_canonical_leader());
     }
 
     #[test]

@@ -1,5 +1,6 @@
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
-use crate::dkg::v0::transport::{AttemptId, CeremonyId, MessageId};
+use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyConfig, CeremonyId, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -9,7 +10,7 @@ use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
 use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -33,6 +34,20 @@ pub struct PeerConnectionPool {
 struct PoolEntry {
     connection: Arc<dyn PeerConnection>,
     last_used: u64,
+}
+
+/// Short-lived authenticated snapshot retained across DKG attempt teardown so
+/// an offline-candidate relay already in flight can still be validated and
+/// converted into a report. It contains only public ceremony metadata.
+#[derive(Clone)]
+pub(crate) struct DkgOfflineRelayReceipt {
+    pub kind: SessionKind,
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub committees: CeremonyConfig,
+    pub leader_node_key: String,
+    pub recorded_at: Instant,
+    pub processed: HashSet<MessageId>,
 }
 
 impl Default for PeerConnectionPool {
@@ -311,6 +326,14 @@ where
     /// lets an authenticated leader safely retry after an ACK is lost.
     pub dkg_public_commit_receipts:
         Arc<Mutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>>,
+    /// Prepared PSS attempts retained briefly for authenticated offline relay
+    /// validation after abort/cleanup races with the detached reporting task.
+    pub(crate) dkg_offline_relay_receipts: Arc<Mutex<HashMap<AttemptKey, DkgOfflineRelayReceipt>>>,
+    /// Ceremony/subject claims made at terminal transport boundaries. This
+    /// suppresses repeated work from later boundaries before a detached report
+    /// task is spawned; SourceHub session deduplication remains authoritative.
+    pub(crate) dkg_offline_candidate_dedup:
+        Arc<std::sync::Mutex<HashMap<(CeremonyId, String), Instant>>>,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
 }
@@ -342,6 +365,8 @@ where
             )),
             dkg_ceremony_start_locks: Arc::new(Mutex::new(HashMap::new())),
             dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
+            dkg_offline_relay_receipts: Arc::new(Mutex::new(HashMap::new())),
+            dkg_offline_candidate_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
     }
