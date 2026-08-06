@@ -23,13 +23,14 @@ use crate::constants::{
     PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
-    handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
+    commitments_prove_equivocation, handle_invalid_commitment_evidence_relay,
+    handle_invalid_share_evidence_relay, queue_or_relay_equivocation, verify_commitment_evidence,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
     handle_commitment_message, handle_reshare_participant_set, handle_reshare_share_ack,
-    handle_session_init, prepare_commitment_message, preflight_commitment_audit_message,
-    preflight_commitment_hash_message, preflight_reshare_participant_set,
+    handle_session_init, preflight_commitment_audit_message, preflight_commitment_hash_message,
+    preflight_reshare_participant_set, prepare_commitment_message,
 };
 use crate::dkg::v0::coordinator::refresh_health_check::{handle_result, preflight_result};
 use crate::dkg::v0::coordinator::reporting::{
@@ -177,7 +178,7 @@ enum PublicProtocolViolationKind {
     BufferLimit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PublicProtocolViolation {
     kind: PublicProtocolViolationKind,
     accused: PublicViolationAccused,
@@ -185,6 +186,14 @@ struct PublicProtocolViolation {
     root: Option<[u8; 32]>,
     message_ids: Vec<MessageId>,
     detail: String,
+    commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PublicCommitmentEquivocation {
+    origin: ParticipantRef,
+    retained: SignedPayload,
+    conflicting: SignedPayload,
 }
 
 impl PublicProtocolViolation {
@@ -201,6 +210,7 @@ impl PublicProtocolViolation {
             root,
             message_ids: Vec::new(),
             detail: detail.into(),
+            commitment_equivocation: None,
         }
     }
 
@@ -233,6 +243,7 @@ impl PublicProtocolViolation {
             root,
             message_ids: Vec::new(),
             detail: detail.into(),
+            commitment_equivocation: None,
         }
     }
 
@@ -243,6 +254,14 @@ impl PublicProtocolViolation {
 
     fn with_message_id(mut self, message_id: MessageId) -> Self {
         self.message_ids = vec![message_id];
+        self
+    }
+
+    fn with_commitment_equivocation(
+        mut self,
+        evidence: Option<PublicCommitmentEquivocation>,
+    ) -> Self {
+        self.commitment_equivocation = evidence.map(Box::new);
         self
     }
 }
@@ -272,6 +291,13 @@ struct ReceivedPublicChunk {
 struct CompletedPublicBatch {
     manifest_event_digest: [u8; 32],
     chunk_digests: BTreeMap<u32, [u8; 32]>,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedPublicOrigin {
+    message_id: MessageId,
+    root: [u8; 32],
+    commitment_envelope: Option<SignedPayload>,
 }
 
 #[derive(Debug)]
@@ -329,7 +355,7 @@ struct PublicBatchAssembler {
     pending: HashMap<(PublicPhase, [u8; 32]), PendingPublicBatch>,
     completed: HashMap<(PublicPhase, [u8; 32]), CompletedPublicBatch>,
     complete_phase_roots: HashMap<PublicPhase, [u8; 32]>,
-    observed_origins: HashMap<(PublicPhase, ParticipantRef), (MessageId, [u8; 32])>,
+    observed_origins: HashMap<(PublicPhase, ParticipantRef), ObservedPublicOrigin>,
 }
 
 impl PublicBatchAssembler {
@@ -452,6 +478,8 @@ impl PublicBatchAssembler {
         }
 
         let key = (phase, root);
+        let commitment_equivocation =
+            self.find_commitment_origin_equivocation(phase, &contributions);
         if let Some(completed) = self.completed.get(&key) {
             return match completed.chunk_digests.get(&index) {
                 Some(existing) if existing == &event_digest => Ok(PublicBatchAssembly::Duplicate),
@@ -460,13 +488,15 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     format!("chunk {index} conflicts with the completed batch"),
-                )),
+                )
+                .with_commitment_equivocation(commitment_equivocation)),
                 None => Err(PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::InvalidChunk,
                     Some(phase),
                     Some(root),
                     format!("extra chunk {index} follows the completed batch"),
-                )),
+                )
+                .with_commitment_equivocation(commitment_equivocation)),
             };
         }
         // For incremental publications, attribute a proven origin contradiction
@@ -476,11 +506,9 @@ impl PublicBatchAssembler {
         if mode == PublicBatchMode::Incremental {
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
-        self.claim_phase_root(mode, phase, root, expected_origin_count)?;
-        if mode == PublicBatchMode::Complete {
-            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
+        if let Err(violation) = self.claim_phase_root(mode, phase, root, expected_origin_count) {
+            return Err(violation.with_commitment_equivocation(commitment_equivocation));
         }
-
         if let Some(existing) = self
             .pending
             .get(&key)
@@ -496,8 +524,12 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     format!("leader published different contents for chunk {index}"),
-                ))
+                )
+                .with_commitment_equivocation(commitment_equivocation))
             };
+        }
+        if mode == PublicBatchMode::Complete {
+            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
         let buffered_for_root: usize = self
             .pending
@@ -514,7 +546,8 @@ impl PublicBatchAssembler {
                 format!(
                     "buffered contributions exceed the expected origin count {expected_origin_count}"
                 ),
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation));
         }
         let buffered_for_phase: usize = self
             .pending
@@ -531,13 +564,19 @@ impl PublicBatchAssembler {
                 format!(
                     "pending contributions exceed the expected origin count {expected_origin_count}"
                 ),
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation));
         }
         for verified in &contributions {
             let contribution = &verified.contribution;
             self.observed_origins
                 .entry((phase, contribution.origin))
-                .or_insert((contribution.message_id, root));
+                .or_insert_with(|| ObservedPublicOrigin {
+                    message_id: contribution.message_id,
+                    root,
+                    commitment_envelope: (phase == PublicPhase::Commitments)
+                        .then(|| verified.signed.clone()),
+                });
         }
         self.pending.entry(key).or_default().chunks.insert(
             index,
@@ -558,17 +597,20 @@ impl PublicBatchAssembler {
         for verified in contributions {
             let contribution = &verified.contribution;
             let origin_key = (phase, contribution.origin);
-            if let Some((existing_id, existing_root)) = self.observed_origins.get(&origin_key) {
-                if existing_id != &contribution.message_id {
+            if let Some(existing) = self.observed_origins.get(&origin_key) {
+                if existing.message_id != contribution.message_id {
                     return Err(PublicProtocolViolation::origin(
                         phase,
                         Some(root),
                         contribution.origin,
                         "origin signed different messages for the same attempt and phase",
                     )
-                    .with_message_ids(*existing_id, contribution.message_id));
+                    .with_message_ids(existing.message_id, contribution.message_id)
+                    .with_commitment_equivocation(
+                        self.commitment_origin_equivocation(existing, verified),
+                    ));
                 }
-                if existing_root != &root {
+                if existing.root != root {
                     return Err(PublicProtocolViolation::leader(
                         PublicProtocolViolationKind::BatchMismatch,
                         Some(phase),
@@ -583,6 +625,47 @@ impl PublicBatchAssembler {
             }
         }
         Ok(())
+    }
+
+    fn find_commitment_origin_equivocation(
+        &self,
+        phase: PublicPhase,
+        contributions: &[VerifiedPublicContribution],
+    ) -> Option<PublicCommitmentEquivocation> {
+        if phase != PublicPhase::Commitments {
+            return None;
+        }
+        let mut seen = HashMap::<ParticipantRef, &VerifiedPublicContribution>::new();
+        for verified in contributions {
+            let contribution = &verified.contribution;
+            if let Some(existing) = self.observed_origins.get(&(phase, contribution.origin)) {
+                if existing.message_id != contribution.message_id {
+                    return self.commitment_origin_equivocation(existing, verified);
+                }
+            }
+            if let Some(existing) = seen.insert(contribution.origin, verified) {
+                if existing.contribution.message_id != contribution.message_id {
+                    return Some(PublicCommitmentEquivocation {
+                        origin: contribution.origin,
+                        retained: existing.signed.clone(),
+                        conflicting: verified.signed.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn commitment_origin_equivocation(
+        &self,
+        existing: &ObservedPublicOrigin,
+        conflicting: &VerifiedPublicContribution,
+    ) -> Option<PublicCommitmentEquivocation> {
+        Some(PublicCommitmentEquivocation {
+            origin: conflicting.contribution.origin,
+            retained: existing.commitment_envelope.clone()?,
+            conflicting: conflicting.signed.clone(),
+        })
     }
 
     fn claim_phase_root(
@@ -692,13 +775,16 @@ impl PublicBatchAssembler {
             .iter()
             .map(|verified| verified.contribution.origin)
             .collect();
+        let commitment_equivocation =
+            self.find_commitment_origin_equivocation(key.0, &contributions);
         if actual_origins != canonical_origins {
             return Err(PublicProtocolViolation::leader(
                 PublicProtocolViolationKind::BatchMismatch,
                 Some(key.0),
                 Some(key.1),
                 "chunk contributions are not in the manifest's canonical origin order",
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation));
         }
         let actual_ids: BTreeMap<_, _> = contributions
             .iter()
@@ -715,7 +801,8 @@ impl PublicBatchAssembler {
                 Some(key.0),
                 Some(key.1),
                 "chunk contribution IDs do not match the manifest",
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation));
         }
 
         self.completed.insert(
@@ -2118,7 +2205,7 @@ where
                 }
                 return Err(error);
             }
-            record_public_contribution(&state, signed, &contribution).await?;
+            record_public_contribution(&state, routes, signed, &contribution).await?;
             crate::metrics::record_dkg_transport_event("public", "result_staged");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: contribution.ceremony_id,
@@ -4643,6 +4730,7 @@ where
 
 async fn abort_public_protocol_violation_from_listener<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     violation: &PublicProtocolViolation,
 ) where
@@ -4650,6 +4738,7 @@ async fn abort_public_protocol_violation_from_listener<D>(
 {
     abort_public_protocol_violation(
         state,
+        routes,
         prepare,
         violation,
         TopicTaskDisposition::DetachCurrent,
@@ -4659,6 +4748,7 @@ async fn abort_public_protocol_violation_from_listener<D>(
 
 async fn abort_public_protocol_violation<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     violation: &PublicProtocolViolation,
     topic_task: TopicTaskDisposition,
@@ -4683,10 +4773,17 @@ async fn abort_public_protocol_violation<D>(
         "aborting DKG attempt after authenticated public protocol violation"
     );
     crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
+    report_public_commitment_equivocation_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.commitment_equivocation.as_deref(),
+    )
+    .await;
     // TODO(reporting): preserve the authenticated leader/origin delivery or
-    // both origin-signed envelopes and submit the appropriate DKG fault or
-    // equivocation report. Reporting evidence/schema work is intentionally
-    // deferred.
+    // submit the appropriate non-commitment DKG fault report. Commitment-origin
+    // equivocation is handled above; the remaining evidence/schema work is
+    // intentionally deferred.
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -4761,12 +4858,23 @@ where
         PublicBatchRecordOutcome::DuplicateSame => {
             crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
         }
-        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+        PublicBatchRecordOutcome::ConflictingDuplicate {
+            origin,
+            retained,
+            conflicting,
+        } => {
             return Err(PublicProtocolViolation::origin(
                 phase,
                 Some(root),
                 origin,
                 "manifest-validated batch conflicts with a retained signed contribution",
+            )
+            .with_commitment_equivocation(
+                (phase == PublicPhase::Commitments).then_some(PublicCommitmentEquivocation {
+                    origin,
+                    retained,
+                    conflicting,
+                }),
             ));
         }
         PublicBatchRecordOutcome::StaleAttempt | PublicBatchRecordOutcome::MissingSession => {
@@ -4979,8 +5087,10 @@ async fn topic_listener<D>(
                             None,
                             error,
                         );
-                        abort_public_protocol_violation_from_listener(&state, &prepare, &violation)
-                            .await;
+                        abort_public_protocol_violation_from_listener(
+                            &state, routes, &prepare, &violation,
+                        )
+                        .await;
                         break 'listener;
                     }
                 };
@@ -5032,7 +5142,7 @@ async fn topic_listener<D>(
                                 "public chunk is not allowed for this ceremony kind",
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -5049,7 +5159,7 @@ async fn topic_listener<D>(
                                 ),
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -5079,7 +5189,7 @@ async fn topic_listener<D>(
                                         ),
                                     );
                                     abort_public_protocol_violation_from_listener(
-                                        &state, &prepare, &violation,
+                                        &state, routes, &prepare, &violation,
                                     )
                                     .await;
                                     break 'listener;
@@ -5100,7 +5210,7 @@ async fn topic_listener<D>(
                                         error.to_string(),
                                     );
                                     abort_public_protocol_violation_from_listener(
-                                        &state, &prepare, &violation,
+                                        &state, routes, &prepare, &violation,
                                     )
                                     .await;
                                     break 'listener;
@@ -5154,7 +5264,7 @@ async fn topic_listener<D>(
                                     Ok(false) => break 'listener,
                                     Err(violation) => {
                                         abort_public_protocol_violation_from_listener(
-                                            &state, &prepare, &violation,
+                                            &state, routes, &prepare, &violation,
                                         )
                                         .await;
                                         break 'listener;
@@ -5163,7 +5273,7 @@ async fn topic_listener<D>(
                             }
                             Err(violation) => {
                                 abort_public_protocol_violation_from_listener(
-                                    &state, &prepare, &violation,
+                                    &state, routes, &prepare, &violation,
                                 )
                                 .await;
                                 break 'listener;
@@ -5185,7 +5295,7 @@ async fn topic_listener<D>(
                                 "public manifest is not allowed for this ceremony kind",
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -5241,7 +5351,7 @@ async fn topic_listener<D>(
                                     Ok(false) => break 'listener,
                                     Err(violation) => {
                                         abort_public_protocol_violation_from_listener(
-                                            &state, &prepare, &violation,
+                                            &state, routes, &prepare, &violation,
                                         )
                                         .await;
                                         break 'listener;
@@ -5250,7 +5360,7 @@ async fn topic_listener<D>(
                             }
                             Err(violation) => {
                                 abort_public_protocol_violation_from_listener(
-                                    &state, &prepare, &violation,
+                                    &state, routes, &prepare, &violation,
                                 )
                                 .await;
                                 break 'listener;
@@ -5642,13 +5752,24 @@ where
         PublicBatchRecordOutcome::DuplicateSame => {
             crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
         }
-        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+        PublicBatchRecordOutcome::ConflictingDuplicate {
+            origin,
+            retained,
+            conflicting,
+        } => {
             return Err(PublicRepairFailure::Violation(
                 PublicProtocolViolation::origin(
                     phase,
                     None,
                     origin,
                     "direct repair conflicts with a retained signed contribution",
+                )
+                .with_commitment_equivocation(
+                    (phase == PublicPhase::Commitments).then_some(PublicCommitmentEquivocation {
+                        origin,
+                        retained,
+                        conflicting,
+                    }),
                 ),
             ));
         }
@@ -6349,8 +6470,14 @@ where
         return match dispatch_retained_public_repair(&state, routes, &prepare, phase).await {
             Ok(_) => Ok(()),
             Err(PublicRepairFailure::Violation(violation)) => {
-                abort_public_protocol_violation(&state, &prepare, &violation, violation_topic_task)
-                    .await;
+                abort_public_protocol_violation(
+                    &state,
+                    routes,
+                    &prepare,
+                    &violation,
+                    violation_topic_task,
+                )
+                .await;
                 Err(DkgError::ProtocolError(format!(
                     "authenticated public repair violation {:?}: {}",
                     violation.kind, violation.detail
@@ -6403,7 +6530,8 @@ where
     };
     let result = repair_public_phase_claimed(&state, routes, &requester, &prepare, phase).await;
     if let Err(PublicRepairFailure::Violation(violation)) = &result {
-        abort_public_protocol_violation(&state, &prepare, violation, violation_topic_task).await;
+        abort_public_protocol_violation(&state, routes, &prepare, violation, violation_topic_task)
+            .await;
         return Err(DkgError::ProtocolError(format!(
             "authenticated public repair violation {:?}: {}",
             violation.kind, violation.detail
@@ -6524,6 +6652,133 @@ where
     Ok(contribution)
 }
 
+/// Re-authenticate a transport-level Commitment conflict and, when the two
+/// nested dealer statements prove PSS equivocation, hand it to the existing
+/// direct-or-relay reporting pipeline. `Ok(false)` is an intentionally
+/// non-reportable conflict (Fresh DKG, missing evidence, or a pair that does
+/// not satisfy the equivocation refutation).
+async fn queue_public_commitment_equivocation<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: &PublicCommitmentEquivocation,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let retained = verify_signed_contribution(state, &evidence.retained).await?;
+    let conflicting = verify_signed_contribution(state, &evidence.conflicting).await?;
+    if retained.ceremony_id != attempt.ceremony_id
+        || retained.attempt_id != attempt.attempt_id
+        || conflicting.ceremony_id != attempt.ceremony_id
+        || conflicting.attempt_id != attempt.attempt_id
+        || retained.origin != evidence.origin
+        || conflicting.origin != evidence.origin
+    {
+        return Err(DkgError::Unauthorized(
+            "public commitment equivocation evidence does not match the active attempt or origin"
+                .into(),
+        ));
+    }
+    let (
+        DkgPublicPayload::Commitment {
+            commitment: retained_bytes,
+            report_evidence: Some(retained_evidence),
+        },
+        DkgPublicPayload::Commitment {
+            commitment: conflicting_bytes,
+            report_evidence: Some(conflicting_evidence),
+        },
+    ) = (retained.payload, conflicting.payload)
+    else {
+        return Ok(false);
+    };
+
+    let coord = DkgCoordinator::<D>::with_routes(state.clone(), routes);
+    let Some(retained_evidence) = verify_commitment_evidence(
+        &coord,
+        attempt,
+        evidence.origin.node_id,
+        &retained_bytes,
+        Some(retained_evidence),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    let Some(conflicting_evidence) = verify_commitment_evidence(
+        &coord,
+        attempt,
+        evidence.origin.node_id,
+        &conflicting_bytes,
+        Some(conflicting_evidence),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    if !commitments_prove_equivocation(&retained_evidence, &conflicting_evidence) {
+        return Ok(false);
+    }
+
+    crate::metrics::record_dkg_transport_event("public", "equivocation_candidate");
+    queue_or_relay_equivocation(&coord, attempt, retained_evidence, conflicting_evidence).await?;
+    crate::metrics::record_dkg_transport_event("public", "equivocation_report_queued");
+    Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) async fn queue_public_commitment_equivocation_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    origin: ParticipantRef,
+    retained: SignedPayload,
+    conflicting: SignedPayload,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    queue_public_commitment_equivocation(
+        state,
+        routes,
+        attempt,
+        &PublicCommitmentEquivocation {
+            origin,
+            retained,
+            conflicting,
+        },
+    )
+    .await
+}
+
+async fn report_public_commitment_equivocation_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&PublicCommitmentEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    if let Err(error) = queue_public_commitment_equivocation(state, routes, attempt, evidence).await
+    {
+        crate::metrics::record_dkg_transport_event("public", "equivocation_report_failed");
+        tracing::warn!(
+            session_id = attempt.session_id(),
+            attempt_id = %hex::encode(attempt.attempt_id.0),
+            origin = ?evidence.origin,
+            error = %error,
+            "failed to queue or relay authenticated public commitment equivocation"
+        );
+    }
+}
+
 async fn record_public_contribution_at_leader<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -6549,7 +6804,10 @@ where
             Ok(true)
         }
         PublicContributionRecordOutcome::DuplicateSame => Ok(false),
-        PublicContributionRecordOutcome::ConflictingDuplicate => {
+        PublicContributionRecordOutcome::ConflictingDuplicate {
+            retained,
+            conflicting,
+        } => {
             let reason = format!(
                 "origin {:?} equivocated in public phase {:?}",
                 contribution.origin,
@@ -6564,8 +6822,19 @@ where
                 "leader aborting DKG attempt after signed origin equivocation"
             );
             crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-            // TODO(reporting): submit both origin-signed contribution envelopes
-            // as DKG equivocation evidence before removing the attempt.
+            let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+            let evidence = PublicCommitmentEquivocation {
+                origin: contribution.origin,
+                retained,
+                conflicting,
+            };
+            report_public_commitment_equivocation_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
             let participant_routes = state
                 .dkg_session_state
                 .transport_participant_routes(&contribution.ceremony_id.0)
@@ -6573,10 +6842,7 @@ where
                 .unwrap_or_default();
             state
                 .dkg_session_state
-                .abort_transport_attempt(
-                    AttemptKey::new(contribution.ceremony_id, contribution.attempt_id),
-                    TopicTaskDisposition::Abort,
-                )
+                .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
                 .await;
             broadcast_attempt_abort(
                 state,
@@ -6598,8 +6864,23 @@ where
     }
 }
 
+#[cfg(test)]
+pub(crate) async fn record_public_contribution_at_leader_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    signed: SignedPayload,
+    contribution: &DkgPublicContribution,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    record_public_contribution_at_leader(state, routes, signed, contribution).await
+}
+
 async fn record_public_contribution<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     signed: SignedPayload,
     contribution: &DkgPublicContribution,
 ) -> Result<bool>
@@ -6624,7 +6905,10 @@ where
                 "public contribution targets a stale attempt".into(),
             ))
         }
-        PublicContributionRecordOutcome::ConflictingDuplicate => {
+        PublicContributionRecordOutcome::ConflictingDuplicate {
+            retained,
+            conflicting,
+        } => {
             tracing::error!(
                 session_id = contribution.ceremony_id.0,
                 attempt_id = %hex::encode(contribution.attempt_id.0),
@@ -6634,14 +6918,22 @@ where
                 "aborting DKG attempt after signed origin equivocation"
             );
             crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-            // TODO(reporting): submit both origin-signed contribution envelopes
-            // as DKG equivocation evidence before removing the attempt.
+            let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+            let evidence = PublicCommitmentEquivocation {
+                origin: contribution.origin,
+                retained,
+                conflicting,
+            };
+            report_public_commitment_equivocation_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
             state
                 .dkg_session_state
-                .abort_transport_attempt(
-                    AttemptKey::new(contribution.ceremony_id, contribution.attempt_id),
-                    TopicTaskDisposition::Abort,
-                )
+                .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
                 .await;
             return Err(DkgError::ProtocolError(
                 "conflicting duplicate public contribution".into(),
@@ -7739,7 +8031,13 @@ where
     // Retain the exact signed bytes in the same phase index used for direct
     // repair. This lets an origin serve its own contribution even if the
     // leader omits a chunk or the local subscriber never receives the relay.
-    record_public_contribution(&coord.app_state, signed.clone(), &contribution).await?;
+    record_public_contribution(
+        &coord.app_state,
+        coord.routes,
+        signed.clone(),
+        &contribution,
+    )
+    .await?;
     if leader == coord.app_state.node_key {
         if contribution.payload.phase() == PublicPhase::RefreshHealthCheck {
             return distribute_refresh_result(
@@ -11073,6 +11371,91 @@ mod stability_tests {
     }
 
     #[tokio::test]
+    async fn direct_repair_conflict_preserves_both_commitment_envelopes() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
+            "direct_repair_conflict_preserves_envelopes",
+            4257,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 3);
+        let retained = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: fresh_commitment_bytes(origin.node_id, ceremony_id.0),
+                report_evidence: None,
+            },
+        );
+        let mut different = fresh_commitment_bytes(origin.node_id, ceremony_id.0);
+        different[crypto::GROUP_POINT_SIZE] ^= 1;
+        let conflicting = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: different,
+                report_evidence: None,
+            },
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .record_public_contribution(
+                    &ceremony_id.0,
+                    attempt_id,
+                    PublicPhase::Commitments,
+                    origin,
+                    retained.signed.clone(),
+                )
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        let error = apply_repair_contributions(
+            &state,
+            &network::V0,
+            &prepare,
+            PublicPhase::Commitments,
+            vec![conflicting.clone()],
+            RepairContributionSource::Origin,
+        )
+        .await
+        .expect_err("conflicting direct repair contribution must abort");
+        let PublicRepairFailure::Violation(violation) = error else {
+            panic!("expected attributable repair violation");
+        };
+        assert_eq!(
+            violation.kind,
+            PublicProtocolViolationKind::OriginEquivocation
+        );
+        assert_eq!(
+            violation.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin,
+                retained: retained.signed.clone(),
+                conflicting: conflicting.signed,
+            })
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::Commitments,)
+                .await
+                .expect("active attempt")
+                .get(&origin),
+            Some(&retained.signed),
+            "the first authenticated envelope must remain authoritative"
+        );
+    }
+
+    #[tokio::test]
     async fn direct_origin_payload_is_preflighted_before_leader_relay() {
         let origin = ParticipantRef::current(2);
         let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
@@ -11223,8 +11606,14 @@ mod stability_tests {
                 .transport
                 .attempt_id = Some(newer_attempt);
         }
-        abort_public_protocol_violation(&state, &prepare, &violation, TopicTaskDisposition::Abort)
-            .await;
+        abort_public_protocol_violation(
+            &state,
+            &network::V0,
+            &prepare,
+            &violation,
+            TopicTaskDisposition::Abort,
+        )
+        .await;
         assert_eq!(
             state
                 .dkg_session_state
@@ -11265,7 +11654,7 @@ mod stability_tests {
             data: vec![3; 16],
         };
 
-        let error = record_public_contribution(&state, signed, &contribution)
+        let error = record_public_contribution(&state, &network::V0, signed, &contribution)
             .await
             .expect_err("stale contribution must be rejected");
 
@@ -11673,6 +12062,7 @@ mod stability_tests {
 
         let first_root = [1; 32];
         let second_root = [2; 32];
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 2);
         assembler
             .insert_chunk(
                 PublicBatchMode::Complete,
@@ -11690,12 +12080,22 @@ mod stability_tests {
                 PublicPhase::Commitments,
                 second_root,
                 0,
-                vec![assembled_contribution(ParticipantRef::current(1), 2)],
+                vec![conflicting.clone()],
                 [3; 32],
                 expected.len(),
             )
             .expect_err("a complete phase cannot advertise two roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: contribution.signed,
+                conflicting: conflicting.signed,
+            }),
+            "leader-first attribution must still preserve provable dealer equivocation"
+        );
     }
 
     #[test]
@@ -11751,6 +12151,66 @@ mod stability_tests {
             )
             .expect_err("the same chunk index cannot change contents");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+
+        let retained = assembled_contribution(ParticipantRef::current(1), 5);
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 6);
+        let mut assembler = PublicBatchAssembler::default();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [5; 32],
+                0,
+                vec![retained.clone()],
+                [5; 32],
+                1,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [5; 32],
+                0,
+                vec![conflicting.clone()],
+                [6; 32],
+                1,
+            )
+            .expect_err("complete chunk conflict must remain attributable to the leader");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: retained.signed,
+                conflicting: conflicting.signed,
+            })
+        );
+
+        let retained = assembled_contribution(ParticipantRef::current(1), 7);
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 8);
+        let error = PublicBatchAssembler::default()
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [7; 32],
+                0,
+                vec![retained.clone(), conflicting.clone()],
+                [7; 32],
+                1,
+            )
+            .expect_err("one chunk cannot contain two messages from the same origin");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: retained.signed,
+                conflicting: conflicting.signed,
+            })
+        );
     }
 
     #[test]
@@ -11787,13 +12247,14 @@ mod stability_tests {
             ));
         }
 
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 9);
         let error = assembler
             .insert_chunk(
                 PublicBatchMode::Incremental,
                 PublicPhase::Commitments,
                 [7; 32],
                 0,
-                vec![assembled_contribution(ParticipantRef::current(1), 9)],
+                vec![conflicting.clone()],
                 [9; 32],
                 expected.len(),
             )
@@ -11803,6 +12264,53 @@ mod stability_tests {
             error.accused,
             PublicViolationAccused::Origin(ParticipantRef::current(1))
         );
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: first.signed,
+                conflicting: conflicting.signed,
+            })
+        );
+    }
+
+    #[test]
+    fn non_commitment_origin_conflicts_do_not_carry_dkg_equivocation_evidence() {
+        let origin = ParticipantRef::current(1);
+        let mut first = assembled_contribution(origin, 1);
+        first.contribution.payload = DkgPublicPayload::CommitmentHash {
+            commitment_hash: [1; 32],
+        };
+        let mut conflicting = assembled_contribution(origin, 2);
+        conflicting.contribution.payload = DkgPublicPayload::CommitmentHash {
+            commitment_hash: [2; 32],
+        };
+        let expected = BTreeSet::from([origin]);
+        let mut assembler = PublicBatchAssembler::default();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::CommitmentHashes,
+                [1; 32],
+                0,
+                vec![first],
+                [1; 32],
+                expected.len(),
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::CommitmentHashes,
+                [2; 32],
+                0,
+                vec![conflicting],
+                [2; 32],
+                expected.len(),
+            )
+            .expect_err("non-Commitment origin conflict must still abort");
+        assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
+        assert!(error.commitment_equivocation.is_none());
     }
 
     #[test]

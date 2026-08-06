@@ -19,8 +19,14 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
 use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::network::{
+    queue_public_commitment_equivocation_for_test, record_public_contribution_at_leader_for_test,
+};
 use crate::dkg::v0::service::DkgServiceImpl;
-use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyId};
+use crate::dkg::v0::transport::{
+    AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig, DkgPublicContribution,
+    DkgPublicPayload, ParticipantRef, PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
+};
 use crate::helpers::identity::determine_session_node_id;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
@@ -39,6 +45,7 @@ use crypto::r#trait::{
 use crypto::{DkgImpl, PreImpl, ScalarField, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
@@ -347,6 +354,95 @@ async fn create_preflight_test_session(
     node_id
 }
 
+async fn configure_public_test_session(
+    coordinator: &DkgCoordinator<DkgImpl>,
+    attempt: AttemptKey,
+    committee: CommitteeConfig,
+) -> [u8; 32] {
+    let committee_digest =
+        crate::dkg::v0::transport::ceremony_committee_digest(&committee.node_keys, None);
+    let leader_node_key = coordinator.app_state.node_key.clone();
+    let leader_peer_route = committee
+        .node_keys
+        .iter()
+        .position(|node_key| node_key == &leader_node_key)
+        .and_then(|index| committee.peer_routes.get(index))
+        .cloned()
+        .expect("test leader must have a committee route");
+    let node_id_to_peer_id = committee
+        .node_keys
+        .iter()
+        .zip(&committee.peer_routes)
+        .map(|(node_key, route)| {
+            (
+                *committee
+                    .node_id_assignments
+                    .get(node_key)
+                    .expect("canonical test node ID"),
+                route.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let participant_routes = committee.peer_routes.clone();
+    let active_dealers = committee
+        .node_id_assignments
+        .values()
+        .copied()
+        .map(ParticipantRef::current)
+        .collect::<Vec<_>>();
+    coordinator
+        .app_state
+        .dkg_session_state
+        .with_attempt_state_mut(attempt, |state| {
+            state.routing.peer_ids = participant_routes.clone();
+            state.routing.node_id_to_peer_id = node_id_to_peer_id;
+            state.transport.ceremony_id = Some(attempt.ceremony_id);
+            state.transport.attempt_id = Some(attempt.attempt_id);
+            state.transport.committee_digest = Some(committee_digest);
+            state.transport.leader_node_key = Some(leader_node_key);
+            state.transport.leader_peer_route = Some(leader_peer_route);
+            state.transport.participant_routes = participant_routes;
+            state.transport.committees = Some(CeremonyConfig {
+                current: committee,
+                next: None,
+            });
+            state.transport.active_dealers = active_dealers;
+            state.transport.activated = true;
+        })
+        .await
+        .expect("configure explicit public transport session");
+    committee_digest
+}
+
+async fn sign_test_public_contribution(
+    app_state: &crate::app_state::AppState<DkgImpl>,
+    attempt: AttemptKey,
+    ring_id: &str,
+    committee_digest: [u8; 32],
+    origin: ParticipantRef,
+    payload: DkgPublicPayload,
+) -> (network::SignedPayload, DkgPublicContribution) {
+    let contribution = DkgPublicContribution::new(
+        attempt.ceremony_id,
+        attempt.attempt_id,
+        ring_id.to_string(),
+        committee_digest,
+        origin,
+        payload,
+    )
+    .expect("construct signed public test contribution");
+    let encoded = crate::dkg::v0::transport::encode(&contribution)
+        .expect("encode signed public test contribution");
+    let signed = app_state
+        .network
+        .pubsub()
+        .expect("test network must support pubsub")
+        .sign(PUBLIC_CONTRIBUTION_SIGNING_DOMAIN, encoded.into())
+        .await
+        .expect("sign public contribution with endpoint identity");
+    (signed, contribution)
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn invalid_refresh_commitment_preflight_queues_report_before_rejection() {
@@ -640,6 +736,543 @@ async fn invalid_refresh_commitment_preflight_queues_report_before_rejection() {
             assert_eq!(statement.origin_protocol, "pss_refresh");
             assert_eq!(statement.request_id, submission.session_id);
             assert_eq!(statement.responder_node_key, submission.accused_node_key);
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn public_commitment_origin_equivocation_queues_report_before_abort() {
+    let db_name = "reporting_public_commitment_origin_equivocation";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    let alice = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &network::V0,
+    );
+    let charlie = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.charlie.app_state.clone()),
+        &network::V0,
+    );
+    let refresh_attempt = AttemptKey::new(CeremonyId(777_000_111_225), AttemptId::random());
+    let refresh_kind = SessionKind::Refresh {
+        ring_pk_hex: ring.ring_pk.clone(),
+    };
+    create_preflight_test_session(
+        &alice,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+    let charlie_node_id =
+        create_preflight_test_session(&charlie, refresh_attempt, &ring_id, &ring, refresh_kind)
+            .await;
+
+    let route_by_node_key = HashMap::from([
+        (
+            network.alice.app_state.node_key.clone(),
+            network.alice.address.clone(),
+        ),
+        (
+            network.bob.app_state.node_key.clone(),
+            network.bob.address.clone(),
+        ),
+        (
+            network.charlie.app_state.node_key.clone(),
+            network.charlie.address.clone(),
+        ),
+    ]);
+    let node_id_assignments = ring
+        .peer_node_keys
+        .iter()
+        .map(|node_key| {
+            (
+                node_key.clone(),
+                determine_session_node_id(node_key, &ring.peer_node_keys)
+                    .expect("finalized member must have a canonical node ID"),
+            )
+        })
+        .collect();
+    let committee = CommitteeConfig {
+        node_keys: ring.peer_node_keys.clone(),
+        peer_routes: ring
+            .peer_node_keys
+            .iter()
+            .map(|node_key| {
+                route_by_node_key
+                    .get(node_key)
+                    .cloned()
+                    .expect("finalized member must have a test route")
+            })
+            .collect(),
+        node_id_assignments,
+        threshold: ring.threshold,
+    };
+    let committee_digest =
+        configure_public_test_session(&alice, refresh_attempt, committee.clone()).await;
+    evidence_build_context(&alice, refresh_attempt)
+        .await
+        .expect("prime reporter evidence binding")
+        .expect("Refresh must have an evidence binding");
+    let charlie_context = evidence_build_context(&charlie, refresh_attempt)
+        .await
+        .expect("build accused evidence context")
+        .expect("Refresh must have an evidence binding");
+
+    let mut first_dealer = *DkgImpl::new(
+        charlie_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        refresh_attempt.session_id(),
+        DkgRole::Standard,
+    )
+    .expect("create first Refresh dealer");
+    first_dealer
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate first Refresh commitment");
+    let first_commitment =
+        serialize_commitment_coefficients(&first_dealer.commitment().coefficients)
+            .expect("serialize first Refresh commitment");
+    let mut second_dealer = *DkgImpl::new(
+        charlie_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        refresh_attempt.session_id(),
+        DkgRole::Standard,
+    )
+    .expect("create second Refresh dealer");
+    second_dealer
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate second Refresh commitment");
+    let second_commitment =
+        serialize_commitment_coefficients(&second_dealer.commitment().coefficients)
+            .expect("serialize second Refresh commitment");
+    assert_ne!(
+        first_commitment, second_commitment,
+        "test must construct two different Refresh commitments"
+    );
+
+    let first_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_context,
+        charlie_node_id,
+        first_commitment.clone(),
+    )
+    .expect("sign first Refresh commitment evidence");
+    let second_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_context,
+        charlie_node_id,
+        second_commitment.clone(),
+    )
+    .expect("sign second Refresh commitment evidence");
+    assert_eq!(
+        first_evidence.statement.session_nonce, second_evidence.statement.session_nonce,
+        "both statements must belong to the same transport attempt"
+    );
+    let origin = ParticipantRef::current(charlie_node_id);
+    let (first_signed, first_contribution) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: first_commitment.clone(),
+            report_evidence: Some(first_evidence.clone()),
+        },
+    )
+    .await;
+    let (second_signed, second_contribution) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(second_evidence.clone()),
+        },
+    )
+    .await;
+
+    let (missing_a, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: first_commitment.clone(),
+            report_evidence: None,
+        },
+    )
+    .await;
+    let (missing_b, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: None,
+        },
+    )
+    .await;
+    assert!(!queue_public_commitment_equivocation_for_test(
+        &alice.app_state,
+        &network::V0,
+        refresh_attempt,
+        origin,
+        missing_a,
+        missing_b,
+    )
+    .await
+    .expect("missing evidence is a non-reportable conflict"));
+
+    let (wrong_ring_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        "foreign-ring",
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(second_evidence.clone()),
+        },
+    )
+    .await;
+    assert!(
+        queue_public_commitment_equivocation_for_test(
+            &alice.app_state,
+            &network::V0,
+            refresh_attempt,
+            origin,
+            first_signed.clone(),
+            wrong_ring_signed,
+        )
+        .await
+        .is_err(),
+        "a foreign outer ring binding must not queue a report"
+    );
+
+    let foreign_attempt = AttemptKey::new(
+        refresh_attempt.ceremony_id,
+        AttemptId([refresh_attempt.attempt_id.0[0].wrapping_add(1); 32]),
+    );
+    let (wrong_attempt_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        foreign_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(second_evidence.clone()),
+        },
+    )
+    .await;
+    assert!(
+        queue_public_commitment_equivocation_for_test(
+            &alice.app_state,
+            &network::V0,
+            refresh_attempt,
+            origin,
+            first_signed.clone(),
+            wrong_attempt_signed,
+        )
+        .await
+        .is_err(),
+        "a foreign outer attempt binding must not queue a report"
+    );
+
+    let alice_node_id =
+        determine_session_node_id(&network.alice.app_state.node_key, &ring.peer_node_keys)
+            .expect("reporter must have a canonical node ID");
+    let (wrong_origin_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        ParticipantRef::current(alice_node_id),
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(second_evidence.clone()),
+        },
+    )
+    .await;
+    assert!(
+        queue_public_commitment_equivocation_for_test(
+            &alice.app_state,
+            &network::V0,
+            refresh_attempt,
+            origin,
+            first_signed.clone(),
+            wrong_origin_signed,
+        )
+        .await
+        .is_err(),
+        "an endpoint/origin mismatch must not queue a report"
+    );
+
+    let mut bad_signature_evidence = second_evidence.clone();
+    bad_signature_evidence.signature[0] ^= 1;
+    let (bad_signature_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(bad_signature_evidence),
+        },
+    )
+    .await;
+    assert!(
+        queue_public_commitment_equivocation_for_test(
+            &alice.app_state,
+            &network::V0,
+            refresh_attempt,
+            origin,
+            first_signed.clone(),
+            bad_signature_signed,
+        )
+        .await
+        .is_err(),
+        "an invalid nested signature must not queue a report"
+    );
+
+    let signing_key = String::from_utf8(
+        network
+            .charlie
+            .app_state
+            .local_storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .expect("read accused signing key")
+            .expect("accused signing key must exist")
+            .to_vec(),
+    )
+    .expect("test signing key must be UTF-8");
+    let mut wrong_binding_evidence = second_evidence.clone();
+    wrong_binding_evidence.statement.request_id = "wrong-refresh-attempt".to_string();
+    wrong_binding_evidence.signature = sign_node_message_with_hex_key(
+        &signing_key,
+        &wrong_binding_evidence.statement.canonical_bytes(),
+    )
+    .expect("re-sign wrong-binding evidence");
+    let (wrong_binding_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(wrong_binding_evidence),
+        },
+    )
+    .await;
+    assert!(
+        queue_public_commitment_equivocation_for_test(
+            &alice.app_state,
+            &network::V0,
+            refresh_attempt,
+            origin,
+            first_signed.clone(),
+            wrong_binding_signed,
+        )
+        .await
+        .is_err(),
+        "wrong session binding must not queue a report"
+    );
+
+    let mut different_nonce_evidence = second_evidence.clone();
+    different_nonce_evidence.statement.session_nonce[0] ^= 1;
+    different_nonce_evidence.signature = sign_node_message_with_hex_key(
+        &signing_key,
+        &different_nonce_evidence.statement.canonical_bytes(),
+    )
+    .expect("re-sign different-nonce evidence");
+    let (different_nonce_signed, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: Some(different_nonce_evidence),
+        },
+    )
+    .await;
+    assert!(!queue_public_commitment_equivocation_for_test(
+        &alice.app_state,
+        &network::V0,
+        refresh_attempt,
+        origin,
+        first_signed.clone(),
+        different_nonce_signed,
+    )
+    .await
+    .expect("different nonces are a non-reportable transport conflict"));
+
+    let fresh_attempt = AttemptKey::new(CeremonyId(777_000_111_226), AttemptId::random());
+    create_preflight_test_session(&alice, fresh_attempt, &ring_id, &ring, SessionKind::Fresh).await;
+    let fresh_digest = configure_public_test_session(&alice, fresh_attempt, committee).await;
+    let (fresh_a, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        fresh_attempt,
+        &ring_id,
+        fresh_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: first_commitment.clone(),
+            report_evidence: None,
+        },
+    )
+    .await;
+    let (fresh_b, _) = sign_test_public_contribution(
+        &network.charlie.app_state,
+        fresh_attempt,
+        &ring_id,
+        fresh_digest,
+        origin,
+        DkgPublicPayload::Commitment {
+            commitment: second_commitment.clone(),
+            report_evidence: None,
+        },
+    )
+    .await;
+    assert!(!queue_public_commitment_equivocation_for_test(
+        &alice.app_state,
+        &network::V0,
+        fresh_attempt,
+        origin,
+        fresh_a,
+        fresh_b,
+    )
+    .await
+    .expect("Fresh commitment conflicts must remain unreported"));
+    assert!(
+        network
+            .dummy_bulletin
+            .as_ref()
+            .expect("reporting test requires DummyBulletin")
+            .take_submitted_reports()
+            .is_empty(),
+        "non-proofs must not submit reports"
+    );
+
+    assert!(record_public_contribution_at_leader_for_test(
+        &alice.app_state,
+        &network::V0,
+        first_signed,
+        &first_contribution,
+    )
+    .await
+    .expect("first contribution must be retained"));
+    let rejection = record_public_contribution_at_leader_for_test(
+        &alice.app_state,
+        &network::V0,
+        second_signed,
+        &second_contribution,
+    )
+    .await
+    .expect_err("second signed commitment must be rejected as equivocation");
+    assert!(matches!(
+        rejection,
+        DkgError::ProtocolError(ref message) if message.contains("equivocated")
+    ));
+    assert_eq!(
+        alice
+            .app_state
+            .dkg_session_state
+            .transport_attempt(&refresh_attempt.session_id())
+            .await,
+        None,
+        "the original protocol path must still abort the attempt"
+    );
+
+    alice.app_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(
+        submissions.len(),
+        1,
+        "expected exactly one equivocation report"
+    );
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(
+        submission.accused_node_key,
+        network.charlie.app_state.node_key
+    );
+    assert_eq!(
+        submission.session_id,
+        refresh_attempt.session_id().to_string()
+    );
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized equivocation payload")
+    {
+        InvalidCryptoResponse::DkgEquivocation {
+            commitment_a,
+            commitment_b,
+        } => {
+            assert_eq!(commitment_a.statement.origin_protocol, "pss_refresh");
+            assert_eq!(commitment_a.statement.request_id, submission.session_id);
+            assert_eq!(
+                commitment_a.statement.responder_node_key,
+                submission.accused_node_key
+            );
+            assert_eq!(
+                commitment_a.statement.session_nonce,
+                commitment_b.statement.session_nonce
+            );
+            assert_ne!(
+                commitment_a.statement.commitment,
+                commitment_b.statement.commitment
+            );
+            assert_eq!(commitment_a.statement.commitment, first_commitment);
+            assert_eq!(commitment_b.statement.commitment, second_commitment);
         }
         other => panic!("unexpected invalid-response payload: {other:?}"),
     }

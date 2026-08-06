@@ -297,20 +297,27 @@ pub(crate) enum TopologyAckRecordOutcome {
     MissingSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PublicContributionRecordOutcome {
     Recorded,
     DuplicateSame,
-    ConflictingDuplicate,
+    ConflictingDuplicate {
+        retained: network::SignedPayload,
+        conflicting: network::SignedPayload,
+    },
     StaleAttempt,
     MissingSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PublicBatchRecordOutcome {
     Recorded,
     DuplicateSame,
-    ConflictingDuplicate { origin: ParticipantRef },
+    ConflictingDuplicate {
+        origin: ParticipantRef,
+        retained: network::SignedPayload,
+        conflicting: network::SignedPayload,
+    },
     StaleAttempt,
     MissingSession,
 }
@@ -1795,7 +1802,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 Some(existing) if existing == &contribution => {
                     PublicContributionRecordOutcome::DuplicateSame
                 }
-                Some(_) => PublicContributionRecordOutcome::ConflictingDuplicate,
+                Some(existing) => PublicContributionRecordOutcome::ConflictingDuplicate {
+                    retained: existing.clone(),
+                    conflicting: contribution,
+                },
                 None => {
                     transport
                         .public_phase_started_at
@@ -1841,11 +1851,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
             let retained = transport.public_contributions.entry(phase).or_default();
             for (origin, contribution) in &contributions {
-                if retained
+                if let Some(existing) = retained
                     .get(origin)
-                    .is_some_and(|existing| existing != contribution)
+                    .filter(|existing| *existing != contribution)
                 {
-                    return PublicBatchRecordOutcome::ConflictingDuplicate { origin: *origin };
+                    return PublicBatchRecordOutcome::ConflictingDuplicate {
+                        origin: *origin,
+                        retained: existing.clone(),
+                        conflicting: contribution.clone(),
+                    };
                 }
             }
 
@@ -3708,9 +3722,12 @@ mod tests {
         let mut conflicting = exact.clone();
         conflicting.data[0] ^= 1;
         assert_eq!(
-            mgr.record_public_contribution(&22, attempt, phase, origin, conflicting)
+            mgr.record_public_contribution(&22, attempt, phase, origin, conflicting.clone())
                 .await,
-            PublicContributionRecordOutcome::ConflictingDuplicate
+            PublicContributionRecordOutcome::ConflictingDuplicate {
+                retained: exact.clone(),
+                conflicting,
+            }
         );
         assert_eq!(
             mgr.public_contributions(&22, attempt, phase)
@@ -4579,15 +4596,18 @@ mod tests {
             PublicContributionRecordOutcome::Recorded
         );
 
+        let conflicting_first = test_signed_public(9);
         let conflicting = BTreeMap::from([
-            (ParticipantRef::current(1), test_signed_public(9)),
+            (ParticipantRef::current(1), conflicting_first.clone()),
             (ParticipantRef::current(2), test_signed_public(2)),
         ]);
         assert_eq!(
             mgr.record_public_batch(&session_id, attempt, phase, conflicting)
                 .await,
             PublicBatchRecordOutcome::ConflictingDuplicate {
-                origin: ParticipantRef::current(1)
+                origin: ParticipantRef::current(1),
+                retained: first.clone(),
+                conflicting: conflicting_first,
             }
         );
         let retained = mgr
