@@ -9,6 +9,13 @@ pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 /// Mirrors the production scheduler's early-due grace window. Benchmark PSS
 /// intervals must exceed it so due-to-start and ceremony time remain separable.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
+/// SourceHub commit every example config, `Experiment::single`/sweep-built
+/// experiment, and (via `docker/Dockerfile.sourcehub-integration`'s own
+/// fallback read of the same file) every raw `docker-compose-*.yml` that
+/// doesn't pass `SOURCEHUB_REF` explicitly all pin by default. Single source
+/// of truth across both Rust and Docker — bump `docker/SOURCEHUB_REF` to
+/// move every default-using caller at once instead of hunting down each copy.
+pub const DEFAULT_SOURCEHUB_REF: &str = include_str!("../../../docker/SOURCEHUB_REF");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -63,6 +70,28 @@ fn default_operations() -> BTreeSet<Operation> {
 pub enum NetworkProfileKind {
     Lan,
     Wan,
+}
+
+/// Where an experiment's nodes actually run.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExecutionBackend {
+    /// Docker Compose: SourceHub + N `orbis-node` containers. Supports every
+    /// operation and network profile.
+    #[default]
+    Docker,
+    /// Real `orbis-node` instances as tokio tasks in this process, over real
+    /// loopback Iroh P2P, backed by a shared in-memory mock bulletin instead
+    /// of SourceHub. No Docker, no chain, no external network dependency —
+    /// trades chain/container realism for immunity to infrastructure
+    /// flakiness unrelated to orbis's own protocol correctness. v1 supports
+    /// `dkg`, `pre`, `sign`, and `pss_refresh` operations (no `pss_reshare`
+    /// yet; see `Experiment::validate`). WAN profiles are supported,
+    /// approximated in software (`network::ShapedNetwork`) instead of
+    /// Docker's per-container `tc netem`. Unlike Docker's SourceHub-backed
+    /// rings, `DummyBulletin` enforces no floor on `pss_interval_secs`, so
+    /// `pss_refresh` isn't limited to SourceHub's 86400s minimum here.
+    InProcess,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -159,6 +188,14 @@ impl Default for TimeoutConfig {
 pub struct ResourceLimits {
     pub cpus_per_node: Option<f64>,
     pub memory_per_node: Option<String>,
+    /// Applied to every SourceHub container (the validator and any
+    /// replicas). Only the validator (replica index 0) proposes and
+    /// executes blocks, so it is the one actually bottlenecked by DKG
+    /// finalization traffic — but capping replicas the same way is harmless
+    /// (a cap just bounds what a container *may* use) and keeps this
+    /// consistent with `cpus_per_node`/`memory_per_node`'s single shared value.
+    pub cpus_per_sourcehub: Option<f64>,
+    pub memory_per_sourcehub: Option<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -180,7 +217,7 @@ fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
 }
 fn default_sourcehub_ref() -> String {
-    "c67e328382ab55d69318ed6e7778d4827996429f".to_string()
+    DEFAULT_SOURCEHUB_REF.to_string()
 }
 fn default_sourcehub_replicas() -> usize {
     1
@@ -240,6 +277,8 @@ pub struct Experiment {
     /// `pss_reshare` trial. Reshare is opt-in and therefore has no default.
     #[serde(default)]
     pub reshare_overlap: Option<usize>,
+    #[serde(default)]
+    pub backend: ExecutionBackend,
 }
 
 fn default_profiles() -> Vec<NetworkProfile> {
@@ -283,6 +322,7 @@ impl Experiment {
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
             reshare_overlap: None,
+            backend: ExecutionBackend::default(),
         }
     }
 
@@ -459,6 +499,19 @@ impl Experiment {
             if *concurrency == 0 {
                 bail!("load concurrency values must be at least 1");
             }
+        }
+        if self.backend == ExecutionBackend::InProcess
+            && self.operations.iter().any(|operation| {
+                !matches!(
+                    operation,
+                    Operation::Dkg | Operation::Pre | Operation::Sign | Operation::PssRefresh
+                )
+            })
+        {
+            bail!(
+                "backend 'in-process' supports only dkg, pre, sign, and pss_refresh operations in v1; got {:?}",
+                self.operations
+            );
         }
         Ok(())
     }

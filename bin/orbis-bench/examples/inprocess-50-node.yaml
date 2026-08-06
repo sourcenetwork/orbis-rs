@@ -1,0 +1,64 @@
+schema_version: 1
+name: orbis-inprocess-50-node
+crypto: bls12-381
+
+# In-process backend: real orbis-node instances run as tokio tasks in this
+# process over real loopback Iroh P2P, backed by a shared in-memory mock
+# bulletin instead of a Dockerized SourceHub. No containers, no chain, no
+# external network dependency — this isolates orbis's own DKG/PRE/SIGN
+# protocol and P2P networking behavior from infrastructure flakiness
+# (SourceHub RPC hiccups, Iroh relay reachability, Docker host contention
+# under 50+ containers) that has nothing to do with protocol correctness.
+#
+# v1 scope: dkg, pre, and sign, on a `lan`-kind profile only (see
+# `Experiment::validate` in config.rs) — there is no PSS refresh/reshare
+# support and no network shaping on this backend yet.
+backend: in-process
+
+networks:
+  - network_size: 50
+    cases:
+      - { ring_size: 5, threshold: 3 }
+      - { ring_size: 20, threshold: 15 }
+      - { ring_size: 15, threshold: 10 }
+      - { ring_size: 50, threshold: 34 }
+
+operations: [dkg, sign, pre]
+# Default is 15s (barely above the 10s PSS_GRACE_PERIOD_SECS floor). Widened
+# to give a refresh round more time to fully settle across the committee
+# before the next one comes due — a livelock was reproduced at 15-node full
+# mesh where a ring's *second* consecutive refresh got stuck in a
+# claim/stall/reclaim loop (see project notes); this is a mitigation attempt,
+# not a confirmed fix for the underlying race.
+pss_interval_secs: 30
+# Default is 1s: every node's PSS scheduler wakes up and scans its local rings
+# once a second. At 50 nodes that's 50 scheduler ticks/sec of background load
+# on top of DKG/PRE/SIGN traffic, and was observed to reintroduce DKG-level
+# iroh contention ("prepare exceeded the preparation deadline") that
+# bind_addr_v4 alone had otherwise eliminated. Widened to reduce that ambient
+# load; mitigation attempt, not a confirmed fix.
+pss_poll_interval_secs: 10
+profiles:
+  - name: lan
+    kind: lan
+  - name: wan-50ms
+    kind: wan
+    delay_ms: 25
+    jitter_ms: 5
+    loss_percent: 0.1
+
+warmups: 1
+repetitions: 5
+seed: 185974508
+output_dir: bench-results
+
+load:
+  concurrency: [1, 4, 16]
+  warmup_secs: 10
+  measure_secs: 30
+
+timeouts:
+  setup_secs: 300
+  dkg_secs: 300
+  pre_secs: 120
+  sign_secs: 120

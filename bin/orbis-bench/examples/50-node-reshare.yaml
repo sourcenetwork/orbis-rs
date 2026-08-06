@@ -34,7 +34,6 @@ resources:
   cpus_per_node: null
   memory_per_node: null
 
-sourcehub_ref: c67e328382ab55d69318ed6e7778d4827996429f
 setup_batch_size: 25
 # Retained for reference: SourceHub enforces a hard 86400s floor on every
 # ring's pss_interval, so this value has no observable effect here (this

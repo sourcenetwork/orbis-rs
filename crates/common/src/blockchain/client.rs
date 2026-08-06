@@ -39,6 +39,24 @@ const ABCI_QUERY_MAX_ATTEMPTS: u32 = 4;
 const ABCI_QUERY_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 
 // ============================================================================
+// REST Transport Retry Constants
+// ============================================================================
+
+/// Maximum attempts for a REST call's `send()` before giving up. Mirrors
+/// `abci_query`'s retry treatment of the analogous RPC failure class: only
+/// transport-level failures (connection refused/reset, brief Docker/DNS
+/// blip between containers) are retried here — a response the server
+/// actually returned, including a non-2xx status, is authoritative and
+/// handled by the caller, not retried. Slightly more attempts and a longer
+/// base delay than ABCI's since REST calls (gas simulation, account/balance
+/// queries) have been the observed source of transient Docker-integration
+/// flakiness.
+const REST_TRANSPORT_MAX_ATTEMPTS: u32 = 5;
+
+/// Base delay between REST transport retries, scaled linearly by attempt number.
+const REST_TRANSPORT_RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
+
+// ============================================================================
 // Gas Simulation Constants
 // ============================================================================
 
@@ -616,12 +634,35 @@ impl SourceHubClient {
         Ok(secs)
     }
 
+    /// Send a REST request, retrying past transport-level failures. See
+    /// `REST_TRANSPORT_MAX_ATTEMPTS`'s docs for what is and isn't retried.
+    /// Panics if `request`'s body can't be cloned (a streaming body) — none
+    /// of this client's REST calls use one.
+    async fn send_with_retry(
+        request: reqwest::RequestBuilder,
+    ) -> std::result::Result<reqwest::Response, reqwest::Error> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let this_attempt = request
+                .try_clone()
+                .expect("REST request body must be cloneable for retry");
+            match this_attempt.send().await {
+                Ok(response) => return Ok(response),
+                Err(error) if attempt < REST_TRANSPORT_MAX_ATTEMPTS => {
+                    eprintln!(
+                        "REST request transport error (attempt {attempt}/{REST_TRANSPORT_MAX_ATTEMPTS}), retrying: {error}"
+                    );
+                    sleep(REST_TRANSPORT_RETRY_BASE_DELAY * attempt).await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Make a REST API GET request.
     pub async fn rest_get<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        let response = self
-            .http_client
-            .get(url)
-            .send()
+        let response = Self::send_with_retry(self.http_client.get(url))
             .await?
             .error_for_status()
             .map_err(|e| BlockchainError::Rest(e.to_string()))?;
@@ -638,7 +679,7 @@ impl SourceHubClient {
     /// Make a REST API GET request that returns None on 404.
     /// Useful for queries where 404 is a valid response (e.g., account doesn't exist).
     pub async fn rest_get_optional<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
-        let response = self.http_client.get(url).send().await?;
+        let response = Self::send_with_retry(self.http_client.get(url)).await?;
 
         let status = response.status();
         if status == reqwest::StatusCode::NOT_FOUND {
@@ -665,11 +706,7 @@ impl SourceHubClient {
         url: &str,
         body: &B,
     ) -> Result<T> {
-        let response = self
-            .http_client
-            .post(url)
-            .json(body)
-            .send()
+        let response = Self::send_with_retry(self.http_client.post(url).json(body))
             .await?
             .error_for_status()
             .map_err(|e| BlockchainError::Rest(e.to_string()))?;
@@ -735,7 +772,7 @@ impl SourceHubClient {
         };
 
         // Make the request and get raw response for debugging
-        let response = self.http_client.post(&url).json(&request).send().await?;
+        let response = Self::send_with_retry(self.http_client.post(&url).json(&request)).await?;
 
         let status = response.status();
         let body = response.text().await?;

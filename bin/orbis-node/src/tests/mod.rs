@@ -9,4 +9,6 @@ mod node;
 mod pending_ring_cancellation;
 #[cfg(feature = "integration-test")]
 mod reporting;
+#[cfg(feature = "scale-testing")]
+mod scale_testing;
 mod upgrade;

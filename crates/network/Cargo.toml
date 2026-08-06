@@ -26,6 +26,7 @@ rand = { workspace = true }
 default = ["iroh"]
 iroh = []
 fault-injection = []
+shaping = []
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }

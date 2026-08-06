@@ -1,6 +1,7 @@
 pub mod compose;
 pub mod config;
 pub mod docker;
+pub mod harness;
 pub mod metrics;
 pub mod protocol;
 pub mod report;
