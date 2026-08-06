@@ -11,7 +11,17 @@ use super::{
     build_signed_relay_statement, queue_report, validate_relay_request_binding,
     RelayRequestBinding, RelayRequestTimestampBinding, RelayStatementInputs,
 };
+use crate::dkg::v0::coordinator::evidence::{
+    build_commitment_evidence_with_context, evidence_build_context,
+};
+use crate::dkg::v0::coordinator::message_handlers::prepare_commitment_message;
+use crate::dkg::v0::coordinator::DkgCoordinator;
+use crate::dkg::v0::error::DkgError;
+use crate::dkg::v0::helpers::serialize_commitment_coefficients;
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::service::DkgServiceImpl;
+use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyId};
+use crate::helpers::identity::determine_session_node_id;
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
@@ -23,8 +33,8 @@ use bulletin::r#trait::UpgradeInfo;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, ThresholdDealer,
-    ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, DkgMode, DkgRole, PriShare,
+    ThresholdDealer, ThresholdSigner,
 };
 use crypto::{DkgImpl, PreImpl, ScalarField, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -306,6 +316,338 @@ async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
 
     cleanup_db(&db_path);
     assert!(error.to_string().contains("not in ring"));
+}
+
+async fn create_preflight_test_session(
+    coordinator: &DkgCoordinator<DkgImpl>,
+    attempt: AttemptKey,
+    ring_id: &str,
+    ring: &RingPayload,
+    kind: SessionKind,
+) -> u32 {
+    let node_id = determine_session_node_id(&coordinator.app_state.node_key, &ring.peer_node_keys)
+        .expect("test node must belong to finalized ring");
+    let session_ring_id = ring_id.to_string();
+    let peer_node_keys = ring.peer_node_keys.clone();
+    coordinator
+        .create_session(
+            attempt,
+            node_id,
+            ring.threshold as usize,
+            ring.peer_node_keys.len(),
+            DkgRole::Standard,
+            move |state| {
+                state.kind = kind;
+                state.routing.ring_id = session_ring_id;
+                state.routing.peer_node_keys = peer_node_keys;
+            },
+        )
+        .await
+        .expect("create explicit preflight test session");
+    node_id
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn invalid_refresh_commitment_preflight_queues_report_before_rejection() {
+    let db_name = "reporting_invalid_refresh_commitment_preflight";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    let alice = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &network::V0,
+    );
+    let charlie = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.charlie.app_state.clone()),
+        &network::V0,
+    );
+    let refresh_attempt = AttemptKey::new(CeremonyId(777_000_111_222), AttemptId::random());
+    let refresh_kind = SessionKind::Refresh {
+        ring_pk_hex: ring.ring_pk.clone(),
+    };
+    let _alice_node_id = create_preflight_test_session(
+        &alice,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+    let charlie_node_id = create_preflight_test_session(
+        &charlie,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+
+    // Prime both sides' authenticated evidence binding before taking the state
+    // snapshot. Public preflight must not populate or otherwise mutate DKG state.
+    evidence_build_context(&alice, refresh_attempt)
+        .await
+        .expect("prime reporter evidence binding")
+        .expect("Refresh must have an evidence binding");
+    let charlie_refresh_context = evidence_build_context(&charlie, refresh_attempt)
+        .await
+        .expect("build accused evidence context")
+        .expect("Refresh must have an evidence binding");
+
+    let mut invalid_dealer = *DkgImpl::new(
+        charlie_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        refresh_attempt.session_id(),
+        DkgRole::Standard,
+    )
+    .expect("create invalid Refresh dealer");
+    invalid_dealer
+        .generate_polynomial(DkgMode::Fresh)
+        .expect("generate non-identity commitment");
+    let invalid_commitment =
+        serialize_commitment_coefficients(&invalid_dealer.commitment().coefficients)
+            .expect("serialize invalid Refresh commitment");
+    let invalid_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_refresh_context,
+        charlie_node_id,
+        invalid_commitment.clone(),
+    )
+    .expect("sign invalid Refresh commitment evidence");
+
+    let mut identity_dealer = *DkgImpl::new(
+        charlie_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        refresh_attempt.session_id(),
+        DkgRole::Standard,
+    )
+    .expect("create valid Refresh dealer");
+    identity_dealer
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate identity-term Refresh commitment");
+    let identity_commitment =
+        serialize_commitment_coefficients(&identity_dealer.commitment().coefficients)
+            .expect("serialize valid Refresh commitment");
+    let identity_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_refresh_context,
+        charlie_node_id,
+        identity_commitment.clone(),
+    )
+    .expect("sign valid Refresh commitment evidence");
+
+    let state_before = alice
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(refresh_attempt, |state| {
+            (
+                state.phase,
+                state.commitments_received,
+                state.shares_received,
+            )
+        })
+        .await
+        .expect("read Refresh state before preflight");
+
+    let malformed = prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &[0xff; 3],
+        None,
+        None,
+    )
+    .await
+    .expect_err("malformed commitment must fail");
+    assert!(matches!(
+        malformed,
+        DkgError::CommitmentVerificationFailed(_)
+    ));
+
+    let mut invalid_signature = invalid_evidence.clone();
+    invalid_signature.signature[0] ^= 0x01;
+    let bad_signature = prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &invalid_commitment,
+        Some(&invalid_signature),
+        None,
+    )
+    .await
+    .expect_err("invalid evidence signature must fail");
+    assert!(matches!(bad_signature, DkgError::Unauthorized(_)));
+
+    let mut wrong_binding = invalid_evidence.clone();
+    wrong_binding.statement.request_id = "wrong-session".to_string();
+    let wrong_binding_error = prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &invalid_commitment,
+        Some(&wrong_binding),
+        None,
+    )
+    .await
+    .expect_err("wrong evidence binding must fail");
+    assert!(matches!(wrong_binding_error, DkgError::Unauthorized(_)));
+
+    prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &identity_commitment,
+        Some(&identity_evidence),
+        None,
+    )
+    .await
+    .expect("identity-term Refresh commitment must pass preflight");
+
+    let fresh_attempt = AttemptKey::new(CeremonyId(777_000_111_223), AttemptId::random());
+    create_preflight_test_session(&alice, fresh_attempt, &ring_id, &ring, SessionKind::Fresh).await;
+    prepare_commitment_message(
+        &alice,
+        fresh_attempt,
+        charlie_node_id,
+        &invalid_commitment,
+        None,
+        None,
+    )
+    .await
+    .expect("Fresh commitment must not be classified as invalid Refresh evidence");
+
+    let reshare_attempt = AttemptKey::new(CeremonyId(777_000_111_224), AttemptId::random());
+    let reshare_kind = SessionKind::Reshare {
+        ring_pk_hex: ring.ring_pk.clone(),
+        new_peer_node_keys: ring.peer_node_keys.clone(),
+        new_threshold: ring.threshold,
+        bulletin_post_id: ring_id.clone(),
+    };
+    create_preflight_test_session(
+        &alice,
+        reshare_attempt,
+        &ring_id,
+        &ring,
+        reshare_kind.clone(),
+    )
+    .await;
+    create_preflight_test_session(&charlie, reshare_attempt, &ring_id, &ring, reshare_kind).await;
+    evidence_build_context(&alice, reshare_attempt)
+        .await
+        .expect("prime Reshare reporter evidence binding")
+        .expect("Reshare must have an evidence binding");
+    let charlie_reshare_context = evidence_build_context(&charlie, reshare_attempt)
+        .await
+        .expect("build Reshare accused evidence context")
+        .expect("Reshare must have an evidence binding");
+    let reshare_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_reshare_context,
+        charlie_node_id,
+        invalid_commitment.clone(),
+    )
+    .expect("sign Reshare commitment evidence");
+    prepare_commitment_message(
+        &alice,
+        reshare_attempt,
+        charlie_node_id,
+        &invalid_commitment,
+        Some(&reshare_evidence),
+        None,
+    )
+    .await
+    .expect("Reshare commitment must not be classified as invalid Refresh evidence");
+
+    let rejection = prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &invalid_commitment,
+        Some(&invalid_evidence),
+        None,
+    )
+    .await
+    .expect_err("non-identity Refresh commitment must be rejected");
+    assert!(matches!(
+        rejection,
+        DkgError::CommitmentVerificationFailed(ref message)
+            if message.contains("non-identity constant term")
+    ));
+
+    let state_after = alice
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(refresh_attempt, |state| {
+            (
+                state.phase,
+                state.commitments_received,
+                state.shares_received,
+            )
+        })
+        .await
+        .expect("read Refresh state after preflight");
+    assert_eq!(state_after, state_before, "preflight mutated DKG state");
+
+    alice.app_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(submissions.len(), 1, "expected exactly one queued report");
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(
+        submission.accused_node_key,
+        network.charlie.app_state.node_key
+    );
+    assert_eq!(
+        submission.session_id,
+        refresh_attempt.session_id().to_string()
+    );
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized invalid-refresh payload")
+    {
+        InvalidCryptoResponse::DkgInvalidRefreshCommitment { statement, .. } => {
+            assert_eq!(statement.origin_protocol, "pss_refresh");
+            assert_eq!(statement.request_id, submission.session_id);
+            assert_eq!(statement.responder_node_key, submission.accused_node_key);
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
 }
 
 #[tokio::test]

@@ -28,8 +28,8 @@ use crate::dkg::v0::coordinator::evidence::{
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
     handle_commitment_message, handle_reshare_participant_set, handle_reshare_share_ack,
-    handle_session_init, preflight_commitment_audit_message, preflight_commitment_hash_message,
-    preflight_commitment_message, preflight_reshare_participant_set,
+    handle_session_init, prepare_commitment_message, preflight_commitment_audit_message,
+    preflight_commitment_hash_message, preflight_reshare_participant_set,
 };
 use crate::dkg::v0::coordinator::refresh_health_check::{handle_result, preflight_result};
 use crate::dkg::v0::coordinator::reporting::{
@@ -6658,7 +6658,8 @@ where
 }
 
 /// Validate the contribution's protocol payload without retaining it, mutating
-/// cryptographic state, advancing a phase, or performing network/bulletin writes.
+/// cryptographic state, or advancing a phase. Proven invalid Refresh commitments
+/// may enqueue best-effort reporting evidence before the caller aborts the attempt.
 async fn preflight_public_contribution<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -6697,16 +6698,16 @@ where
         DkgPublicPayload::Commitment {
             commitment,
             report_evidence,
-        } => {
-            preflight_commitment_message(
-                &coordinator,
-                attempt,
-                contribution.origin.node_id,
-                commitment,
-                report_evidence.as_ref(),
-            )
-            .await
-        }
+        } => prepare_commitment_message(
+            &coordinator,
+            attempt,
+            contribution.origin.node_id,
+            commitment,
+            report_evidence.as_ref(),
+            None,
+        )
+        .await
+        .map(|_| ()),
         DkgPublicPayload::CommitmentAudit { .. } => {
             preflight_commitment_audit_message(&coordinator, attempt).await
         }

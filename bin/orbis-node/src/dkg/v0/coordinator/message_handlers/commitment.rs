@@ -4,7 +4,8 @@ use crate::dkg::v0::coordinator::evidence::{
 };
 use crypto::SignImpl;
 
-pub(super) enum PreparedCommitment {
+#[derive(Debug)]
+pub(crate) enum PreparedCommitment {
     WaitingForHash,
     Ready {
         polynomial_commitment: PolynomialCommitment,
@@ -14,63 +15,13 @@ pub(super) enum PreparedCommitment {
     },
 }
 
-pub(crate) async fn preflight_commitment_message<D>(
-    coord: &DkgCoordinator<D>,
-    attempt: AttemptKey,
-    from_node_id: u32,
-    commitment: &[u8],
-    report_evidence: Option<&SignedDkgCommitment>,
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    prepare_commitment_message(
-        coord,
-        attempt,
-        from_node_id,
-        commitment,
-        report_evidence,
-        None,
-        false,
-    )
-    .await?;
-    Ok(())
-}
-
-pub(super) async fn preflight_commitment_message_with_hash<D>(
-    coord: &DkgCoordinator<D>,
-    attempt: AttemptKey,
-    from_node_id: u32,
-    commitment: &[u8],
-    report_evidence: Option<&SignedDkgCommitment>,
-    expected_hash: [u8; 32],
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    prepare_commitment_message(
-        coord,
-        attempt,
-        from_node_id,
-        commitment,
-        report_evidence,
-        Some(expected_hash),
-        false,
-    )
-    .await?;
-    Ok(())
-}
-
-async fn prepare_commitment_message<D>(
+pub(crate) async fn prepare_commitment_message<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
     from_node_id: u32,
     commitment: &[u8],
     report_evidence: Option<&SignedDkgCommitment>,
     expected_hash_override: Option<[u8; 32]>,
-    report_invalid_refresh: bool,
 ) -> Result<PreparedCommitment>
 where
     D: CoordinatorDkg,
@@ -164,22 +115,20 @@ where
     };
 
     if is_refresh && !polynomial_commitment.constant_term_is_identity() {
-        if report_invalid_refresh {
-            if let Some(evidence) = &verified_evidence {
-                if let Err(error) = queue_invalid_refresh_commitment_report(
-                    coord.app_state.clone(),
-                    coord.routes,
-                    evidence.clone(),
-                )
-                .await
-                {
-                    tracing::warn!(
-                        session_id,
-                        from_node_id,
-                        error = %error,
-                        "Failed to queue invalid-refresh-commitment report"
-                    );
-                }
+        if let Some(evidence) = &verified_evidence {
+            if let Err(error) = queue_invalid_refresh_commitment_report(
+                coord.app_state.clone(),
+                coord.routes,
+                evidence.clone(),
+            )
+            .await
+            {
+                tracing::warn!(
+                    session_id,
+                    from_node_id,
+                    error = %error,
+                    "Failed to queue invalid-refresh-commitment report"
+                );
             }
         }
         return Err(DkgError::CommitmentVerificationFailed(format!(
@@ -240,7 +189,6 @@ where
         &commitment,
         report_evidence.as_ref(),
         None,
-        true,
     )
     .await?
     else {
