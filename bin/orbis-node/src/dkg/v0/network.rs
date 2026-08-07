@@ -11320,6 +11320,12 @@ mod stability_tests {
         }
     }
 
+    fn reshare_participant_set_payload(dealers: &[u32]) -> DkgPublicPayload {
+        DkgPublicPayload::ReshareParticipantSet {
+            selected_dealers: dealers.iter().copied().map(ParticipantRef::current).collect(),
+        }
+    }
+
     async fn bind_test_origin_to_local_peer(
         state: &Arc<AppState<crypto::DkgImpl>>,
         session_id: u128,
@@ -13089,6 +13095,61 @@ mod stability_tests {
                 contribution_b: Some(conflicting_envelope),
             }),
             "non-Commitment conflicts must preserve both exact endpoint envelopes"
+        );
+    }
+
+    #[test]
+    fn reshare_participant_set_origin_conflicts_do_not_carry_dkg_equivocation_evidence() {
+        // ReshareParticipantSet is Complete-mode with a single legitimate
+        // origin (next-committee node 1), so a genuinely different root the
+        // second time is a leader-attributed ConflictingManifest, not origin
+        // equivocation. Origin equivocation instead shows up as the same
+        // origin appearing again at a different index under the one
+        // canonical root the phase already committed to.
+        let origin = ParticipantRef::next(1);
+        let mut first = assembled_contribution(origin, 1);
+        first.contribution.payload = reshare_participant_set_payload(&[1, 2]);
+        first.signed.data = transport::encode(&first.contribution).unwrap();
+        let mut conflicting = assembled_contribution(origin, 2);
+        conflicting.contribution.payload = reshare_participant_set_payload(&[1, 3]);
+        conflicting.signed.data = transport::encode(&conflicting.contribution).unwrap();
+        let mut assembler = PublicBatchAssembler::default();
+        let retained_envelope = first.signed.clone();
+        let conflicting_envelope = conflicting.signed.clone();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::ReshareParticipantSet,
+                [1; 32],
+                0,
+                vec![first],
+                [1; 32],
+                2,
+                None,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::ReshareParticipantSet,
+                [1; 32],
+                1,
+                vec![conflicting],
+                [2; 32],
+                2,
+                None,
+            )
+            .expect_err("reshare participant-set origin conflict must still abort");
+        assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
+        assert!(error.commitment_equivocation.is_none());
+        assert_eq!(
+            error.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained_envelope,
+                contribution_b: Some(conflicting_envelope),
+            }),
+            "reshare participant-set conflicts must preserve both exact endpoint envelopes"
         );
     }
 

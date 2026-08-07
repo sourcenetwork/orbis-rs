@@ -1528,6 +1528,218 @@ async fn public_origin_non_commitment_equivocation_queues_report_before_abort() 
 
 #[tokio::test]
 #[serial_test::serial]
+async fn refresh_health_check_origin_equivocation_queues_report_before_abort() {
+    let db_name = "reporting_refresh_health_check_origin_equivocation";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    // RefreshHealthCheckResult must come from canonical node 1; find which
+    // test-harness member that is so it can act as the equivocating origin,
+    // and use a different member as the recording leader.
+    let origin_app_state = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ]
+    .into_iter()
+    .find(|app_state| {
+        determine_session_node_id(&app_state.node_key, &ring.peer_node_keys) == Some(1)
+    })
+    .expect("one test-harness member must be canonical node 1")
+    .clone();
+    let recorder_app_state = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ]
+    .into_iter()
+    .find(|app_state| app_state.node_key != origin_app_state.node_key)
+    .expect("a non-origin test-harness member must exist")
+    .clone();
+    let recorder = DkgCoordinator::<DkgImpl>::with_routes(Arc::new(recorder_app_state), &network::V0);
+
+    let refresh_attempt = AttemptKey::new(CeremonyId(777_000_444_222), AttemptId::random());
+    let refresh_kind = SessionKind::Refresh {
+        ring_pk_hex: ring.ring_pk.clone(),
+    };
+    create_preflight_test_session(&recorder, refresh_attempt, &ring_id, &ring, refresh_kind).await;
+
+    let route_by_node_key = HashMap::from([
+        (
+            network.alice.app_state.node_key.clone(),
+            network.alice.address.clone(),
+        ),
+        (
+            network.bob.app_state.node_key.clone(),
+            network.bob.address.clone(),
+        ),
+        (
+            network.charlie.app_state.node_key.clone(),
+            network.charlie.address.clone(),
+        ),
+    ]);
+    let committee = CommitteeConfig {
+        node_keys: ring.peer_node_keys.clone(),
+        peer_routes: ring
+            .peer_node_keys
+            .iter()
+            .map(|node_key| route_by_node_key[node_key].clone())
+            .collect(),
+        node_id_assignments: ring
+            .peer_node_keys
+            .iter()
+            .map(|node_key| {
+                (
+                    node_key.clone(),
+                    determine_session_node_id(node_key, &ring.peer_node_keys)
+                        .expect("finalized member must have a canonical node ID"),
+                )
+            })
+            .collect(),
+        threshold: ring.threshold,
+    };
+    let committee_digest =
+        configure_public_test_session(&recorder, refresh_attempt, committee).await;
+    evidence_build_context(&recorder, refresh_attempt)
+        .await
+        .expect("prime reporter evidence binding")
+        .expect("Refresh must have an evidence binding");
+
+    let origin = ParticipantRef::current(1);
+    let statement = crate::sign::v0::messages::RefreshHealthCheckStatement {
+        domain: crate::sign::v0::messages::REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
+        session_id: refresh_attempt.session_id(),
+        ring_pk: ring.ring_pk.clone(),
+        public_polynomial_sha256: "00".repeat(32),
+        peer_node_keys_sha256: "00".repeat(32),
+        threshold: ring.threshold,
+        total_participants: ring.peer_node_keys.len() as u32,
+    };
+    let (first_signed, first) = sign_test_public_contribution(
+        &origin_app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement: statement.clone(),
+            signature: None,
+        },
+    )
+    .await;
+    let mut conflicting_statement = statement;
+    conflicting_statement.public_polynomial_sha256 = "22".repeat(32);
+    let (second_signed, second) = sign_test_public_contribution(
+        &origin_app_state,
+        refresh_attempt,
+        &ring_id,
+        committee_digest,
+        origin,
+        DkgPublicPayload::RefreshHealthCheckResult {
+            statement: conflicting_statement,
+            signature: None,
+        },
+    )
+    .await;
+
+    assert!(record_public_contribution_at_leader_for_test(
+        &recorder.app_state,
+        &network::V0,
+        first_signed.clone(),
+        &first,
+    )
+    .await
+    .expect("first result must be retained"));
+    let rejection = record_public_contribution_at_leader_for_test(
+        &recorder.app_state,
+        &network::V0,
+        second_signed.clone(),
+        &second,
+    )
+    .await
+    .expect_err("the conflicting result must abort the attempt");
+    assert!(matches!(rejection, DkgError::ProtocolError(_)));
+    assert_eq!(
+        recorder
+            .app_state
+            .dkg_session_state
+            .transport_attempt(&refresh_attempt.session_id())
+            .await,
+        None,
+        "the original public protocol path must abort the attempt"
+    );
+
+    recorder.app_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(submissions.len(), 1, "expected one public-origin report");
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(submission.accused_node_key, origin_app_state.node_key);
+    assert_eq!(
+        submission.session_id,
+        refresh_attempt.session_id().to_string()
+    );
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized public-origin payload")
+    {
+        InvalidCryptoResponse::DkgPublicOriginFault { statement } => {
+            assert_eq!(
+                statement.fault_kind,
+                DkgPublicOriginFaultKind::OriginEquivocation
+            );
+            assert_eq!(statement.phase, "refresh_health_check");
+            assert_eq!(statement.attempt_id, refresh_attempt.attempt_id.0);
+            assert_eq!(statement.signed_at, first.signed_at.max(second.signed_at));
+            assert_eq!(statement.contribution_a.data, first_signed.data);
+            assert_eq!(
+                statement
+                    .contribution_b
+                    .expect("equivocation requires a second contribution")
+                    .data,
+                second_signed.data
+            );
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn public_commitment_origin_equivocation_queues_report_before_abort() {
     let db_name = "reporting_public_commitment_origin_equivocation";
     let db_paths = [
