@@ -2374,8 +2374,17 @@ where
                         %error,
                         "aborting DKG attempt after staged leader result failed preflight"
                     );
-                    // TODO(reporting): retain the authenticated leader envelope
-                    // and report the invalid staged refresh result.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        attempt,
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: signed.clone(),
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
@@ -2450,6 +2459,7 @@ where
             // Commit is the authorization to apply it, so bypass the generic
             // record-and-deduplicate helper: treating the retained record as a
             // completed application would leave followers staged forever.
+            let retained_signed = signed.clone();
             if let Err(error) =
                 dispatch_public_contribution(state.clone(), routes, signed, contribution.clone())
                     .await
@@ -2466,8 +2476,17 @@ where
                         "public",
                         "protocol_violation_abort",
                     );
-                    // TODO(reporting): retain the authenticated leader result
-                    // and report the invalid committed refresh result.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: retained_signed,
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(

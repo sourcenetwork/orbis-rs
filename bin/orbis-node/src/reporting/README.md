@@ -111,7 +111,12 @@ The current evidence kinds are:
   same origin and attempt. The statement uses domain
   `orbis-dkg-public-origin-fault-v1`, retains the exact endpoint envelopes, and
   is limited to Refresh/Reshare. Commitment equivocation remains on the
-  stronger `dkg_equivocation` path.
+  stronger `dkg_equivocation` path. This same `InvalidPayload` path also
+  covers a Refresh result that fails preflight or dispatch over the
+  `StageRefreshResult`/`CommitRefreshResult` direct-QUIC delivery barrier — a
+  second, control-plane delivery route for the same `RefreshHealthCheckResult`
+  contribution alongside its normal Gossip-batch path, kept reliable
+  independently of Gossip.
 - `dkg_leader_equivocation`: two conflicting endpoint-signed Gossip
   broadcasts (a manifest, or a chunk at the same index) from the same
   canonical public-plane leader for the same phase and coordinate. Unlike
