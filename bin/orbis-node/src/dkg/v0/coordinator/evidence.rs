@@ -11,16 +11,20 @@ use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
-use crate::dkg::v0::network::relay_invalid_commitment_evidence;
+use crate::dkg::v0::network::{
+    relay_invalid_commitment_evidence, relay_public_origin_fault_evidence,
+};
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
-use crate::dkg::v0::transport::AttemptKey;
+use crate::dkg::v0::transport::{self, AttemptKey, DkgPublicContribution};
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::node_key_for_canonical_node_id;
 use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
-    InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgPublicOriginFaultKind,
+    DkgPublicOriginFaultStatement, DkgShareStatement, EndpointSignedContribution,
+    InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
+    DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
 };
 
 use super::{
@@ -397,6 +401,83 @@ where
             "local node is not in the report signing committee".to_string(),
         ))
     }
+}
+
+pub async fn queue_or_relay_public_origin_fault<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: network::SignedPayload,
+    contribution_b: Option<network::SignedPayload>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if local_node_is_current_route_member(coord, attempt).await? {
+        queue_public_origin_fault_report(
+            coord.app_state.clone(),
+            coord.routes,
+            attempt,
+            fault_kind,
+            contribution_a,
+            contribution_b,
+        )
+        .await
+    } else {
+        let origin_protocol = evidence_binding(coord, attempt)
+            .await?
+            .ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "Fresh DKG public-origin faults are not reportable".to_string(),
+                )
+            })?
+            .origin_protocol;
+        if origin_protocol != "pss_reshare" {
+            return Err(DkgError::Unauthorized(
+                "local node is not in the report signing committee".to_string(),
+            ));
+        }
+        relay_public_origin_fault_evidence(
+            coord,
+            attempt,
+            fault_kind,
+            contribution_a,
+            contribution_b,
+        )
+        .await
+    }
+}
+
+pub async fn handle_public_origin_fault_evidence_relay<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: network::SignedPayload,
+    contribution_b: Option<network::SignedPayload>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    verify_relay_is_current_signer(coord, attempt).await?;
+    let binding = evidence_binding(coord, attempt).await?.ok_or_else(|| {
+        DkgError::Unauthorized("Fresh DKG public-origin faults are not reportable".to_string())
+    })?;
+    if binding.origin_protocol != "pss_reshare" {
+        return Err(DkgError::Unauthorized(
+            "public-origin fault relay is only valid for Reshare".to_string(),
+        ));
+    }
+    queue_public_origin_fault_report(
+        coord.app_state.clone(),
+        coord.routes,
+        attempt,
+        fault_kind,
+        contribution_a,
+        contribution_b,
+    )
+    .await
 }
 
 async fn relay_equivocation_evidence<D>(
@@ -786,6 +867,109 @@ where
     Ok(())
 }
 
+async fn queue_public_origin_fault_report<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: network::SignedPayload,
+    contribution_b: Option<network::SignedPayload>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), routes);
+    let binding = evidence_binding(&coordinator, attempt)
+        .await?
+        .ok_or_else(|| {
+            DkgError::Unauthorized("Fresh DKG public-origin faults are not reportable".to_string())
+        })?;
+    let decoded: DkgPublicContribution = transport::decode(
+        &contribution_a.data,
+        transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+    )
+    .map_err(DkgError::Deserialization)?;
+    if decoded.ceremony_id != attempt.ceremony_id || decoded.attempt_id != attempt.attempt_id {
+        return Err(DkgError::Unauthorized(
+            "public-origin evidence does not target the active attempt".to_string(),
+        ));
+    }
+    let evidence_signed_at = match fault_kind {
+        DkgPublicOriginFaultKind::InvalidPayload => decoded.signed_at,
+        DkgPublicOriginFaultKind::OriginEquivocation => {
+            let contribution_b = contribution_b.as_ref().ok_or_else(|| {
+                DkgError::InvalidInput(
+                    "public-origin equivocation evidence requires two contributions".to_string(),
+                )
+            })?;
+            let decoded_b: DkgPublicContribution = transport::decode(
+                &contribution_b.data,
+                transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+            )
+            .map_err(DkgError::Deserialization)?;
+            decoded.signed_at.max(decoded_b.signed_at)
+        }
+    };
+    let (accused_committee_scope, node_keys) = match decoded.origin.scope {
+        transport::CommitteeScope::Current => (CommitteeScope::Current, &binding.current_node_keys),
+        transport::CommitteeScope::Next => {
+            (CommitteeScope::PendingNew, &binding.receiver_node_keys)
+        }
+    };
+    let accused_node_key = node_key_for_canonical_node_id(decoded.origin.node_id, node_keys)
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "public-origin evidence participant is not in the bound committee".to_string(),
+            )
+        })?;
+    let accused_info = read_node_info(&app_state, &accused_node_key).await?;
+    let statement = DkgPublicOriginFaultStatement {
+        domain: DKG_PUBLIC_ORIGIN_FAULT_DOMAIN.to_string(),
+        chain_id: binding.chain_id,
+        ring_id: binding.ring_id.clone(),
+        ring_pk: binding.ring_pk,
+        ring_state_sha256: binding.ring_state_sha256,
+        protocol_version: binding.protocol_version,
+        request_id: binding.request_id,
+        signed_at: evidence_signed_at,
+        responder_node_key: accused_node_key.clone(),
+        origin_protocol: binding.origin_protocol,
+        accused_committee_scope,
+        signing_committee_scope: CommitteeScope::Current,
+        attempt_id: attempt.attempt_id.0,
+        phase: decoded.payload.phase().as_metric_label().to_string(),
+        fault_kind,
+        contribution_a: EndpointSignedContribution {
+            origin: contribution_a.origin,
+            signature: contribution_a.signature,
+            data: contribution_a.data,
+        },
+        contribution_b: contribution_b.map(|contribution| EndpointSignedContribution {
+            origin: contribution.origin,
+            signature: contribution.signature,
+            data: contribution.data,
+        }),
+    };
+    let observation = InvalidCryptoResponseObservation {
+        ring_id: binding.ring_id,
+        accused_node_key,
+        accused_peer_id: accused_info.peer_id,
+        observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        evidence: InvalidCryptoResponse::DkgPublicOriginFault {
+            statement: Box::new(statement),
+        },
+    };
+    queue_report::<D, SignImpl>(
+        app_state,
+        routes,
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+    )
+    .await
+    .map_err(|error| DkgError::Generic(error.to_string()))?;
+    Ok(())
+}
+
 async fn queue_equivocation_report<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -1162,6 +1346,44 @@ mod tests {
         )
         .await
         .unwrap_err();
+        cleanup_db(&db_path);
+
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+    }
+
+    #[tokio::test]
+    async fn public_origin_relay_rejects_refresh_session() {
+        let db_name = "evidence_public_origin_relay_rejects_refresh";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+        let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+        let attempt = AttemptKey::test(9);
+        coordinator
+            .create_session(attempt, 1, 2, 3, DkgRole::Standard, |state| {
+                state.kind = SessionKind::Refresh {
+                    ring_pk_hex: "pk".to_string(),
+                };
+                state.routing.node_id_to_peer_id.insert(1, local_peer_hex);
+                state.report_evidence_binding = Some(evidence_binding_for_tests());
+            })
+            .await
+            .expect("create Refresh relay test session");
+
+        let error = handle_public_origin_fault_evidence_relay(
+            &coordinator,
+            attempt,
+            DkgPublicOriginFaultKind::InvalidPayload,
+            network::SignedPayload {
+                origin: vec![1; 32],
+                signature: vec![2; 64],
+                data: vec![3],
+            },
+            None,
+        )
+        .await
+        .expect_err("public-origin relays are Reshare-only");
         cleanup_db(&db_path);
 
         assert!(matches!(error, DkgError::Unauthorized(_)));

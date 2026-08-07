@@ -24,7 +24,8 @@ use crate::constants::{
 };
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_invalid_commitment_evidence_relay,
-    handle_invalid_share_evidence_relay, queue_or_relay_equivocation, verify_commitment_evidence,
+    handle_invalid_share_evidence_relay, handle_public_origin_fault_evidence_relay,
+    queue_or_relay_equivocation, queue_or_relay_public_origin_fault, verify_commitment_evidence,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
@@ -70,6 +71,7 @@ use crate::helpers::test_helpers::{
     TEST_FRESH_DKG_RING_ID,
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
+use crate::reporting::v0::types::DkgPublicOriginFaultKind;
 use crate::ring_state::RingShareBundle;
 #[cfg(test)]
 use bulletin::dummy::DummyBulletin;
@@ -187,6 +189,7 @@ struct PublicProtocolViolation {
     message_ids: Vec<MessageId>,
     detail: String,
     commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
+    public_origin_fault: Option<Box<PublicOriginFaultEvidence>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +197,13 @@ struct PublicCommitmentEquivocation {
     origin: ParticipantRef,
     retained: SignedPayload,
     conflicting: SignedPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PublicOriginFaultEvidence {
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: SignedPayload,
+    contribution_b: Option<SignedPayload>,
 }
 
 impl PublicProtocolViolation {
@@ -211,6 +221,7 @@ impl PublicProtocolViolation {
             message_ids: Vec::new(),
             detail: detail.into(),
             commitment_equivocation: None,
+            public_origin_fault: None,
         }
     }
 
@@ -244,6 +255,7 @@ impl PublicProtocolViolation {
             message_ids: Vec::new(),
             detail: detail.into(),
             commitment_equivocation: None,
+            public_origin_fault: None,
         }
     }
 
@@ -262,6 +274,11 @@ impl PublicProtocolViolation {
         evidence: Option<PublicCommitmentEquivocation>,
     ) -> Self {
         self.commitment_equivocation = evidence.map(Box::new);
+        self
+    }
+
+    fn with_public_origin_fault(mut self, evidence: Option<PublicOriginFaultEvidence>) -> Self {
+        self.public_origin_fault = evidence.map(Box::new);
         self
     }
 }
@@ -297,7 +314,7 @@ struct CompletedPublicBatch {
 struct ObservedPublicOrigin {
     message_id: MessageId,
     root: [u8; 32],
-    commitment_envelope: Option<SignedPayload>,
+    signed_envelope: SignedPayload,
 }
 
 #[derive(Debug)]
@@ -480,6 +497,7 @@ impl PublicBatchAssembler {
         let key = (phase, root);
         let commitment_equivocation =
             self.find_commitment_origin_equivocation(phase, &contributions);
+        let public_origin_fault = self.find_public_origin_equivocation(phase, &contributions);
         if let Some(completed) = self.completed.get(&key) {
             return match completed.chunk_digests.get(&index) {
                 Some(existing) if existing == &event_digest => Ok(PublicBatchAssembly::Duplicate),
@@ -489,14 +507,16 @@ impl PublicBatchAssembler {
                     Some(root),
                     format!("chunk {index} conflicts with the completed batch"),
                 )
-                .with_commitment_equivocation(commitment_equivocation)),
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)),
                 None => Err(PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::InvalidChunk,
                     Some(phase),
                     Some(root),
                     format!("extra chunk {index} follows the completed batch"),
                 )
-                .with_commitment_equivocation(commitment_equivocation)),
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)),
             };
         }
         // For incremental publications, attribute a proven origin contradiction
@@ -507,7 +527,9 @@ impl PublicBatchAssembler {
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
         if let Err(violation) = self.claim_phase_root(mode, phase, root, expected_origin_count) {
-            return Err(violation.with_commitment_equivocation(commitment_equivocation));
+            return Err(violation
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault));
         }
         if let Some(existing) = self
             .pending
@@ -525,7 +547,8 @@ impl PublicBatchAssembler {
                     Some(root),
                     format!("leader published different contents for chunk {index}"),
                 )
-                .with_commitment_equivocation(commitment_equivocation))
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault))
             };
         }
         if mode == PublicBatchMode::Complete {
@@ -547,7 +570,8 @@ impl PublicBatchAssembler {
                     "buffered contributions exceed the expected origin count {expected_origin_count}"
                 ),
             )
-            .with_commitment_equivocation(commitment_equivocation));
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
         let buffered_for_phase: usize = self
             .pending
@@ -565,7 +589,8 @@ impl PublicBatchAssembler {
                     "pending contributions exceed the expected origin count {expected_origin_count}"
                 ),
             )
-            .with_commitment_equivocation(commitment_equivocation));
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
         for verified in &contributions {
             let contribution = &verified.contribution;
@@ -574,8 +599,7 @@ impl PublicBatchAssembler {
                 .or_insert_with(|| ObservedPublicOrigin {
                     message_id: contribution.message_id,
                     root,
-                    commitment_envelope: (phase == PublicPhase::Commitments)
-                        .then(|| verified.signed.clone()),
+                    signed_envelope: verified.signed.clone(),
                 });
         }
         self.pending.entry(key).or_default().chunks.insert(
@@ -608,6 +632,9 @@ impl PublicBatchAssembler {
                     .with_message_ids(existing.message_id, contribution.message_id)
                     .with_commitment_equivocation(
                         self.commitment_origin_equivocation(existing, verified),
+                    )
+                    .with_public_origin_fault(
+                        self.public_origin_equivocation(existing, verified),
                     ));
                 }
                 if existing.root != root {
@@ -656,14 +683,69 @@ impl PublicBatchAssembler {
         None
     }
 
+    fn find_public_origin_equivocation(
+        &self,
+        phase: PublicPhase,
+        contributions: &[VerifiedPublicContribution],
+    ) -> Option<PublicOriginFaultEvidence> {
+        if phase == PublicPhase::Commitments {
+            return None;
+        }
+        let mut seen = HashMap::<ParticipantRef, &VerifiedPublicContribution>::new();
+        for verified in contributions {
+            let contribution = &verified.contribution;
+            if let Some(existing) = self.observed_origins.get(&(phase, contribution.origin)) {
+                if let Some(evidence) = self.public_origin_equivocation(existing, verified) {
+                    return Some(evidence);
+                }
+            }
+            if let Some(existing) = seen.insert(contribution.origin, verified) {
+                if existing.contribution.payload != contribution.payload {
+                    return Some(PublicOriginFaultEvidence {
+                        fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                        contribution_a: existing.signed.clone(),
+                        contribution_b: Some(verified.signed.clone()),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn public_origin_equivocation(
+        &self,
+        existing: &ObservedPublicOrigin,
+        conflicting: &VerifiedPublicContribution,
+    ) -> Option<PublicOriginFaultEvidence> {
+        if conflicting.contribution.payload.phase() == PublicPhase::Commitments {
+            return None;
+        }
+        let retained: DkgPublicContribution = transport::decode(
+            &existing.signed_envelope.data,
+            transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+        )
+        .ok()?;
+        if retained.payload == conflicting.contribution.payload {
+            return None;
+        }
+        Some(PublicOriginFaultEvidence {
+            fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+            contribution_a: existing.signed_envelope.clone(),
+            contribution_b: Some(conflicting.signed.clone()),
+        })
+    }
+
     fn commitment_origin_equivocation(
         &self,
         existing: &ObservedPublicOrigin,
         conflicting: &VerifiedPublicContribution,
     ) -> Option<PublicCommitmentEquivocation> {
+        if conflicting.contribution.payload.phase() != PublicPhase::Commitments {
+            return None;
+        }
         Some(PublicCommitmentEquivocation {
             origin: conflicting.contribution.origin,
-            retained: existing.commitment_envelope.clone()?,
+            retained: existing.signed_envelope.clone(),
             conflicting: conflicting.signed.clone(),
         })
     }
@@ -777,6 +859,7 @@ impl PublicBatchAssembler {
             .collect();
         let commitment_equivocation =
             self.find_commitment_origin_equivocation(key.0, &contributions);
+        let public_origin_fault = self.find_public_origin_equivocation(key.0, &contributions);
         if actual_origins != canonical_origins {
             return Err(PublicProtocolViolation::leader(
                 PublicProtocolViolationKind::BatchMismatch,
@@ -784,7 +867,8 @@ impl PublicBatchAssembler {
                 Some(key.1),
                 "chunk contributions are not in the manifest's canonical origin order",
             )
-            .with_commitment_equivocation(commitment_equivocation));
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
         let actual_ids: BTreeMap<_, _> = contributions
             .iter()
@@ -802,7 +886,8 @@ impl PublicBatchAssembler {
                 Some(key.1),
                 "chunk contribution IDs do not match the manifest",
             )
-            .with_commitment_equivocation(commitment_equivocation));
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
 
         self.completed.insert(
@@ -2108,8 +2193,17 @@ where
                         "public",
                         "protocol_violation_abort",
                     );
-                    // TODO(reporting): retain the authenticated origin envelope
-                    // and submit invalid-public-contribution evidence.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        attempt,
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: signed.clone(),
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
@@ -2547,6 +2641,83 @@ where
                 idempotency_key,
             })
         }
+        DkgControlMessage::RelayPublicOriginFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            fault_kind,
+            contribution_a,
+            contribution_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "public-origin evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (fault_kind, contribution_a.clone(), contribution_b.clone());
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "public-origin-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "public-origin evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_public_origin_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                fault_kind,
+                contribution_a,
+                contribution_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
         DkgControlMessage::RelayOfflineCandidates {
             ceremony_id,
             attempt_id,
@@ -2747,6 +2918,20 @@ where
             "unexpected control request: {other:?}"
         ))),
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn handle_control_for_test<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    request: DkgControlMessage,
+    sender: &PeerId,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    handle_control(state, routes, request, sender).await
 }
 
 /// Begin cryptographic work only after the leader has observed an activation
@@ -4780,10 +4965,15 @@ async fn abort_public_protocol_violation<D>(
         violation.commitment_equivocation.as_deref(),
     )
     .await;
-    // TODO(reporting): preserve the authenticated leader/origin delivery or
-    // submit the appropriate non-commitment DKG fault report. Commitment-origin
-    // equivocation is handled above; the remaining evidence/schema work is
-    // intentionally deferred.
+    report_public_origin_fault_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.public_origin_fault.as_deref(),
+    )
+    .await;
+    // TODO(reporting): standalone leader-authenticated manifest/chunk faults
+    // still require their own leader evidence kind.
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -4842,7 +5032,12 @@ where
                     verified.contribution.origin
                 ),
             )
-            .with_message_id(verified.contribution.message_id));
+            .with_message_id(verified.contribution.message_id)
+            .with_public_origin_fault(Some(PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                contribution_a: verified.signed.clone(),
+                contribution_b: None,
+            })));
         }
     }
     let retained: BTreeMap<_, _> = contributions
@@ -4869,13 +5064,20 @@ where
                 origin,
                 "manifest-validated batch conflicts with a retained signed contribution",
             )
-            .with_commitment_equivocation(
-                (phase == PublicPhase::Commitments).then_some(PublicCommitmentEquivocation {
+            .with_commitment_equivocation((phase == PublicPhase::Commitments).then_some(
+                PublicCommitmentEquivocation {
                     origin,
-                    retained,
-                    conflicting,
-                }),
-            ));
+                    retained: retained.clone(),
+                    conflicting: conflicting.clone(),
+                },
+            ))
+            .with_public_origin_fault((phase != PublicPhase::Commitments).then_some(
+                PublicOriginFaultEvidence {
+                    fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                    contribution_a: retained,
+                    contribution_b: Some(conflicting),
+                },
+            )));
         }
         PublicBatchRecordOutcome::StaleAttempt | PublicBatchRecordOutcome::MissingSession => {
             return Ok(false);
@@ -5733,7 +5935,14 @@ where
                         verified.contribution.origin,
                         format!("direct-repair contribution failed payload preflight: {error}"),
                     )
-                    .with_message_id(verified.contribution.message_id),
+                    .with_message_id(verified.contribution.message_id)
+                    .with_public_origin_fault(Some(
+                        PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: verified.signed.clone(),
+                            contribution_b: None,
+                        },
+                    )),
                 ));
             }
             return Err(PublicRepairFailure::Error(error));
@@ -5764,11 +5973,18 @@ where
                     origin,
                     "direct repair conflicts with a retained signed contribution",
                 )
-                .with_commitment_equivocation(
-                    (phase == PublicPhase::Commitments).then_some(PublicCommitmentEquivocation {
+                .with_commitment_equivocation((phase == PublicPhase::Commitments).then_some(
+                    PublicCommitmentEquivocation {
                         origin,
-                        retained,
-                        conflicting,
+                        retained: retained.clone(),
+                        conflicting: conflicting.clone(),
+                    },
+                ))
+                .with_public_origin_fault(
+                    (phase != PublicPhase::Commitments).then_some(PublicOriginFaultEvidence {
+                        fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                        contribution_a: retained,
+                        contribution_b: Some(conflicting),
                     }),
                 ),
             ));
@@ -6779,6 +6995,44 @@ async fn report_public_commitment_equivocation_best_effort<D>(
     }
 }
 
+async fn report_public_origin_fault_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&PublicOriginFaultEvidence>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "origin_fault_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    match queue_or_relay_public_origin_fault(
+        &coordinator,
+        attempt,
+        evidence.fault_kind,
+        evidence.contribution_a.clone(),
+        evidence.contribution_b.clone(),
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::metrics::record_dkg_transport_event("public", "origin_fault_report_queued")
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("public", "origin_fault_report_failed");
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue or relay authenticated public-origin fault"
+            );
+        }
+    }
+}
+
 async fn record_public_contribution_at_leader<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -6825,14 +7079,26 @@ where
             let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
             let evidence = PublicCommitmentEquivocation {
                 origin: contribution.origin,
-                retained,
-                conflicting,
+                retained: retained.clone(),
+                conflicting: conflicting.clone(),
             };
             report_public_commitment_equivocation_best_effort(
                 state,
                 routes,
                 attempt,
                 (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
+            let origin_fault = PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained,
+                contribution_b: Some(conflicting),
+            };
+            report_public_origin_fault_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() != PublicPhase::Commitments).then_some(&origin_fault),
             )
             .await;
             let participant_routes = state
@@ -6921,14 +7187,26 @@ where
             let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
             let evidence = PublicCommitmentEquivocation {
                 origin: contribution.origin,
-                retained,
-                conflicting,
+                retained: retained.clone(),
+                conflicting: conflicting.clone(),
             };
             report_public_commitment_equivocation_best_effort(
                 state,
                 routes,
                 attempt,
                 (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
+            let origin_fault = PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained,
+                contribution_b: Some(conflicting),
+            };
+            report_public_origin_fault_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() != PublicPhase::Commitments).then_some(&origin_fault),
             )
             .await;
             state
@@ -8302,6 +8580,52 @@ where
     .await
 }
 
+pub(crate) async fn relay_public_origin_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: SignedPayload,
+    contribution_b: Option<SignedPayload>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "public-origin evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (fault_kind, contribution_a.clone(), contribution_b.clone());
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayPublicOriginFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            fault_kind,
+            contribution_a: contribution_a.clone(),
+            contribution_b: contribution_b.clone(),
+        },
+        "public-origin-fault-evidence",
+        &payload,
+    )
+    .await
+}
+
 async fn relay_private_evidence<D, T, F>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -8325,7 +8649,7 @@ where
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
     let ceremony_id = attempt.ceremony_id;
-    let mut accepted = 0usize;
+    let mut requests = FuturesUnordered::new();
     for (node_id, peer) in current_routes {
         let recipient = ParticipantRef::current(node_id);
         let key = transport::derive_control_message_id(
@@ -8337,30 +8661,35 @@ where
             payload,
         )
         .map_err(DkgError::Serialization)?;
-        if let Ok(DkgControlMessage::EvidenceAccepted {
-            ceremony_id: got_ceremony,
-            attempt_id: got_attempt,
-            idempotency_key,
-        }) = control_request_with_timeout(
-            &coord.app_state,
-            coord.routes,
-            &peer,
-            make_request(ceremony_id, attempt_id, key),
-            PEER_RESPONSE_TIMEOUT,
-        )
-        .await
-        {
-            if got_ceremony == ceremony_id && got_attempt == attempt_id && idempotency_key == key {
-                accepted += 1;
-            }
+        let request = make_request(ceremony_id, attempt_id, key);
+        requests.push(async move {
+            matches!(
+                control_request_with_timeout(
+                    &coord.app_state,
+                    coord.routes,
+                    &peer,
+                    request,
+                    PEER_RESPONSE_TIMEOUT,
+                )
+                .await,
+                Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id: got_ceremony,
+                    attempt_id: got_attempt,
+                    idempotency_key,
+                }) if got_ceremony == ceremony_id
+                    && got_attempt == attempt_id
+                    && idempotency_key == key
+            )
+        });
+    }
+    while let Some(accepted) = requests.next().await {
+        if accepted {
+            return Ok(());
         }
     }
-    if accepted == 0 {
-        return Err(DkgError::NetworkCommunication(
-            "private evidence was not accepted by any current-committee member".into(),
-        ));
-    }
-    Ok(())
+    Err(DkgError::NetworkCommunication(
+        "private evidence was not accepted by any current-committee member".into(),
+    ))
 }
 
 /// Relay terminal transport-liveness candidates from a pure pending-new
@@ -11456,6 +11785,93 @@ mod stability_tests {
     }
 
     #[tokio::test]
+    async fn direct_repair_non_commitment_conflict_preserves_public_origin_evidence() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
+            "direct_repair_non_commitment_conflict_preserves_envelopes",
+            4258,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 3);
+        let first_payload = refresh_health_payload(ceremony_id.0);
+        let mut second_payload = first_payload.clone();
+        let DkgPublicPayload::RefreshHealthCheckResult { statement, .. } = &mut second_payload
+        else {
+            unreachable!("refresh-health test helper returned a different phase");
+        };
+        statement.public_polynomial_sha256 = "22".repeat(32);
+        let retained = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            first_payload,
+        );
+        let conflicting = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            second_payload,
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .record_public_contribution(
+                    &ceremony_id.0,
+                    attempt_id,
+                    PublicPhase::RefreshHealthCheck,
+                    origin,
+                    retained.signed.clone(),
+                )
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        let error = apply_repair_contributions(
+            &state,
+            &network::V0,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            vec![conflicting.clone()],
+            RepairContributionSource::Origin,
+        )
+        .await
+        .expect_err("conflicting direct repair contribution must abort");
+        let PublicRepairFailure::Violation(violation) = error else {
+            panic!("expected attributable repair violation");
+        };
+        assert_eq!(
+            violation.kind,
+            PublicProtocolViolationKind::OriginEquivocation
+        );
+        assert!(violation.commitment_equivocation.is_none());
+        assert_eq!(
+            violation.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained.signed.clone(),
+                contribution_b: Some(conflicting.signed),
+            })
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+                .await
+                .expect("active attempt")
+                .get(&origin),
+            Some(&retained.signed),
+            "the first authenticated envelope must remain authoritative"
+        );
+    }
+
+    #[tokio::test]
     async fn direct_origin_payload_is_preflighted_before_leader_relay() {
         let origin = ParticipantRef::current(2);
         let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
@@ -11821,6 +12237,7 @@ mod stability_tests {
             ring_id: "batch-test-ring".into(),
             committee_digest: [8; 32],
             origin,
+            signed_at: 1_700_000_000,
             message_id,
             payload: DkgPublicPayload::Commitment {
                 commitment: vec![message_byte],
@@ -12278,19 +12695,25 @@ mod stability_tests {
     fn non_commitment_origin_conflicts_do_not_carry_dkg_equivocation_evidence() {
         let origin = ParticipantRef::current(1);
         let mut first = assembled_contribution(origin, 1);
-        first.contribution.payload = DkgPublicPayload::CommitmentHash {
-            commitment_hash: [1; 32],
-        };
+        first.contribution.payload = refresh_health_payload(900);
+        first.signed.data = transport::encode(&first.contribution).unwrap();
         let mut conflicting = assembled_contribution(origin, 2);
-        conflicting.contribution.payload = DkgPublicPayload::CommitmentHash {
-            commitment_hash: [2; 32],
+        conflicting.contribution.payload = refresh_health_payload(900);
+        let DkgPublicPayload::RefreshHealthCheckResult { statement, .. } =
+            &mut conflicting.contribution.payload
+        else {
+            unreachable!("refresh-health test helper returned a different phase");
         };
+        statement.public_polynomial_sha256 = "22".repeat(32);
+        conflicting.signed.data = transport::encode(&conflicting.contribution).unwrap();
         let expected = BTreeSet::from([origin]);
         let mut assembler = PublicBatchAssembler::default();
+        let retained_envelope = first.signed.clone();
+        let conflicting_envelope = conflicting.signed.clone();
         assembler
             .insert_chunk(
                 PublicBatchMode::Incremental,
-                PublicPhase::CommitmentHashes,
+                PublicPhase::RefreshHealthCheck,
                 [1; 32],
                 0,
                 vec![first],
@@ -12301,7 +12724,7 @@ mod stability_tests {
         let error = assembler
             .insert_chunk(
                 PublicBatchMode::Incremental,
-                PublicPhase::CommitmentHashes,
+                PublicPhase::RefreshHealthCheck,
                 [2; 32],
                 0,
                 vec![conflicting],
@@ -12311,6 +12734,15 @@ mod stability_tests {
             .expect_err("non-Commitment origin conflict must still abort");
         assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
         assert!(error.commitment_equivocation.is_none());
+        assert_eq!(
+            error.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained_envelope,
+                contribution_b: Some(conflicting_envelope),
+            }),
+            "non-Commitment conflicts must preserve both exact endpoint envelopes"
+        );
     }
 
     #[test]

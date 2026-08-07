@@ -13,6 +13,7 @@ use crate::sign::v0::messages::RefreshHealthCheckStatement;
 
 pub const PUBLIC_CONTRIBUTION_SIGNING_DOMAIN: &[u8] = b"orbis-dkg-public-contribution-v1";
 pub const MAX_PUBLIC_CHUNK_BYTES: usize = 256 * 1024;
+pub const MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
 
 /// Stable logical ceremony identity. Existing session IDs remain its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -392,6 +393,10 @@ pub struct DkgPublicContribution {
     pub ring_id: String,
     pub committee_digest: [u8; 32],
     pub origin: ParticipantRef,
+    /// Unix timestamp covered by the endpoint signature. Public-origin fault
+    /// reports pin their validity window to this value so one signed bad
+    /// contribution cannot be re-reported after chain deduplication expires.
+    pub signed_at: u64,
     pub message_id: MessageId,
     pub payload: DkgPublicPayload,
 }
@@ -405,13 +410,37 @@ impl DkgPublicContribution {
         origin: ParticipantRef,
         payload: DkgPublicPayload,
     ) -> Result<Self, String> {
+        let signed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("failed to get public contribution timestamp: {error}"))?
+            .as_secs();
+        Self::new_at(
+            ceremony_id,
+            attempt_id,
+            ring_id,
+            committee_digest,
+            origin,
+            signed_at,
+            payload,
+        )
+    }
+
+    pub fn new_at(
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        ring_id: String,
+        committee_digest: [u8; 32],
+        origin: ParticipantRef,
+        signed_at: u64,
+        payload: DkgPublicPayload,
+    ) -> Result<Self, String> {
         let message_id = derive_message_id(
             ceremony_id,
             attempt_id,
             payload.phase(),
             origin,
             None,
-            &payload,
+            &(signed_at, &payload),
         )?;
         Ok(Self {
             ceremony_id,
@@ -419,6 +448,7 @@ impl DkgPublicContribution {
             ring_id,
             committee_digest,
             origin,
+            signed_at,
             message_id,
             payload,
         })
@@ -431,7 +461,7 @@ impl DkgPublicContribution {
             self.payload.phase(),
             self.origin,
             None,
-            &self.payload,
+            &(self.signed_at, &self.payload),
         )?;
         if expected != self.message_id {
             return Err("public contribution message_id does not match its payload".to_string());
@@ -770,6 +800,14 @@ pub enum DkgControlMessage {
         commitment_a: SignedDkgCommitment,
         commitment_b: SignedDkgCommitment,
     },
+    RelayPublicOriginFaultEvidence {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        fault_kind: crate::reporting::v0::types::DkgPublicOriginFaultKind,
+        contribution_a: network::SignedPayload,
+        contribution_b: Option<network::SignedPayload>,
+    },
     EvidenceAccepted {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
@@ -848,6 +886,7 @@ impl DkgControlMessage {
             Self::ReshareShareAcked { .. } => "reshare_share_acked",
             Self::RelayInvalidShareEvidence { .. } => "relay_invalid_share_evidence",
             Self::RelayInvalidCommitmentEvidence { .. } => "relay_invalid_commitment_evidence",
+            Self::RelayPublicOriginFaultEvidence { .. } => "relay_public_origin_fault_evidence",
             Self::EvidenceAccepted { .. } => "evidence_accepted",
             Self::RelayOfflineCandidates { .. } => "relay_offline_candidates",
             Self::OfflineCandidatesAccepted { .. } => "offline_candidates_accepted",
@@ -1549,6 +1588,41 @@ mod tests {
             commitment_hash: [6; 32],
         };
         assert!(contribution.validate_message_id().is_err());
+    }
+
+    #[test]
+    fn contribution_message_id_binds_explicit_signing_time() {
+        let mut contribution = DkgPublicContribution::new_at(
+            CeremonyId(1),
+            AttemptId([2; 32]),
+            "ring".into(),
+            [3; 32],
+            ParticipantRef::current(4),
+            1_700_000_000,
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [5; 32],
+            },
+        )
+        .unwrap();
+        let message_id = contribution.message_id;
+        assert!(contribution.validate_message_id().is_ok());
+
+        contribution.signed_at += 1;
+        assert!(contribution.validate_message_id().is_err());
+
+        let reconstructed = DkgPublicContribution::new_at(
+            CeremonyId(1),
+            AttemptId([2; 32]),
+            "ring".into(),
+            [3; 32],
+            ParticipantRef::current(4),
+            1_700_000_000,
+            DkgPublicPayload::CommitmentHash {
+                commitment_hash: [5; 32],
+            },
+        )
+        .unwrap();
+        assert_eq!(reconstructed.message_id, message_id);
     }
 
     #[test]

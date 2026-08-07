@@ -85,11 +85,8 @@ ciphertexts, raw error text, or transport sub-stage details.
 ## `invalid_crypto_response` flow
 
 `invalid_crypto_response` is the unified report type for attributable bad
-cryptographic responses. Its payload is:
-
-```text
-evidence_kind, statement, response_signature
-```
+cryptographic or authenticated protocol responses. Its canonical payload starts
+with an evidence-kind tag followed by that kind's exact signed evidence.
 
 The current evidence kinds are:
 
@@ -104,14 +101,27 @@ The current evidence kinds are:
   `DkgCommitmentStatement` with domain `orbis-dkg-commitment-v1`.
   `origin_protocol` must be `pss_refresh` or `pss_reshare`. Fresh/full DKG
   does not report bad raw shares.
+- `dkg_invalid_refresh_commitment`: a signed Refresh commitment whose decoded
+  constant term is non-identity. It is queued during public preflight before
+  the original rejection aborts the attempt.
+- `dkg_equivocation`: two signed PSS commitment statements from the same
+  dealer and session nonce with different commitment bytes.
+- `dkg_public_origin_fault`: one endpoint-signed invalid public contribution,
+  or two conflicting endpoint-signed non-Commitment contributions from the
+  same origin and attempt. The statement uses domain
+  `orbis-dkg-public-origin-fault-v1`, retains the exact endpoint envelopes, and
+  is limited to Refresh/Reshare. Commitment equivocation remains on the
+  stronger `dkg_equivocation` path.
 
-Each response statement is signed by the accused node's secp256k1 chain key
-(`NodeSigningKey`; the ring-registered `node_key` is exactly that key's
-compressed public key hex). The signed statement carries chain/ring binding,
-the ring-state digest, protocol version, request/session id, `signed_at`, the
-responder node key, origin protocol, protocol-specific crypto material, and the
-crypto backend name. Missing or invalid evidence signatures reject the response
-or report outright; only signature-valid evidence is attributable.
+PRE, Sign, and nested DKG statements are signed by the accused node's
+secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
+that key's compressed public key hex). Public-origin evidence instead retains
+the exact transport envelope signed by the accused node's registered endpoint
+identity. The normalized statement carries chain/ring binding, the ring-state
+digest, protocol version, request/session id, evidence timestamp, responder
+node key, origin protocol, and protocol-specific material. Missing or invalid
+evidence signatures reject the response or report outright; only
+signature-valid evidence is attributable.
 
 When a signature-valid response fails the protocol-specific verifier, the
 protocol queues `ReportObservation::InvalidCryptoResponse`. The protocol should
@@ -127,7 +137,8 @@ Signer-side validation (no health probe for this report type):
   - PRE: origin `pre`, current/current committee scopes;
   - Sign: origin `sign`, `pss_refresh`, `pss_reshare`, or `report`, using the
     statement's accused/signing committee scopes;
-  - DKG share: origin `pss_refresh` or `pss_reshare`, current/current scopes;
+  - DKG evidence: origin `pss_refresh` or `pss_reshare`, with current signers
+    and a current or pending-new accused as permitted by the evidence kind;
 - evidence signature: secp256k1 verify under `accused_node_key`; DKG share
   reports also verify the nested DKG commitment signature;
 - **evidence anchor**: `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`
@@ -136,9 +147,9 @@ Signer-side validation (no health probe for this report type):
   stale or future evidence and the chain's plain TTL dedupe records provably
   outlive any resubmission of the same evidence — one accepted report per
   (request, accused, origin), ever, with no extra retention rules;
-- anti-framing re-verification: signers rerun the relevant cryptographic check
-  and refuse to sign if the PRE proof, Sign share, or DKG share actually
-  verifies.
+- anti-framing re-verification: signers rerun the relevant cryptographic or
+  authenticated-protocol check and refuse to sign unless the embedded evidence
+  independently proves the claimed fault.
 
 For PRE evidence, signers fetch the document by object_id from the bulletin
 (authoritative enc_cmt), load the local `RingPolyState` polynomial, and run
@@ -268,9 +279,11 @@ change:
    already accepted;
 5. decode and validate the report payload: `node_offline` checks
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
-   `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`, or
-   `dkg_share`), checks the expected statement domain/shape, validates
-   origin-protocol policy, and binds the signed statement to the envelope;
+   `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
+   `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`, or
+   `dkg_public_origin_fault`), checks the expected statement domain/shape,
+   validates origin-protocol policy, and binds the signed evidence to the
+   envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);
