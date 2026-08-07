@@ -15,6 +15,42 @@ pub(crate) enum PreparedCommitment {
     },
 }
 
+/// Shared by every Refresh-commitment failure mode that carries verified
+/// evidence. The report statement carries the dealer's exact signed bytes
+/// rather than a decoded value, so an undecodable commitment is just as
+/// reportable as a decodable-but-wrong one.
+async fn report_invalid_refresh_commitment<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    from_node_id: u32,
+    is_refresh: bool,
+    verified_evidence: &Option<SignedDkgCommitment>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if !is_refresh {
+        return;
+    }
+    let Some(evidence) = verified_evidence else {
+        return;
+    };
+    if let Err(error) = queue_invalid_refresh_commitment_report(
+        coord.app_state.clone(),
+        coord.routes,
+        evidence.clone(),
+    )
+    .await
+    {
+        tracing::warn!(
+            session_id,
+            from_node_id,
+            error = %error,
+            "Failed to queue invalid-refresh-commitment report"
+        );
+    }
+}
+
 pub(crate) async fn prepare_commitment_message<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -102,12 +138,23 @@ where
     for i in 0..num_coefficients {
         let start = i * G1_COMPRESSED_SIZE;
         let end = start + G1_COMPRESSED_SIZE;
-        let coeff = <D::PublicKey>::from_bytes(&commitment[start..end]).map_err(|e| {
-            DkgError::Deserialization(format!(
-                "Failed to deserialize commitment coefficient {}: {}",
-                i, e
-            ))
-        })?;
+        let coeff = match <D::PublicKey>::from_bytes(&commitment[start..end]) {
+            Ok(coeff) => coeff,
+            Err(e) => {
+                report_invalid_refresh_commitment(
+                    coord,
+                    session_id,
+                    from_node_id,
+                    is_refresh,
+                    &verified_evidence,
+                )
+                .await;
+                return Err(DkgError::Deserialization(format!(
+                    "Failed to deserialize commitment coefficient {}: {}",
+                    i, e
+                )));
+            }
+        };
         commitment_coeffs.push(coeff);
     }
     let polynomial_commitment = PolynomialCommitment {
@@ -115,22 +162,14 @@ where
     };
 
     if is_refresh && !polynomial_commitment.constant_term_is_identity() {
-        if let Some(evidence) = &verified_evidence {
-            if let Err(error) = queue_invalid_refresh_commitment_report(
-                coord.app_state.clone(),
-                coord.routes,
-                evidence.clone(),
-            )
-            .await
-            {
-                tracing::warn!(
-                    session_id,
-                    from_node_id,
-                    error = %error,
-                    "Failed to queue invalid-refresh-commitment report"
-                );
-            }
-        }
+        report_invalid_refresh_commitment(
+            coord,
+            session_id,
+            from_node_id,
+            is_refresh,
+            &verified_evidence,
+        )
+        .await;
         return Err(DkgError::CommitmentVerificationFailed(format!(
             "Refresh commitment from node {} has a non-identity constant term \
              (a nonzero delta at x=0 would shift the ring key)",

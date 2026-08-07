@@ -749,6 +749,184 @@ async fn invalid_refresh_commitment_preflight_queues_report_before_rejection() {
 
 #[tokio::test]
 #[serial_test::serial]
+async fn undecodable_refresh_commitment_preflight_queues_report_before_rejection() {
+    let db_name = "reporting_undecodable_refresh_commitment_preflight";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    let alice = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &network::V0,
+    );
+    let charlie = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.charlie.app_state.clone()),
+        &network::V0,
+    );
+    let refresh_attempt = AttemptKey::new(CeremonyId(777_000_222_333), AttemptId::random());
+    let refresh_kind = SessionKind::Refresh {
+        ring_pk_hex: ring.ring_pk.clone(),
+    };
+    let _alice_node_id = create_preflight_test_session(
+        &alice,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+    let charlie_node_id = create_preflight_test_session(
+        &charlie,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+
+    // Prime both sides' authenticated evidence binding before taking the state
+    // snapshot. Public preflight must not populate or otherwise mutate DKG state.
+    evidence_build_context(&alice, refresh_attempt)
+        .await
+        .expect("prime reporter evidence binding")
+        .expect("Refresh must have an evidence binding");
+    let charlie_refresh_context = evidence_build_context(&charlie, refresh_attempt)
+        .await
+        .expect("build accused evidence context")
+        .expect("Refresh must have an evidence binding");
+
+    // A validly-shaped identity-term commitment (would otherwise pass
+    // preflight) with its first coefficient's bytes replaced by an invalid
+    // curve-point encoding. Same length and coefficient count as a real
+    // commitment, isolating the deserialization branch from the
+    // constant-term check exercised by the test above.
+    let mut identity_dealer = *DkgImpl::new(
+        charlie_node_id,
+        ring.threshold as usize,
+        ring.peer_node_keys.len(),
+        refresh_attempt.session_id(),
+        DkgRole::Standard,
+    )
+    .expect("create valid Refresh dealer");
+    identity_dealer
+        .generate_polynomial(DkgMode::Refresh)
+        .expect("generate identity-term Refresh commitment");
+    let mut undecodable_commitment =
+        serialize_commitment_coefficients(&identity_dealer.commitment().coefficients)
+            .expect("serialize valid Refresh commitment");
+    undecodable_commitment[..crypto::GROUP_POINT_SIZE].fill(0xff);
+    let undecodable_evidence = build_commitment_evidence_with_context(
+        &charlie,
+        &charlie_refresh_context,
+        charlie_node_id,
+        undecodable_commitment.clone(),
+    )
+    .expect("sign undecodable Refresh commitment evidence");
+
+    let state_before = alice
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(refresh_attempt, |state| {
+            (
+                state.phase,
+                state.commitments_received,
+                state.shares_received,
+            )
+        })
+        .await
+        .expect("read Refresh state before preflight");
+
+    let rejection = prepare_commitment_message(
+        &alice,
+        refresh_attempt,
+        charlie_node_id,
+        &undecodable_commitment,
+        Some(&undecodable_evidence),
+        None,
+    )
+    .await
+    .expect_err("undecodable Refresh commitment must fail preflight");
+    assert!(
+        matches!(rejection, DkgError::Deserialization(_)),
+        "expected a deserialization failure, got {rejection:?}"
+    );
+
+    let state_after = alice
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(refresh_attempt, |state| {
+            (
+                state.phase,
+                state.commitments_received,
+                state.shares_received,
+            )
+        })
+        .await
+        .expect("read Refresh state after preflight");
+    assert_eq!(state_after, state_before, "preflight mutated DKG state");
+
+    alice.app_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(submissions.len(), 1, "expected exactly one queued report");
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(
+        submission.accused_node_key,
+        network.charlie.app_state.node_key
+    );
+    assert_eq!(
+        submission.session_id,
+        refresh_attempt.session_id().to_string()
+    );
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized invalid-refresh payload")
+    {
+        InvalidCryptoResponse::DkgInvalidRefreshCommitment { statement, .. } => {
+            assert_eq!(statement.origin_protocol, "pss_refresh");
+            assert_eq!(statement.request_id, submission.session_id);
+            assert_eq!(statement.responder_node_key, submission.accused_node_key);
+            assert_eq!(statement.commitment, undecodable_commitment);
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
 async fn public_origin_invalid_payload_queues_report_before_abort() {
     let db_name = "reporting_public_origin_invalid_payload";
     let db_paths = [
