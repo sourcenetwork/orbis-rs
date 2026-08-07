@@ -808,6 +808,20 @@ pub enum DkgControlMessage {
         contribution_a: network::SignedPayload,
         contribution_b: Option<network::SignedPayload>,
     },
+    /// Relay two conflicting endpoint-signed leader deliveries (a manifest,
+    /// or a chunk) proving the canonical leader equivocated. `delivery_id`
+    /// is the per-broadcast randomized ID mixed into each delivery's
+    /// Gossip-frame signing domain — required alongside the `SignedPayload`
+    /// to independently re-verify the endpoint signature later.
+    RelayLeaderEquivocationEvidence {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        delivery_id_a: [u8; 16],
+        delivery_a: network::SignedPayload,
+        delivery_id_b: [u8; 16],
+        delivery_b: network::SignedPayload,
+    },
     EvidenceAccepted {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
@@ -887,6 +901,7 @@ impl DkgControlMessage {
             Self::RelayInvalidShareEvidence { .. } => "relay_invalid_share_evidence",
             Self::RelayInvalidCommitmentEvidence { .. } => "relay_invalid_commitment_evidence",
             Self::RelayPublicOriginFaultEvidence { .. } => "relay_public_origin_fault_evidence",
+            Self::RelayLeaderEquivocationEvidence { .. } => "relay_leader_equivocation_evidence",
             Self::EvidenceAccepted { .. } => "evidence_accepted",
             Self::RelayOfflineCandidates { .. } => "relay_offline_candidates",
             Self::OfflineCandidatesAccepted { .. } => "offline_candidates_accepted",

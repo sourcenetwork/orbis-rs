@@ -209,6 +209,17 @@ impl PubSub for ShapedPubSub {
         self.inner.verify(domain, payload).await
     }
 
+    async fn verify_topic_delivery(
+        &self,
+        topic: TopicId,
+        delivery_id: [u8; 16],
+        payload: &SignedPayload,
+    ) -> Result<AuthenticatedMessage> {
+        self.inner
+            .verify_topic_delivery(topic, delivery_id, payload)
+            .await
+    }
+
     async fn subscribe(&self, topic: TopicId, bootstrap: Vec<PeerId>) -> Result<Arc<dyn Topic>> {
         let inner = self.inner.subscribe(topic, bootstrap).await?;
         Ok(Arc::new(ShapedTopic {

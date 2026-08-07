@@ -13,6 +13,7 @@ pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
 pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";
+pub const DKG_LEADER_EQUIVOCATION_DOMAIN: &str = "orbis-dkg-leader-equivocation-v1";
 pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
@@ -717,6 +718,127 @@ impl DkgPublicOriginFaultStatement {
     }
 }
 
+/// Normalized bindings plus two conflicting Gossip-authenticated deliveries
+/// from the same canonical leader for the same phase/coordinate (a manifest,
+/// or a chunk at the same index). `delivery_a`/`delivery_b` carry the exact
+/// endpoint-signed broadcast bytes; each co-signer independently
+/// re-verifies both signatures under the accused leader's registered
+/// endpoint identity rather than trusting the reporter's characterization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgLeaderEquivocationStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub phase: String,
+    pub delivery_id_a: [u8; 16],
+    pub delivery_a: EndpointSignedContribution,
+    pub delivery_id_b: [u8; 16],
+    pub delivery_b: EndpointSignedContribution,
+}
+
+impl DkgLeaderEquivocationStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.phase);
+        write_bytes(&mut out, &self.delivery_id_a);
+        self.delivery_a.write_canonical(&mut out);
+        write_bytes(&mut out, &self.delivery_id_b);
+        self.delivery_b.write_canonical(&mut out);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let phase = decoder.read_string("phase")?;
+        let delivery_id_a = decoder.read_bytes("delivery_id_a")?.try_into().map_err(
+            |bytes: Vec<u8>| {
+                ReportingError::InvalidReport(format!(
+                    "DKG leader-equivocation delivery_id_a must be 16 bytes, got {}",
+                    bytes.len()
+                ))
+            },
+        )?;
+        let delivery_a = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_a")?;
+        let delivery_id_b = decoder.read_bytes("delivery_id_b")?.try_into().map_err(
+            |bytes: Vec<u8>| {
+                ReportingError::InvalidReport(format!(
+                    "DKG leader-equivocation delivery_id_b must be 16 bytes, got {}",
+                    bytes.len()
+                ))
+            },
+        )?;
+        let delivery_b = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_b")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            phase,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        })
+    }
+}
+
 impl DkgShareStatement {
     /// Field order is the canonical wire contract — the chain-side (Go)
     /// decoder must read fields in exactly this order.
@@ -837,6 +959,13 @@ pub enum InvalidCryptoResponse {
     DkgPublicOriginFault {
         statement: Box<DkgPublicOriginFaultStatement>,
     },
+    /// The canonical leader of a public-plane batch signed two conflicting
+    /// Gossip broadcasts (a manifest, or a chunk) for the same phase and
+    /// coordinate. Unlike `DkgPublicOriginFault`, the fault is the leader's
+    /// own packaging act, not any origin's contribution content.
+    DkgLeaderEquivocation {
+        statement: Box<DkgLeaderEquivocationStatement>,
+    },
 }
 
 impl InvalidCryptoResponse {
@@ -887,6 +1016,10 @@ impl InvalidCryptoResponse {
             }
             Self::DkgPublicOriginFault { statement } => {
                 write_string(&mut out, "dkg_public_origin_fault");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgLeaderEquivocation { statement } => {
+                write_string(&mut out, "dkg_leader_equivocation");
                 write_bytes(&mut out, &statement.canonical_bytes());
             }
         }
@@ -959,6 +1092,14 @@ impl InvalidCryptoResponse {
                     )?),
                 }
             }
+            "dkg_leader_equivocation" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgLeaderEquivocation {
+                    statement: Box::new(DkgLeaderEquivocationStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
             value => {
                 return Err(ReportingError::InvalidReport(format!(
                     "unsupported invalid crypto evidence kind {value}"
@@ -977,6 +1118,7 @@ impl InvalidCryptoResponse {
             Self::DkgInvalidRefreshCommitment { statement, .. } => &statement.request_id,
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
             Self::DkgPublicOriginFault { statement } => &statement.request_id,
+            Self::DkgLeaderEquivocation { statement } => &statement.request_id,
         }
     }
 
@@ -990,6 +1132,7 @@ impl InvalidCryptoResponse {
             }
             Self::DkgEquivocation { .. } => CommitteeScope::Current,
             Self::DkgPublicOriginFault { statement } => statement.signing_committee_scope,
+            Self::DkgLeaderEquivocation { statement } => statement.signing_committee_scope,
         }
     }
 }
@@ -1657,6 +1800,46 @@ mod tests {
         assert_eq!(
             hex::encode(Sha256::digest(&encoded)),
             "2b1a98fd49fa0f9fc0f43ae80108b180eab351d8643654f9b5f22a939552b248"
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_leader_equivocation_payload_round_trips() {
+        let statement = DkgLeaderEquivocationStatement {
+            domain: DKG_LEADER_EQUIVOCATION_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitment_audit".to_string(),
+            delivery_id_a: [0xaa; 16],
+            delivery_a: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            delivery_id_b: [0xbb; 16],
+            delivery_b: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![2; 64],
+                data: vec![4, 5, 6],
+            },
+        };
+        let payload = InvalidCryptoResponse::DkgLeaderEquivocation {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
         );
     }
 

@@ -47,6 +47,17 @@ pub struct AuthenticatedMessage {
     /// consumers must not read that as relay attribution either.
     pub delivered_from: PeerId,
     pub data: Bytes,
+    /// The raw endpoint-identity signature that authenticated this message.
+    /// Verified-then-discarded until this field existed; retained so a
+    /// receiver can build portable evidence (e.g. a leader equivocation
+    /// report) that a third party can independently re-verify without
+    /// having witnessed the live exchange itself.
+    pub signature: Vec<u8>,
+    /// The per-broadcast randomized ID mixed into the topic-frame signing
+    /// domain. `Some` only for a message delivered over a topic
+    /// subscription; `None` for a message verified via [`PubSub::verify`]
+    /// on a standalone [`SignedPayload`], which has no topic framing.
+    pub delivery_id: Option<[u8; 16]>,
     /// Holds shared ingress capacity until the application finishes processing
     /// a message received from the network. Embedded-signature verification does
     /// not attach a lease.
@@ -141,6 +152,19 @@ pub trait PubSub: Send + Sync {
 
     /// Verify an embedded endpoint-identity signature.
     async fn verify(&self, domain: &[u8], payload: &SignedPayload) -> Result<AuthenticatedMessage>;
+
+    /// Independently re-verify a leader's raw Gossip broadcast signature
+    /// without having witnessed the live topic exchange. `topic` and
+    /// `delivery_id` reconstruct the exact per-broadcast signing domain a
+    /// topic frame was signed under (see [`Topic::broadcast`]); report
+    /// validators use this to check retained evidence against the accused's
+    /// registered endpoint identity.
+    async fn verify_topic_delivery(
+        &self,
+        topic: TopicId,
+        delivery_id: [u8; 16],
+        payload: &SignedPayload,
+    ) -> Result<AuthenticatedMessage>;
 
     /// Join a topic using authenticated endpoint identities as bootstrap peers.
     async fn subscribe(&self, topic: TopicId, bootstrap: Vec<PeerId>) -> Result<Arc<dyn Topic>>;

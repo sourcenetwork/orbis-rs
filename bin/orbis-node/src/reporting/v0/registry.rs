@@ -18,14 +18,14 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgPublicOriginFaultKind,
-    DkgPublicOriginFaultStatement, DkgShareStatement, EndpointSignedContribution,
-    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, RelayRequestStatement,
-    ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
-    RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
-    UNAUTHORIZED_REQUEST_REPORT_TYPE,
+    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgLeaderEquivocationStatement,
+    DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement, DkgShareStatement,
+    EndpointSignedContribution, InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement,
+    RelayRequestStatement, ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload,
+    CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
+    DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN,
+    REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -444,6 +444,10 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 self.validate_dkg_public_origin_fault(envelope, context, &ring, statement)
                     .await
             }
+            InvalidCryptoResponse::DkgLeaderEquivocation { statement } => {
+                self.validate_dkg_leader_equivocation_evidence(envelope, context, &ring, statement)
+                    .await
+            }
         }
     }
 }
@@ -591,6 +595,166 @@ impl InvalidCryptoResponseHandler {
                 }
             }
         }
+        Ok(())
+    }
+
+    async fn validate_dkg_leader_equivocation_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &DkgLeaderEquivocationStatement,
+    ) -> Result<()> {
+        validate_invalid_crypto_statement_prologue(
+            envelope,
+            context,
+            InvalidCryptoStatementPrologue {
+                label: "DKG leader equivocation".to_string(),
+                domain: statement.domain.clone(),
+                expected_domain: DKG_LEADER_EQUIVOCATION_DOMAIN.to_string(),
+                chain_id: statement.chain_id.clone(),
+                ring_id: statement.ring_id.clone(),
+                ring_pk: statement.ring_pk.clone(),
+                ring_state_sha256: statement.ring_state_sha256.clone(),
+                request_id: statement.request_id.clone(),
+                signed_at: statement.signed_at,
+                responder_node_key: statement.responder_node_key.clone(),
+                check_anchor: true,
+            },
+        )?;
+        if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
+            return Err(ReportingError::InvalidReport(format!(
+                "unsupported DKG leader-equivocation origin protocol {}",
+                statement.origin_protocol
+            )));
+        }
+        if statement.signing_committee_scope != CommitteeScope::Current {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader-equivocation reports must use the current signing committee"
+                    .to_string(),
+            ));
+        }
+        // The canonical leader is drawn from the current committee for a
+        // refresh (same committee throughout) and from the pending-new
+        // committee for a reshare (`PrepareSession::leader_committee`).
+        let expected_accused_scope = match statement.origin_protocol.as_str() {
+            "pss_reshare" => CommitteeScope::PendingNew,
+            _ => CommitteeScope::Current,
+        };
+        if statement.accused_committee_scope != expected_accused_scope {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader-equivocation accused committee scope does not match origin protocol"
+                    .to_string(),
+            ));
+        }
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG leader-equivocation protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            CommitteeScope::Current,
+            "DKG leader equivocation",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "DKG leader equivocation",
+        )?;
+
+        // Independently re-derive who the leader should have been rather
+        // than trusting the reporter's characterization of the accused.
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        let canonical_leader = transport::canonical_leader(&accused_committee.peer_node_keys)
+            .ok_or_else(|| {
+                ReportingError::InvalidReport(
+                    "DKG leader-equivocation accused committee is empty".to_string(),
+                )
+            })?;
+        if canonical_leader != envelope.accused_node_key {
+            return Err(ReportingError::Unauthorized(
+                "accused node is not the canonical leader for this committee".to_string(),
+            ));
+        }
+
+        let next_peer_node_keys = if statement.origin_protocol == "pss_reshare" {
+            Some(ring.new_peer_node_keys.clone().ok_or_else(|| {
+                ReportingError::Unauthorized(
+                    "DKG leader-equivocation reshare evidence requires a pending reshare"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+        let committee_digest = transport::ceremony_committee_digest(
+            &ring.peer_node_keys,
+            next_peer_node_keys.as_deref(),
+        );
+        let ceremony_id = statement.request_id.parse::<u128>().map_err(|_| {
+            ReportingError::InvalidReport(
+                "DKG leader-equivocation request_id is not a ceremony ID".to_string(),
+            )
+        })?;
+        let attempt_id = transport::AttemptId(statement.attempt_id);
+        let topic = transport::derive_topic_id(
+            &statement.chain_id,
+            &statement.ring_id,
+            &committee_digest,
+            transport::CeremonyId(ceremony_id),
+            attempt_id,
+        );
+
+        let delivery_a = verify_leader_delivery_envelope(
+            envelope,
+            context,
+            topic,
+            statement.delivery_id_a,
+            &statement.delivery_a,
+        )
+        .await?;
+        let delivery_b = verify_leader_delivery_envelope(
+            envelope,
+            context,
+            topic,
+            statement.delivery_id_b,
+            &statement.delivery_b,
+        )
+        .await?;
+        if !leader_deliveries_prove_equivocation(&delivery_a, &delivery_b) {
+            return Err(ReportingError::Unauthorized(
+                "leader deliveries do not prove manifest/chunk equivocation".to_string(),
+            ));
+        }
+        let (delivery_ceremony_id, delivery_attempt_id, delivery_phase) =
+            leader_delivery_coordinates(&delivery_a).ok_or_else(|| {
+                ReportingError::Unauthorized(
+                    "leader delivery is not a manifest or chunk".to_string(),
+                )
+            })?;
+        if delivery_ceremony_id.0 != ceremony_id
+            || delivery_attempt_id != attempt_id
+            || delivery_phase.as_metric_label() != statement.phase
+        {
+            return Err(ReportingError::Unauthorized(
+                "leader delivery does not target the claimed attempt/phase".to_string(),
+            ));
+        }
+        if !public_origin_protocol_allows_phase(&statement.origin_protocol, delivery_phase) {
+            return Err(ReportingError::Unauthorized(
+                "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
+            ));
+        }
+
         Ok(())
     }
 
@@ -1241,6 +1405,121 @@ async fn public_origin_payload_proves_failure(
         DkgPublicPayload::CommitmentHash { .. } | DkgPublicPayload::CommitmentAudit { .. } => {
             Ok(false)
         }
+    }
+}
+
+/// Independently re-verify one retained leader delivery: the endpoint
+/// signature under the exact per-broadcast topic-delivery domain, that the
+/// signing endpoint matches the accused's registered peer ID, and that the
+/// bytes decode as a public-plane Gossip message.
+async fn verify_leader_delivery_envelope(
+    envelope: &ReportEnvelope,
+    context: &ReportValidationContext,
+    topic: network::TopicId,
+    delivery_id: [u8; 16],
+    evidence: &EndpointSignedContribution,
+) -> Result<transport::DkgPublicMessage> {
+    if evidence.origin.len() != 32 || evidence.signature.len() != 64 || evidence.data.is_empty() {
+        return Err(ReportingError::InvalidReport(
+            "DKG leader-delivery endpoint envelope has invalid field lengths".to_string(),
+        ));
+    }
+    let pubsub = context.network.pubsub().ok_or_else(|| {
+        ReportingError::InvalidReport(
+            "network backend does not support endpoint-authenticated public evidence".to_string(),
+        )
+    })?;
+    let signed = network::SignedPayload {
+        origin: evidence.origin.clone(),
+        signature: evidence.signature.clone(),
+        data: evidence.data.clone(),
+    };
+    let authenticated = pubsub
+        .verify_topic_delivery(topic, delivery_id, &signed)
+        .await
+        .map_err(|error| {
+            ReportingError::Unauthorized(format!(
+                "invalid DKG leader-delivery endpoint signature: {error}"
+            ))
+        })?;
+    let accused_endpoint = extract_node_part(&envelope.accused_peer_id).to_lowercase();
+    if hex::encode(authenticated.origin.as_bytes()) != accused_endpoint {
+        return Err(ReportingError::Unauthorized(
+            "leader delivery endpoint does not match the accused peer ID".to_string(),
+        ));
+    }
+    transport::decode::<transport::DkgPublicMessage>(
+        &authenticated.data,
+        transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+    )
+    .map_err(ReportingError::InvalidReport)
+}
+
+/// The ceremony/attempt/phase a decoded leader delivery targets, or `None`
+/// for `TopologyProbe`, which never carries retained equivocation evidence
+/// (unreachable in practice: `leader_deliveries_prove_equivocation` only
+/// returns `true` for a Manifest/Manifest or Chunk/Chunk pairing).
+fn leader_delivery_coordinates(
+    message: &transport::DkgPublicMessage,
+) -> Option<(transport::CeremonyId, transport::AttemptId, DkgPublicPhase)> {
+    match message {
+        transport::DkgPublicMessage::Manifest(manifest) => {
+            Some((manifest.ceremony_id, manifest.attempt_id, manifest.phase))
+        }
+        transport::DkgPublicMessage::Chunk {
+            ceremony_id,
+            attempt_id,
+            phase,
+            ..
+        } => Some((*ceremony_id, *attempt_id, *phase)),
+        transport::DkgPublicMessage::TopologyProbe { .. } => None,
+    }
+}
+
+/// Two leader deliveries prove equivocation only if they claim the exact
+/// same coordinate (manifest phase_root, or chunk phase_root+index) but
+/// carry different content.
+fn leader_deliveries_prove_equivocation(
+    a: &transport::DkgPublicMessage,
+    b: &transport::DkgPublicMessage,
+) -> bool {
+    match (a, b) {
+        (
+            transport::DkgPublicMessage::Manifest(manifest_a),
+            transport::DkgPublicMessage::Manifest(manifest_b),
+        ) => {
+            manifest_a.ceremony_id == manifest_b.ceremony_id
+                && manifest_a.attempt_id == manifest_b.attempt_id
+                && manifest_a.phase == manifest_b.phase
+                && manifest_a.phase_root == manifest_b.phase_root
+                && manifest_a != manifest_b
+        }
+        (
+            transport::DkgPublicMessage::Chunk {
+                ceremony_id: ceremony_a,
+                attempt_id: attempt_a,
+                phase: phase_a,
+                phase_root: root_a,
+                index: index_a,
+                contributions: contributions_a,
+            },
+            transport::DkgPublicMessage::Chunk {
+                ceremony_id: ceremony_b,
+                attempt_id: attempt_b,
+                phase: phase_b,
+                phase_root: root_b,
+                index: index_b,
+                contributions: contributions_b,
+            },
+        ) => {
+            ceremony_a == ceremony_b
+                && attempt_a == attempt_b
+                && phase_a == phase_b
+                && root_a == root_b
+                && index_a == index_b
+                && contributions_a != contributions_b
+        }
+        _ => false,
     }
 }
 

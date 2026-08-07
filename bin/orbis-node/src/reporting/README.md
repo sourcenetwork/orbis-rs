@@ -112,16 +112,37 @@ The current evidence kinds are:
   `orbis-dkg-public-origin-fault-v1`, retains the exact endpoint envelopes, and
   is limited to Refresh/Reshare. Commitment equivocation remains on the
   stronger `dkg_equivocation` path.
+- `dkg_leader_equivocation`: two conflicting endpoint-signed Gossip
+  broadcasts (a manifest, or a chunk at the same index) from the same
+  canonical public-plane leader for the same phase and coordinate. Unlike
+  `dkg_public_origin_fault`, the fault is the leader's own batch-packaging
+  claim, not any origin's contribution content — a leader who sends two
+  different canonical manifests/chunks for one phase_root (or two different
+  chunks at one index) breaks the single-canonical-batch guarantee the
+  broadcast transport depends on. The statement uses domain
+  `orbis-dkg-leader-equivocation-v1`, is limited to Refresh/Reshare (the
+  accused committee scope follows `PrepareSession::leader_committee`: current
+  for Refresh, pending-new for Reshare), and retains both raw signed
+  deliveries plus each one's per-broadcast `delivery_id` (the randomized ID
+  mixed into the Gossip topic-frame signing domain — see
+  `crates/network/src/iroh/pubsub.rs`). Independent verification recomputes
+  the topic ID from chain/ring/committee/ceremony/attempt binding and
+  re-checks each endpoint signature via `PubSub::verify_topic_delivery`
+  rather than trusting the reporter. A totally undecodable leader broadcast
+  (fails to parse as any `DkgPublicMessage` at all) is not covered by this
+  evidence kind — the endpoint signature that authenticated it at the
+  transport layer is verified and then discarded before the DKG layer ever
+  sees it, so there is currently nothing portable to retain for that case.
 
 PRE, Sign, and nested DKG statements are signed by the accused node's
 secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
-that key's compressed public key hex). Public-origin evidence instead retains
-the exact transport envelope signed by the accused node's registered endpoint
-identity. The normalized statement carries chain/ring binding, the ring-state
-digest, protocol version, request/session id, evidence timestamp, responder
-node key, origin protocol, and protocol-specific material. Missing or invalid
-evidence signatures reject the response or report outright; only
-signature-valid evidence is attributable.
+that key's compressed public key hex). Public-origin and leader-equivocation
+evidence instead retain the exact transport envelope(s) signed by the accused
+node's registered endpoint identity. The normalized statement carries
+chain/ring binding, the ring-state digest, protocol version, request/session
+id, evidence timestamp, responder node key, origin protocol, and
+protocol-specific material. Missing or invalid evidence signatures reject the
+response or report outright; only signature-valid evidence is attributable.
 
 When a signature-valid response fails the protocol-specific verifier, the
 protocol queues `ReportObservation::InvalidCryptoResponse`. The protocol should
@@ -280,10 +301,10 @@ change:
 5. decode and validate the report payload: `node_offline` checks
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
    `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
-   `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`, or
-   `dkg_public_origin_fault`), checks the expected statement domain/shape,
-   validates origin-protocol policy, and binds the signed evidence to the
-   envelope;
+   `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`,
+   `dkg_public_origin_fault`, or `dkg_leader_equivocation`), checks the
+   expected statement domain/shape, validates origin-protocol policy, and
+   binds the signed evidence to the envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);

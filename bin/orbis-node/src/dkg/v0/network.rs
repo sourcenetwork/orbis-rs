@@ -24,8 +24,10 @@ use crate::constants::{
 };
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_invalid_commitment_evidence_relay,
-    handle_invalid_share_evidence_relay, handle_public_origin_fault_evidence_relay,
-    queue_or_relay_equivocation, queue_or_relay_public_origin_fault, verify_commitment_evidence,
+    handle_invalid_share_evidence_relay, handle_leader_equivocation_evidence_relay,
+    handle_public_origin_fault_evidence_relay, queue_or_relay_equivocation,
+    queue_or_relay_leader_equivocation, queue_or_relay_public_origin_fault,
+    verify_commitment_evidence,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
@@ -190,6 +192,7 @@ struct PublicProtocolViolation {
     detail: String,
     commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
     public_origin_fault: Option<Box<PublicOriginFaultEvidence>>,
+    leader_equivocation: Option<Box<LeaderDeliveryEquivocation>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +207,50 @@ struct PublicOriginFaultEvidence {
     fault_kind: DkgPublicOriginFaultKind,
     contribution_a: SignedPayload,
     contribution_b: Option<SignedPayload>,
+}
+
+/// The raw endpoint-authenticated bytes of one canonical-leader Gossip
+/// broadcast (a Manifest or a Chunk), retained so an equivocating leader can
+/// be proven to a third party who never witnessed the live topic exchange.
+#[derive(Debug, Clone, PartialEq)]
+struct PublicLeaderDelivery {
+    origin: Vec<u8>,
+    delivery_id: [u8; 16],
+    signature: Vec<u8>,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LeaderDeliveryEquivocation {
+    retained: PublicLeaderDelivery,
+    conflicting: PublicLeaderDelivery,
+}
+
+/// `delivery_id` is only `None` for a message verified via a standalone
+/// `PubSub::verify` call, never for one delivered over a topic subscription
+/// — but retention here is best-effort by design, so a missing ID just
+/// means this particular delivery can't back a future equivocation report,
+/// not that the message is rejected.
+fn public_leader_delivery_from_message(message: &network::AuthenticatedMessage) -> Option<PublicLeaderDelivery> {
+    Some(PublicLeaderDelivery {
+        origin: message.origin.as_bytes().to_vec(),
+        delivery_id: message.delivery_id?,
+        signature: message.signature.clone(),
+        data: message.data.clone().into(),
+    })
+}
+
+/// Retention is best-effort (see `PublicLeaderDelivery`'s callers): a
+/// conflict is still rejected even when one side's raw delivery wasn't
+/// captured, but evidence can only be attached when both sides are present.
+fn leader_delivery_equivocation(
+    retained: Option<&PublicLeaderDelivery>,
+    conflicting: Option<&PublicLeaderDelivery>,
+) -> Option<LeaderDeliveryEquivocation> {
+    Some(LeaderDeliveryEquivocation {
+        retained: retained?.clone(),
+        conflicting: conflicting?.clone(),
+    })
 }
 
 impl PublicProtocolViolation {
@@ -222,6 +269,7 @@ impl PublicProtocolViolation {
             detail: detail.into(),
             commitment_equivocation: None,
             public_origin_fault: None,
+            leader_equivocation: None,
         }
     }
 
@@ -256,6 +304,7 @@ impl PublicProtocolViolation {
             detail: detail.into(),
             commitment_equivocation: None,
             public_origin_fault: None,
+            leader_equivocation: None,
         }
     }
 
@@ -281,6 +330,11 @@ impl PublicProtocolViolation {
         self.public_origin_fault = evidence.map(Box::new);
         self
     }
+
+    fn with_leader_equivocation(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
+        self.leader_equivocation = evidence.map(Box::new);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -298,16 +352,20 @@ struct PendingPublicBatch {
 struct ReceivedPublicManifest {
     manifest: PhaseManifest,
     event_digest: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 struct ReceivedPublicChunk {
     contributions: Vec<VerifiedPublicContribution>,
     event_digest: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 struct CompletedPublicBatch {
     manifest_event_digest: [u8; 32],
+    manifest_delivery: Option<PublicLeaderDelivery>,
     chunk_digests: BTreeMap<u32, [u8; 32]>,
+    chunk_deliveries: BTreeMap<u32, PublicLeaderDelivery>,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +440,7 @@ impl PublicBatchAssembler {
         manifest: PhaseManifest,
         event_digest: [u8; 32],
         expected_origins: &BTreeSet<ParticipantRef>,
+        delivery: Option<PublicLeaderDelivery>,
     ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
         let phase = manifest.phase;
         let root = manifest.phase_root;
@@ -416,7 +475,11 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     "manifest metadata conflicts with a completed batch",
-                ))
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    completed.manifest_delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
         }
         if let Some(existing) = self
@@ -432,7 +495,11 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     "manifest metadata conflicts for the same phase root",
-                ))
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    existing.delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
         }
 
@@ -460,6 +527,7 @@ impl PublicBatchAssembler {
         self.pending.entry(key).or_default().manifest = Some(ReceivedPublicManifest {
             manifest,
             event_digest,
+            delivery,
         });
         self.try_complete(key, true)
     }
@@ -473,6 +541,7 @@ impl PublicBatchAssembler {
         contributions: Vec<VerifiedPublicContribution>,
         event_digest: [u8; 32],
         expected_origin_count: usize,
+        delivery: Option<PublicLeaderDelivery>,
     ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
         if contributions.is_empty() {
             return Err(PublicProtocolViolation::leader(
@@ -508,7 +577,11 @@ impl PublicBatchAssembler {
                     format!("chunk {index} conflicts with the completed batch"),
                 )
                 .with_commitment_equivocation(commitment_equivocation)
-                .with_public_origin_fault(public_origin_fault)),
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    completed.chunk_deliveries.get(&index),
+                    delivery.as_ref(),
+                ))),
                 None => Err(PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::InvalidChunk,
                     Some(phase),
@@ -548,7 +621,11 @@ impl PublicBatchAssembler {
                     format!("leader published different contents for chunk {index}"),
                 )
                 .with_commitment_equivocation(commitment_equivocation)
-                .with_public_origin_fault(public_origin_fault))
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    existing.delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
         }
         if mode == PublicBatchMode::Complete {
@@ -607,6 +684,7 @@ impl PublicBatchAssembler {
             ReceivedPublicChunk {
                 contributions,
                 event_digest,
+                delivery,
             },
         );
         self.try_complete(key, false)
@@ -839,6 +917,7 @@ impl PublicBatchAssembler {
         let manifest = received_manifest.manifest;
         let mut contributions = Vec::new();
         let mut chunk_digests = BTreeMap::new();
+        let mut chunk_deliveries = BTreeMap::new();
         for index in 0..manifest.chunk_count {
             let chunk = batch.chunks.get(&index).ok_or_else(|| {
                 PublicProtocolViolation::leader(
@@ -849,6 +928,9 @@ impl PublicBatchAssembler {
                 )
             })?;
             chunk_digests.insert(index, chunk.event_digest);
+            if let Some(delivery) = &chunk.delivery {
+                chunk_deliveries.insert(index, delivery.clone());
+            }
             contributions.extend(chunk.contributions.iter().cloned());
         }
 
@@ -894,7 +976,9 @@ impl PublicBatchAssembler {
             key,
             CompletedPublicBatch {
                 manifest_event_digest: received_manifest.event_digest,
+                manifest_delivery: received_manifest.delivery,
                 chunk_digests,
+                chunk_deliveries,
             },
         );
         Ok(PublicBatchAssembly::Complete {
@@ -2705,6 +2789,85 @@ where
                 fault_kind,
                 contribution_a,
                 contribution_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderEquivocationEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader-equivocation evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (delivery_id_a, delivery_a.clone(), delivery_id_b, delivery_b.clone());
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-equivocation-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader-equivocation evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_equivocation_evidence_relay(
+                &coordinator,
+                attempt,
+                delivery_id_a,
+                delivery_a,
+                delivery_id_b,
+                delivery_b,
             )
             .await;
             state
@@ -4972,8 +5135,13 @@ async fn abort_public_protocol_violation<D>(
         violation.public_origin_fault.as_deref(),
     )
     .await;
-    // TODO(reporting): standalone leader-authenticated manifest/chunk faults
-    // still require their own leader evidence kind.
+    report_leader_equivocation_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_equivocation.as_deref(),
+    )
+    .await;
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -5430,6 +5598,7 @@ async fn topic_listener<D>(
                             verified,
                             event_digest,
                             expected_origins.len(),
+                            public_leader_delivery_from_message(&message),
                         );
                         match assembly {
                             Ok(PublicBatchAssembly::Pending { .. }) => {
@@ -5507,6 +5676,7 @@ async fn topic_listener<D>(
                             manifest,
                             event_digest,
                             &expected_origins,
+                            public_leader_delivery_from_message(&message),
                         ) {
                             Ok(PublicBatchAssembly::Pending {
                                 manifest_added: true,
@@ -7028,6 +7198,59 @@ async fn report_public_origin_fault_best_effort<D>(
                 attempt_id = %hex::encode(attempt.attempt_id.0),
                 error = %error,
                 "failed to queue or relay authenticated public-origin fault"
+            );
+        }
+    }
+}
+
+async fn report_leader_equivocation_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&LeaderDeliveryEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_equivocation_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let retained = SignedPayload {
+        origin: evidence.retained.origin.clone(),
+        signature: evidence.retained.signature.clone(),
+        data: evidence.retained.data.clone(),
+    };
+    let conflicting = SignedPayload {
+        origin: evidence.conflicting.origin.clone(),
+        signature: evidence.conflicting.signature.clone(),
+        data: evidence.conflicting.data.clone(),
+    };
+    match queue_or_relay_leader_equivocation(
+        &coordinator,
+        attempt,
+        evidence.retained.delivery_id,
+        retained,
+        evidence.conflicting.delivery_id,
+        conflicting,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_equivocation_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_equivocation_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue or relay authenticated leader-equivocation evidence"
             );
         }
     }
@@ -8621,6 +8844,54 @@ where
             contribution_b: contribution_b.clone(),
         },
         "public-origin-fault-evidence",
+        &payload,
+    )
+    .await
+}
+
+pub(crate) async fn relay_leader_equivocation_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    delivery_id_a: [u8; 16],
+    delivery_a: SignedPayload,
+    delivery_id_b: [u8; 16],
+    delivery_b: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader-equivocation evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (delivery_id_a, delivery_a.clone(), delivery_id_b, delivery_b.clone());
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderEquivocationEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            delivery_id_a,
+            delivery_a: delivery_a.clone(),
+            delivery_id_b,
+            delivery_b: delivery_b.clone(),
+        },
+        "leader-equivocation-evidence",
         &payload,
     )
     .await
@@ -12284,6 +12555,15 @@ mod stability_tests {
         }
     }
 
+    fn sample_leader_delivery(tag: u8) -> PublicLeaderDelivery {
+        PublicLeaderDelivery {
+            origin: vec![tag; 32],
+            delivery_id: [tag; 16],
+            signature: vec![tag; 64],
+            data: vec![tag; 8],
+        }
+    }
+
     #[test]
     fn public_batch_waits_for_manifest_and_every_chunk() {
         let first = assembled_contribution(ParticipantRef::current(1), 1);
@@ -12302,6 +12582,7 @@ mod stability_tests {
                     vec![second],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending { .. }
@@ -12313,6 +12594,7 @@ mod stability_tests {
                     manifest.clone(),
                     [3; 32],
                     &expected,
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending {
@@ -12328,6 +12610,7 @@ mod stability_tests {
                 vec![first],
                 [1; 32],
                 expected.len(),
+                None,
             )
             .unwrap();
         let PublicBatchAssembly::Complete { contributions, .. } = complete else {
@@ -12392,6 +12675,8 @@ mod stability_tests {
         let manifest = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
         let expected = BTreeSet::from([ParticipantRef::current(1)]);
         let mut assembler = PublicBatchAssembler::default();
+        let manifest_delivery_a = sample_leader_delivery(1);
+        let manifest_delivery_b = sample_leader_delivery(2);
         assert!(matches!(
             assembler
                 .insert_manifest(
@@ -12399,6 +12684,7 @@ mod stability_tests {
                     manifest.clone(),
                     [1; 32],
                     &expected,
+                    Some(manifest_delivery_a.clone()),
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending { .. }
@@ -12410,6 +12696,7 @@ mod stability_tests {
                     manifest.clone(),
                     [1; 32],
                     &expected,
+                    Some(manifest_delivery_a.clone()),
                 )
                 .unwrap(),
             PublicBatchAssembly::Duplicate
@@ -12420,9 +12707,18 @@ mod stability_tests {
                 manifest.clone(),
                 [9; 32],
                 &expected,
+                Some(manifest_delivery_b.clone()),
             )
             .expect_err("a semantically equal manifest with different bytes must conflict");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: manifest_delivery_a,
+                conflicting: manifest_delivery_b,
+            }),
+            "conflicting manifest must retain both signed leader deliveries"
+        );
         assert!(matches!(
             assembler
                 .insert_chunk(
@@ -12433,6 +12729,7 @@ mod stability_tests {
                     vec![contribution.clone()],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Complete { .. }
@@ -12447,10 +12744,12 @@ mod stability_tests {
                     vec![contribution],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Duplicate
         ));
+        let chunk_delivery = sample_leader_delivery(3);
         let error = assembler
             .insert_chunk(
                 PublicBatchMode::Complete,
@@ -12460,9 +12759,14 @@ mod stability_tests {
                 vec![assembled_contribution(ParticipantRef::current(1), 1)],
                 [8; 32],
                 expected.len(),
+                Some(chunk_delivery),
             )
             .expect_err("a semantically equal chunk with different bytes must conflict");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+        assert!(
+            error.leader_equivocation.is_none(),
+            "the completed chunk's own delivery was never retained, so evidence stays best-effort"
+        );
     }
 
     #[test]
@@ -12473,7 +12777,7 @@ mod stability_tests {
         let expected = BTreeSet::from([ParticipantRef::current(1)]);
         let mut assembler = PublicBatchAssembler::default();
         let error = assembler
-            .insert_manifest(PublicBatchMode::Complete, invalid, [1; 32], &expected)
+            .insert_manifest(PublicBatchMode::Complete, invalid, [1; 32], &expected, None)
             .expect_err("an internally invalid root must fail");
         assert_eq!(error.kind, PublicProtocolViolationKind::InvalidManifest);
 
@@ -12489,6 +12793,7 @@ mod stability_tests {
                 vec![contribution.clone()],
                 [2; 32],
                 expected.len(),
+                None,
             )
             .unwrap();
         let error = assembler
@@ -12500,6 +12805,7 @@ mod stability_tests {
                 vec![conflicting.clone()],
                 [3; 32],
                 expected.len(),
+                None,
             )
             .expect_err("a complete phase cannot advertise two roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
@@ -12528,6 +12834,7 @@ mod stability_tests {
                 manifest.clone(),
                 [1; 32],
                 &expected,
+                None,
             )
             .unwrap();
         let error = assembler
@@ -12539,6 +12846,7 @@ mod stability_tests {
                 vec![second, first],
                 [2; 32],
                 expected.len(),
+                None,
             )
             .expect_err("manifest contents must retain canonical origin order");
         assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
@@ -12554,6 +12862,7 @@ mod stability_tests {
                 vec![contribution.clone()],
                 [3; 32],
                 2,
+                None,
             )
             .unwrap();
         let error = assembler
@@ -12565,12 +12874,15 @@ mod stability_tests {
                 vec![assembled_contribution(ParticipantRef::current(2), 4)],
                 [4; 32],
                 2,
+                None,
             )
             .expect_err("the same chunk index cannot change contents");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
 
         let retained = assembled_contribution(ParticipantRef::current(1), 5);
         let conflicting = assembled_contribution(ParticipantRef::current(1), 6);
+        let retained_delivery = sample_leader_delivery(5);
+        let conflicting_delivery = sample_leader_delivery(6);
         let mut assembler = PublicBatchAssembler::default();
         assembler
             .insert_chunk(
@@ -12581,6 +12893,7 @@ mod stability_tests {
                 vec![retained.clone()],
                 [5; 32],
                 1,
+                Some(retained_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -12592,10 +12905,19 @@ mod stability_tests {
                 vec![conflicting.clone()],
                 [6; 32],
                 1,
+                Some(conflicting_delivery.clone()),
             )
             .expect_err("complete chunk conflict must remain attributable to the leader");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
         assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: retained_delivery,
+                conflicting: conflicting_delivery,
+            }),
+            "conflicting chunk must retain both signed leader deliveries"
+        );
         assert_eq!(
             error.commitment_equivocation.as_deref(),
             Some(&PublicCommitmentEquivocation {
@@ -12616,6 +12938,7 @@ mod stability_tests {
                 vec![retained.clone(), conflicting.clone()],
                 [7; 32],
                 1,
+                None,
             )
             .expect_err("one chunk cannot contain two messages from the same origin");
         assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
@@ -12646,6 +12969,7 @@ mod stability_tests {
                     manifest.clone(),
                     [contribution.contribution.origin.node_id as u8; 32],
                     &expected,
+                    None,
                 )
                 .unwrap();
             assert!(matches!(
@@ -12658,6 +12982,7 @@ mod stability_tests {
                         vec![contribution],
                         [manifest.contribution_ids.len() as u8; 32],
                         expected.len(),
+                        None,
                     )
                     .unwrap(),
                 PublicBatchAssembly::Complete { .. }
@@ -12674,6 +12999,7 @@ mod stability_tests {
                 vec![conflicting.clone()],
                 [9; 32],
                 expected.len(),
+                None,
             )
             .expect_err("one origin cannot sign two messages for a public phase");
         assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
@@ -12719,6 +13045,7 @@ mod stability_tests {
                 vec![first],
                 [1; 32],
                 expected.len(),
+                None,
             )
             .unwrap();
         let error = assembler
@@ -12730,6 +13057,7 @@ mod stability_tests {
                 vec![conflicting],
                 [2; 32],
                 expected.len(),
+                None,
             )
             .expect_err("non-Commitment origin conflict must still abort");
         assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
@@ -12761,6 +13089,7 @@ mod stability_tests {
                 vec![first.clone()],
                 [1; 32],
                 expected.len(),
+                None,
             )
             .unwrap();
         let error = assembler
@@ -12772,6 +13101,7 @@ mod stability_tests {
                 vec![first],
                 [2; 32],
                 expected.len(),
+                None,
             )
             .expect_err("a leader cannot retain one contribution under multiple roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
@@ -12781,7 +13111,13 @@ mod stability_tests {
         let one_origin = assembled_manifest(std::slice::from_ref(&first), 1, false);
         let overlapping = assembled_manifest(&[first, second], 1, false);
         assembler
-            .insert_manifest(PublicBatchMode::Incremental, one_origin, [3; 32], &expected)
+            .insert_manifest(
+                PublicBatchMode::Incremental,
+                one_origin,
+                [3; 32],
+                &expected,
+                None,
+            )
             .unwrap();
         let error = assembler
             .insert_manifest(
@@ -12789,6 +13125,7 @@ mod stability_tests {
                 overlapping,
                 [4; 32],
                 &expected,
+                None,
             )
             .expect_err("pending manifest entries must remain committee-bounded");
         assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);

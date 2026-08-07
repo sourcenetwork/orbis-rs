@@ -111,6 +111,8 @@ fn verify_signed(domain: &[u8], payload: &SignedPayload) -> Result<Authenticated
         origin: PeerId::from_bytes(origin.as_bytes()),
         delivered_from: PeerId::from_bytes(origin.as_bytes()),
         data: payload.data.clone().into(),
+        signature: payload.signature.clone(),
+        delivery_id: None,
         ingress_lease: None,
     })
 }
@@ -127,6 +129,7 @@ fn authenticate_topic_frame(
     )
     .map_err(|_| PubSubRejectReason::InvalidAuthentication)?;
     authenticated.delivered_from = delivered_from;
+    authenticated.delivery_id = Some(wire.delivery_id);
     Ok(authenticated)
 }
 
@@ -376,6 +379,15 @@ impl PubSub for IrohPubSub {
 
     async fn verify(&self, domain: &[u8], payload: &SignedPayload) -> Result<AuthenticatedMessage> {
         verify_signed(domain, payload)
+    }
+
+    async fn verify_topic_delivery(
+        &self,
+        topic: TopicId,
+        delivery_id: [u8; 16],
+        payload: &SignedPayload,
+    ) -> Result<AuthenticatedMessage> {
+        verify_signed(&topic_delivery_domain(topic, &delivery_id), payload)
     }
 
     async fn subscribe(&self, topic: TopicId, bootstrap: Vec<PeerId>) -> Result<Arc<dyn Topic>> {
