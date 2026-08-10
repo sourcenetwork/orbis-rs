@@ -17,10 +17,10 @@ use tokio::time::{sleep, timeout, Duration, Instant};
 
 use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
-    DKG_ATTEMPT_TIMEOUT, DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
-    DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
-    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE,
-    PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
+    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE, DKG_MAX_REPAIR_BACKOFF,
+    DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT, DKG_REPAIR_STALL_INTERVAL,
+    DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE, PEER_RESPONSE_TIMEOUT,
+    PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
@@ -7549,30 +7549,18 @@ async fn record_control_ack_best_effort<D>(
         return;
     }
 
-    let key = (
-        ceremony_id,
-        attempt_id,
-        follower_node_key.clone(),
-        message_kind,
-    );
-    let conflicting = {
-        let now = Instant::now();
-        let mut receipts = state.dkg_control_ack_receipts.lock().await;
-        receipts.retain(|_, (_, _, recorded_at)| {
-            now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT
-        });
-        match receipts.get(&key) {
-            Some((existing_digest, existing_signature, _)) if *existing_digest != digest => {
-                Some((*existing_digest, existing_signature.clone()))
-            }
-            Some(_) => None,
-            None => {
-                receipts.insert(key, (digest, signature, now));
-                return;
-            }
-        }
-    };
-    let Some((existing_digest, existing_signature)) = conflicting else {
+    let attempt = AttemptKey::new(ceremony_id, attempt_id);
+    let Some((existing_digest, existing_signature)) = state
+        .dkg_session_state
+        .record_control_ack(
+            attempt,
+            follower_node_key.clone(),
+            message_kind,
+            digest,
+            &signature,
+        )
+        .await
+    else {
         return;
     };
 
@@ -7588,7 +7576,7 @@ async fn record_control_ack_best_effort<D>(
     };
     match queue_or_relay_control_message_fault(
         &coordinator,
-        AttemptKey::new(ceremony_id, attempt_id),
+        attempt,
         follower_node_key,
         message_kind.to_string(),
         DkgControlMessageFaultKind::AckEquivocation,
@@ -9624,7 +9612,7 @@ where
                 .await
                 .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
         }
-        let semaphore = self.state.dkg_private_exchange_permits.clone();
+        let semaphore = self.state.dkg_session_state.private_exchange_permits();
         let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
@@ -9919,7 +9907,7 @@ where
             "PairHello targets an inactive dealer".into(),
         ));
     }
-    let semaphore = state.dkg_private_exchange_permits.clone();
+    let semaphore = state.dkg_session_state.private_exchange_permits();
     let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
         Ok(Ok(permit)) => permit,
         Ok(Err(_)) => {
@@ -10302,7 +10290,10 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         let permit = timeout(
             remaining,
-            state.dkg_private_exchange_permits.clone().acquire_owned(),
+            state
+                .dkg_session_state
+                .private_exchange_permits()
+                .acquire_owned(),
         )
         .await
         .map_err(|_| DkgError::InvalidState("private pair permit timed out".into()))?
@@ -10532,7 +10523,7 @@ where
                 "private pair exchange with {peer} exceeded hard attempt deadline"
             )));
         }
-        let semaphore = state.dkg_private_exchange_permits.clone();
+        let semaphore = state.dkg_session_state.private_exchange_permits();
         let remaining = deadline.saturating_duration_since(Instant::now());
         let permit = timeout(remaining, semaphore.acquire_owned())
             .await

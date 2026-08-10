@@ -1,6 +1,6 @@
-use crate::dkg::v0::messages::{ControlSignature, SessionKind};
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
-use crate::dkg::v0::transport::{AttemptId, CeremonyConfig, CeremonyId, MessageId};
+use crate::dkg::v0::transport::{CeremonyConfig, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::constants::{DKG_PRIVATE_EXCHANGE_CONCURRENCY, MAX_CACHED_PEER_CONNECTIONS};
+use crate::constants::MAX_CACHED_PEER_CONNECTIONS;
 
 /// Global per-peer, per-protocol connection pool.
 ///
@@ -314,25 +314,6 @@ where
     pub ring_index_lock: Arc<Mutex<()>>,
     /// Global per-peer, per-protocol connection pool shared across DKG, PRE, and Sign.
     pub peer_connection_pool: Arc<PeerConnectionPool>,
-    /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
-    /// including ceremonies for different rings.
-    pub dkg_private_exchange_permits: Arc<tokio::sync::Semaphore>,
-    /// The leader's record of each follower's first signed control-plane
-    /// acknowledgement (Prepared/Activated/Begun) per (ceremony, attempt,
-    /// message kind), so a later conflicting signed answer to the identical
-    /// request is provable as equivocation rather than trusted on the
-    /// leader's own word. Digest-only comparison is sound because
-    /// config_digest/activation_digest are invariant for a fixed attempt_id
-    /// — a new attempt_id is minted whenever the underlying parameters
-    /// would legitimately change.
-    pub(crate) dkg_control_ack_receipts: Arc<
-        Mutex<
-            HashMap<
-                (CeremonyId, AttemptId, String, &'static str),
-                ([u8; 32], ControlSignature, Instant),
-            >,
-        >,
-    >,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
 }
@@ -359,10 +340,6 @@ where
             bulletin,
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
-            dkg_private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
-                DKG_PRIVATE_EXCHANGE_CONCURRENCY,
-            )),
-            dkg_control_ack_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
     }

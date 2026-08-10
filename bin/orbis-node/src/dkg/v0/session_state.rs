@@ -9,14 +9,16 @@
 
 use crate::app_state::DkgOfflineRelayReceipt;
 use crate::constants::{
-    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, MAX_DKG_SESSIONS,
-    SESSION_EXPIRATION_CHECK_INTERVAL,
+    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, DKG_PRIVATE_EXCHANGE_CONCURRENCY,
+    MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL,
 };
 use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
 #[cfg(test)]
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 use crate::dkg::v0::transport::{
     decode, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeScope, DkgPrivateMessage,
     MessageId, ParticipantRef, PublicPhase,
@@ -453,6 +455,14 @@ pub(crate) struct DkgSessionTransportState {
     pub processed_message_ids: HashSet<MessageId>,
     pub topic_task: Option<tokio::task::AbortHandle>,
     attempt_cancel_tx: watch::Sender<bool>,
+    /// The leader's record of each follower's first signed control-plane
+    /// acknowledgement (Prepared/Activated/Begun) per (follower_node_key,
+    /// message_kind) for this attempt, so a later conflicting signed answer
+    /// to the identical request is provable as equivocation rather than
+    /// trusted on the leader's own word. No separate TTL pruning needed here
+    /// (unlike a node-wide cache) because transport state is configured
+    /// exactly once per attempt and is torn down with the session.
+    pub(crate) control_ack_receipts: HashMap<(String, &'static str), ([u8; 32], ControlSignature)>,
 }
 
 impl Default for DkgSessionTransportState {
@@ -494,6 +504,7 @@ impl Default for DkgSessionTransportState {
             processed_message_ids: HashSet::new(),
             topic_task: None,
             attempt_cancel_tx,
+            control_ack_receipts: HashMap::new(),
         }
     }
 }
@@ -820,6 +831,11 @@ pub struct SessionStateManager<D: Dkg> {
     /// suppresses repeated work from later boundaries before a detached report
     /// task is spawned; SourceHub session deduplication remains authoritative.
     offline_candidate_dedup: StdMutex<HashMap<(CeremonyId, String), Instant>>,
+    /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
+    /// including ceremonies for different rings. A resource limit on the DKG
+    /// subsystem as a whole, not any one session, so it lives here rather than
+    /// on `DkgSessionState`.
+    private_exchange_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -863,6 +879,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             public_commit_receipts: TokioMutex::new(HashMap::new()),
             offline_relay_receipts: TokioMutex::new(HashMap::new()),
             offline_candidate_dedup: StdMutex::new(HashMap::new()),
+            private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
+                DKG_PRIVATE_EXCHANGE_CONCURRENCY,
+            )),
         }
     }
 
@@ -1229,6 +1248,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.ceremony_start_locks.clone()
     }
 
+    /// Clone of the node-wide private DKG pair-exchange concurrency permit.
+    pub(crate) fn private_exchange_permits(&self) -> Arc<tokio::sync::Semaphore> {
+        self.private_exchange_permits.clone()
+    }
+
     /// Look up a retained `CommitRefreshResult` receipt for `key`, pruning
     /// expired entries first. Returns the recorded leader peer bytes if a
     /// live receipt exists.
@@ -1370,7 +1394,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .len()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "fault-injection"))]
     pub(crate) fn offline_candidate_subjects_for_ceremony(&self, ceremony_id: u128) -> Vec<String> {
         self.offline_candidate_dedup
             .lock()
@@ -1380,6 +1404,42 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 (candidate_ceremony.0 == ceremony_id).then_some(subject.clone())
             })
             .collect()
+    }
+
+    /// Record a follower's signed control-plane ack for `(follower_node_key,
+    /// message_kind)` within `attempt`. Returns `Some((existing_digest,
+    /// existing_signature))` when a *different* digest was already recorded
+    /// for this exact request — provable equivocation — or `None` when this
+    /// is either the first sighting (now recorded) or a duplicate of the
+    /// already-recorded digest (nothing to do). Also `None` if the attempt no
+    /// longer owns the session, matching this call's best-effort semantics.
+    pub(crate) async fn record_control_ack(
+        &self,
+        attempt: AttemptKey,
+        follower_node_key: String,
+        message_kind: &'static str,
+        digest: [u8; 32],
+        signature: &ControlSignature,
+    ) -> Option<([u8; 32], ControlSignature)> {
+        self.with_attempt_state_mut(attempt, |state| {
+            let key = (follower_node_key, message_kind);
+            match state.transport.control_ack_receipts.get(&key) {
+                Some((existing_digest, existing_signature)) if *existing_digest != digest => {
+                    Some((*existing_digest, existing_signature.clone()))
+                }
+                Some(_) => None,
+                None => {
+                    state
+                        .transport
+                        .control_ack_receipts
+                        .insert(key, (digest, signature.clone()));
+                    None
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Stop and join the manager's background cleanup workers.
