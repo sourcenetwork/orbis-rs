@@ -1227,14 +1227,19 @@ impl InvalidCryptoResponseHandler {
         commitment_a: &SignedDkgCommitment,
         commitment_b: &SignedDkgCommitment,
     ) -> Result<()> {
-        // commitment_a anchors the envelope's observed_at; commitment_b only needs
-        // ring/session binding (its signed_at may differ within the attempt).
+        // Neither commitment individually anchors the envelope: the report is
+        // anchored to whichever of the two has the LATER signed_at (matching
+        // `dkg_public_origin_fault`'s OriginEquivocation case), since
+        // equivocation is only provable once the second, conflicting
+        // commitment arrives — that can legitimately be well after the first
+        // within a long-running attempt, and anchoring to the earlier one
+        // would let the report's TTL close before the fault was detectable.
         validate_equivocation_commitment_shape(
             envelope,
             context,
             &commitment_a.statement,
             &commitment_a.signature,
-            true,
+            false,
         )?;
         validate_equivocation_commitment_shape(
             envelope,
@@ -1242,6 +1247,13 @@ impl InvalidCryptoResponseHandler {
             &commitment_b.statement,
             &commitment_b.signature,
             false,
+        )?;
+        validate_evidence_anchor(
+            commitment_a
+                .statement
+                .signed_at
+                .max(commitment_b.statement.signed_at),
+            envelope.observed_at,
         )?;
 
         let effective_version =

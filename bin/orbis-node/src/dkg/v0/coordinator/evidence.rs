@@ -1614,12 +1614,19 @@ where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    // Both commitments name the same dealer; commitment_a anchors the envelope's observed_at.
+    // Both commitments name the same dealer. Anchor the envelope to the LATER
+    // of the two signed_at values, not whichever happens to be "commitment_a"
+    // (typically the earlier, already-retained one) — equivocation is only
+    // detectable once the second, conflicting commitment arrives, which can
+    // legitimately be well after the first within a long-running attempt.
+    // Anchoring to the earlier one would let the report's TTL close before
+    // the fault is even provable.
     let accused_node_key = commitment_a.statement.responder_node_key.clone();
     let accused_info = read_node_info(&app_state, &accused_node_key).await?;
     let observed_at = commitment_a
         .statement
         .signed_at
+        .max(commitment_b.statement.signed_at)
         .saturating_sub(CHAIN_BLOCK_GRACE_SECS);
     let observation = InvalidCryptoResponseObservation {
         ring_id: commitment_a.statement.ring_id.clone(),
