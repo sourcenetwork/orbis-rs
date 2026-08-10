@@ -1,5 +1,4 @@
 use crate::app_state::AppState;
-use crate::constants::DKG_ATTEMPT_TIMEOUT;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::AbandonedPssSession;
@@ -125,8 +124,6 @@ impl PssOfflineObservationSeed {
     }
 }
 
-const MAX_OFFLINE_CANDIDATE_CLAIMS: usize = 4096;
-
 fn claim_new_offline_candidates<D>(app_state: &AppState<D>, seed: &mut PssOfflineObservationSeed)
 where
     D: Dkg<
@@ -139,12 +136,8 @@ where
         + Sync
         + 'static,
 {
-    let now = tokio::time::Instant::now();
-    let mut claims = app_state
-        .dkg_offline_candidate_dedup
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    claims.retain(|_, recorded_at| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+    app_state.dkg_session_state.prune_offline_candidate_claims();
+    let ceremony_id = seed.ceremony_id;
     seed.accused.retain(|participant| {
         let subject = seed
             .subject_overrides
@@ -157,22 +150,9 @@ where
                     .map(str::to_owned)
             });
         subject.is_some_and(|subject| {
-            let key = (seed.ceremony_id, subject);
-            if let Some(recorded_at) = claims.get_mut(&key) {
-                *recorded_at = now;
-                return false;
-            }
-            if claims.len() >= MAX_OFFLINE_CANDIDATE_CLAIMS {
-                if let Some(oldest) = claims
-                    .iter()
-                    .min_by_key(|(_, recorded_at)| **recorded_at)
-                    .map(|(key, _)| key.clone())
-                {
-                    claims.remove(&oldest);
-                }
-            }
-            claims.insert(key, now);
-            true
+            app_state
+                .dkg_session_state
+                .claim_offline_candidate(ceremony_id, subject)
         })
     });
     seed.route_overrides

@@ -526,19 +526,12 @@ async fn run_topology_barrier_offline_report_case(
     );
 
     {
-        let candidates = leader_state
-            .dkg_offline_candidate_dedup
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let ceremony_subjects: Vec<_> = candidates
-            .keys()
-            .filter_map(|(candidate_ceremony, subject)| {
-                (candidate_ceremony.0 == ceremony_id).then_some(subject.clone())
-            })
-            .collect();
+        let ceremony_subjects = leader_state
+            .dkg_session_state
+            .offline_candidate_subjects_for_ceremony(ceremony_id);
         assert_eq!(
             ceremony_subjects,
-            [victim_node_key.clone()],
+            std::slice::from_ref(&victim_node_key),
             "the topology barrier must retain exactly its silent participant"
         );
     }

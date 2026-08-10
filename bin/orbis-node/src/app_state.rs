@@ -1,6 +1,6 @@
 use crate::dkg::v0::messages::{ControlSignature, SessionKind};
 use crate::dkg::v0::session_state::SessionStateManager;
-use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyConfig, CeremonyId, MessageId};
+use crate::dkg::v0::transport::{AttemptId, CeremonyConfig, CeremonyId, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -317,23 +317,6 @@ where
     /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
     /// including ceremonies for different rings.
     pub dkg_private_exchange_permits: Arc<tokio::sync::Semaphore>,
-    /// Ceremony-keyed leader singleflight locks. A node manages at most the
-    /// bounded local-ring limit, so retaining one small lock per seen ceremony
-    /// avoids duplicate-attempt races without serializing unrelated rings.
-    pub dkg_ceremony_start_locks: Arc<Mutex<HashMap<u128, Arc<Mutex<()>>>>>,
-    /// Recently completed public-result commits. Refresh result application
-    /// removes the ceremony state, so this bounded, short-lived receipt cache
-    /// lets an authenticated leader safely retry after an ACK is lost.
-    pub dkg_public_commit_receipts:
-        Arc<Mutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>>,
-    /// Prepared PSS attempts retained briefly for authenticated offline relay
-    /// validation after abort/cleanup races with the detached reporting task.
-    pub(crate) dkg_offline_relay_receipts: Arc<Mutex<HashMap<AttemptKey, DkgOfflineRelayReceipt>>>,
-    /// Ceremony/subject claims made at terminal transport boundaries. This
-    /// suppresses repeated work from later boundaries before a detached report
-    /// task is spawned; SourceHub session deduplication remains authoritative.
-    pub(crate) dkg_offline_candidate_dedup:
-        Arc<std::sync::Mutex<HashMap<(CeremonyId, String), Instant>>>,
     /// The leader's record of each follower's first signed control-plane
     /// acknowledgement (Prepared/Activated/Begun) per (ceremony, attempt,
     /// message kind), so a later conflicting signed answer to the identical
@@ -379,10 +362,6 @@ where
             dkg_private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
                 DKG_PRIVATE_EXCHANGE_CONCURRENCY,
             )),
-            dkg_ceremony_start_locks: Arc::new(Mutex::new(HashMap::new())),
-            dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
-            dkg_offline_relay_receipts: Arc::new(Mutex::new(HashMap::new())),
-            dkg_offline_candidate_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
             dkg_control_ack_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }

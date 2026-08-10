@@ -89,8 +89,6 @@ use crypto::SignImpl;
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 /// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
 const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
-const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
-const MAX_OFFLINE_RELAY_RECEIPTS: usize = 4096;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const PRIVATE_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
@@ -1768,8 +1766,9 @@ async fn lock_ceremony_start<D>(
 where
     D: CoordinatorDkg,
 {
+    let locks = state.dkg_session_state.ceremony_start_locks();
     let lock = {
-        let mut locks = state.dkg_ceremony_start_locks.lock().await;
+        let mut locks = locks.lock().await;
         locks
             .entry(ceremony_id.0)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -1780,7 +1779,7 @@ where
     CeremonyStartGuard {
         ceremony_id: ceremony_id.0,
         lock: weak_lock,
-        locks: state.dkg_ceremony_start_locks.clone(),
+        locks,
         guard: Some(guard),
     }
 }
@@ -2440,24 +2439,21 @@ where
             message_id,
         } => {
             let receipt_key = (ceremony_id, attempt_id, message_id);
+            if let Some(leader_peer) = state
+                .dkg_session_state
+                .public_commit_receipt(receipt_key)
+                .await
             {
-                let now = Instant::now();
-                let mut receipts = state.dkg_public_commit_receipts.lock().await;
-                receipts.retain(|_, (_, recorded_at)| {
-                    now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT
-                });
-                if let Some((leader_peer, _)) = receipts.get(&receipt_key) {
-                    if leader_peer.as_slice() != sender.as_bytes() {
-                        return Err(DkgError::Unauthorized(
-                            "refresh-result retry did not come from its original leader".into(),
-                        ));
-                    }
-                    return Ok(DkgControlMessage::PublicContributionAck {
-                        ceremony_id,
-                        attempt_id,
-                        message_id,
-                    });
+                if leader_peer.as_slice() != sender.as_bytes() {
+                    return Err(DkgError::Unauthorized(
+                        "refresh-result retry did not come from its original leader".into(),
+                    ));
                 }
+                return Ok(DkgControlMessage::PublicContributionAck {
+                    ceremony_id,
+                    attempt_id,
+                    message_id,
+                });
             }
 
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
@@ -2532,18 +2528,10 @@ where
                 return Err(error);
             }
 
-            let now = Instant::now();
-            let mut receipts = state.dkg_public_commit_receipts.lock().await;
-            if receipts.len() >= MAX_PUBLIC_COMMIT_RECEIPTS {
-                if let Some(oldest) = receipts
-                    .iter()
-                    .min_by_key(|(_, (_, recorded_at))| *recorded_at)
-                    .map(|(key, _)| *key)
-                {
-                    receipts.remove(&oldest);
-                }
-            }
-            receipts.insert(receipt_key, (sender.as_bytes().to_vec(), now));
+            state
+                .dkg_session_state
+                .record_public_commit_receipt(receipt_key, sender.as_bytes().to_vec())
+                .await;
             crate::metrics::record_dkg_transport_event("public", "result_committed");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id,
@@ -3035,18 +3023,15 @@ where
         } => {
             let mut relay_rejection = OfflineRelayRejectionGuard::new(stage);
             let attempt = AttemptKey::new(ceremony_id, attempt_id);
-            let receipt = {
-                let now = Instant::now();
-                let mut receipts = state.dkg_offline_relay_receipts.lock().await;
-                receipts.retain(|_, receipt| {
-                    now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT
-                });
-                receipts.get(&attempt).cloned().ok_or_else(|| {
+            let receipt = state
+                .dkg_session_state
+                .offline_relay_receipt(attempt)
+                .await
+                .ok_or_else(|| {
                     DkgError::Unauthorized(
                         "offline-candidate relay targets an unknown or expired attempt".into(),
                     )
-                })?
-            };
+                })?;
             let kind = receipt.kind;
             let ring_id = receipt.ring_id;
             let protocol_version = receipt.protocol_version;
@@ -3075,13 +3060,13 @@ where
                     "offline-candidate idempotency key mismatch".into(),
                 ));
             }
-            let claimed = {
-                let mut receipts = state.dkg_offline_relay_receipts.lock().await;
-                let receipt = receipts.get_mut(&attempt).ok_or_else(|| {
+            let claimed = state
+                .dkg_session_state
+                .claim_offline_relay_idempotency(attempt, idempotency_key)
+                .await
+                .ok_or_else(|| {
                     DkgError::Unauthorized("offline-candidate relay receipt expired".into())
                 })?;
-                receipt.processed.insert(idempotency_key)
-            };
             if !claimed {
                 relay_rejection.accept();
                 return Ok(DkgControlMessage::OfflineCandidatesAccepted {
@@ -5195,34 +5180,21 @@ where
     }
     if matches!(outcome, TransportConfigureOutcome::Configured) {
         if !matches!(prepare.kind, SessionKind::Fresh) {
-            let now = Instant::now();
-            let mut receipts = state.dkg_offline_relay_receipts.lock().await;
-            receipts.retain(|attempt, receipt| {
-                now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT
-                    && (attempt.ceremony_id != prepare.ceremony_id
-                        || attempt.attempt_id == prepare.attempt_id)
-            });
-            if receipts.len() >= MAX_OFFLINE_RELAY_RECEIPTS {
-                if let Some(oldest) = receipts
-                    .iter()
-                    .min_by_key(|(_, receipt)| receipt.recorded_at)
-                    .map(|(attempt, _)| *attempt)
-                {
-                    receipts.remove(&oldest);
-                }
-            }
-            receipts.insert(
-                AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
-                DkgOfflineRelayReceipt {
-                    kind: prepare.kind.clone(),
-                    ring_id: prepare.ring_id.clone(),
-                    protocol_version: routes.version,
-                    committees: prepare.committees.clone(),
-                    leader_node_key: prepare.leader_node_key.clone(),
-                    recorded_at: now,
-                    processed: Default::default(),
-                },
-            );
+            state
+                .dkg_session_state
+                .record_offline_relay_receipt(
+                    AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+                    DkgOfflineRelayReceipt {
+                        kind: prepare.kind.clone(),
+                        ring_id: prepare.ring_id.clone(),
+                        protocol_version: routes.version,
+                        committees: prepare.committees.clone(),
+                        leader_node_key: prepare.leader_node_key.clone(),
+                        recorded_at: tokio::time::Instant::now(),
+                        processed: Default::default(),
+                    },
+                )
+                .await;
         }
         let task = tokio::spawn(topic_listener(
             state.clone(),
@@ -11455,7 +11427,8 @@ mod stability_tests {
         let ceremony = CeremonyId(91);
         let first = lock_ceremony_start(&state, ceremony).await;
         assert!(state
-            .dkg_ceremony_start_locks
+            .dkg_session_state
+            .ceremony_start_locks()
             .lock()
             .await
             .contains_key(&ceremony.0));
@@ -11466,7 +11439,8 @@ mod stability_tests {
         timeout(Duration::from_secs(1), async {
             loop {
                 let references = {
-                    let locks = state.dkg_ceremony_start_locks.lock().await;
+                    let locks = state.dkg_session_state.ceremony_start_locks();
+                    let locks = locks.lock().await;
                     Arc::strong_count(locks.get(&ceremony.0).expect("lock entry must exist"))
                 };
                 if references >= 3 {
@@ -11481,7 +11455,8 @@ mod stability_tests {
         drop(first);
         let second = waiter.await.expect("waiter task should complete");
         assert!(state
-            .dkg_ceremony_start_locks
+            .dkg_session_state
+            .ceremony_start_locks()
             .lock()
             .await
             .contains_key(&ceremony.0));
@@ -11490,7 +11465,8 @@ mod stability_tests {
         timeout(Duration::from_secs(1), async {
             loop {
                 if !state
-                    .dkg_ceremony_start_locks
+                    .dkg_session_state
+                    .ceremony_start_locks()
                     .lock()
                     .await
                     .contains_key(&ceremony.0)
@@ -12027,7 +12003,7 @@ mod stability_tests {
             .expect("active repair attempt");
         assert_eq!(retained.keys().copied().collect::<Vec<_>>(), vec![origin]);
         assert_eq!(
-            state.dkg_offline_candidate_dedup.lock().unwrap().len(),
+            state.dkg_session_state.offline_candidate_claim_count(),
             1,
             "leader fallback must retain its terminal liveness observation"
         );
@@ -12076,7 +12052,7 @@ mod stability_tests {
             [("repair-route-1".to_string(), "get_public_phase")]
         );
         assert!(
-            state.dkg_offline_candidate_dedup.lock().unwrap().is_empty(),
+            state.dkg_session_state.offline_candidate_claim_count() == 0,
             "a reachable protocol rejection must not create an offline candidate"
         );
     }

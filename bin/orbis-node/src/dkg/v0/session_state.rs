@@ -7,6 +7,7 @@
 //! message deduplication) and the cryptographic state (the DKG node itself) into
 //! a single unified structure.
 
+use crate::app_state::DkgOfflineRelayReceipt;
 use crate::constants::{
     DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, MAX_DKG_SESSIONS,
     SESSION_EXPIRATION_CHECK_INTERVAL,
@@ -29,10 +30,15 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use zeroize::Zeroize;
+
+const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
+const MAX_OFFLINE_RELAY_RECEIPTS: usize = 4096;
+const MAX_OFFLINE_CANDIDATE_CLAIMS: usize = 4096;
 
 /// DKG Protocol Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -795,6 +801,25 @@ pub struct SessionStateManager<D: Dkg> {
     /// offline-report attribution. Taken once via [`SessionStateManager::take_stall_report_receiver`]
     /// at node startup; the sender lives inside the expiration worker.
     stall_report_rx: StdMutex<Option<mpsc::Receiver<AbandonedPssSession>>>,
+    /// Ceremony-keyed leader singleflight locks. A node manages at most the
+    /// bounded local-ring limit, so retaining one small lock per seen ceremony
+    /// avoids duplicate-attempt races without serializing unrelated rings. Kept
+    /// as its own `Arc` (rather than folded into a plain field) because
+    /// `CeremonyStartGuard` needs to hold an owned clone independent of this
+    /// manager for its detached `Drop` cleanup task.
+    ceremony_start_locks: Arc<TokioMutex<HashMap<u128, Arc<TokioMutex<()>>>>>,
+    /// Recently completed public-result commits. Refresh result application
+    /// removes the ceremony state, so this bounded, short-lived receipt cache
+    /// lets an authenticated leader safely retry after an ACK is lost.
+    public_commit_receipts:
+        TokioMutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>,
+    /// Prepared PSS attempts retained briefly for authenticated offline relay
+    /// validation after abort/cleanup races with the detached reporting task.
+    offline_relay_receipts: TokioMutex<HashMap<AttemptKey, DkgOfflineRelayReceipt>>,
+    /// Ceremony/subject claims made at terminal transport boundaries. This
+    /// suppresses repeated work from later boundaries before a detached report
+    /// task is spawned; SourceHub session deduplication remains authoritative.
+    offline_candidate_dedup: StdMutex<HashMap<(CeremonyId, String), Instant>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -834,6 +859,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             shutdown_tx,
             background_tasks: StdMutex::new(background_tasks),
             stall_report_rx: StdMutex::new(Some(stall_report_rx)),
+            ceremony_start_locks: Arc::new(TokioMutex::new(HashMap::new())),
+            public_commit_receipts: TokioMutex::new(HashMap::new()),
+            offline_relay_receipts: TokioMutex::new(HashMap::new()),
+            offline_candidate_dedup: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -1190,6 +1219,167 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         {
             claims.remove(ring_pk_hex);
         }
+    }
+
+    /// Clone of the ceremony-start singleflight lock registry, for
+    /// `CeremonyStartGuard`'s independent `Drop`-time cleanup task.
+    pub(crate) fn ceremony_start_locks(
+        &self,
+    ) -> Arc<TokioMutex<HashMap<u128, Arc<TokioMutex<()>>>>> {
+        self.ceremony_start_locks.clone()
+    }
+
+    /// Look up a retained `CommitRefreshResult` receipt for `key`, pruning
+    /// expired entries first. Returns the recorded leader peer bytes if a
+    /// live receipt exists.
+    pub(crate) async fn public_commit_receipt(
+        &self,
+        key: (CeremonyId, AttemptId, MessageId),
+    ) -> Option<Vec<u8>> {
+        let now = Instant::now();
+        let mut receipts = self.public_commit_receipts.lock().await;
+        receipts
+            .retain(|_, (_, recorded_at)| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+        receipts
+            .get(&key)
+            .map(|(leader_peer, _)| leader_peer.clone())
+    }
+
+    /// Record a completed `CommitRefreshResult` receipt for `key`, evicting the
+    /// oldest entry first if the bounded cache is full.
+    pub(crate) async fn record_public_commit_receipt(
+        &self,
+        key: (CeremonyId, AttemptId, MessageId),
+        leader_peer: Vec<u8>,
+    ) {
+        let now = Instant::now();
+        let mut receipts = self.public_commit_receipts.lock().await;
+        if receipts.len() >= MAX_PUBLIC_COMMIT_RECEIPTS {
+            if let Some(oldest) = receipts
+                .iter()
+                .min_by_key(|(_, (_, recorded_at))| *recorded_at)
+                .map(|(key, _)| *key)
+            {
+                receipts.remove(&oldest);
+            }
+        }
+        receipts.insert(key, (leader_peer, now));
+    }
+
+    /// Look up a retained offline-relay receipt for `attempt`, pruning expired
+    /// entries first.
+    pub(crate) async fn offline_relay_receipt(
+        &self,
+        attempt: AttemptKey,
+    ) -> Option<DkgOfflineRelayReceipt> {
+        let now = tokio::time::Instant::now();
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        receipts
+            .retain(|_, receipt| now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+        receipts.get(&attempt).cloned()
+    }
+
+    /// Claim `idempotency_key` against the retained offline-relay receipt for
+    /// `attempt`. Returns `None` if the receipt has already expired or was
+    /// never recorded, `Some(true)` on a new claim, `Some(false)` if it was
+    /// already claimed.
+    pub(crate) async fn claim_offline_relay_idempotency(
+        &self,
+        attempt: AttemptKey,
+        idempotency_key: MessageId,
+    ) -> Option<bool> {
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        let receipt = receipts.get_mut(&attempt)?;
+        Some(receipt.processed.insert(idempotency_key))
+    }
+
+    /// Record a fresh offline-relay receipt for `attempt`, pruning expired
+    /// entries and other attempts of the same ceremony first, then evicting
+    /// the oldest entry if the bounded cache is still full.
+    pub(crate) async fn record_offline_relay_receipt(
+        &self,
+        attempt: AttemptKey,
+        receipt: DkgOfflineRelayReceipt,
+    ) {
+        let now = tokio::time::Instant::now();
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        receipts.retain(|existing, r| {
+            now.duration_since(r.recorded_at) <= DKG_ATTEMPT_TIMEOUT
+                && (existing.ceremony_id != attempt.ceremony_id
+                    || existing.attempt_id == attempt.attempt_id)
+        });
+        if receipts.len() >= MAX_OFFLINE_RELAY_RECEIPTS {
+            if let Some(oldest) = receipts
+                .iter()
+                .min_by_key(|(_, r)| r.recorded_at)
+                .map(|(attempt, _)| *attempt)
+            {
+                receipts.remove(&oldest);
+            }
+        }
+        receipts.insert(attempt, receipt);
+    }
+
+    /// Prune expired terminal-boundary offline-candidate claims. Called once
+    /// before a batch of [`SessionStateManager::claim_offline_candidate`] calls
+    /// rather than on every call, since the caller iterates a whole candidate set
+    /// under one logical dedup pass.
+    pub(crate) fn prune_offline_candidate_claims(&self) {
+        let now = Instant::now();
+        let mut claims = self
+            .offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        claims.retain(|_, recorded_at| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+    }
+
+    /// Claim `(ceremony_id, subject)` as an offline-candidate observation.
+    /// Returns `true` for a new claim (caller should keep the candidate) or
+    /// `false` if it was already claimed recently, refreshing its timestamp
+    /// (caller should drop it). Evicts the oldest claim first if the bounded
+    /// cache is full.
+    pub(crate) fn claim_offline_candidate(&self, ceremony_id: CeremonyId, subject: String) -> bool {
+        let now = Instant::now();
+        let mut claims = self
+            .offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (ceremony_id, subject);
+        if let Some(recorded_at) = claims.get_mut(&key) {
+            *recorded_at = now;
+            return false;
+        }
+        if claims.len() >= MAX_OFFLINE_CANDIDATE_CLAIMS {
+            if let Some(oldest) = claims
+                .iter()
+                .min_by_key(|(_, recorded_at)| **recorded_at)
+                .map(|(key, _)| key.clone())
+            {
+                claims.remove(&oldest);
+            }
+        }
+        claims.insert(key, now);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offline_candidate_claim_count(&self) -> usize {
+        self.offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offline_candidate_subjects_for_ceremony(&self, ceremony_id: u128) -> Vec<String> {
+        self.offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keys()
+            .filter_map(|(candidate_ceremony, subject)| {
+                (candidate_ceremony.0 == ceremony_id).then_some(subject.clone())
+            })
+            .collect()
     }
 
     /// Stop and join the manager's background cleanup workers.
