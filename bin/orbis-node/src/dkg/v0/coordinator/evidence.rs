@@ -477,17 +477,21 @@ where
         }
         let app_state = coord.app_state.clone();
         let routes = coord.routes;
-        spawn_evidence_relay(attempt.session_id(), "dkg_public_origin_fault", async move {
-            let coordinator = DkgCoordinator::with_routes(app_state, routes);
-            relay_public_origin_fault_evidence(
-                &coordinator,
-                attempt,
-                fault_kind,
-                contribution_a,
-                contribution_b,
-            )
-            .await
-        });
+        spawn_evidence_relay(
+            attempt.session_id(),
+            "dkg_public_origin_fault",
+            async move {
+                let coordinator = DkgCoordinator::with_routes(app_state, routes);
+                relay_public_origin_fault_evidence(
+                    &coordinator,
+                    attempt,
+                    fault_kind,
+                    contribution_a,
+                    contribution_b,
+                )
+                .await
+            },
+        );
         Ok(())
     }
 }
@@ -532,18 +536,22 @@ where
         }
         let app_state = coord.app_state.clone();
         let routes = coord.routes;
-        spawn_evidence_relay(attempt.session_id(), "dkg_leader_equivocation", async move {
-            let coordinator = DkgCoordinator::with_routes(app_state, routes);
-            crate::dkg::v0::network::relay_leader_equivocation_evidence(
-                &coordinator,
-                attempt,
-                delivery_id_a,
-                delivery_a,
-                delivery_id_b,
-                delivery_b,
-            )
-            .await
-        });
+        spawn_evidence_relay(
+            attempt.session_id(),
+            "dkg_leader_equivocation",
+            async move {
+                let coordinator = DkgCoordinator::with_routes(app_state, routes);
+                crate::dkg::v0::network::relay_leader_equivocation_evidence(
+                    &coordinator,
+                    attempt,
+                    delivery_id_a,
+                    delivery_a,
+                    delivery_id_b,
+                    delivery_b,
+                )
+                .await
+            },
+        );
         Ok(())
     }
 }
@@ -590,19 +598,23 @@ where
         }
         let app_state = coord.app_state.clone();
         let routes = coord.routes;
-        spawn_evidence_relay(attempt.session_id(), "dkg_control_message_fault", async move {
-            let coordinator = DkgCoordinator::with_routes(app_state, routes);
-            crate::dkg::v0::network::relay_control_message_fault_evidence(
-                &coordinator,
-                attempt,
-                accused_node_key,
-                message_kind,
-                fault_kind,
-                artifact_a,
-                artifact_b,
-            )
-            .await
-        });
+        spawn_evidence_relay(
+            attempt.session_id(),
+            "dkg_control_message_fault",
+            async move {
+                let coordinator = DkgCoordinator::with_routes(app_state, routes);
+                crate::dkg::v0::network::relay_control_message_fault_evidence(
+                    &coordinator,
+                    attempt,
+                    accused_node_key,
+                    message_kind,
+                    fault_kind,
+                    artifact_a,
+                    artifact_b,
+                )
+                .await
+            },
+        );
         Ok(())
     }
 }
