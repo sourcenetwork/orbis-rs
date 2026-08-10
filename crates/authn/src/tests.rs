@@ -1,6 +1,7 @@
 use super::*;
 use crate::jwt_builder::JwtSigner;
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
 const TEST_MAX_JWT_BYTES: usize = 16 * 1024; // mirrors the node constant
@@ -41,6 +42,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -69,6 +71,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri.clone(),
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -94,6 +97,7 @@ fn test_resolve_jwt_did_expired() {
     let current_time = 3000; // After expiration
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -121,6 +125,7 @@ fn test_resolve_jwt_did_future_issued_time() {
     let current_time = 500; // Before issued_time
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -148,6 +153,7 @@ fn test_resolve_jwt_did_accepts_future_issued_time_with_clock_skew() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: current_time + TEST_CLOCK_SKEW_LEEWAY,
         expiration_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1000,
         not_before: None,
@@ -174,6 +180,7 @@ fn test_resolve_jwt_did_rejects_future_issued_time_beyond_clock_skew() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1,
         expiration_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1000,
         not_before: None,
@@ -208,6 +215,7 @@ fn test_token_lifetime_at_limit() {
     // Exactly MAX_TOKEN_LIFETIME_SECS (86400) — should be accepted
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time,
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME,
@@ -240,6 +248,7 @@ fn test_token_lifetime_one_second_over_limit() {
     // One second over MAX_TOKEN_LIFETIME_SECS — should be rejected
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time,
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME + 1,
@@ -274,6 +283,7 @@ fn test_token_lifetime_far_future() {
     // Expiration decades away — should be rejected
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time,
         not_before: None,
         expiration_time: issued_time + (365 * 24 * 60 * 60 * 10), // 10 years
@@ -305,6 +315,7 @@ fn test_resolve_jwt_did_invalid_signature() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -332,6 +343,7 @@ fn test_nbf_in_future_rejected() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: Some(1500),
@@ -359,6 +371,7 @@ fn test_nbf_in_past_accepted() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 2000,
         not_before: Some(950),
@@ -380,6 +393,7 @@ fn test_nbf_within_clock_skew_accepted() {
     let current_time = 1000;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 900,
         expiration_time: 3000,
         not_before: Some(current_time + TEST_CLOCK_SKEW_LEEWAY),
@@ -407,6 +421,7 @@ fn test_expiration_within_clock_skew_accepted() {
     let current_time = expiration_time + TEST_CLOCK_SKEW_LEEWAY - 1;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 1000,
         expiration_time,
         not_before: None,
@@ -434,6 +449,7 @@ fn test_expiration_at_clock_skew_boundary_rejected() {
     let current_time = expiration_time + TEST_CLOCK_SKEW_LEEWAY;
     let token = BearerToken {
         issuer_id: did_uri,
+        subject_id: None,
         issued_time: 1000,
         expiration_time,
         not_before: None,
@@ -501,4 +517,84 @@ fn test_token_at_max_size_reaches_normal_validation() {
         "Normal-sized JWT should not be rejected by the size check, got: {:?}",
         result
     );
+}
+
+#[test]
+fn direct_token_uses_issuer_as_actor() {
+    let token = BearerToken {
+        issuer_id: "did:key:direct".to_string(),
+        subject_id: None,
+        issued_time: 1,
+        expiration_time: 2,
+        not_before: None,
+        claims: (),
+    };
+
+    assert_eq!(
+        resolve_actor_id(&token, &HashSet::new()).unwrap(),
+        token.issuer_id
+    );
+}
+
+#[test]
+fn trusted_relay_may_delegate_actor() {
+    let relay = JwtSigner::new();
+    let jwt = relay
+        .sign_for_actor("did:opk:user".to_string(), (), Duration::from_secs(60))
+        .unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token: BearerToken =
+        resolve_jwt_did(&jwt, now, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0).unwrap();
+
+    let trusted = HashSet::from([relay.did_uri]);
+    assert_eq!(resolve_actor_id(&token, &trusted).unwrap(), "did:opk:user");
+}
+
+#[test]
+fn untrusted_issuer_cannot_delegate_actor() {
+    let token = BearerToken {
+        issuer_id: "did:key:untrusted".to_string(),
+        subject_id: Some("did:opk:user".to_string()),
+        issued_time: 1,
+        expiration_time: 2,
+        not_before: None,
+        claims: (),
+    };
+
+    assert!(matches!(
+        resolve_actor_id(&token, &HashSet::new()),
+        Err(AuthNError::Unauthorized(message)) if message.contains("not allowed")
+    ));
+}
+
+#[test]
+fn trusted_relay_cannot_delegate_invalid_actor() {
+    let relay = "did:key:relay".to_string();
+    let trusted = HashSet::from([relay.clone()]);
+
+    for actor in [
+        "did:",
+        "did::user",
+        "did:OPK:user",
+        "did:opk:",
+        "did:opk:user name",
+        "did:opk:user\0name",
+    ] {
+        let token = BearerToken {
+            issuer_id: relay.clone(),
+            subject_id: Some(actor.to_string()),
+            issued_time: 1,
+            expiration_time: 2,
+            not_before: None,
+            claims: (),
+        };
+
+        assert!(matches!(
+            resolve_actor_id(&token, &trusted),
+            Err(AuthNError::Unauthorized(message)) if message.contains("valid DID")
+        ));
+    }
 }

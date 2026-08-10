@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_actor};
 use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
@@ -99,6 +99,8 @@ where
         let (token_string, token) =
             extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
                 .map_err(SignError::Unauthorized)?;
+        let actor_id = request_actor(&token, &self.state.trusted_auth_relay_dids)
+            .map_err(SignError::Unauthorized)?;
 
         let req = request.into_inner();
 
@@ -127,7 +129,7 @@ where
             &*self.state.authz,
             &key_derivation,
             &req.derivation_id,
-            &token.issuer_id,
+            &actor_id,
             valid_window.clone(),
             relay_acp_timestamp,
         )
@@ -139,6 +141,7 @@ where
             ring_pk = %ring_payload.ring_pk,
             peer_node_keys = ?ring_payload.peer_node_keys,
             issuer = %token.issuer_id,
+            actor = %actor_id,
             "Authenticated StartSign request"
         );
 
@@ -190,7 +193,7 @@ where
                 request_id: request_id.clone(),
                 origin_protocol: "sign".to_string(),
                 relayer_node_key: self.state.node_key.clone(),
-                actor_id: token.issuer_id.clone(),
+                actor_id: actor_id.clone(),
                 object_id: req.derivation_id.clone(),
                 user_signed_at: token.issued_time,
                 acp_timestamp: relay_acp_timestamp,

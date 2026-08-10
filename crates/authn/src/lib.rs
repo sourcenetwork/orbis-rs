@@ -6,6 +6,7 @@ use did_key::{resolve, KeyMaterial};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt::Debug;
 
 // Re-export commonly used items from jwt_builder
@@ -23,6 +24,9 @@ pub struct BearerToken<T = ()> {
     /// DID URI of the issuer (e.g., did:key:z6Mk...)
     #[serde(rename = "iss")]
     pub issuer_id: String,
+    /// Actor delegated by a configured trusted relay.
+    #[serde(rename = "sub", skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<String>,
     /// Issued at timestamp (Unix epoch seconds)
     #[serde(rename = "iat")]
     pub issued_time: u64,
@@ -35,6 +39,55 @@ pub struct BearerToken<T = ()> {
     /// Custom claims specific to the endpoint
     #[serde(flatten)]
     pub claims: T,
+}
+
+/// Returns the actor represented by a verified token.
+pub fn resolve_actor_id<'a, T>(
+    token: &'a BearerToken<T>,
+    trusted_relay_issuers: &HashSet<String>,
+) -> Result<&'a str> {
+    let Some(subject_id) = token.subject_id.as_deref() else {
+        return Ok(&token.issuer_id);
+    };
+    if !trusted_relay_issuers.contains(&token.issuer_id) {
+        return Err(AuthNError::Unauthorized(
+            "token issuer is not allowed to delegate an actor".to_string(),
+        ));
+    }
+    let mut parts = subject_id.splitn(3, ':');
+    let valid_did = parts.next() == Some("did")
+        && parts.next().is_some_and(|method| {
+            !method.is_empty()
+                && method
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+        && parts
+            .next()
+            .is_some_and(|identifier| !identifier.is_empty());
+    if subject_id.len() > 255
+        || !valid_did
+        || subject_id
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err(AuthNError::Unauthorized(
+            "delegated actor must be a valid DID".to_string(),
+        ));
+    }
+    Ok(subject_id)
+}
+
+/// Validates a relay issuer DID accepted by the JWT verifier.
+pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
+    let key = resolve(issuer_id)
+        .map_err(|_| AuthNError::DidError("unable to resolve relay issuer DID".to_string()))?;
+    if key.public_key_bytes().len() != 32 {
+        return Err(AuthNError::DidError(
+            "relay issuer must contain a 32-byte Ed25519 public key".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Claims for PRE (Proxy Re-Encryption) endpoints

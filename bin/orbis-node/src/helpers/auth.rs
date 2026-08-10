@@ -1,6 +1,7 @@
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use authn::{extract_bearer_token, resolve_jwt_did, BearerToken};
+use authn::{extract_bearer_token, resolve_actor_id, resolve_jwt_did, BearerToken};
 use serde::de::DeserializeOwned;
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,4 +40,13 @@ where
     )
     .map_err(|e| format!("JWT validation failed: {}", e))?;
     Ok((token_str, token))
+}
+
+pub fn request_actor<C>(
+    token: &BearerToken<C>,
+    trusted_relay_issuers: &HashSet<String>,
+) -> Result<String, String> {
+    resolve_actor_id(token, trusted_relay_issuers)
+        .map(str::to_string)
+        .map_err(|error| error.to_string())
 }

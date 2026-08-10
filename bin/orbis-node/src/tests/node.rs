@@ -105,6 +105,7 @@ async fn make_test_node_config(
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
             node_whitelisted_ring_ids: vec![],
+            trusted_auth_relay_dids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
         },
@@ -166,6 +167,7 @@ fn node_info_test_args(
         node_peer_id,
         node_whitelisted_policy_ids: policy_ids.into_iter().map(str::to_string).collect(),
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
+        trusted_auth_relay_dids: vec![],
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
     }
@@ -672,6 +674,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
             node_whitelisted_ring_ids: vec![],
+            trusted_auth_relay_dids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
         },

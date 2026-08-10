@@ -93,6 +93,12 @@ where
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        if token.subject_id.is_some() {
+            return Err(StoreSecretError::Unauthorized(
+                "delegated actors must store documents through their SourceHub signer".to_string(),
+            )
+            .into());
+        }
 
         let req = request.into_inner();
 
@@ -168,7 +174,7 @@ where
         tracing::info!(
             object_id = %object_id,
             ring_id = %req.ring_id,
-            owner = %token.issuer_id,
+            requester = %token.issuer_id,
             "Successfully stored encrypted secret"
         );
 

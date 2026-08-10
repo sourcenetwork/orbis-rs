@@ -873,6 +873,7 @@ mod tests {
     fn dkg_token(_policy_id: Option<&str>) -> BearerToken<DkgClaims> {
         BearerToken {
             issuer_id: "issuer".to_string(),
+            subject_id: None,
             issued_time: 0,
             expiration_time: 1,
             not_before: None,

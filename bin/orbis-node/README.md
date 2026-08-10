@@ -49,6 +49,7 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--loki-url`** — optional Loki log shipping.
 - **`--runtime-base-path`** — base directory for runtime files. The database is stored as `<PATH>/dbs/orbis.<backend>` (`orbis.redb` with the default backend), and the node public key is written to `<PATH>/public_key.txt`.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
+- **`--trusted-auth-relay-did`** — repeatable `did:key` allowlist for services that submit requests for another actor.
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
@@ -101,6 +102,25 @@ Operational rules:
   ring states will not co-sign), but it does not protect a node whose own RPC
   view is forged. Detection is not prevention — the trusted-endpoint
   requirement above is the actual control.
+
+## Trusted authentication relays
+
+Direct client JWTs continue to use their issuer DID as the actor. A configured
+relay may instead sign a JWT with its `did:key` as `iss` and the user DID as
+`sub`. PRE and signing authorize the delegated user, while every committee node
+independently verifies the relay signature and allowlist entry.
+
+Configure the same relay DID on every committee member:
+
+```bash
+orbis-node --trusted-auth-relay-did did:key:z6Mk... <other options>
+```
+
+A trusted relay can assert any actor DID, so its signing key is a privileged
+credential. Keep the allowlist explicit, protect the private key, and remove a
+retired relay from every node. `StoreSecret` rejects delegated JWTs because its
+SourceHub transaction is signed by the Orbis node; delegated callers must store
+the document through a SourceHub signer that preserves their actor identity.
 
 ## In-repo docs
 

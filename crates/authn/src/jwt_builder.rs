@@ -143,12 +143,37 @@ impl JwtSigner {
             .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
         let token = BearerToken {
             issuer_id: self.did_uri.clone(),
+            subject_id: None,
             issued_time,
             expiration_time,
             not_before: None,
             claims,
         };
         self.sign_bearer_token(&token)
+    }
+
+    /// Create a signed JWT that delegates the request to an actor DID.
+    pub fn sign_for_actor<T>(
+        &self,
+        actor_id: String,
+        claims: T,
+        duration: Duration,
+    ) -> Result<String>
+    where
+        T: Serialize + DeserializeOwned,
+    {
+        let issued_time = Self::current_unix_time()?;
+        let expiration_time = issued_time
+            .checked_add(duration.as_secs())
+            .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
+        self.sign_bearer_token(&BearerToken {
+            issuer_id: self.did_uri.clone(),
+            subject_id: Some(actor_id),
+            issued_time,
+            expiration_time,
+            not_before: None,
+            claims,
+        })
     }
 
     /// Create a JWT with DKG claims.
