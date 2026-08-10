@@ -24,7 +24,7 @@ use crypto::r#trait::{
 };
 use crypto::{
     CryptoDeserialize, PolynomialCommitmentImpl as PolynomialCommitment,
-    GROUP_POINT_SIZE as G1_COMPRESSED_SIZE, SCALAR_SIZE as FR_COMPRESSED_SIZE,
+    GROUP_POINT_SIZE as G1_COMPRESSED_SIZE,
 };
 use network::PeerId;
 use std::collections::HashMap;

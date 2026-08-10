@@ -61,19 +61,13 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     let session_id = attempt.session_id();
-    if share_value.is_empty() {
-        return Err(DkgError::ShareVerificationFailed(
-            "Share value cannot be empty".to_string(),
-        ));
-    }
-
-    if share_value.len() != FR_COMPRESSED_SIZE {
-        return Err(DkgError::ShareVerificationFailed(format!(
-            "Invalid share value length: {} bytes, expected {}",
-            share_value.len(),
-            FR_COMPRESSED_SIZE
-        )));
-    }
+    // Empty or wrong-length share bytes are not rejected here: `<D::ShareValue>::from_bytes`
+    // below already checks length internally and fails gracefully (no panic risk) for
+    // anything but the exact expected size, and a signed-but-wrong-length share is just as
+    // attributable as a right-sized-but-invalid one (`require_dkg_share_verification_failure`
+    // treats any decode failure the same way). Rejecting the length early, before the
+    // evidence-verify-and-report path below, silently dropped that attributable case instead
+    // of reporting it.
 
     // Validate this share is intended for us.
     // For reshare, incoming shares are addressed by new-committee index;
