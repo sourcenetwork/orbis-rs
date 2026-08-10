@@ -138,16 +138,52 @@ The current evidence kinds are:
   evidence kind — the endpoint signature that authenticated it at the
   transport layer is verified and then discarded before the DKG layer ever
   sees it, so there is currently nothing portable to retain for that case.
+- `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
+  fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
+  messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry
+  no reclaimable transport-layer signature — QUIC/TLS authentication proves
+  identity to the two live endpoints, not a portable per-message artifact —
+  so `PrepareSession` and each ack now carry an explicit
+  `ControlSignature` over `(ceremony_id, attempt_id, message_kind, digest)`
+  under the sender's own chain node key. Two fault kinds share the statement
+  (domain `orbis-dkg-control-message-fault-v1`):
+  - `leader_prepare_fault`: one signed `Prepare`, independently provable as
+    invalid because it names a noncanonical leader (or, when self-consistent
+    routes/digests still contradict current SourceHub `NodeInfo`/ring state).
+    Reported before any session is created for it — the noncanonical-leader
+    and route/digest checks in `prepare_participant` all fire earlier than
+    `handle_session_init`. A signature only covers `config_digest`, so before
+    attributing fault the reporter recomputes `config_digest` from the full
+    retained `Prepare` and only reports if it's self-consistent — otherwise a
+    relay could tamper with `leader_node_key`/`committees` post-signature
+    while leaving an innocent signer's original digest intact. Any
+    current-committee recipient can queue this report directly; a pure
+    pending-new reshare receiver that detects it cannot relay it yet (relaying
+    needs the current-committee routing that normally comes from live session
+    state, which by construction doesn't exist for a rejected `Prepare`).
+  - `ack_equivocation`: two differently-signed acks
+    (`Prepared`/`Activated`/`Begun`) from the same follower for the identical
+    (ceremony, attempt, message_kind) request. A single wrong or stale-looking
+    ack is not enough — that can happen honestly on a retry race — so this
+    only fires when the same signer produces two genuinely different signed
+    digests for the provably identical request. Detected leader-side as each
+    response arrives, and reported/relayed the same way as the other DKG
+    evidence kinds. Only the leader-observed direction is covered — a
+    follower-side detector for the leader itself sending conflicting
+    `Activate`/`Begin` messages is not built in this pass.
 
 PRE, Sign, and nested DKG statements are signed by the accused node's
 secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
 that key's compressed public key hex). Public-origin and leader-equivocation
 evidence instead retain the exact transport envelope(s) signed by the accused
-node's registered endpoint identity. The normalized statement carries
-chain/ring binding, the ring-state digest, protocol version, request/session
-id, evidence timestamp, responder node key, origin protocol, and
-protocol-specific material. Missing or invalid evidence signatures reject the
-response or report outright; only signature-valid evidence is attributable.
+node's registered endpoint identity. Control-message-fault evidence is signed
+directly with that same chain node key (not the endpoint identity), since
+direct-QUIC control messages have no transport-layer signature to reclaim. The
+normalized statement carries chain/ring binding, the ring-state digest,
+protocol version, request/session id, evidence timestamp, responder node key,
+origin protocol, and protocol-specific material. Missing or invalid evidence
+signatures reject the response or report outright; only signature-valid
+evidence is attributable.
 
 When a signature-valid response fails the protocol-specific verifier, the
 protocol queues `ReportObservation::InvalidCryptoResponse`. The protocol should
@@ -307,9 +343,10 @@ change:
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
    `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
    `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`,
-   `dkg_public_origin_fault`, or `dkg_leader_equivocation`), checks the
-   expected statement domain/shape, validates origin-protocol policy, and
-   binds the signed evidence to the envelope;
+   `dkg_public_origin_fault`, `dkg_leader_equivocation`, or
+   `dkg_control_message_fault`), checks the expected statement domain/shape,
+   validates origin-protocol policy, and binds the signed evidence to the
+   envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);

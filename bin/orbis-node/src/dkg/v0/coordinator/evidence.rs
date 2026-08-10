@@ -10,22 +10,25 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use crate::app_state::AppState;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::deserialize_wire_commitment;
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 use crate::dkg::v0::network::{
     relay_invalid_commitment_evidence, relay_public_origin_fault_evidence,
 };
 use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
-use crate::dkg::v0::transport::{self, AttemptKey, DkgPublicContribution};
+use crate::dkg::v0::transport::{self, AttemptKey, DkgPublicContribution, PrepareSession};
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::node_key_for_canonical_node_id;
 use crate::reporting::v0::observation::{InvalidCryptoResponseObservation, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgLeaderEquivocationStatement,
+    ring_state_sha256, CommitteeScope, ControlMessageArtifact, DkgCommitmentStatement,
+    DkgControlMessageFaultKind, DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement,
     DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement, DkgShareStatement,
     EndpointSignedContribution, InvalidCryptoResponse, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN,
-    DKG_SHARE_DOMAIN,
+    DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
+    DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
 };
 
 use super::{
@@ -500,6 +503,59 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn queue_or_relay_control_message_fault<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    accused_node_key: String,
+    message_kind: String,
+    fault_kind: DkgControlMessageFaultKind,
+    artifact_a: ControlMessageArtifact,
+    artifact_b: Option<ControlMessageArtifact>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if local_node_is_current_route_member(coord, attempt).await? {
+        queue_control_message_fault_report(
+            coord.app_state.clone(),
+            coord.routes,
+            attempt,
+            accused_node_key,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
+        )
+        .await
+    } else {
+        let origin_protocol = evidence_binding(coord, attempt)
+            .await?
+            .ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "Fresh DKG control-message faults are not reportable".to_string(),
+                )
+            })?
+            .origin_protocol;
+        if origin_protocol != "pss_reshare" {
+            return Err(DkgError::Unauthorized(
+                "local node is not in the report signing committee".to_string(),
+            ));
+        }
+        crate::dkg::v0::network::relay_control_message_fault_evidence(
+            coord,
+            attempt,
+            accused_node_key,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
+        )
+        .await
+    }
+}
+
 pub async fn handle_public_origin_fault_evidence_relay<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -561,6 +617,42 @@ where
         delivery_a,
         delivery_id_b,
         delivery_b,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn handle_control_message_fault_evidence_relay<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    accused_node_key: String,
+    message_kind: String,
+    fault_kind: DkgControlMessageFaultKind,
+    artifact_a: ControlMessageArtifact,
+    artifact_b: Option<ControlMessageArtifact>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    verify_relay_is_current_signer(coord, attempt).await?;
+    let binding = evidence_binding(coord, attempt).await?.ok_or_else(|| {
+        DkgError::Unauthorized("Fresh DKG control-message faults are not reportable".to_string())
+    })?;
+    if binding.origin_protocol != "pss_reshare" {
+        return Err(DkgError::Unauthorized(
+            "control-message fault evidence relay is only valid for Reshare".to_string(),
+        ));
+    }
+    queue_control_message_fault_report(
+        coord.app_state.clone(),
+        coord.routes,
+        attempt,
+        accused_node_key,
+        message_kind,
+        fault_kind,
+        artifact_a,
+        artifact_b,
     )
     .await
 }
@@ -741,6 +833,203 @@ where
     Ok(Some(binding))
 }
 
+/// Resolve report-evidence binding directly from a received `PrepareSession`
+/// rather than from live session state, mirroring `evidence_binding`'s
+/// bulletin-ring read exactly. A noncanonical-leader or route/digest-invalid
+/// `Prepare` is rejected *before* any session is created (deliberately — we
+/// do not want to commit local state for a bogus Prepare), so the usual
+/// session-backed evidence path cannot be used for this one fault kind.
+async fn evidence_binding_from_prepare<D>(
+    app_state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+) -> Result<Option<DkgReportEvidenceBinding>>
+where
+    D: Dkg + Clone + 'static,
+{
+    let (origin_protocol, ring_id, receiver_node_keys) = match &prepare.kind {
+        SessionKind::Fresh => return Ok(None),
+        SessionKind::Refresh { .. } => (
+            "pss_refresh",
+            prepare.ring_id.clone(),
+            prepare.committees.current.node_keys.clone(),
+        ),
+        SessionKind::Reshare {
+            bulletin_post_id,
+            new_peer_node_keys,
+            ..
+        } => (
+            "pss_reshare",
+            if prepare.ring_id.is_empty() {
+                bulletin_post_id.clone()
+            } else {
+                prepare.ring_id.clone()
+            },
+            new_peer_node_keys.clone(),
+        ),
+    };
+    if ring_id.is_empty() {
+        return Err(DkgError::InvalidState(
+            "PSS DKG report evidence requires an authoritative ring ID".to_string(),
+        ));
+    }
+    let ring_post = app_state
+        .bulletin
+        .read(ring_id.clone(), BulletinKind::Ring)
+        .await
+        .map_err(|error| DkgError::Bulletin(error.to_string()))?;
+    let ring = RingPayload::try_from(ring_post)
+        .map_err(|error| DkgError::Deserialization(error.to_string()))?;
+    Ok(Some(DkgReportEvidenceBinding {
+        ring_id,
+        ring_pk: ring.ring_pk.clone(),
+        ring_state_sha256: ring_state_sha256(&ring),
+        chain_id: app_state.bulletin.chain_id(),
+        protocol_version: routes.version,
+        request_id: prepare.ceremony_id.0.to_string(),
+        origin_protocol: origin_protocol.to_string(),
+        current_node_keys: ring.peer_node_keys.clone(),
+        receiver_node_keys,
+    }))
+}
+
+/// Report a `Prepare` that is independently provable as invalid (noncanonical
+/// leader, or routes/digest contradicting SourceHub) before any session is
+/// created for it. Best-effort and queue-only: unlike the other control
+/// evidence kinds, a pure pending-new reshare receiver that detects this
+/// (rather than a current-committee member) cannot relay it in this pass —
+/// relaying requires the current-committee routing that normally comes from
+/// live session state, which by construction does not exist yet here. A
+/// current-committee detector (every recipient for Fresh/Refresh, current
+/// dealers/dealer-receivers for Reshare) is unaffected.
+pub(crate) async fn report_leader_prepare_fault_best_effort<D>(
+    app_state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(signature) = prepare.report_signature.clone() else {
+        return;
+    };
+    if verify_control_signature(
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+        &prepare.leader_node_key,
+        &signature,
+    )
+    .is_err()
+    {
+        return;
+    }
+    // A signature only covers `config_digest`, not the rest of the message.
+    // Without also confirming the digest is self-consistent with the
+    // fields actually present, a relay that tampers with `leader_node_key`
+    // or `committees` post-signature while leaving the original digest
+    // intact could produce a mismatch that looks attributable to the real
+    // signer but isn't — the signer never endorsed the tampered content.
+    // Only a self-consistent (and therefore untampered) `Prepare` is safe
+    // to report.
+    match transport::config_digest(prepare) {
+        Ok(recomputed) if recomputed == prepare.config_digest => {}
+        _ => return,
+    }
+    if !prepare
+        .committees
+        .current
+        .node_keys
+        .contains(&app_state.node_key)
+    {
+        // Not a current-committee member: cannot queue directly, and relay
+        // is not built for this fault kind yet (see doc comment above).
+        return;
+    }
+    let Ok(Some(binding)) = evidence_binding_from_prepare(app_state, routes, prepare).await else {
+        return;
+    };
+    let Ok(data) = transport::encode(prepare) else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("control", "leader_prepare_fault_candidate");
+    let accused_info = match read_node_info(app_state, &prepare.leader_node_key).await {
+        Ok(info) => info,
+        Err(error) => {
+            tracing::warn!(
+                session_id = prepare.ceremony_id.0,
+                %error,
+                "failed to resolve accused leader NodeInfo for Prepare-fault report"
+            );
+            return;
+        }
+    };
+    let Ok(signed_at) = now_unix_secs() else {
+        return;
+    };
+    let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
+        CommitteeScope::PendingNew
+    } else {
+        CommitteeScope::Current
+    };
+    let statement = DkgControlMessageFaultStatement {
+        domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+        chain_id: binding.chain_id,
+        ring_id: binding.ring_id.clone(),
+        ring_pk: binding.ring_pk,
+        ring_state_sha256: binding.ring_state_sha256,
+        protocol_version: binding.protocol_version,
+        request_id: binding.request_id,
+        signed_at,
+        responder_node_key: prepare.leader_node_key.clone(),
+        origin_protocol: binding.origin_protocol,
+        accused_committee_scope,
+        signing_committee_scope: CommitteeScope::Current,
+        attempt_id: prepare.attempt_id.0,
+        message_kind: "prepare".to_string(),
+        fault_kind: DkgControlMessageFaultKind::LeaderPrepareFault,
+        artifact_a: ControlMessageArtifact {
+            signature: signature.signature,
+            data,
+        },
+        artifact_b: None,
+    };
+    let observation = InvalidCryptoResponseObservation {
+        ring_id: binding.ring_id,
+        accused_node_key: prepare.leader_node_key.clone(),
+        accused_peer_id: accused_info.peer_id,
+        observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        evidence: InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        },
+    };
+    match queue_report::<D, SignImpl>(
+        app_state.clone(),
+        routes,
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+    )
+    .await
+    {
+        Ok(_) => crate::metrics::record_dkg_transport_event(
+            "control",
+            "leader_prepare_fault_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "control",
+                "leader_prepare_fault_report_failed",
+            );
+            tracing::warn!(
+                session_id = prepare.ceremony_id.0,
+                attempt_id = %hex::encode(prepare.attempt_id.0),
+                %error,
+                "failed to queue authenticated leader-Prepare fault report"
+            );
+        }
+    }
+}
+
 fn validate_commitment_statement<D>(
     binding: &DkgReportEvidenceBinding,
     from_node_id: u32,
@@ -875,6 +1164,60 @@ fn now_unix_secs() -> Result<u64> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|error| DkgError::Generic(format!("Failed to get unix timestamp: {error}")))
+}
+
+/// Node-key sign one control-handshake message's existing digest field
+/// (`config_digest`/`activation_digest`), binding it to
+/// (ceremony_id, attempt_id, message_kind). Unconditional across every
+/// `SessionKind` — Fresh DKG is excluded later, at report-build time
+/// (`evidence_binding` returns `None`), not here; the signature itself is
+/// cheap and this keeps signing uniform regardless of reportability.
+pub(crate) fn sign_control_message<D>(
+    app_state: &Arc<AppState<D>>,
+    ceremony_id: transport::CeremonyId,
+    attempt_id: transport::AttemptId,
+    message_kind: &str,
+    digest: [u8; 32],
+) -> Result<ControlSignature>
+where
+    D: Dkg + Clone + 'static,
+{
+    let signing_key_hex = read_node_signing_key_hex(app_state)?;
+    let signed_at = now_unix_secs()?;
+    let message =
+        transport::control_ack_signing_bytes(ceremony_id, attempt_id, message_kind, digest);
+    let signature = sign_statement_with_key(&signing_key_hex, &message)?;
+    Ok(ControlSignature {
+        signer_node_key: app_state.node_key.clone(),
+        signed_at,
+        signature,
+    })
+}
+
+/// Independently re-verify a `ControlSignature` against the claimed
+/// digest/message-kind/attempt binding and the expected signer. Does not
+/// trust `signature.signer_node_key` for identity — the caller supplies
+/// `expected_signer_node_key` from its own authoritative source (e.g. the
+/// committee route the message arrived on).
+pub(crate) fn verify_control_signature(
+    ceremony_id: transport::CeremonyId,
+    attempt_id: transport::AttemptId,
+    message_kind: &str,
+    digest: [u8; 32],
+    expected_signer_node_key: &str,
+    signature: &ControlSignature,
+) -> Result<()> {
+    if signature.signer_node_key != expected_signer_node_key {
+        return Err(DkgError::Unauthorized(format!(
+            "control message signature claims signer {} but expected {}",
+            signature.signer_node_key, expected_signer_node_key
+        )));
+    }
+    let message =
+        transport::control_ack_signing_bytes(ceremony_id, attempt_id, message_kind, digest);
+    verify_node_message(expected_signer_node_key, &message, &signature.signature).map_err(|error| {
+        DkgError::Unauthorized(format!("invalid control message signature: {error}"))
+    })
 }
 
 async fn queue_invalid_share_report<D>(
@@ -1060,7 +1403,11 @@ where
 /// evidence.
 fn leader_delivery_attempt_and_phase(
     message: &transport::DkgPublicMessage,
-) -> Option<(transport::CeremonyId, transport::AttemptId, transport::PublicPhase)> {
+) -> Option<(
+    transport::CeremonyId,
+    transport::AttemptId,
+    transport::PublicPhase,
+)> {
     match message {
         transport::DkgPublicMessage::Manifest(manifest) => {
             Some((manifest.ceremony_id, manifest.attempt_id, manifest.phase))
@@ -1163,6 +1510,87 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
         evidence: InvalidCryptoResponse::DkgLeaderEquivocation {
+            statement: Box::new(statement),
+        },
+    };
+    queue_report::<D, SignImpl>(
+        app_state,
+        routes,
+        ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+    )
+    .await
+    .map_err(|error| DkgError::Generic(error.to_string()))?;
+    Ok(())
+}
+
+/// Package a control-handshake fault into a report. Accepts the accused's
+/// node key directly rather than re-deriving it, since which key that is
+/// varies by fault kind (the claimed leader for `LeaderPrepareFault`, the
+/// equivocating follower for `AckEquivocation`) and the caller already knows
+/// it from the same logic that detected the fault. Like
+/// `queue_leader_equivocation_report`, this does not itself re-verify the
+/// signatures — direct detection already proved it structurally, and a
+/// relayed claim is independently re-checked by every co-signer during
+/// threshold-signing.
+#[allow(clippy::too_many_arguments)]
+async fn queue_control_message_fault_report<D>(
+    app_state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    accused_node_key: String,
+    message_kind: String,
+    fault_kind: DkgControlMessageFaultKind,
+    artifact_a: ControlMessageArtifact,
+    artifact_b: Option<ControlMessageArtifact>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let coordinator = DkgCoordinator::with_routes(app_state.clone(), routes);
+    let binding = evidence_binding(&coordinator, attempt)
+        .await?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "Fresh DKG control-message faults are not reportable".to_string(),
+            )
+        })?;
+    let accused_committee_scope = if binding.current_node_keys.contains(&accused_node_key) {
+        CommitteeScope::Current
+    } else if binding.receiver_node_keys.contains(&accused_node_key) {
+        CommitteeScope::PendingNew
+    } else {
+        return Err(DkgError::Unauthorized(
+            "control-message fault accused is not in the bound committee".to_string(),
+        ));
+    };
+    let signed_at = now_unix_secs()?;
+    let accused_info = read_node_info(&app_state, &accused_node_key).await?;
+    let statement = DkgControlMessageFaultStatement {
+        domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+        chain_id: binding.chain_id,
+        ring_id: binding.ring_id.clone(),
+        ring_pk: binding.ring_pk,
+        ring_state_sha256: binding.ring_state_sha256,
+        protocol_version: binding.protocol_version,
+        request_id: binding.request_id,
+        signed_at,
+        responder_node_key: accused_node_key.clone(),
+        origin_protocol: binding.origin_protocol,
+        accused_committee_scope,
+        signing_committee_scope: CommitteeScope::Current,
+        attempt_id: attempt.attempt_id.0,
+        message_kind: message_kind.to_string(),
+        fault_kind,
+        artifact_a,
+        artifact_b,
+    };
+    let observation = InvalidCryptoResponseObservation {
+        ring_id: binding.ring_id,
+        accused_node_key,
+        accused_peer_id: accused_info.peer_id,
+        observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        evidence: InvalidCryptoResponse::DkgControlMessageFault {
             statement: Box::new(statement),
         },
     };

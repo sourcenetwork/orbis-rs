@@ -1,9 +1,10 @@
 use super::error::Result;
 use super::observation::{InvalidCryptoResponseObservation, OfflineObservation, ReportObservation};
 use super::types::{
-    ring_state_sha256, CommitteeScope, DkgPublicOriginFaultKind, InvalidCryptoResponse,
-    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, CHAIN_BLOCK_GRACE_SECS,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN,
+    ring_state_sha256, CommitteeScope, DkgControlMessageFaultKind, DkgPublicOriginFaultKind,
+    InvalidCryptoResponse, PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope,
+    CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    RELAY_REQUEST_DOMAIN,
 };
 #[cfg(feature = "bls12-381")]
 use super::types::{SignResponseStatement, SIGN_RESPONSE_DOMAIN};
@@ -13,6 +14,7 @@ use super::{
 };
 use crate::dkg::v0::coordinator::evidence::{
     build_commitment_evidence_with_context, evidence_build_context,
+    report_leader_prepare_fault_best_effort, sign_control_message,
 };
 use crate::dkg::v0::coordinator::message_handlers::prepare_commitment_message;
 use crate::dkg::v0::coordinator::DkgCoordinator;
@@ -21,12 +23,13 @@ use crate::dkg::v0::helpers::serialize_commitment_coefficients;
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::network::{
     handle_control_for_test, queue_public_commitment_equivocation_for_test,
-    record_public_contribution_at_leader_for_test,
+    record_control_ack_best_effort_for_test, record_public_contribution_at_leader_for_test,
 };
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::transport::{
-    AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig, DkgControlMessage,
-    DkgPublicContribution, DkgPublicPayload, ParticipantRef, PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
+    canonical_leader, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig,
+    DkgControlMessage, DkgPublicContribution, DkgPublicPayload, ParticipantRef, PrepareSession,
+    PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::identity::{determine_session_node_id, extract_node_part};
 use crate::helpers::node_routes::resolve_node_routes;
@@ -1156,7 +1159,8 @@ async fn staged_refresh_result_invalid_payload_queues_report_before_abort() {
     .expect("a non-leader test-harness member must exist")
     .clone();
 
-    let receiver = DkgCoordinator::<DkgImpl>::with_routes(Arc::new(receiver_app_state), &network::V0);
+    let receiver =
+        DkgCoordinator::<DkgImpl>::with_routes(Arc::new(receiver_app_state), &network::V0);
     let refresh_attempt = AttemptKey::new(CeremonyId(777_000_333_111), AttemptId::random());
     let refresh_kind = SessionKind::Refresh {
         ring_pk_hex: ring.ring_pk.clone(),
@@ -1581,7 +1585,8 @@ async fn refresh_health_check_origin_equivocation_queues_report_before_abort() {
     .find(|app_state| app_state.node_key != origin_app_state.node_key)
     .expect("a non-origin test-harness member must exist")
     .clone();
-    let recorder = DkgCoordinator::<DkgImpl>::with_routes(Arc::new(recorder_app_state), &network::V0);
+    let recorder =
+        DkgCoordinator::<DkgImpl>::with_routes(Arc::new(recorder_app_state), &network::V0);
 
     let refresh_attempt = AttemptKey::new(CeremonyId(777_000_444_222), AttemptId::random());
     let refresh_kind = SessionKind::Refresh {
@@ -2978,6 +2983,375 @@ async fn health_probe_blocks_report_when_accused_node_is_online() {
         0,
         "no report should be submitted: bob's health probe finds charlie reachable and refuses to co-sign"
     );
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
+/// Builds the `CommitteeConfig` for a finalized test ring: node keys in ring
+/// order, routes resolved from the live three-node test network, and
+/// canonical node-ID assignments.
+fn finalized_ring_committee(
+    network: &crate::helpers::test_helpers::ThreeNodeNetwork,
+    ring: &RingPayload,
+) -> CommitteeConfig {
+    let route_by_node_key = HashMap::from([
+        (
+            network.alice.app_state.node_key.clone(),
+            network.alice.address.clone(),
+        ),
+        (
+            network.bob.app_state.node_key.clone(),
+            network.bob.address.clone(),
+        ),
+        (
+            network.charlie.app_state.node_key.clone(),
+            network.charlie.address.clone(),
+        ),
+    ]);
+    CommitteeConfig {
+        node_keys: ring.peer_node_keys.clone(),
+        peer_routes: ring
+            .peer_node_keys
+            .iter()
+            .map(|node_key| route_by_node_key[node_key].clone())
+            .collect(),
+        node_id_assignments: ring
+            .peer_node_keys
+            .iter()
+            .map(|node_key| {
+                (
+                    node_key.clone(),
+                    determine_session_node_id(node_key, &ring.peer_node_keys)
+                        .expect("finalized member must have a canonical node ID"),
+                )
+            })
+            .collect(),
+        threshold: ring.threshold,
+    }
+}
+
+/// Two differently-signed acks (`Activated`) from the same follower for the
+/// identical (ceremony, attempt, message_kind) request must be reported as
+/// `AckEquivocation`, proving the leader-side control-ack recorder actually
+/// detects and queues the fault rather than just silently overwriting the
+/// first receipt.
+#[tokio::test]
+#[serial_test::serial]
+async fn control_ack_equivocation_queues_report() {
+    let db_name = "reporting_control_ack_equivocation";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    let recorder = DkgCoordinator::<DkgImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &network::V0,
+    );
+    let follower_app_state = network.bob.app_state.clone();
+
+    let refresh_attempt = AttemptKey::new(CeremonyId(777_000_555_333), AttemptId::random());
+    let refresh_kind = SessionKind::Refresh {
+        ring_pk_hex: ring.ring_pk.clone(),
+    };
+    create_preflight_test_session(
+        &recorder,
+        refresh_attempt,
+        &ring_id,
+        &ring,
+        refresh_kind.clone(),
+    )
+    .await;
+
+    let committee = finalized_ring_committee(&network, &ring);
+    configure_public_test_session(&recorder, refresh_attempt, committee.clone()).await;
+    evidence_build_context(&recorder, refresh_attempt)
+        .await
+        .expect("prime reporter evidence binding")
+        .expect("Refresh must have an evidence binding");
+
+    let follower_route = committee
+        .node_keys
+        .iter()
+        .position(|node_key| node_key == &follower_app_state.node_key)
+        .and_then(|index| committee.peer_routes.get(index))
+        .cloned()
+        .expect("follower must have a committee route");
+
+    let prepare = PrepareSession {
+        ceremony_id: refresh_attempt.ceremony_id,
+        attempt_id: refresh_attempt.attempt_id,
+        config_digest: [0; 32],
+        topic_id: [0; 32],
+        leader_node_key: network.alice.app_state.node_key.clone(),
+        committees: CeremonyConfig {
+            current: committee,
+            next: None,
+        },
+        token_string: String::new(),
+        kind: refresh_kind,
+        pss_interval: ring.pss_interval,
+        policy_id: ring.policy_id.clone(),
+        ring_id: ring_id.clone(),
+        report_signature: None,
+    };
+
+    let first_digest = [0x11; 32];
+    let second_digest = [0x22; 32];
+    let first_signature = sign_control_message(
+        &Arc::new(follower_app_state.clone()),
+        refresh_attempt.ceremony_id,
+        refresh_attempt.attempt_id,
+        "activated",
+        first_digest,
+    )
+    .expect("sign first activated ack");
+    let second_signature = sign_control_message(
+        &Arc::new(follower_app_state.clone()),
+        refresh_attempt.ceremony_id,
+        refresh_attempt.attempt_id,
+        "activated",
+        second_digest,
+    )
+    .expect("sign conflicting activated ack");
+
+    record_control_ack_best_effort_for_test(
+        &recorder.app_state,
+        &network::V0,
+        &prepare,
+        refresh_attempt.ceremony_id,
+        refresh_attempt.attempt_id,
+        "activated",
+        first_digest,
+        &follower_route,
+        Some(first_signature),
+    )
+    .await;
+    record_control_ack_best_effort_for_test(
+        &recorder.app_state,
+        &network::V0,
+        &prepare,
+        refresh_attempt.ceremony_id,
+        refresh_attempt.attempt_id,
+        "activated",
+        second_digest,
+        &follower_route,
+        Some(second_signature),
+    )
+    .await;
+
+    recorder.app_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(
+        submissions.len(),
+        1,
+        "expected one control-ack-equivocation report"
+    );
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(submission.accused_node_key, follower_app_state.node_key);
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized control-message-fault payload")
+    {
+        InvalidCryptoResponse::DkgControlMessageFault { statement } => {
+            assert_eq!(
+                statement.fault_kind,
+                DkgControlMessageFaultKind::AckEquivocation
+            );
+            assert_eq!(statement.message_kind, "activated");
+            assert_eq!(statement.responder_node_key, follower_app_state.node_key);
+            let artifact_b = statement
+                .artifact_b
+                .expect("equivocation requires two artifacts");
+            let digests: std::collections::BTreeSet<_> =
+                [statement.artifact_a.data.clone(), artifact_b.data.clone()]
+                    .into_iter()
+                    .collect();
+            assert_eq!(
+                digests,
+                std::collections::BTreeSet::from([first_digest.to_vec(), second_digest.to_vec()])
+            );
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
+
+    network.shutdown_routers().await.unwrap();
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
+/// A `Prepare` signed by a noncanonical leader is independently provable
+/// (self-consistent digest, but the leader isn't the deterministic
+/// `canonical_leader` for the committee) and must be reported as
+/// `LeaderPrepareFault` by any current-committee recipient, without needing
+/// any live session state (the report fires before a session would even be
+/// created for such a `Prepare`).
+#[tokio::test]
+#[serial_test::serial]
+async fn leader_prepare_fault_queues_report_for_noncanonical_leader() {
+    let db_name = "reporting_leader_prepare_fault";
+    let db_paths = [
+        test_db_path(&format!("{db_name}_1")),
+        test_db_path(&format!("{db_name}_2")),
+        test_db_path(&format!("{db_name}_3")),
+    ];
+    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    sleep(Duration::from_millis(100)).await;
+
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let token = TestKeyPair::new()
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .unwrap();
+    service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("Fresh DKG should start");
+    let (ring, ring_id) = wait_for_finalized_ring(&network).await;
+    wait_for_all_nodes_ring_state(&network, &ring.ring_pk).await;
+
+    let canonical = canonical_leader(&ring.peer_node_keys)
+        .expect("finalized ring must have a canonical leader")
+        .to_string();
+    let noncanonical_app_state = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ]
+    .into_iter()
+    .find(|app_state| app_state.node_key != canonical)
+    .expect("a non-canonical-leader test-harness member must exist")
+    .clone();
+    let recorder_app_state = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ]
+    .into_iter()
+    .find(|app_state| app_state.node_key != noncanonical_app_state.node_key)
+    .expect("a distinct recording test-harness member must exist")
+    .clone();
+
+    let committee = finalized_ring_committee(&network, &ring);
+    let mut prepare = PrepareSession {
+        ceremony_id: CeremonyId(777_000_666_444),
+        attempt_id: AttemptId::random(),
+        config_digest: [0; 32],
+        topic_id: [0; 32],
+        leader_node_key: noncanonical_app_state.node_key.clone(),
+        committees: CeremonyConfig {
+            current: committee,
+            next: None,
+        },
+        token_string: String::new(),
+        kind: SessionKind::Refresh {
+            ring_pk_hex: ring.ring_pk.clone(),
+        },
+        pss_interval: ring.pss_interval,
+        policy_id: ring.policy_id.clone(),
+        ring_id: ring_id.clone(),
+        report_signature: None,
+    };
+    prepare.config_digest =
+        crate::dkg::v0::transport::config_digest(&prepare).expect("compute config digest");
+    assert_ne!(
+        canonical_leader(&prepare.committees.current.node_keys),
+        Some(prepare.leader_node_key.as_str()),
+        "test must construct a genuinely noncanonical leader claim"
+    );
+
+    prepare.report_signature = Some(
+        sign_control_message(
+            &Arc::new(noncanonical_app_state.clone()),
+            prepare.ceremony_id,
+            prepare.attempt_id,
+            "prepare",
+            prepare.config_digest,
+        )
+        .expect("sign noncanonical Prepare"),
+    );
+
+    let recorder = Arc::new(recorder_app_state.clone());
+    report_leader_prepare_fault_best_effort(&recorder, &network::V0, &prepare).await;
+
+    recorder.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("reporting test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(
+        submissions.len(),
+        1,
+        "expected one leader-prepare-fault report"
+    );
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
+    assert_eq!(submission.ring_id, ring_id);
+    assert_eq!(submission.accused_node_key, noncanonical_app_state.node_key);
+    match InvalidCryptoResponse::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized control-message-fault payload")
+    {
+        InvalidCryptoResponse::DkgControlMessageFault { statement } => {
+            assert_eq!(
+                statement.fault_kind,
+                DkgControlMessageFaultKind::LeaderPrepareFault
+            );
+            assert_eq!(statement.message_kind, "prepare");
+            assert_eq!(
+                statement.responder_node_key,
+                noncanonical_app_state.node_key
+            );
+            assert!(statement.artifact_b.is_none());
+            let decoded: PrepareSession = crate::dkg::v0::transport::decode(
+                &statement.artifact_a.data,
+                crate::dkg::v0::transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+            )
+            .expect("decode retained Prepare artifact");
+            assert_eq!(decoded.config_digest, prepare.config_digest);
+        }
+        other => panic!("unexpected invalid-response payload: {other:?}"),
+    }
 
     network.shutdown_routers().await.unwrap();
     for path in db_paths {

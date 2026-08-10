@@ -14,6 +14,7 @@ pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";
 pub const DKG_LEADER_EQUIVOCATION_DOMAIN: &str = "orbis-dkg-leader-equivocation-v1";
+pub const DKG_CONTROL_MESSAGE_FAULT_DOMAIN: &str = "orbis-dkg-control-message-fault-v1";
 pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
@@ -797,23 +798,27 @@ impl DkgLeaderEquivocationStatement {
                     ))
                 })?;
         let phase = decoder.read_string("phase")?;
-        let delivery_id_a = decoder.read_bytes("delivery_id_a")?.try_into().map_err(
-            |bytes: Vec<u8>| {
-                ReportingError::InvalidReport(format!(
-                    "DKG leader-equivocation delivery_id_a must be 16 bytes, got {}",
-                    bytes.len()
-                ))
-            },
-        )?;
+        let delivery_id_a =
+            decoder
+                .read_bytes("delivery_id_a")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation delivery_id_a must be 16 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
         let delivery_a = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_a")?;
-        let delivery_id_b = decoder.read_bytes("delivery_id_b")?.try_into().map_err(
-            |bytes: Vec<u8>| {
-                ReportingError::InvalidReport(format!(
-                    "DKG leader-equivocation delivery_id_b must be 16 bytes, got {}",
-                    bytes.len()
-                ))
-            },
-        )?;
+        let delivery_id_b =
+            decoder
+                .read_bytes("delivery_id_b")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation delivery_id_b must be 16 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
         let delivery_b = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_b")?;
         decoder.finish()?;
         Ok(Self {
@@ -835,6 +840,187 @@ impl DkgLeaderEquivocationStatement {
             delivery_a,
             delivery_id_b,
             delivery_b,
+        })
+    }
+}
+
+/// One node-key-signed control-handshake artifact
+/// (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`). `data` is
+/// whatever content that message kind's signature actually covers: the
+/// canonically-encoded `PrepareSession` for `prepare` (so a verifier can
+/// recompute `config_digest` and inspect `leader_node_key`/`committees`
+/// directly), or the raw 32-byte `config_digest`/`activation_digest` for the
+/// ack kinds (already bound to ceremony/attempt/message_kind by the
+/// signature itself, so nothing else needs duplicating).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlMessageArtifact {
+    pub signature: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+impl ControlMessageArtifact {
+    fn write_canonical(&self, out: &mut Vec<u8>) {
+        write_bytes(out, &self.signature);
+        write_bytes(out, &self.data);
+    }
+
+    fn read_canonical(decoder: &mut Decoder<'_>, prefix: &str) -> Result<Self> {
+        Ok(Self {
+            signature: decoder.read_bytes(&format!("{prefix}_signature"))?,
+            data: decoder.read_bytes(&format!("{prefix}_data"))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DkgControlMessageFaultKind {
+    /// One signed `Prepare`, independently provable as invalid: sent by a
+    /// noncanonical leader, or naming committee routes/digests that
+    /// contradict current SourceHub `NodeInfo`/ring state.
+    LeaderPrepareFault,
+    /// Two conflicting signed acks (`Prepared`/`Activated`/`Begun`) from the
+    /// same follower for the identical (ceremony, attempt, message_kind)
+    /// request — a single wrong/stale-looking ack is not enough on its own,
+    /// since that can happen honestly on a retry race.
+    AckEquivocation,
+}
+
+impl DkgControlMessageFaultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LeaderPrepareFault => "leader_prepare_fault",
+            Self::AckEquivocation => "ack_equivocation",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "leader_prepare_fault" => Ok(Self::LeaderPrepareFault),
+            "ack_equivocation" => Ok(Self::AckEquivocation),
+            _ => Err(ReportingError::InvalidReport(format!(
+                "unknown DKG control-message fault kind {value}"
+            ))),
+        }
+    }
+}
+
+/// Normalized bindings plus the exact node-key-signed control-handshake
+/// artifact(s). Unlike `DkgPublicOriginFaultStatement`/
+/// `DkgLeaderEquivocationStatement` (endpoint-signed), these are signed with
+/// the accused's chain node key directly, since direct-QUIC control
+/// messages carry no reclaimable transport-layer signature the way Gossip
+/// broadcasts do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgControlMessageFaultStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub message_kind: String,
+    pub fault_kind: DkgControlMessageFaultKind,
+    pub artifact_a: ControlMessageArtifact,
+    pub artifact_b: Option<ControlMessageArtifact>,
+}
+
+impl DkgControlMessageFaultStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.message_kind);
+        write_string(&mut out, self.fault_kind.as_str());
+        self.artifact_a.write_canonical(&mut out);
+        match &self.artifact_b {
+            Some(artifact) => {
+                out.push(1);
+                artifact.write_canonical(&mut out);
+            }
+            None => out.push(0),
+        }
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG control-message fault attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let message_kind = decoder.read_string("message_kind")?;
+        let fault_kind = DkgControlMessageFaultKind::from_str(&decoder.read_string("fault_kind")?)?;
+        let artifact_a = ControlMessageArtifact::read_canonical(&mut decoder, "artifact_a")?;
+        let artifact_b = match decoder.read_u8("artifact_b_present")? {
+            0 => None,
+            1 => Some(ControlMessageArtifact::read_canonical(
+                &mut decoder,
+                "artifact_b",
+            )?),
+            value => {
+                return Err(ReportingError::InvalidReport(format!(
+                    "invalid optional artifact_b tag {value}"
+                )))
+            }
+        };
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
         })
     }
 }
@@ -966,6 +1152,12 @@ pub enum InvalidCryptoResponse {
     DkgLeaderEquivocation {
         statement: Box<DkgLeaderEquivocationStatement>,
     },
+    /// A direct-QUIC control-handshake fault: a noncanonical leader's
+    /// `Prepare`, a `Prepare` whose routes/digests contradict SourceHub, or
+    /// a follower equivocating on a `Prepared`/`Activated`/`Begun` ack.
+    DkgControlMessageFault {
+        statement: Box<DkgControlMessageFaultStatement>,
+    },
 }
 
 impl InvalidCryptoResponse {
@@ -1020,6 +1212,10 @@ impl InvalidCryptoResponse {
             }
             Self::DkgLeaderEquivocation { statement } => {
                 write_string(&mut out, "dkg_leader_equivocation");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgControlMessageFault { statement } => {
+                write_string(&mut out, "dkg_control_message_fault");
                 write_bytes(&mut out, &statement.canonical_bytes());
             }
         }
@@ -1100,6 +1296,14 @@ impl InvalidCryptoResponse {
                     )?),
                 }
             }
+            "dkg_control_message_fault" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgControlMessageFault {
+                    statement: Box::new(DkgControlMessageFaultStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
             value => {
                 return Err(ReportingError::InvalidReport(format!(
                     "unsupported invalid crypto evidence kind {value}"
@@ -1119,6 +1323,7 @@ impl InvalidCryptoResponse {
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
             Self::DkgPublicOriginFault { statement } => &statement.request_id,
             Self::DkgLeaderEquivocation { statement } => &statement.request_id,
+            Self::DkgControlMessageFault { statement } => &statement.request_id,
         }
     }
 
@@ -1133,6 +1338,7 @@ impl InvalidCryptoResponse {
             Self::DkgEquivocation { .. } => CommitteeScope::Current,
             Self::DkgPublicOriginFault { statement } => statement.signing_committee_scope,
             Self::DkgLeaderEquivocation { statement } => statement.signing_committee_scope,
+            Self::DkgControlMessageFault { statement } => statement.signing_committee_scope,
         }
     }
 }
@@ -1834,6 +2040,77 @@ mod tests {
             },
         };
         let payload = InvalidCryptoResponse::DkgLeaderEquivocation {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_leader_prepare_payload_round_trips() {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "prepare".to_string(),
+            fault_kind: DkgControlMessageFaultKind::LeaderPrepareFault,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            artifact_b: None,
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_ack_equivocation_payload_round_trips() {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_reshare".to_string(),
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "activated".to_string(),
+            fault_kind: DkgControlMessageFaultKind::AckEquivocation,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![2; 64],
+                data: vec![0xaa; 32],
+            },
+            artifact_b: Some(ControlMessageArtifact {
+                signature: vec![3; 64],
+                data: vec![0xbb; 32],
+            }),
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
             statement: Box::new(statement),
         };
         let encoded = payload.canonical_bytes();

@@ -18,11 +18,12 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgLeaderEquivocationStatement,
-    DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement, DkgShareStatement,
-    EndpointSignedContribution, InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement,
-    RelayRequestStatement, ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload,
-    CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
+    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgControlMessageFaultKind,
+    DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgPublicOriginFaultKind,
+    DkgPublicOriginFaultStatement, DkgShareStatement, EndpointSignedContribution,
+    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, RelayRequestStatement,
+    ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
+    DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
     DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
     NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN,
     REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
@@ -448,6 +449,12 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 self.validate_dkg_leader_equivocation_evidence(envelope, context, &ring, statement)
                     .await
             }
+            InvalidCryptoResponse::DkgControlMessageFault { statement } => {
+                self.validate_dkg_control_message_fault_evidence(
+                    envelope, context, &ring, statement,
+                )
+                .await
+            }
         }
     }
 }
@@ -753,6 +760,251 @@ impl InvalidCryptoResponseHandler {
             return Err(ReportingError::Unauthorized(
                 "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
             ));
+        }
+
+        Ok(())
+    }
+
+    async fn validate_dkg_control_message_fault_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &DkgControlMessageFaultStatement,
+    ) -> Result<()> {
+        validate_invalid_crypto_statement_prologue(
+            envelope,
+            context,
+            InvalidCryptoStatementPrologue {
+                label: "DKG control-message fault".to_string(),
+                domain: statement.domain.clone(),
+                expected_domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+                chain_id: statement.chain_id.clone(),
+                ring_id: statement.ring_id.clone(),
+                ring_pk: statement.ring_pk.clone(),
+                ring_state_sha256: statement.ring_state_sha256.clone(),
+                request_id: statement.request_id.clone(),
+                signed_at: statement.signed_at,
+                responder_node_key: statement.responder_node_key.clone(),
+                check_anchor: true,
+            },
+        )?;
+        if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
+            return Err(ReportingError::InvalidReport(format!(
+                "unsupported DKG control-message fault origin protocol {}",
+                statement.origin_protocol
+            )));
+        }
+        if statement.signing_committee_scope != CommitteeScope::Current {
+            return Err(ReportingError::Unauthorized(
+                "DKG control-message fault reports must use the current signing committee"
+                    .to_string(),
+            ));
+        }
+        let expected_accused_scope = match statement.origin_protocol.as_str() {
+            "pss_reshare" => CommitteeScope::PendingNew,
+            _ => CommitteeScope::Current,
+        };
+        if statement.accused_committee_scope != expected_accused_scope {
+            return Err(ReportingError::Unauthorized(
+                "DKG control-message fault accused committee scope does not match origin protocol"
+                    .to_string(),
+            ));
+        }
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG control-message fault protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            CommitteeScope::Current,
+            "DKG control-message fault",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "DKG control-message fault",
+        )?;
+
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        if !accused_committee
+            .peer_node_keys
+            .contains(&statement.responder_node_key)
+        {
+            return Err(ReportingError::Unauthorized(
+                "control-message fault accused is not in the claimed committee".to_string(),
+            ));
+        }
+
+        let ceremony_id = statement.request_id.parse::<u128>().map_err(|_| {
+            ReportingError::InvalidReport(
+                "DKG control-message fault request_id is not a ceremony ID".to_string(),
+            )
+        })?;
+
+        match statement.fault_kind {
+            DkgControlMessageFaultKind::LeaderPrepareFault => {
+                if statement.artifact_b.is_some() {
+                    return Err(ReportingError::InvalidReport(
+                        "leader-prepare-fault evidence must contain exactly one artifact"
+                            .to_string(),
+                    ));
+                }
+                if statement.message_kind != "prepare" {
+                    return Err(ReportingError::InvalidReport(
+                        "leader-prepare-fault evidence must target the Prepare message".to_string(),
+                    ));
+                }
+                let prepare: transport::PrepareSession = transport::decode(
+                    &statement.artifact_a.data,
+                    transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+                )
+                .map_err(ReportingError::InvalidReport)?;
+                if prepare.ceremony_id.0 != ceremony_id
+                    || prepare.attempt_id.0 != statement.attempt_id
+                {
+                    return Err(ReportingError::Unauthorized(
+                        "leader-prepare-fault evidence does not target the claimed attempt"
+                            .to_string(),
+                    ));
+                }
+                if prepare.leader_node_key != statement.responder_node_key {
+                    return Err(ReportingError::Unauthorized(
+                        "leader-prepare-fault Prepare is not self-consistently attributed to the accused"
+                            .to_string(),
+                    ));
+                }
+                let recomputed_digest =
+                    transport::config_digest(&prepare).map_err(ReportingError::InvalidReport)?;
+                if recomputed_digest != prepare.config_digest {
+                    return Err(ReportingError::Unauthorized(
+                        "leader-prepare-fault Prepare content does not match its own config_digest"
+                            .to_string(),
+                    ));
+                }
+                let signed_bytes = transport::control_ack_signing_bytes(
+                    prepare.ceremony_id,
+                    prepare.attempt_id,
+                    "prepare",
+                    recomputed_digest,
+                );
+                verify_node_message(
+                    &statement.responder_node_key,
+                    &signed_bytes,
+                    &statement.artifact_a.signature,
+                )
+                .map_err(|error| {
+                    ReportingError::Unauthorized(format!(
+                        "invalid leader-prepare-fault signature: {error}"
+                    ))
+                })?;
+
+                let noncanonical_leader =
+                    prepare.canonical_leader_node_key() != Some(prepare.leader_node_key.as_str());
+                let routes_contradict_sourcehub = if noncanonical_leader {
+                    false
+                } else {
+                    let (claimed, expected_node_keys) = match statement.accused_committee_scope {
+                        CommitteeScope::Current => {
+                            (&prepare.committees.current, &ring.peer_node_keys)
+                        }
+                        CommitteeScope::PendingNew => {
+                            let next = prepare.committees.next.as_ref().ok_or_else(|| {
+                                ReportingError::InvalidReport(
+                                    "leader-prepare-fault Reshare Prepare omits the next committee"
+                                        .to_string(),
+                                )
+                            })?;
+                            (next, &accused_committee.peer_node_keys)
+                        }
+                    };
+                    let claimed_keys: std::collections::BTreeSet<_> =
+                        claimed.node_keys.iter().collect();
+                    let expected_keys: std::collections::BTreeSet<_> =
+                        expected_node_keys.iter().collect();
+                    claimed_keys != expected_keys
+                        || resolve_node_routes(&context.bulletin, expected_node_keys)
+                            .await
+                            .is_ok_and(|resolved| {
+                                let resolved_routes: std::collections::BTreeMap<_, _> = resolved
+                                    .into_iter()
+                                    .map(|route| (route.node_key, route.peer_id))
+                                    .collect();
+                                claimed.node_keys.iter().zip(&claimed.peer_routes).any(
+                                    |(node_key, route)| {
+                                        resolved_routes.get(node_key) != Some(route)
+                                    },
+                                )
+                            })
+                };
+                if !noncanonical_leader && !routes_contradict_sourcehub {
+                    return Err(ReportingError::Unauthorized(
+                        "Prepare content does not prove a leader-prepare fault".to_string(),
+                    ));
+                }
+            }
+            DkgControlMessageFaultKind::AckEquivocation => {
+                if !matches!(
+                    statement.message_kind.as_str(),
+                    "prepared" | "activated" | "begun"
+                ) {
+                    return Err(ReportingError::InvalidReport(format!(
+                        "unsupported DKG control-ack message kind {}",
+                        statement.message_kind
+                    )));
+                }
+                let artifact_b = statement.artifact_b.as_ref().ok_or_else(|| {
+                    ReportingError::InvalidReport(
+                        "ack-equivocation evidence requires two artifacts".to_string(),
+                    )
+                })?;
+                let digest_a: [u8; 32] =
+                    statement.artifact_a.data.clone().try_into().map_err(|_| {
+                        ReportingError::InvalidReport(
+                            "ack-equivocation artifact_a digest must be 32 bytes".to_string(),
+                        )
+                    })?;
+                let digest_b: [u8; 32] = artifact_b.data.clone().try_into().map_err(|_| {
+                    ReportingError::InvalidReport(
+                        "ack-equivocation artifact_b digest must be 32 bytes".to_string(),
+                    )
+                })?;
+                if digest_a == digest_b {
+                    return Err(ReportingError::Unauthorized(
+                        "ack-equivocation artifacts claim the identical digest".to_string(),
+                    ));
+                }
+                let attempt_id = transport::AttemptId(statement.attempt_id);
+                for (digest, artifact) in
+                    [(digest_a, &statement.artifact_a), (digest_b, artifact_b)]
+                {
+                    let signed_bytes = transport::control_ack_signing_bytes(
+                        transport::CeremonyId(ceremony_id),
+                        attempt_id,
+                        &statement.message_kind,
+                        digest,
+                    );
+                    verify_node_message(
+                        &statement.responder_node_key,
+                        &signed_bytes,
+                        &artifact.signature,
+                    )
+                    .map_err(|error| {
+                        ReportingError::Unauthorized(format!(
+                            "invalid ack-equivocation signature: {error}"
+                        ))
+                    })?;
+                }
+            }
         }
 
         Ok(())

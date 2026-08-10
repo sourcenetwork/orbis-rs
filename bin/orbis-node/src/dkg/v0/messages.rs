@@ -62,3 +62,19 @@ pub struct SignedDkgShare {
     pub statement: DkgShareStatement,
     pub signature: Vec<u8>,
 }
+
+/// A node-key signature over one control-plane handshake message
+/// (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`). Direct QUIC
+/// authentication proves the message to the two endpoints on that
+/// connection but produces no portable artifact — unlike Gossip, which signs
+/// each frame at the transport layer, control messages carry no such
+/// signature to reclaim. This is deliberately a thin, generic wrapper: what
+/// exactly was signed (the message's own existing digest field) is
+/// reconstructed by the caller from data it already has, not duplicated
+/// here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlSignature {
+    pub signer_node_key: String,
+    pub signed_at: u64,
+    pub signature: Vec<u8>,
+}

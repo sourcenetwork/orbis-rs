@@ -1,4 +1,4 @@
-use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::messages::{ControlSignature, SessionKind};
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyConfig, CeremonyId, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
@@ -334,6 +334,22 @@ where
     /// task is spawned; SourceHub session deduplication remains authoritative.
     pub(crate) dkg_offline_candidate_dedup:
         Arc<std::sync::Mutex<HashMap<(CeremonyId, String), Instant>>>,
+    /// The leader's record of each follower's first signed control-plane
+    /// acknowledgement (Prepared/Activated/Begun) per (ceremony, attempt,
+    /// message kind), so a later conflicting signed answer to the identical
+    /// request is provable as equivocation rather than trusted on the
+    /// leader's own word. Digest-only comparison is sound because
+    /// config_digest/activation_digest are invariant for a fixed attempt_id
+    /// — a new attempt_id is minted whenever the underlying parameters
+    /// would legitimately change.
+    pub(crate) dkg_control_ack_receipts: Arc<
+        Mutex<
+            HashMap<
+                (CeremonyId, AttemptId, String, &'static str),
+                ([u8; 32], ControlSignature, Instant),
+            >,
+        >,
+    >,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
 }
@@ -367,6 +383,7 @@ where
             dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
             dkg_offline_relay_receipts: Arc::new(Mutex::new(HashMap::new())),
             dkg_offline_candidate_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            dkg_control_ack_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
     }

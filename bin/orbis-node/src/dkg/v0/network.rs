@@ -23,11 +23,13 @@ use crate::constants::{
     PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
-    commitments_prove_equivocation, handle_invalid_commitment_evidence_relay,
-    handle_invalid_share_evidence_relay, handle_leader_equivocation_evidence_relay,
-    handle_public_origin_fault_evidence_relay, queue_or_relay_equivocation,
+    commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
+    handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
+    handle_leader_equivocation_evidence_relay, handle_public_origin_fault_evidence_relay,
+    queue_or_relay_control_message_fault, queue_or_relay_equivocation,
     queue_or_relay_leader_equivocation, queue_or_relay_public_origin_fault,
-    verify_commitment_evidence,
+    report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
+    verify_control_signature,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
@@ -46,7 +48,9 @@ use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
     ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
 };
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 #[cfg(test)]
 use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
@@ -73,7 +77,9 @@ use crate::helpers::test_helpers::{
     TEST_FRESH_DKG_RING_ID,
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
-use crate::reporting::v0::types::DkgPublicOriginFaultKind;
+use crate::reporting::v0::types::{
+    ControlMessageArtifact, DkgControlMessageFaultKind, DkgPublicOriginFaultKind,
+};
 use crate::ring_state::RingShareBundle;
 #[cfg(test)]
 use bulletin::dummy::DummyBulletin;
@@ -231,7 +237,9 @@ struct LeaderDeliveryEquivocation {
 /// — but retention here is best-effort by design, so a missing ID just
 /// means this particular delivery can't back a future equivocation report,
 /// not that the message is rejected.
-fn public_leader_delivery_from_message(message: &network::AuthenticatedMessage) -> Option<PublicLeaderDelivery> {
+fn public_leader_delivery_from_message(
+    message: &network::AuthenticatedMessage,
+) -> Option<PublicLeaderDelivery> {
     Some(PublicLeaderDelivery {
         origin: message.origin.as_bytes().to_vec(),
         delivery_id: message.delivery_id?,
@@ -2158,6 +2166,7 @@ where
             attempt_id,
             activation_digest,
             active_dealers,
+            report_signature: _,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
             let (_, configured_attempt, config_digest) = state
@@ -2185,10 +2194,18 @@ where
                 .await;
             match activation {
                 TransportActivationOutcome::AlreadyActivated => {
+                    let report_signature = Some(sign_control_message(
+                        &state,
+                        ceremony_id,
+                        attempt_id,
+                        "activated",
+                        activation_digest,
+                    )?);
                     return Ok(DkgControlMessage::Activated {
                         ceremony_id,
                         attempt_id,
                         activation_digest,
+                        report_signature,
                     });
                 }
                 TransportActivationOutcome::Activated => {}
@@ -2197,16 +2214,25 @@ where
                     return Err(DkgError::ProtocolError("activate for stale attempt".into()));
                 }
             }
+            let report_signature = Some(sign_control_message(
+                &state,
+                ceremony_id,
+                attempt_id,
+                "activated",
+                activation_digest,
+            )?);
             Ok(DkgControlMessage::Activated {
                 ceremony_id,
                 attempt_id,
                 activation_digest,
+                report_signature,
             })
         }
         DkgControlMessage::Begin {
             ceremony_id,
             attempt_id,
             activation_digest,
+            report_signature: _,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
             match state
@@ -2216,7 +2242,7 @@ where
             {
                 TransportBeginOutcome::Begun => {
                     spawn_cryptographic_attempt(
-                        state,
+                        state.clone(),
                         routes,
                         AttemptKey::new(ceremony_id, attempt_id),
                     );
@@ -2231,10 +2257,18 @@ where
                     return Err(DkgError::ProtocolError("begin for stale attempt".into()));
                 }
             }
+            let report_signature = Some(sign_control_message(
+                &state,
+                ceremony_id,
+                attempt_id,
+                "begun",
+                activation_digest,
+            )?);
             Ok(DkgControlMessage::Begun {
                 ceremony_id,
                 attempt_id,
                 activation_digest,
+                report_signature,
             })
         }
         DkgControlMessage::PublicContribution(signed) => {
@@ -2851,7 +2885,12 @@ where
                     "leader-equivocation evidence sender is not in next committee".into(),
                 )
             })?;
-            let payload = (delivery_id_a, delivery_a.clone(), delivery_id_b, delivery_b.clone());
+            let payload = (
+                delivery_id_a,
+                delivery_a.clone(),
+                delivery_id_b,
+                delivery_b.clone(),
+            );
             let expected_key = transport::derive_control_message_id(
                 ceremony_id,
                 attempt_id,
@@ -2887,6 +2926,93 @@ where
                 delivery_a,
                 delivery_id_b,
                 delivery_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayControlMessageFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            accused_node_key,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "control-message fault evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (
+                accused_node_key.clone(),
+                message_kind.clone(),
+                fault_kind,
+                artifact_a.clone(),
+                artifact_b.clone(),
+            );
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "control-message-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "control-message fault evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_control_message_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                accused_node_key,
+                message_kind,
+                fault_kind,
+                artifact_a,
+                artifact_b,
             )
             .await;
             state
@@ -3646,8 +3772,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id,
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
     let (ceremony, attempt) = coordinate_prepared(state, routes, prepare).await?;
     crate::metrics::record_dkg_transport_event("control", "reshare_start_accepted");
     Ok(ReshareStartOutcome::Started(ceremony, attempt))
@@ -3809,8 +3943,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id,
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
     coordinate_prepared(state, routes, prepare)
         .await
         .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
@@ -3981,8 +4123,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id.clone(),
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
 
     coordinate_prepared(state, routes, prepare).await
 }
@@ -4102,7 +4252,9 @@ where
                 result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
             match response {
                 Ok(response) => {
-                    if let Err(error) = validate_prepared_response(prepare, &peer, response) {
+                    if let Err(error) =
+                        validate_prepared_response(state, routes, prepare, &peer, response).await
+                    {
                         first_error.get_or_insert(error);
                     }
                 }
@@ -4262,7 +4414,7 @@ where
             let response = match response {
                 Ok(response) => {
                     unreachable.remove(&route_id);
-                    validate_prepared_response(prepare, &peer, response)
+                    validate_prepared_response(state, routes, prepare, &peer, response).await
                 }
                 Err(error) => {
                     if error.is_unreachable() {
@@ -4349,20 +4501,41 @@ where
     Ok((active_routes, active_dealers))
 }
 
-fn validate_prepared_response(
+async fn validate_prepared_response<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     peer: &str,
     response: DkgControlMessage,
-) -> Result<()> {
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
     match response {
         DkgControlMessage::Prepared {
             ceremony_id,
             attempt_id,
             config_digest,
-        } if ceremony_id == prepare.ceremony_id
-            && attempt_id == prepare.attempt_id
-            && config_digest == prepare.config_digest =>
-        {
+            report_signature,
+        } if ceremony_id == prepare.ceremony_id && attempt_id == prepare.attempt_id => {
+            record_control_ack_best_effort(
+                state,
+                routes,
+                prepare,
+                ceremony_id,
+                attempt_id,
+                "prepared",
+                config_digest,
+                peer,
+                report_signature,
+            )
+            .await;
+            if config_digest != prepare.config_digest {
+                return Err(DkgError::ProtocolError(format!(
+                    "peer {peer} returned invalid Prepared response"
+                )));
+            }
             Ok(())
         }
         _ => Err(DkgError::ProtocolError(format!(
@@ -4572,6 +4745,13 @@ where
             ));
         }
     }
+    let activate_signature = Some(sign_control_message(
+        &state,
+        ceremony_id,
+        attempt_id,
+        "activate",
+        activation_digest,
+    )?);
 
     let mut activations = JoinSet::new();
     for peer in peer_ids
@@ -4581,6 +4761,7 @@ where
         let state = state.clone();
         let peer = peer.clone();
         let active_dealers = active_dealers.clone();
+        let activate_signature = activate_signature.clone();
         activations.spawn(async move {
             let result = retry_preparation_control_classified(
                 &state,
@@ -4591,6 +4772,7 @@ where
                     attempt_id,
                     activation_digest,
                     active_dealers,
+                    report_signature: activate_signature,
                 },
                 deadline,
             )
@@ -4608,9 +4790,24 @@ where
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
+                report_signature,
             }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
-                && got_activation == activation_digest => {}
+                && got_activation == activation_digest =>
+            {
+                record_control_ack_best_effort(
+                    &state,
+                    routes,
+                    &prepare,
+                    got_ceremony,
+                    got_attempt,
+                    "activated",
+                    got_activation,
+                    &peer,
+                    report_signature,
+                )
+                .await;
+            }
             Ok(response) => {
                 activation_error.get_or_insert_with(|| {
                     DkgError::ProtocolError(format!("invalid activation response: {response:?}"))
@@ -4665,6 +4862,13 @@ where
             ));
         }
     }
+    let begin_signature = Some(sign_control_message(
+        &state,
+        ceremony_id,
+        attempt_id,
+        "begin",
+        activation_digest,
+    )?);
 
     let mut beginnings = JoinSet::new();
     for peer in peer_ids
@@ -4673,6 +4877,7 @@ where
     {
         let state = state.clone();
         let peer = peer.clone();
+        let begin_signature = begin_signature.clone();
         beginnings.spawn(async move {
             let result = retry_preparation_control_classified(
                 &state,
@@ -4682,6 +4887,7 @@ where
                     ceremony_id,
                     attempt_id,
                     activation_digest,
+                    report_signature: begin_signature,
                 },
                 deadline,
             )
@@ -4699,9 +4905,24 @@ where
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
+                report_signature,
             }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
-                && got_activation == activation_digest => {}
+                && got_activation == activation_digest =>
+            {
+                record_control_ack_best_effort(
+                    &state,
+                    routes,
+                    &prepare,
+                    got_ceremony,
+                    got_attempt,
+                    "begun",
+                    got_activation,
+                    &peer,
+                    report_signature,
+                )
+                .await;
+            }
             Ok(response) => {
                 begin_error.get_or_insert_with(|| {
                     DkgError::ProtocolError(format!("invalid begin response: {response:?}"))
@@ -4813,9 +5034,8 @@ where
     let leader_authorized =
         prepare.canonical_leader_node_key() == Some(prepare.leader_node_key.as_str());
     if !leader_authorized {
-        if matches!(&prepare.kind, SessionKind::Refresh { .. }) {
-            // TODO(reporting): retain the authenticated noncanonical refresh
-            // Prepare as evidence of attributable leader impersonation.
+        if !matches!(prepare.kind, SessionKind::Fresh) {
+            report_leader_prepare_fault_best_effort(&state, routes, &prepare).await;
             crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
         }
         return Err(DkgError::Unauthorized(
@@ -4832,6 +5052,11 @@ where
     }
     let expected = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
     if expected != prepare.config_digest {
+        // Not reported: a signature only covers config_digest, so a
+        // self-inconsistent Prepare (digest doesn't match its own fields)
+        // could equally be a relay tampering with fields post-signature as
+        // the real signer's own mistake — report_leader_prepare_fault_best_effort
+        // itself refuses to attribute this ambiguous case.
         return Err(DkgError::Unauthorized(
             "Prepare configuration digest mismatch".into(),
         ));
@@ -4853,10 +5078,18 @@ where
             && attempt_id == prepare.attempt_id
             && config_digest == prepare.config_digest
         {
+            let report_signature = Some(sign_control_message(
+                &state,
+                prepare.ceremony_id,
+                prepare.attempt_id,
+                "prepared",
+                prepare.config_digest,
+            )?);
             return Ok(DkgControlMessage::Prepared {
                 ceremony_id: prepare.ceremony_id,
                 attempt_id: prepare.attempt_id,
                 config_digest: prepare.config_digest,
+                report_signature,
             });
         }
         return Err(DkgError::ProtocolError(
@@ -4864,7 +5097,15 @@ where
         ));
     }
 
-    validate_reshare_transport_routes(&state, &prepare).await?;
+    if let Err(error) = validate_reshare_transport_routes(&state, &prepare).await {
+        // Reached only after leader_authorized, sender-route, and
+        // config_digest all already matched, so `prepare` is confirmed
+        // self-consistent and genuinely signed by the real canonical
+        // leader — unlike the digest-mismatch branch above, there is no
+        // tampering ambiguity here.
+        report_leader_prepare_fault_best_effort(&state, routes, &prepare).await;
+        return Err(error);
+    }
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     handle_session_init(
         &coordinator,
@@ -4897,10 +5138,18 @@ where
             && attempt_id == prepare.attempt_id
             && config_digest == prepare.config_digest
         {
+            let report_signature = Some(sign_control_message(
+                &state,
+                prepare.ceremony_id,
+                prepare.attempt_id,
+                "prepared",
+                prepare.config_digest,
+            )?);
             return Ok(DkgControlMessage::Prepared {
                 ceremony_id: prepare.ceremony_id,
                 attempt_id: prepare.attempt_id,
                 config_digest: prepare.config_digest,
+                report_signature,
             });
         }
         return Err(DkgError::ProtocolError(
@@ -4986,10 +5235,18 @@ where
             .set_transport_topic_task(&prepare.ceremony_id.0, task.abort_handle())
             .await;
     }
+    let report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepared",
+        prepare.config_digest,
+    )?);
     Ok(DkgControlMessage::Prepared {
         ceremony_id: prepare.ceremony_id,
         attempt_id: prepare.attempt_id,
         config_digest: prepare.config_digest,
+        report_signature,
     })
 }
 
@@ -7275,6 +7532,145 @@ async fn report_leader_equivocation_best_effort<D>(
     }
 }
 
+/// Records a follower's signed control-plane acknowledgement
+/// (`Prepared`/`Activated`/`Begun`) and reports `AckEquivocation` if the
+/// same follower already signed a *different* digest for the identical
+/// (ceremony, attempt, message_kind) request. Best-effort throughout: a
+/// missing/invalid signature, or a failure to record/report, never blocks
+/// the caller's own accept/reject handling of the response — this function
+/// only ever adds attribution on top of behavior that already happens.
+#[allow(clippy::too_many_arguments)]
+async fn record_control_ack_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    message_kind: &'static str,
+    digest: [u8; 32],
+    peer: &str,
+    report_signature: Option<ControlSignature>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(signature) = report_signature else {
+        return;
+    };
+    let Some(participant) = participant_for_transport_peer(&prepare.committees, peer) else {
+        return;
+    };
+    let Some(follower_node_key) = prepare.committees.node_key(participant) else {
+        return;
+    };
+    let follower_node_key = follower_node_key.to_string();
+    if verify_control_signature(
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        &follower_node_key,
+        &signature,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let key = (
+        ceremony_id,
+        attempt_id,
+        follower_node_key.clone(),
+        message_kind,
+    );
+    let conflicting = {
+        let now = Instant::now();
+        let mut receipts = state.dkg_control_ack_receipts.lock().await;
+        receipts.retain(|_, (_, _, recorded_at)| {
+            now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT
+        });
+        match receipts.get(&key) {
+            Some((existing_digest, existing_signature, _)) if *existing_digest != digest => {
+                Some((*existing_digest, existing_signature.clone()))
+            }
+            Some(_) => None,
+            None => {
+                receipts.insert(key, (digest, signature, now));
+                return;
+            }
+        }
+    };
+    let Some((existing_digest, existing_signature)) = conflicting else {
+        return;
+    };
+
+    crate::metrics::record_dkg_transport_event("control", "ack_equivocation_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let artifact_a = ControlMessageArtifact {
+        signature: existing_signature.signature,
+        data: existing_digest.to_vec(),
+    };
+    let artifact_b = ControlMessageArtifact {
+        signature: signature.signature,
+        data: digest.to_vec(),
+    };
+    match queue_or_relay_control_message_fault(
+        &coordinator,
+        AttemptKey::new(ceremony_id, attempt_id),
+        follower_node_key,
+        message_kind.to_string(),
+        DkgControlMessageFaultKind::AckEquivocation,
+        artifact_a,
+        Some(artifact_b),
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::metrics::record_dkg_transport_event("control", "ack_equivocation_report_queued")
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("control", "ack_equivocation_report_failed");
+            tracing::warn!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                message_kind,
+                %error,
+                "failed to queue or relay authenticated control-ack equivocation"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_control_ack_best_effort_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    message_kind: &'static str,
+    digest: [u8; 32],
+    peer: &str,
+    report_signature: Option<ControlSignature>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    record_control_ack_best_effort(
+        state,
+        routes,
+        prepare,
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        peer,
+        report_signature,
+    )
+    .await
+}
+
 async fn record_public_contribution_at_leader<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -8896,7 +9292,12 @@ where
                 "leader-equivocation evidence relay requires next-committee role".into(),
             )
         })?;
-    let payload = (delivery_id_a, delivery_a.clone(), delivery_id_b, delivery_b.clone());
+    let payload = (
+        delivery_id_a,
+        delivery_a.clone(),
+        delivery_id_b,
+        delivery_b.clone(),
+    );
     relay_private_evidence(
         coord,
         attempt,
@@ -8911,6 +9312,63 @@ where
             delivery_b: delivery_b.clone(),
         },
         "leader-equivocation-evidence",
+        &payload,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn relay_control_message_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    accused_node_key: String,
+    message_kind: String,
+    fault_kind: DkgControlMessageFaultKind,
+    artifact_a: ControlMessageArtifact,
+    artifact_b: Option<ControlMessageArtifact>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "control-message fault evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (
+        accused_node_key.clone(),
+        message_kind.clone(),
+        fault_kind,
+        artifact_a.clone(),
+        artifact_b.clone(),
+    );
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayControlMessageFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            accused_node_key: accused_node_key.clone(),
+            message_kind: message_kind.to_string(),
+            fault_kind,
+            artifact_a: artifact_a.clone(),
+            artifact_b: artifact_b.clone(),
+        },
+        "control-message-fault-evidence",
         &payload,
     )
     .await
@@ -10664,6 +11122,7 @@ mod stability_tests {
             pss_interval: 60,
             policy_id: None,
             ring_id: "ring-id".into(),
+            report_signature: None,
         };
         let current_route = extract_node_part(&committees.current.peer_routes[1]).to_lowercase();
         let next_route =
@@ -11302,6 +11761,7 @@ mod stability_tests {
             pss_interval: 0,
             policy_id: None,
             ring_id: "test-ring-post".to_string(),
+            report_signature: None,
         }
     }
 
@@ -11322,7 +11782,11 @@ mod stability_tests {
 
     fn reshare_participant_set_payload(dealers: &[u32]) -> DkgPublicPayload {
         DkgPublicPayload::ReshareParticipantSet {
-            selected_dealers: dealers.iter().copied().map(ParticipantRef::current).collect(),
+            selected_dealers: dealers
+                .iter()
+                .copied()
+                .map(ParticipantRef::current)
+                .collect(),
         }
     }
 
@@ -11814,6 +12278,7 @@ mod stability_tests {
                     ceremony_id,
                     attempt_id,
                     activation_digest: [8; 32],
+                    report_signature: None,
                 })]),
             ),
             (
@@ -12286,6 +12751,7 @@ mod stability_tests {
                 ceremony_id,
                 attempt_id,
                 activation_digest: [7; 32],
+                report_signature: None,
             })]),
         )]));
 
@@ -13405,6 +13871,7 @@ mod stability_tests {
             pss_interval: 60,
             policy_id: Some("test-policy".to_string()),
             ring_id: ring_id.to_string(),
+            report_signature: None,
         };
         prepare.config_digest =
             transport::config_digest(&prepare).expect("compute config digest for test Prepare");
@@ -13477,6 +13944,7 @@ mod stability_tests {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 config_digest: got_digest,
+                ..
             } => {
                 assert_eq!(got_ceremony, prepare.ceremony_id);
                 assert_eq!(got_attempt, prepare.attempt_id);

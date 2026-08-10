@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::constants::MAX_DKG_COMMITTEE_SIZE;
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 
 pub const PUBLIC_CONTRIBUTION_SIGNING_DOMAIN: &[u8] = b"orbis-dkg-public-contribution-v1";
@@ -641,6 +643,12 @@ pub struct PrepareSession {
     pub pss_interval: u64,
     pub policy_id: Option<String>,
     pub ring_id: String,
+    /// Node-key signature over `config_digest`, binding the sender to this
+    /// exact committee/config claim so a noncanonical-leader impersonation
+    /// attempt or a route/digest claim contradicting SourceHub stays
+    /// provable after the fact. `None` only for Fresh DKG, which has no
+    /// ring to bind evidence to.
+    pub report_signature: Option<ControlSignature>,
 }
 
 impl PrepareSession {
@@ -725,6 +733,9 @@ pub enum DkgControlMessage {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         config_digest: [u8; 32],
+        /// Node-key signature over (ceremony_id, attempt_id, "prepared",
+        /// config_digest) — see `ControlSignature`.
+        report_signature: Option<ControlSignature>,
     },
     TopologyProbeAck {
         ceremony_id: CeremonyId,
@@ -736,21 +747,33 @@ pub enum DkgControlMessage {
         attempt_id: AttemptId,
         activation_digest: [u8; 32],
         active_dealers: Vec<ParticipantRef>,
+        /// Node-key signature over (ceremony_id, attempt_id, "activate",
+        /// activation_digest) — see `ControlSignature`.
+        report_signature: Option<ControlSignature>,
     },
     Activated {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         activation_digest: [u8; 32],
+        /// Node-key signature over (ceremony_id, attempt_id, "activated",
+        /// activation_digest) — see `ControlSignature`.
+        report_signature: Option<ControlSignature>,
     },
     Begin {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         activation_digest: [u8; 32],
+        /// Node-key signature over (ceremony_id, attempt_id, "begin",
+        /// activation_digest) — see `ControlSignature`.
+        report_signature: Option<ControlSignature>,
     },
     Begun {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
         activation_digest: [u8; 32],
+        /// Node-key signature over (ceremony_id, attempt_id, "begun",
+        /// activation_digest) — see `ControlSignature`.
+        report_signature: Option<ControlSignature>,
     },
     Abort {
         ceremony_id: CeremonyId,
@@ -821,6 +844,19 @@ pub enum DkgControlMessage {
         delivery_a: network::SignedPayload,
         delivery_id_b: [u8; 16],
         delivery_b: network::SignedPayload,
+    },
+    /// Relay a node-key-signed control-handshake fault (a bad `Prepare`, or
+    /// a follower's conflicting `Prepared`/`Activated`/`Begun` acks) from a
+    /// pure pending-new reshare member to a current-committee signer.
+    RelayControlMessageFaultEvidence {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        accused_node_key: String,
+        message_kind: String,
+        fault_kind: crate::reporting::v0::types::DkgControlMessageFaultKind,
+        artifact_a: crate::reporting::v0::types::ControlMessageArtifact,
+        artifact_b: Option<crate::reporting::v0::types::ControlMessageArtifact>,
     },
     EvidenceAccepted {
         ceremony_id: CeremonyId,
@@ -902,6 +938,7 @@ impl DkgControlMessage {
             Self::RelayInvalidCommitmentEvidence { .. } => "relay_invalid_commitment_evidence",
             Self::RelayPublicOriginFaultEvidence { .. } => "relay_public_origin_fault_evidence",
             Self::RelayLeaderEquivocationEvidence { .. } => "relay_leader_equivocation_evidence",
+            Self::RelayControlMessageFaultEvidence { .. } => "relay_control_message_fault_evidence",
             Self::EvidenceAccepted { .. } => "evidence_accepted",
             Self::RelayOfflineCandidates { .. } => "relay_offline_candidates",
             Self::OfflineCandidatesAccepted { .. } => "offline_candidates_accepted",
@@ -1228,6 +1265,26 @@ pub fn derive_control_message_id<T: Serialize>(
     Ok(MessageId(hasher.finalize().into()))
 }
 
+/// Canonical bytes signed by `ControlSignature` for one control-handshake
+/// message. `digest` is that message's own existing `config_digest` or
+/// `activation_digest` field — reused rather than re-derived, so signing
+/// adds no new hashing surface beyond binding it to
+/// (ceremony_id, attempt_id, message_kind).
+pub fn control_ack_signing_bytes(
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    message_kind: &str,
+    digest: [u8; 32],
+) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"orbis-dkg-control-ack-v1");
+    hasher.update(ceremony_id.0.to_be_bytes());
+    hasher.update(attempt_id.0);
+    hash_string(&mut hasher, message_kind);
+    hasher.update(digest);
+    hasher.finalize().to_vec()
+}
+
 /// Derive one recipient-independent identity for an offline-candidate relay.
 /// Every current-committee recipient therefore claims and acknowledges the
 /// same logical observation, while the authenticated sender remains bound into
@@ -1378,6 +1435,7 @@ mod tests {
             pss_interval: 60,
             policy_id: Some("policy".into()),
             ring_id: "ring".into(),
+            report_signature: None,
         };
         prepare.config_digest = config_digest(&prepare).unwrap();
 
@@ -1510,6 +1568,7 @@ mod tests {
             pss_interval: 60,
             policy_id: Some("policy".into()),
             ring_id: "ring".into(),
+            report_signature: None,
         };
         assert_eq!(prepare.canonical_leader_node_key(), Some("new-a"));
         assert_eq!(prepare.leader_route(), Some("peer-new-a"));
