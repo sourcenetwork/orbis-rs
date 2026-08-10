@@ -297,6 +297,27 @@ pub fn share_evidence_proves_failure(evidence: &SignedDkgShare) -> bool {
     !commitment.verify_share(evidence.statement.to_node_id, &share_value)
 }
 
+/// Spawn a pending-new evidence relay so it never blocks the caller (a
+/// protocol-response or ceremony-abort path). One fan-out attempt is
+/// considered sufficient — there are many independent detection points and
+/// co-signers across this reporting system, so a single relay attempt that
+/// fails is an acceptable loss rather than something worth retrying.
+fn spawn_evidence_relay<Fut>(session_id: u128, evidence_kind: &'static str, relay: Fut)
+where
+    Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(error) = relay.await {
+            tracing::warn!(
+                session_id = session_id,
+                evidence_kind,
+                %error,
+                "failed to relay evidence to a current-committee signer"
+            );
+        }
+    });
+}
+
 pub async fn queue_or_relay_invalid_share<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -309,7 +330,13 @@ where
     if local_node_is_current_route_member(coord, attempt).await? {
         queue_invalid_share_report(coord.app_state.clone(), coord.routes, evidence).await
     } else if evidence.statement.origin_protocol == "pss_reshare" {
-        relay_invalid_share_evidence(coord, attempt, evidence).await
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(attempt.session_id(), "dkg_share", async move {
+            let coordinator = DkgCoordinator::with_routes(app_state, routes);
+            relay_invalid_share_evidence(&coordinator, attempt, evidence).await
+        });
+        Ok(())
     } else {
         Err(DkgError::Unauthorized(
             "local node is not in the report signing committee".to_string(),
@@ -399,7 +426,13 @@ where
         )
         .await
     } else if commitment_a.statement.origin_protocol == "pss_reshare" {
-        relay_equivocation_evidence(coord, attempt, commitment_a, commitment_b).await
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(attempt.session_id(), "dkg_equivocation", async move {
+            let coordinator = DkgCoordinator::with_routes(app_state, routes);
+            relay_equivocation_evidence(&coordinator, attempt, commitment_a, commitment_b).await
+        });
+        Ok(())
     } else {
         Err(DkgError::Unauthorized(
             "local node is not in the report signing committee".to_string(),
@@ -442,14 +475,20 @@ where
                 "local node is not in the report signing committee".to_string(),
             ));
         }
-        relay_public_origin_fault_evidence(
-            coord,
-            attempt,
-            fault_kind,
-            contribution_a,
-            contribution_b,
-        )
-        .await
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(attempt.session_id(), "dkg_public_origin_fault", async move {
+            let coordinator = DkgCoordinator::with_routes(app_state, routes);
+            relay_public_origin_fault_evidence(
+                &coordinator,
+                attempt,
+                fault_kind,
+                contribution_a,
+                contribution_b,
+            )
+            .await
+        });
+        Ok(())
     }
 }
 
@@ -491,15 +530,21 @@ where
                 "local node is not in the report signing committee".to_string(),
             ));
         }
-        crate::dkg::v0::network::relay_leader_equivocation_evidence(
-            coord,
-            attempt,
-            delivery_id_a,
-            delivery_a,
-            delivery_id_b,
-            delivery_b,
-        )
-        .await
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(attempt.session_id(), "dkg_leader_equivocation", async move {
+            let coordinator = DkgCoordinator::with_routes(app_state, routes);
+            crate::dkg::v0::network::relay_leader_equivocation_evidence(
+                &coordinator,
+                attempt,
+                delivery_id_a,
+                delivery_a,
+                delivery_id_b,
+                delivery_b,
+            )
+            .await
+        });
+        Ok(())
     }
 }
 
@@ -543,16 +588,22 @@ where
                 "local node is not in the report signing committee".to_string(),
             ));
         }
-        crate::dkg::v0::network::relay_control_message_fault_evidence(
-            coord,
-            attempt,
-            accused_node_key,
-            message_kind,
-            fault_kind,
-            artifact_a,
-            artifact_b,
-        )
-        .await
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(attempt.session_id(), "dkg_control_message_fault", async move {
+            let coordinator = DkgCoordinator::with_routes(app_state, routes);
+            crate::dkg::v0::network::relay_control_message_fault_evidence(
+                &coordinator,
+                attempt,
+                accused_node_key,
+                message_kind,
+                fault_kind,
+                artifact_a,
+                artifact_b,
+            )
+            .await
+        });
+        Ok(())
     }
 }
 
