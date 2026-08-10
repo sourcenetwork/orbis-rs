@@ -959,11 +959,28 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     // means one or more dealers went silent. Publish the dealers we never heard
                     // from so the stall-report worker can attempt `node_offline` reports (the
                     // co-signer reachability probe filters to dealers that are actually unreachable).
-                    if matches!(
-                        state.phase,
-                        DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares
-                    ) {
-                        let missing_peer_ids = state.missing_dealer_peer_ids(state.phase);
+                    //
+                    // A pure reshare Receiver never generates commitments, so
+                    // `initiate_phase1_commitments` deliberately skips it and its `phase`
+                    // never leaves `Initializing` for the entire ceremony — even though it
+                    // is, in every meaningful sense, waiting on dealers' Phase 2 shares the
+                    // whole time. Classify by role/obligation, not only by phase: treat that
+                    // case the same as an explicit `Phase2Shares` stall. `missing_dealer_peer_ids`
+                    // itself is phase-parameterized, not role-gated (its own `Dealer`
+                    // exclusion for `Phase2Shares` doesn't apply to `Receiver`), so this reuses
+                    // its existing `received_shares` tracking rather than adding a new one.
+                    let stalled_phase = match state.phase {
+                        DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares => Some(state.phase),
+                        DkgPhase::Initializing
+                            if matches!(state.kind, SessionKind::Reshare { .. })
+                                && state.node.role() == DkgRole::Receiver =>
+                        {
+                            Some(DkgPhase::Phase2Shares)
+                        }
+                        _ => None,
+                    };
+                    if let Some(stalled_phase) = stalled_phase {
+                        let missing_peer_ids = state.missing_dealer_peer_ids(stalled_phase);
                         if !missing_peer_ids.is_empty() {
                             if let Err(error) = stall_report_tx.try_send(AbandonedPssSession {
                                 session_id: *session_id,
@@ -4410,6 +4427,84 @@ mod tests {
             mgr.session_exists(&31).await,
             "phase age must not override the attempt hard deadline"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiration_worker_reports_stall_for_pure_reshare_receiver_stuck_initializing() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let mut stall_rx = mgr
+            .take_stall_report_receiver()
+            .expect("stall receiver available on a fresh manager");
+
+        let receiver_node =
+            *DkgImpl::new(1, 2, 3, 0, DkgRole::Receiver).expect("DkgImpl::new failed");
+        mgr.create_session(90, receiver_node, 3, |_| {}).await;
+        mgr.set_session_kind(
+            &90,
+            SessionKind::Reshare {
+                ring_pk_hex: "rk".to_string(),
+                new_peer_node_keys: vec!["k1".into(), "k2".into(), "k3".into()],
+                new_threshold: 2,
+                bulletin_post_id: "post".to_string(),
+            },
+        )
+        .await;
+        mgr.set_peer_node_keys(&90, vec!["k1".into(), "k2".into(), "k3".into()])
+            .await;
+        mgr.set_node_peer_mappings(
+            &90,
+            HashMap::from([
+                (1, "peer1".to_string()),
+                (2, "peer2".to_string()),
+                (3, "peer3".to_string()),
+            ]),
+        )
+        .await;
+
+        {
+            let mut states = mgr.states.write().await;
+            let s = states.get_mut(&90).expect("session must exist");
+            assert_eq!(
+                s.node.role(),
+                DkgRole::Receiver,
+                "test setup must construct a pure receiver"
+            );
+            s.reshare.params = Some(ReshareParams {
+                old_share: None,
+                participating_ids: vec![2, 3],
+                new_threshold: 2,
+                new_total_nodes: 3,
+                new_peer_node_keys: vec!["k1".into(), "k2".into(), "k3".into()],
+                new_node_id: Some(1),
+                bulletin_post_id: "post".to_string(),
+            });
+            s.transport.hard_deadline = Some(Instant::now());
+        }
+
+        // Only dealer 2 sent its share; dealer 3 stayed silent. A pure
+        // receiver never leaves `Initializing` (it has no commitments of its
+        // own to generate), so this must not rely on the phase reaching
+        // `Phase2Shares`.
+        mgr.record_received_share(&90, 2).await;
+        assert_eq!(
+            mgr.with_state(&90, |s| s.phase).await,
+            Some(DkgPhase::Initializing),
+            "a pure receiver must stay Initializing before Phase 4"
+        );
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&90).await,
+            "session at the attempt hard deadline should be removed"
+        );
+        let event = stall_rx
+            .try_recv()
+            .expect("a stall report must be published for the silent dealer");
+        assert_eq!(event.session_id, 90);
+        assert_eq!(event.missing_peer_ids, vec!["peer3".to_string()]);
     }
 
     #[tokio::test(start_paused = true)]
