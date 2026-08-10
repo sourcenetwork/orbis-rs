@@ -146,13 +146,30 @@ where
             .await?;
             if let Some(report_evidence) = report_evidence {
                 if share_evidence_proves_failure(&report_evidence) {
-                    queue_or_relay_invalid_share(coord, attempt, report_evidence).await?;
+                    // Best-effort: a reporting-pipeline failure (capacity, registry
+                    // lookup, relay) must never surface as this function's own
+                    // error. This share is still rejected either way, and the
+                    // caller uses that outcome to send the delivery's transport
+                    // ACK — letting a report-queueing failure `?`-propagate here
+                    // would withhold that ACK over something unrelated to
+                    // whether the share itself was valid.
+                    if let Err(error) =
+                        queue_or_relay_invalid_share(coord, attempt, report_evidence).await
+                    {
+                        tracing::warn!(
+                            from_node_id = from_node_id,
+                            to_node_id = to_node_id,
+                            session_id = session_id,
+                            %error,
+                            "DKG Coordinator: failed to queue/relay invalid_crypto_response report for undeserializable DKG share"
+                        );
+                    }
                     tracing::warn!(
                         from_node_id = from_node_id,
                         to_node_id = to_node_id,
                         session_id = session_id,
                         error = %e,
-                        "DKG Coordinator: queued invalid_crypto_response report for undeserializable DKG share"
+                        "DKG Coordinator: rejected undeserializable DKG share"
                     );
                     return Ok(false);
                 }
@@ -206,13 +223,25 @@ where
         Err(e) => {
             if let Some(report_evidence) = report_evidence {
                 if share_evidence_proves_failure(&report_evidence) {
-                    queue_or_relay_invalid_share(coord, attempt, report_evidence).await?;
+                    // Best-effort — see the matching comment above for why this
+                    // must not `?`-propagate into this function's own result.
+                    if let Err(error) =
+                        queue_or_relay_invalid_share(coord, attempt, report_evidence).await
+                    {
+                        tracing::warn!(
+                            from_node_id = from_node_id,
+                            to_node_id = to_node_id,
+                            session_id = session_id,
+                            %error,
+                            "DKG Coordinator: failed to queue/relay invalid_crypto_response report for bad DKG share"
+                        );
+                    }
                     tracing::warn!(
                         from_node_id = from_node_id,
                         to_node_id = to_node_id,
                         session_id = session_id,
                         error = %e,
-                        "DKG Coordinator: queued invalid_crypto_response report for bad DKG share"
+                        "DKG Coordinator: rejected bad DKG share"
                     );
                     return Ok(false);
                 }
@@ -246,13 +275,25 @@ where
         Err(e) => {
             if let Some(report_evidence) = report_evidence {
                 if share_evidence_proves_failure(&report_evidence) {
-                    queue_or_relay_invalid_share(coord, attempt, report_evidence).await?;
+                    // Best-effort — see the matching comment in accept_share_message
+                    // for why this must not `?`-propagate into this function's own result.
+                    if let Err(error) =
+                        queue_or_relay_invalid_share(coord, attempt, report_evidence).await
+                    {
+                        tracing::warn!(
+                            from_node_id = from_node_id,
+                            to_node_id = to_node_id,
+                            session_id = session_id,
+                            %error,
+                            "DKG Coordinator: failed to queue/relay invalid_crypto_response report for pending bad DKG share"
+                        );
+                    }
                     tracing::warn!(
                         from_node_id = from_node_id,
                         to_node_id = to_node_id,
                         session_id = session_id,
                         error = %e,
-                        "DKG Coordinator: queued invalid_crypto_response report for pending bad DKG share"
+                        "DKG Coordinator: rejected pending bad DKG share"
                     );
                     return Ok(());
                 }
