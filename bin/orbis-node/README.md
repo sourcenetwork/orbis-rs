@@ -107,8 +107,8 @@ Operational rules:
 
 Direct client JWTs continue to use their issuer DID as the actor. A configured
 relay may instead sign a JWT with its `did:key` as `iss` and the user DID as
-`sub`. PRE and signing authorize the delegated user, while every committee node
-independently verifies the relay signature and allowlist entry.
+`sub`. DKG, PRE, and signing authorize the delegated user, while every committee
+node independently verifies the relay signature and allowlist entry.
 
 Configure the same relay DID on every committee member:
 
