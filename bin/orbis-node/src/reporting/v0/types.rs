@@ -1935,6 +1935,20 @@ mod tests {
             dkg_commitment_statement().canonical_bytes(),
             changed.canonical_bytes()
         );
+
+        // attempt_id must be bound into the signed bytes too, not just
+        // carried alongside them — that's what makes it tamper-proof enough to
+        // fold into the chain-side sessionDedupeID (see reporting/README.md's
+        // "Two distinct dedupe keys" section). Unlike session_nonce (self-chosen
+        // by the dealer, only usable for equivocation-nonce matching), attempt_id
+        // is network-assigned, so this binding is what lets it double as a safe
+        // dedupe-scoping key.
+        let mut changed_attempt = dkg_commitment_statement();
+        changed_attempt.attempt_id = [7u8; 32];
+        assert_ne!(
+            dkg_commitment_statement().canonical_bytes(),
+            changed_attempt.canonical_bytes()
+        );
     }
 
     #[test]

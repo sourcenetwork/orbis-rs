@@ -1788,6 +1788,55 @@ mod tests {
     use crypto::DkgImpl;
     use std::sync::Arc;
 
+    /// RPT-13: `spawn_evidence_relay` must return to its caller as soon as the
+    /// relay task is spawned, never waiting for the relay itself to resolve —
+    /// the whole point of moving it off the caller's `.await` chain. A
+    /// channel-gated relay future proves this isn't just true because the
+    /// current relay implementation happens to be fast: the metric this test
+    /// observes can only fire once the spawned task actually runs, so seeing
+    /// it still at zero immediately after the call, then incremented only
+    /// after the gate is released, demonstrates the call returned without
+    /// waiting on that future at all.
+    #[tokio::test]
+    async fn spawn_evidence_relay_does_not_block_on_relay_completion() {
+        let event = "test_relay_kind_relay_exhausted";
+        let before = crate::metrics::DKG_TRANSPORT_EVENTS_TOTAL
+            .with_label_values(&["private", event])
+            .get();
+
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        spawn_evidence_relay(1, "test_relay_kind", async move {
+            release_rx.await.ok();
+            Err(DkgError::Generic("relay never accepted".to_string()))
+        });
+
+        // The call above already returned (it's a plain `fn`, not `async fn`),
+        // and the gate is still held — the spawned task cannot have completed
+        // yet, so the failure metric must still read its pre-call value.
+        assert_eq!(
+            crate::metrics::DKG_TRANSPORT_EVENTS_TOTAL
+                .with_label_values(&["private", event])
+                .get(),
+            before,
+            "relay failure metric must not fire before the relay future resolves"
+        );
+
+        release_tx
+            .send(())
+            .expect("relay task should still be awaiting the gate");
+        // Give the spawned task a chance to run now that it's unblocked.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(
+            crate::metrics::DKG_TRANSPORT_EVENTS_TOTAL
+                .with_label_values(&["private", event])
+                .get(),
+            before + 1.0,
+            "relay failure metric should fire once the spawned task completes"
+        );
+    }
+
     fn signed_share_with_origin(origin: &str) -> SignedDkgShare {
         let commitment_statement = DkgCommitmentStatement {
             domain: DKG_COMMITMENT_DOMAIN.to_string(),

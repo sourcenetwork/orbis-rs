@@ -372,3 +372,251 @@ where
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_state::AppState;
+    use crate::dkg::v0::session_state::DkgReportEvidenceBinding;
+    use crate::helpers::test_helpers::{
+        cleanup_db, create_test_app_state_with_bulletin, test_db_path,
+    };
+    use crate::reporting::v0::state::InFlightReportKey;
+    use crate::reporting::v0::types::{
+        CommitteeScope, DkgCommitmentStatement, DkgShareStatement, DKG_COMMITMENT_DOMAIN,
+        DKG_SHARE_DOMAIN,
+    };
+    use bulletin::{dummy::DummyBulletin, r#trait::NodeInfo};
+    use common::blockchain::{
+        sign_node_message_with_hex_key, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+    };
+    use crypto::r#trait::{Dkg as _, DkgRole};
+    use crypto::DkgImpl;
+    use std::sync::Arc;
+
+    /// Sorts before `TEST_ACCOUNT_PUBKEY_HEX` (which starts with "02"), so
+    /// `node_key_for_canonical_node_id(2, [placeholder, accused])` resolves
+    /// canonical node_id 2 to the accused key.
+    const NODE1_PLACEHOLDER_KEY: &str =
+        "00000000000000000000000000000000000000000000000000000000000000";
+    const RECEIVER_NODE_KEY: &str = "receiver-node-1";
+
+    /// A fully-signed `SignedDkgShare` from node 2 ("accused",
+    /// `TEST_ACCOUNT_PUBKEY_HEX`) to node 1 (this test's coordinator). The
+    /// nested commitment is deliberately garbage too — any decode failure
+    /// (commitment or share) counts as proof of a bad share per
+    /// `share_evidence_proves_failure`, so this doesn't need real DKG crypto,
+    /// only real secp256k1 signatures over the statements.
+    fn signed_bad_share_evidence(session_id: u128, share_value: Vec<u8>) -> SignedDkgShare {
+        let request_id = session_id.to_string();
+        let commitment_statement = DkgCommitmentStatement {
+            domain: DKG_COMMITMENT_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: request_id.clone(),
+            signed_at: 100,
+            responder_node_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            commitment: vec![0xFF; 5],
+            session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
+            crypto_backend: DkgImpl::name(),
+        };
+        let commitment_signature = sign_node_message_with_hex_key(
+            TEST_ACCOUNT_HEX_KEY,
+            &commitment_statement.canonical_bytes(),
+        )
+        .expect("sign nested commitment statement");
+
+        let statement = DkgShareStatement {
+            domain: DKG_SHARE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id,
+            signed_at: 100,
+            responder_node_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+            receiver_node_key: RECEIVER_NODE_KEY.to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: 2,
+            to_node_id: 1,
+            commitment_statement,
+            commitment_signature,
+            share_value,
+            nonce: [3u8; 16],
+            crypto_backend: DkgImpl::name(),
+        };
+        let signature =
+            sign_node_message_with_hex_key(TEST_ACCOUNT_HEX_KEY, &statement.canonical_bytes())
+                .expect("sign share statement");
+        SignedDkgShare {
+            statement,
+            signature,
+        }
+    }
+
+    /// Wires up a coordinator whose session takes the full evidence-verify-
+    /// and-report path for a share from node 2 to node 1: this node is node 1
+    /// and a current-route member (so reporting queues directly instead of
+    /// relaying), and the accused's `NodeInfo` is seeded on the dummy bulletin
+    /// so `queue_report`'s lookup succeeds.
+    async fn coordinator_ready_to_report(
+        db_name: &str,
+        session_id: u128,
+    ) -> (Arc<AppState<DkgImpl>>, AttemptKey) {
+        let request_id = session_id.to_string();
+        let bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
+        bulletin
+            .set_node_info(
+                TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                NodeInfo {
+                    peer_id: "accused-peer".to_string(),
+                    controller_key: TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                    whitelisted_policy_ids: vec![],
+                    whitelisted_ring_ids: vec![],
+                },
+            )
+            .expect("seed accused NodeInfo");
+        let app_state =
+            Arc::new(create_test_app_state_with_bulletin(true, bulletin, db_name).await);
+        let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+        let attempt = AttemptKey::test(session_id);
+
+        coordinator
+            .create_session(attempt, 1, 2, 3, DkgRole::Standard, |state| {
+                state.kind = SessionKind::Refresh {
+                    ring_pk_hex: "pk".to_string(),
+                };
+                state.report_evidence_binding = Some(DkgReportEvidenceBinding {
+                    ring_id: "ring".to_string(),
+                    ring_pk: "pk".to_string(),
+                    ring_state_sha256: "00".repeat(32),
+                    chain_id: "chain".to_string(),
+                    protocol_version: 0,
+                    request_id,
+                    origin_protocol: "pss_refresh".to_string(),
+                    current_node_keys: vec![
+                        NODE1_PLACEHOLDER_KEY.to_string(),
+                        TEST_ACCOUNT_PUBKEY_HEX.to_string(),
+                    ],
+                    receiver_node_keys: vec![RECEIVER_NODE_KEY.to_string()],
+                });
+                state
+                    .routing
+                    .node_id_to_peer_id
+                    .insert(1, format!("{local_peer_hex}@127.0.0.1:1234"));
+            })
+            .await
+            .expect("create session for report test");
+
+        (app_state, attempt)
+    }
+
+    /// RPT-15: a wrong-length share must flow into the same evidence-verify-
+    /// and-report path as any other undecodable share, not be silently
+    /// dropped by an early length check.
+    #[tokio::test]
+    async fn accept_share_message_reports_wrong_length_share_like_any_other_decode_failure() {
+        let db_name = "share_wrong_length_reports";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let (app_state, attempt) = coordinator_ready_to_report(db_name, 5001).await;
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+
+        // Deliberately the wrong length for a real share value.
+        let bad_share_value = vec![0x11; 3];
+        let evidence = signed_bad_share_evidence(5001, bad_share_value.clone());
+
+        let accepted = accept_share_message(
+            &coordinator,
+            attempt,
+            2,
+            1,
+            bad_share_value,
+            [3u8; 16],
+            Some(evidence),
+        )
+        .await
+        .expect("a decode-failure share is rejected, not a hard error");
+
+        assert!(!accepted, "an undeserializable share must not be accepted");
+        assert_eq!(
+            app_state.reporting_state.in_flight_count(),
+            1,
+            "the wrong-length share must reach the same reporting path as any other \
+             undecodable share, not be silently dropped"
+        );
+
+        cleanup_db(&db_path);
+    }
+
+    /// RPT-14: a reporting-pipeline failure (capacity exhausted) must never
+    /// surface as `accept_share_message`'s own error — the caller uses this
+    /// function's `Ok`/`Err` split to decide whether to send the private
+    /// delivery's transport ACK, and that must depend only on whether the
+    /// share itself was valid, not on reporting capacity.
+    #[tokio::test]
+    async fn accept_share_message_does_not_propagate_reporting_capacity_failure() {
+        let db_name = "share_reporting_capacity_exhausted";
+        let db_path = test_db_path(db_name);
+        cleanup_db(&db_path);
+        let (app_state, attempt) = coordinator_ready_to_report(db_name, 5002).await;
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+
+        // Fill every in-flight report slot with a task that never completes, so
+        // the next queue attempt synchronously hits CapacityReached before ever
+        // touching the (also-unavailable-in-this-test) chain.
+        for i in 0..128 {
+            let claimed = app_state
+                .reporting_state
+                .spawn(
+                    InFlightReportKey {
+                        report_type: "node_offline",
+                        ring_id: "filler-ring".to_string(),
+                        subject_key: format!("filler-{i}"),
+                    },
+                    std::future::pending::<()>(),
+                )
+                .await
+                .expect("filler slot should be claimed");
+            assert!(claimed, "each filler key must be distinct");
+        }
+        assert_eq!(app_state.reporting_state.in_flight_count(), 128);
+
+        let bad_share_value = vec![0x22; 3];
+        let evidence = signed_bad_share_evidence(5002, bad_share_value.clone());
+
+        let accepted = accept_share_message(
+            &coordinator,
+            attempt,
+            2,
+            1,
+            bad_share_value,
+            [3u8; 16],
+            Some(evidence),
+        )
+        .await
+        .expect(
+            "a reporting-capacity hiccup must never surface as this function's own \
+             error — the share is still cleanly rejected either way",
+        );
+
+        assert!(!accepted, "an undeserializable share must not be accepted");
+        // Every slot is still held by a filler task; the real report attempt
+        // must have failed to queue at all, not squeezed in as a 129th entry.
+        assert_eq!(app_state.reporting_state.in_flight_count(), 128);
+
+        cleanup_db(&db_path);
+    }
+}
