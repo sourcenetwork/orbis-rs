@@ -18,6 +18,7 @@ use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
 use std::{
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc,
@@ -114,8 +115,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Bulletin implementation: {}", BulletinImpl::name());
         tracing::info!("Network implementation: {}", NetworkImpl::name());
 
-        // Get password for encrypting ring key shares
-        let password = get_password(None).map_err(|e| format!("Failed to get password: {}", e))?;
+        // Get password for encrypting ring key shares. 
+        // Loads from environment, if available,
+        // otherwise uses default orbis location
+        let password_file = std::env::var(constants::PASSWORD_FILE_ENV_VAR)
+        .ok()
+        .filter(|file| !file.is_empty())
+        .map(PathBuf::from);
+        let password =
+            get_password(password_file).map_err(|e| format!("Failed to get password: {}", e))?;
         let local_storage = LocalStorageImpl::new(password, db_path(&runtime_base_path, "orbis"))
             .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
