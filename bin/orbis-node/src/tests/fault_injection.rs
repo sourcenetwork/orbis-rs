@@ -231,6 +231,7 @@ async fn setup_fault_three_node_network(
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                trusted_auth_relay_dids: vec![],
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },

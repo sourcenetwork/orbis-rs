@@ -6,10 +6,12 @@
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state_default, get_test_ring_post,
-    setup_three_node_network_with_pre, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_pre, setup_three_node_network_with_pre_and_trusted_relays,
+    test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding, PreResponse};
 use crate::pre::v0::service::PreServiceImpl;
+use authn::{DkgClaims, PreClaims};
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,
@@ -17,7 +19,7 @@ use crypto::r#trait::{
 use crypto::{DkgImpl, PreImpl};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 use zeroize::Zeroizing;
@@ -96,8 +98,8 @@ fn test_report_binding(
 /// 5. Bob decrypts the secret using his private key
 #[tokio::test]
 #[serial_test::serial]
-async fn test_dkg_then_pre_end_to_end() {
-    let db_name = "test_dkg_then_pre_end_to_end";
+async fn test_delegated_dkg_then_pre_end_to_end() {
+    let db_name = "test_delegated_dkg_then_pre_end_to_end";
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -110,7 +112,13 @@ async fn test_dkg_then_pre_end_to_end() {
     // Step 1: Setup the three-node network with both DKG and PRE handlers
     // =========================================================================
     println!("Step 1: Setting up three-node network...");
-    let mut network = setup_three_node_network_with_pre(true, true, true, db_name).await;
+    let relay = TestKeyPair::new();
+    let actor_id = "did:opk:alice";
+    let mut network = setup_three_node_network_with_pre_and_trusted_relays(
+        db_name,
+        HashSet::from([relay.did_uri.clone()]),
+    )
+    .await;
 
     // Get all peer IDs (including initiator) for participation
     let peer_ids = network.get_all_peer_ids();
@@ -131,9 +139,14 @@ async fn test_dkg_then_pre_end_to_end() {
     };
 
     // Create authenticated request
-    let test_keys = TestKeyPair::new();
-    let token = test_keys
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+    let token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            DkgClaims {
+                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            },
+            Duration::from_secs(60),
+        )
         .expect("Failed to create JWT");
 
     println!("Node1 sending StartDkgRequest...");
@@ -234,8 +247,17 @@ async fn test_dkg_then_pre_end_to_end() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
-    let pre_token = test_keys
-        .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
+    let pre_token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            PreClaims {
+                rdr_pk: bob_pk_bytes.clone(),
+                object_id: object_id.clone(),
+                derivation: None,
+                salt: None,
+            },
+            Duration::from_secs(60),
+        )
         .expect("Failed to create PRE JWT");
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin

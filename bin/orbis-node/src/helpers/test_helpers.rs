@@ -53,7 +53,7 @@ use local_storage::{
 };
 use network::{NetworkImpl, Router};
 use proto::info_service::NodeStatus;
-use std::{fs, sync::Arc};
+use std::{collections::HashSet, fs, sync::Arc};
 use tokio::time::Duration;
 use zeroize::Zeroizing;
 
@@ -357,7 +357,15 @@ fn seed_three_node_dummy_bulletin(
 pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> ThreeNodeNetwork {
     // DKG reshare Phase 4 collects a threshold signature over the bulletin
     // update, so even DKG-focused network tests need the Sign handler available.
-    setup_three_node_network_impl(start_routers, true, true, db_name, TestRouterHandlers::All).await
+    setup_three_node_network_impl(
+        start_routers,
+        true,
+        true,
+        db_name,
+        TestRouterHandlers::All,
+        HashSet::new(),
+    )
+    .await
 }
 
 /// Which protocol handlers the test routers install.
@@ -455,6 +463,7 @@ async fn setup_three_node_network_impl(
     dummy_bulletin: bool,
     db_name: &str,
     handlers: TestRouterHandlers,
+    trusted_auth_relay_dids: HashSet<String>,
 ) -> ThreeNodeNetwork {
     println!(
         "Setting up three-node test network with {} handlers...",
@@ -492,6 +501,7 @@ async fn setup_three_node_network_impl(
         &format!("{}_1", db_name),
     )
     .await;
+    let alice_state = alice_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids.clone());
     let (bob_state, bob_peer_id, bob_peer_id_with_addr) = setup_test_node(
         "Bob",
         dummy_authz,
@@ -500,6 +510,7 @@ async fn setup_three_node_network_impl(
         &format!("{}_2", db_name),
     )
     .await;
+    let bob_state = bob_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids.clone());
     let (charlie_state, charlie_peer_id, charlie_peer_id_with_addr) = setup_test_node(
         "Charlie",
         dummy_authz,
@@ -508,6 +519,7 @@ async fn setup_three_node_network_impl(
         &format!("{}_3", db_name),
     )
     .await;
+    let charlie_state = charlie_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids);
 
     if let Some(dummy_bulletin) = &dummy_bulletin_arc {
         seed_three_node_dummy_bulletin(
@@ -576,6 +588,22 @@ pub async fn setup_three_node_network_with_pre(
         dummy_bulletin,
         db_name,
         TestRouterHandlers::DkgPre,
+        HashSet::new(),
+    )
+    .await
+}
+
+pub async fn setup_three_node_network_with_pre_and_trusted_relays(
+    db_name: &str,
+    trusted_auth_relay_dids: HashSet<String>,
+) -> ThreeNodeNetwork {
+    setup_three_node_network_impl(
+        true,
+        true,
+        true,
+        db_name,
+        TestRouterHandlers::DkgPre,
+        trusted_auth_relay_dids,
     )
     .await
 }
@@ -606,6 +634,22 @@ pub async fn setup_three_node_network_with_sign(
         dummy_bulletin,
         db_name,
         TestRouterHandlers::All,
+        HashSet::new(),
+    )
+    .await
+}
+
+pub async fn setup_three_node_network_with_sign_and_trusted_relays(
+    db_name: &str,
+    trusted_auth_relay_dids: HashSet<String>,
+) -> ThreeNodeNetwork {
+    setup_three_node_network_impl(
+        true,
+        true,
+        true,
+        db_name,
+        TestRouterHandlers::All,
+        trusted_auth_relay_dids,
     )
     .await
 }

@@ -1,5 +1,6 @@
 use super::PreCoordinator;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
+use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
     check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
@@ -110,6 +111,8 @@ where
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
+            .map_err(PreError::Unauthorized)?;
 
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(
@@ -144,7 +147,7 @@ where
             &*self.app_state.authz,
             &document_payload,
             &ctx.object_id,
-            &token.issuer_id,
+            &actor_id,
             ctx.valid_window.clone(),
         )
         .await
@@ -161,7 +164,7 @@ where
                         chain_id,
                         request_id: request_id.clone(),
                         origin_protocol: "pre".to_string(),
-                        actor_id: token.issuer_id.clone(),
+                        actor_id: actor_id.clone(),
                         object_id: ctx.object_id.clone(),
                         user_signed_at: token.issued_time,
                         valid_window: ctx.valid_window.clone(),

@@ -314,6 +314,8 @@ where
         JWT_CLOCK_SKEW_LEEWAY_SECS,
     )
     .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+    let actor_id = request_actor(&token, &coord.app_state.trusted_auth_relay_dids)
+        .map_err(DkgError::Unauthorized)?;
     validate_dkg_claims(&token, ring_id)?;
 
     let (bulletin_ring_payload, effective_routes) =
@@ -351,6 +353,7 @@ where
     .await?;
     tracing::info!(
         issuer = %token.issuer_id,
+        actor = %actor_id,
         threshold = threshold,
         policy_id = ?policy_id,
         "DKG Coordinator: SessionInit JWT validated successfully"

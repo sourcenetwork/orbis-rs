@@ -8,7 +8,8 @@ use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::ring::RingConfig;
 use crate::helpers::test_helpers::{
     cleanup_db, create_authenticated_request, create_test_app_state, get_test_ring_post,
-    setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
+    setup_three_node_network_with_sign, setup_three_node_network_with_sign_and_trusted_relays,
+    test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
@@ -18,6 +19,7 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 #[cfg(feature = "decaf377")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
+use authn::{DkgClaims, SignClaims};
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{
@@ -27,7 +29,8 @@ use crypto::r#trait::{CryptoDeserialize, Dkg, ThresholdSigner};
 use crypto::{DkgImpl, SignImpl};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::sign::{sign_service_server::SignService, StartSignRequest};
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{collections::HashSet, sync::Arc};
 use tokio::time::{sleep, Duration};
 /// End-to-end test: DKG → Sign message → Verify signature
 ///
@@ -1130,8 +1133,8 @@ fn setup_key_derivation_in_bulletin(
 /// DKG → post KeyDerivation → sign arbitrary message with JWT auth → success.
 #[tokio::test]
 #[serial_test::serial]
-async fn test_dkg_then_sign_policy_end_to_end() {
-    let db_name = "test_dkg_then_sign_policy_end_to_end";
+async fn test_delegated_dkg_then_sign_policy_end_to_end() {
+    let db_name = "test_delegated_dkg_then_sign_policy_end_to_end";
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -1140,15 +1143,26 @@ async fn test_dkg_then_sign_policy_end_to_end() {
 
     println!("=== Starting Policy Sign End-to-End Test ===\n");
 
-    let mut network = setup_three_node_network_with_sign(true, true, true, db_name).await;
+    let relay = TestKeyPair::new();
+    let actor_id = "did:opk:alice";
+    let mut network = setup_three_node_network_with_sign_and_trusted_relays(
+        db_name,
+        HashSet::from([relay.did_uri.clone()]),
+    )
+    .await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG
     let node1_service =
         DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
-    let test_keys = TestKeyPair::new();
-    let token = test_keys
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+    let token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            DkgClaims {
+                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            },
+            Duration::from_secs(60),
+        )
         .expect("create DKG JWT");
     let result = node1_service
         .start_dkg(
@@ -1180,8 +1194,15 @@ async fn test_dkg_then_sign_policy_end_to_end() {
     let message = b"Hello, Policy Signing World!".to_vec();
 
     // Create valid sign JWT
-    let sign_token = test_keys
-        .create_sign_jwt(POLICY_TEST_DERIVATION_ID, &message)
+    let sign_token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            SignClaims {
+                derivation_id: POLICY_TEST_DERIVATION_ID.to_string(),
+                message_sha256: Sha256::digest(&message).to_vec(),
+            },
+            Duration::from_secs(60),
+        )
         .expect("create sign JWT");
 
     let sign_coordinator = SignCoordinator::<DkgImpl, SignImpl>::with_routes(
