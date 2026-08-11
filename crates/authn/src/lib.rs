@@ -2,7 +2,7 @@ pub mod error;
 pub mod jwt_builder;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use did_key::{resolve, KeyMaterial};
+use did_key::{resolve, DIDCore, KeyMaterial, CONFIG_LD_PUBLIC};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -82,9 +82,13 @@ pub fn resolve_actor_id<'a, T>(
 pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
     let key = resolve(issuer_id)
         .map_err(|_| AuthNError::DidError("unable to resolve relay issuer DID".to_string()))?;
-    if key.public_key_bytes().len() != 32 {
+    let is_ed25519 = key
+        .get_verification_methods(CONFIG_LD_PUBLIC, issuer_id)
+        .first()
+        .is_some_and(|method| method.key_type == "Ed25519VerificationKey2018");
+    if !is_ed25519 {
         return Err(AuthNError::DidError(
-            "relay issuer must contain a 32-byte Ed25519 public key".to_string(),
+            "relay issuer must contain an Ed25519 public key".to_string(),
         ));
     }
     Ok(())

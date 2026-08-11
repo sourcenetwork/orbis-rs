@@ -1,6 +1,6 @@
 use super::*;
 use crate::jwt_builder::JwtSigner;
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
+use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, X25519KeyPair};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
@@ -534,6 +534,17 @@ fn direct_token_uses_issuer_as_actor() {
         resolve_actor_id(&token, &HashSet::new()).unwrap(),
         token.issuer_id
     );
+}
+
+#[test]
+fn relay_issuer_must_use_ed25519_key() {
+    let ed25519 = generate::<DidEd25519KeyPair>(None);
+    let ed25519_did = format!("did:key:{}", ed25519.fingerprint());
+    assert!(validate_relay_issuer(&ed25519_did).is_ok());
+
+    let x25519 = generate::<X25519KeyPair>(None);
+    let x25519_did = format!("did:key:{}", x25519.fingerprint());
+    assert!(validate_relay_issuer(&x25519_did).is_err());
 }
 
 #[test]
