@@ -59,8 +59,13 @@ where
             if let Err(error) =
                 create_report::<D, S>(app_state, routes, observation, Arc::clone(&handler)).await
             {
+                let status = if matches!(error, ReportingError::Expired) {
+                    "expired"
+                } else {
+                    "failed"
+                };
                 crate::metrics::REPORT_ATTEMPTS_TOTAL
-                    .with_label_values(&[report_type, "failed"])
+                    .with_label_values(&[report_type, status])
                     .inc();
                 tracing::warn!(
                     report_type,

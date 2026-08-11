@@ -5,11 +5,12 @@ as PRE, DKG, PSS, and signing should only submit normalized observations here;
 report construction, validation, threshold signing, and delivery should stay in
 this module.
 
-Supported report types are `node_offline` and `invalid_crypto_response`. They
-are intentionally small: protocols can keep serving the user while reporting
-tries, in the background, to produce a threshold-signed artifact proving that a
-committee member appears offline or returned an attributable bad cryptographic
-response.
+Supported report types are `node_offline`, `invalid_crypto_response`, and
+`unauthorized_request`. They are intentionally small: protocols can keep
+serving the user while reporting tries, in the background, to produce a
+threshold-signed artifact proving that a committee member appears offline,
+returned an attributable bad cryptographic response, or relayed a request that
+fails a re-check against Authz.
 
 ## High-level flow
 
@@ -235,6 +236,56 @@ ring-state digest). The signed evidence wire fields are mandatory — all ring
 nodes must upgrade together. Like `node_offline`, this report attributes fault,
 not intent.
 
+## `unauthorized_request` flow
+
+`unauthorized_request` attributes a node that relayed a Sign/PRE request on
+behalf of another node, where the acceptor's own ACP re-check on that request
+failed. It exists because a relayer sits between the original caller and the
+acceptor: the acceptor only sees the relayer's forwarded copy, so a relayer
+that forwards something it should have rejected needs to be independently
+attributable, the same way an invalid cryptographic response is.
+
+1. A relaying node signs a `RelayRequestStatement` describing the request it's
+   forwarding (chain/ring binding, `request_id`, `origin_protocol`, actor/object
+   ids, the caller's own signed timestamp, and an optional `ValidWindow`) and
+   attaches its own `checked_at_anchor` — an opaque, backend-agnostic Authz
+   point-in-history token (not necessarily a block height) captured when it
+   itself checked authorization before relaying.
+2. The acceptor re-runs its own ACP check on the forwarded request. If that
+   check fails, it calls `queue_unauthorized_request_report`, which reads the
+   relayer's current `NodeInfo` from the bulletin and queues an
+   `UnauthorizedRequestObservation` through the same `queue_report` path every
+   other report type uses.
+3. `origin_protocol` is always `pre` or `sign` (never `pss_refresh`/
+   `pss_reshare`/`report` — this report type is about the original relay hop,
+   not any PSS/report-signing context those values distinguish for
+   `invalid_crypto_response`'s `sign` evidence kind).
+4. Only the current committee signs (the relayer is always a current-committee
+   member; there's no pending-new-relay path here since this is about a caller
+   → relayer → acceptor hop, not committee-boundary evidence).
+
+Signer-side validation (co-signers, independent of the accepting node):
+
+- statement↔envelope binding: chain_id, ring_id, ring_pk, ring_state digest,
+  the request's protocol version at `observed_at`, and `from_node_id` matches
+  the relayer's own canonical node id in its accused-committee scope;
+- the relayer's signature over its own statement verifies under
+  `accused_node_key`;
+- **anti-framing re-verification, the refutation this report type is built
+  around**: re-run the ACP check for the relayed request as of the relayer's
+  own captured `checked_at_anchor`. If the actor **is** authorized at that
+  anchor, the relayer forwarded a legitimate request and the report is
+  rejected — only an unauthorized verdict at that anchor confirms the fault.
+  `anchor_time(checked_at_anchor) ≈ signed_at` (within `RELAY_CHECK_MAX_DRIFT_SECS`)
+  binds the anchor to the relay moment, protecting an honest relayer from a
+  policy revocation that lands right after it forwards — the anchor reflects
+  what the relayer actually saw, not what's true now.
+
+Demerit weight is the ring's `unauthorized_request_demerits` (DemeritConfig).
+Dedupe follows the same two-key shape as every other report type (see
+[Two distinct dedupe keys](#two-distinct-dedupe-keys) below); `attempt_id`
+does not apply here since this isn't DKG evidence.
+
 ## Common validation gates
 
 ### orbis-rs signer-side gates
@@ -397,6 +448,39 @@ elapsed. That's safe to do unconditionally: the envelope's own
 that point regardless of whether the dedupe record still exists, so there's
 no replay gap opened by forgetting it.
 
+### DKG-specific expiry
+
+DKG evidence and reports live under three independent timescales that are
+easy to conflate but govern different things:
+
+- **The report's own TTL — 120s (`ReportTTLSeconds`), the same for every
+  report type.** This is the window described above:
+  `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS` pins the envelope's
+  `expires_at` to when the evidence was actually signed, not to whenever the
+  report happens to be submitted. This is what the chain-side dedupe records
+  are pruned against.
+- **The ceremony's own attempt deadline — `DKG_ATTEMPT_TIMEOUT`
+  (`constants.rs`), 15 minutes in production.** This is a transport-layer
+  concept, unrelated to reporting: it's when `expiration_worker` gives up on a
+  stalled DKG/PSS attempt and tears down its session state (see
+  [Report-before-teardown (DKG transport)](#report-before-teardown-dkg-transport)
+  above for what gets reported before that teardown happens). Evidence that
+  depends on live session state (`transport_attempt`, a staged
+  `refresh.candidate`, etc.) can only be gathered before this deadline passes,
+  since the state it reads disappears at that point.
+- **Post-completion session retention — `DKG_COMPLETED_SESSION_TTL`
+  (`constants.rs`), 5 minutes.** A *successfully completed* ceremony's session
+  state isn't torn down immediately — it's kept queryable for this long
+  afterward, which is what lets evidence about the tail end of a ceremony
+  (e.g. a leader's final `RefreshHealthCheckResult`) still be gathered and
+  reported shortly after the ceremony itself finished, not just while it was
+  still in progress.
+
+None of these three windows overlaps with or extends another: the 120s report
+TTL always governs whether a *report* can still be submitted once evidence has
+been signed, regardless of which of the other two windows produced that
+evidence.
+
 ## Demerits
 
 `DemeritAmountForReportType` (`x/orbis/keeper/demerits.go`) maps each report
@@ -428,6 +512,63 @@ To add another invalid-crypto evidence kind under the existing report type,
 extend `InvalidCryptoResponse`, add statement shape/signature/anti-framing
 validation in the handler, update SourceHub's decoder, and add matching golden
 vectors on both sides.
+
+## Metrics
+
+`report_attempts_total{report_type, status}` is the main funnel metric — every
+`queue_report` call moves through some subset of these `status` values, in
+roughly this order:
+
+- `queued` — a new in-flight slot was claimed; `duplicate` if it collided with
+  work already in flight for the same handler-owned key instead.
+- `capacity_reached` — the in-flight slot claim itself failed because
+  `MAX_IN_FLIGHT_REPORTS` (128) was already full; distinct from `duplicate`
+  (this is "too much unrelated work in flight", not "this exact report is
+  already queued").
+- `signed` — the background task completed and produced a threshold-signed
+  report.
+- `expired` — same background task, but it failed specifically because the
+  evidence's `observed_at`/`expires_at` window had already lapsed
+  (`ReportingError::Expired`) by the time enough co-signers validated it.
+- `failed` — the background task failed for any other reason (chain read
+  error, co-signer rejection, below-threshold, etc.) — the catch-all for
+  failures that aren't capacity or expiry.
+
+This covers "observation queued", "duplicate", "report signed", and "report
+expired" from this report type's own funnel. The other three named states live
+elsewhere, closer to where they actually happen:
+
+- **fault detected** — for DKG control/public-plane evidence kinds, a
+  `dkg_transport_events_total{plane, event}` `*_candidate` event
+  (`origin_fault_candidate`, `equivocation_candidate`, `leader_equivocation_
+  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`)
+  fires at the moment a fault is first recognized, before any report is even
+  built. PRE/Sign/`dkg_share`/`dkg_invalid_refresh_commitment` evidence kinds
+  don't have a separate "detected" moment distinct from "queued" — a
+  signature-valid-but-failing response goes straight to
+  `ReportObservation::InvalidCryptoResponse`, so `status="queued"` above is
+  the first and only signal for those.
+- **relay accepted** — pending-new evidence relay (`spawn_evidence_relay` in
+  `dkg/v0/coordinator/evidence.rs`, the non-blocking fan-out described under
+  `dkg_control_message_fault` above) records
+  `dkg_transport_events_total{plane="private", event="<evidence_kind>_relay_
+  accepted"}` on success, or `<evidence_kind>_relay_exhausted` if no
+  current-committee peer accepted it.
+- **observation dropped** — deliberately *not* one metric. Two genuinely
+  different subsystems can drop an observation before it ever becomes a
+  report, and unifying them into one counter would blur which one needs
+  attention:
+  - `report_attempts_total{status="capacity_reached"}` above — the reporting
+    pipeline itself is backed up;
+  - `dkg_transport_events_total{plane="pss_stall_report", event="dropped"}` —
+    a completely separate channel, in `session_state.rs`'s stall-detection
+    sweep, filling up (bounded at 256, drop-newest-and-count by design — see
+    the doc comment on that field). This is about DKG stall-detection volume,
+    not reporting-pipeline volume.
+
+`report_in_flight` (gauge) tracks the current size of the in-flight set
+directly. `report_health_checks_total{status}` covers `node_offline`'s
+independent health-probe outcomes, separate from the funnel above.
 
 ## Test expectations
 

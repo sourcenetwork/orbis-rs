@@ -310,17 +310,25 @@ where
     Fut: std::future::Future<Output = Result<()>> + Send + 'static,
 {
     tokio::spawn(async move {
-        if let Err(error) = relay.await {
-            crate::metrics::record_dkg_transport_event(
-                "private",
-                &format!("{evidence_kind}_relay_exhausted"),
-            );
-            tracing::warn!(
-                session_id = session_id,
-                evidence_kind,
-                %error,
-                "failed to relay evidence to a current-committee signer"
-            );
+        match relay.await {
+            Ok(()) => {
+                crate::metrics::record_dkg_transport_event(
+                    "private",
+                    &format!("{evidence_kind}_relay_accepted"),
+                );
+            }
+            Err(error) => {
+                crate::metrics::record_dkg_transport_event(
+                    "private",
+                    &format!("{evidence_kind}_relay_exhausted"),
+                );
+                tracing::warn!(
+                    session_id = session_id,
+                    evidence_kind,
+                    %error,
+                    "failed to relay evidence to a current-committee signer"
+                );
+            }
         }
     });
 }
