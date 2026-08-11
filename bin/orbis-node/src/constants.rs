@@ -313,6 +313,9 @@ pub const PASSWORD_FILE_NAME: &str = ".orbis_password";
 /// in a shell script or Dockerfile ENV instruction.
 pub const PASSWORD_ENV_VAR: &str = "ORBIS_PASSWORD";
 
+/// Environment variable naming the path of the password file
+pub const PASSWORD_FILE_ENV_VAR: &str = "ORBIS_PASSWORD_FILE";
+
 // ============================================================================
 // Secret Key (Peer Identity) Configuration Constants
 // ============================================================================
