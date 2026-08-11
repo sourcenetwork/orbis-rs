@@ -35,7 +35,13 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{blockchain::ChainConfig, SourceHubTestContainer};
+use common::{
+    blockchain::{
+        events::ReportEventSubscription, ChainConfig, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY,
+    },
+    SourceHubTestContainer,
+};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
@@ -939,5 +945,203 @@ async fn test_dkg_fails_when_node_unreachable() {
     println!(
         "DKG correctly failed with charlie blocked: {:?}",
         dkg_result.unwrap_err()
+    );
+}
+
+/// A private DKG-share pair partner that silently stalls every response (never
+/// hangs up, never replies) is reported `node_offline` once the ceremony's
+/// hard attempt deadline passes — distinct from `test_dkg_repairs_gossip_loss_
+/// and_private_disconnects` above, which stalls exactly one response and
+/// proves the retry path recovers. Here every response stalls for the whole
+/// ceremony, so retries never succeed and the sender's terminal-offline check
+/// (`open_private_pair` in `network.rs`) fires at the deadline.
+///
+/// Fault injection here only wraps a node's own *outbound* connections, not
+/// its inbound/server side, and is scoped by protocol, not by peer — so it
+/// can't target "peer X's responses to peer Y" directly. Instead this stalls
+/// the canonical-middle node's outbound view: in a 3-node ring the two lower
+/// node IDs each open exactly one private pair with a higher ID, and the
+/// middle ID opens a stream only to the highest ID (it's a pure responder for
+/// the lowest ID's pair) — so stalling the middle node's outbound private
+/// responses deterministically implicates only the highest-ID node.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_private_pair_terminal_stall_triggers_on_chain_report() {
+    let net = setup_fault_three_node_network("fault_dkg_private_terminal", 51078).await;
+
+    let mut ordered: Vec<(&str, &str, &FaultNetworkController)> = vec![
+        (
+            net.node_keys[0].as_str(),
+            net.alice.grpc_endpoint.as_str(),
+            &net.alice.fault_ctrl,
+        ),
+        (
+            net.node_keys[1].as_str(),
+            net.bob.grpc_endpoint.as_str(),
+            &net.bob.fault_ctrl,
+        ),
+        (
+            net.node_keys[2].as_str(),
+            net.charlie.grpc_endpoint.as_str(),
+            &net.charlie.fault_ctrl,
+        ),
+    ];
+    ordered.sort_by(|left, right| left.0.cmp(right.0));
+    let (_lowest_key, lowest_endpoint, _) = ordered[0];
+    let (_middle_key, _middle_endpoint, middle_ctrl) = ordered[1];
+    let (highest_key, _highest_endpoint, _) = ordered[2];
+
+    // Every private-plane response the middle node's own outbound connections
+    // receive stalls for the rest of the ceremony (a huge pass-through-0
+    // count), well past PEER_RESPONSE_TIMEOUT, so retries never succeed and
+    // the sender never observes a real reply from its higher-ID partner.
+    middle_ctrl
+        .stall_protocol_responses_after(
+            network::V0.dkg_private_alpn,
+            0,
+            1000,
+            PEER_RESPONSE_TIMEOUT + Duration::from_secs(1),
+        )
+        .await;
+
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
+        .await
+        .expect("connect report event subscription");
+
+    // Fire-and-forget: the ceremony runs to its hard deadline in the
+    // background regardless of whether this triggering RPC call is still
+    // being awaited.
+    tokio::spawn(cli_tool::do_dkg(lowest_endpoint.to_string(), ring_id.clone()));
+
+    println!("Waiting for organic private-pair-stall EventReportAccepted on chain (up to 240s)...");
+    let event = sub
+        .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(240), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == highest_key
+        })
+        .await
+        .expect("stalled private pair should organically report the silent partner");
+
+    println!(
+        "Private-pair-stall report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, highest_key,
+        "the highest-ID node should be accused, since only the middle node's \
+         outbound pair to it was stalled"
+    );
+    assert_eq!(event.ring_id, ring_id, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert_ne!(
+        event.reporter_node_key, highest_key,
+        "the accused node should not be its own reporter"
+    );
+
+    let controller_client = SourceHubClient::with_signer(
+        net.chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, highest_key)
+        .await
+        .expect("query accused demerits");
+    assert!(
+        demerits > 0,
+        "silent private-pair partner should receive at least one demerit"
+    );
+}
+
+/// A committee member that never receives (hence never acks) the leader's
+/// Gossip topology probe is reported `node_offline` and the whole ceremony
+/// aborts at the preparation barrier — distinct from the private-pair and
+/// leader-offline scenarios above: the failure is at the very first barrier
+/// (`coordinate_prepared_inner` in `network.rs`), gated by the shorter
+/// `DKG_PREPARATION_TIMEOUT` (2 minutes, unaffected by the `DKG_ATTEMPT_
+/// TIMEOUT` test-mode shrink), not the ceremony's overall hard deadline.
+///
+/// `drop_gossip_deliveries_after` drops every authenticated Gossip delivery
+/// charlie's own subscription receives, not just the topology probe — but
+/// nothing else is gossiped this early in a ceremony, so it's an effective
+/// stand-in for "the probe specifically never arrived."
+#[tokio::test]
+#[serial_test::serial]
+async fn test_dkg_missing_topology_ack_triggers_on_chain_report() {
+    let net = setup_fault_three_node_network("fault_dkg_topology_ack", 51081).await;
+
+    let charlie_key = net.node_keys[2].clone();
+    net.charlie
+        .fault_ctrl
+        .drop_gossip_deliveries_after(0, 1000)
+        .await;
+
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
+        .await
+        .expect("connect report event subscription");
+
+    println!("Initiating DKG — charlie will never see the topology probe...");
+    let dkg_result = cli_tool::do_dkg(net.alice.grpc_endpoint.clone(), ring_id.clone()).await;
+    assert!(
+        dkg_result.is_err(),
+        "DKG must abort at the topology-preparation barrier when a member \
+         never acks, but it succeeded: {:?}",
+        dkg_result
+    );
+    println!(
+        "DKG correctly aborted at the topology barrier: {:?}",
+        dkg_result.unwrap_err()
+    );
+
+    println!("Waiting for organic missing-topology-ack EventReportAccepted on chain (up to 60s)...");
+    let event = sub
+        .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(60), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == charlie_key
+        })
+        .await
+        .expect("aborted topology barrier should organically report the silent member");
+
+    println!(
+        "Missing-topology-ack report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, charlie_key,
+        "charlie (never received the topology probe) should be accused"
+    );
+    assert_eq!(event.ring_id, ring_id, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert_ne!(
+        event.reporter_node_key, charlie_key,
+        "the accused node should not be its own reporter"
+    );
+
+    let controller_client = SourceHubClient::with_signer(
+        net.chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, &charlie_key)
+        .await
+        .expect("query accused demerits");
+    assert!(
+        demerits > 0,
+        "silent topology-probe partner should receive at least one demerit"
     );
 }
