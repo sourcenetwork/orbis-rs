@@ -3852,6 +3852,29 @@ where
             "only the canonical current-committee leader may coordinate PSS refresh".into(),
         ));
     }
+    coordinate_refresh_as_claimed_leader(state, routes, ring_id, ring_pk, ring).await
+}
+
+/// Build, sign, and broadcast a refresh `Prepare` as this node, claiming the
+/// leader role — everything `coordinate_refresh` does *after* verifying the
+/// caller is the canonical leader and loading+validating `ring`. Split out so
+/// `submit_organic_noncanonical_prepare` (`unsafe_testing`) can drive the exact
+/// same real signing/broadcast path from a non-canonical node, organically
+/// exercising the *other* nodes' unmodified `leader_prepare_fault` detection
+/// instead of injecting evidence directly. Callers are responsible for their
+/// own ring-load + `ring_payload_matches_ring_key` check before calling in, so
+/// this never re-reads the chain.
+pub(crate) async fn coordinate_refresh_as_claimed_leader<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+    ring: RingPayload,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
     if let Some(session_id) = state
         .dkg_session_state
         .active_ring_pss_session(&ring_pk)

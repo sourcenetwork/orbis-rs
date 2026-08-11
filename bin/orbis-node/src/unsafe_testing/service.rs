@@ -4,15 +4,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app_state::AppState;
 use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::coordinator::evidence::{
-    queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
-    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
+    build_and_store_commitment_evidence, queue_invalid_refresh_commitment_report,
+    queue_or_relay_equivocation, queue_or_relay_invalid_share, share_evidence_proves_failure,
+    verify_share_evidence,
 };
 use crate::dkg::v0::coordinator::reporting::report_abandoned_pss_session;
 use crate::dkg::v0::coordinator::DkgCoordinator;
-use crate::dkg::v0::helpers::deserialize_wire_commitment;
+use crate::dkg::v0::helpers::{deserialize_wire_commitment, ring_payload_matches_ring_key};
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::network::{
+    coordinate_refresh_as_claimed_leader, submit_public_contribution, RefreshStartOutcome,
+};
 use crate::dkg::v0::session_state::AbandonedPssSession;
-use crate::dkg::v0::transport::{AttemptKey, CeremonyId};
+use crate::dkg::v0::transport::{AttemptKey, CeremonyId, DkgPublicPayload};
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pre::v0::coordinator::PreCoordinator;
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::RelayRequestStatement;
@@ -20,7 +25,7 @@ use crate::sign::v0::coordinator::SignCoordinator;
 use crate::sign::v0::messages::{NonceRequest, PolicyContext, SignContext, SignMessage};
 use bulletin::r#trait::{BulletinKind, KeyDerivation};
 use common::blockchain::verify_node_message;
-use crypto::r#trait::PolynomialCommitment as _;
+use crypto::r#trait::{Dkg as _, PolynomialCommitment as _};
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -34,7 +39,9 @@ use proto::unsafe_testing::{
     SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
-    SubmitDkgInvalidShareEvidenceResponse, SubmitPssStallOfflineReportRequest,
+    SubmitDkgInvalidShareEvidenceResponse, SubmitOrganicConflictingCommitmentRequest,
+    SubmitOrganicConflictingCommitmentResponse, SubmitOrganicNoncanonicalPrepareRequest,
+    SubmitOrganicNoncanonicalPrepareResponse, SubmitPssStallOfflineReportRequest,
     SubmitPssStallOfflineReportResponse, SubmitUnauthorizedRelayEvidenceRequest,
     SubmitUnauthorizedRelayEvidenceResponse,
 };
@@ -466,6 +473,109 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         }
 
         Ok(Response::new(SubmitUnauthorizedRelayEvidenceResponse {}))
+    }
+
+    async fn submit_organic_conflicting_commitment(
+        &self,
+        request: Request<SubmitOrganicConflictingCommitmentRequest>,
+    ) -> Result<Response<SubmitOrganicConflictingCommitmentResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        if request.commitment_bytes.is_empty() {
+            return Err(Status::invalid_argument("commitment_bytes is required"));
+        }
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
+        let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
+
+        // This node's own node_id within the live attempt — the same identity
+        // its real (already-broadcast) first commitment used, so the second
+        // one lands as a conflict for the same origin rather than a new one.
+        let node_id = coordinator
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |state| state.node.node_id())
+            .await
+            .map_err(|error| Status::failed_precondition(format!("{error:?}")))?;
+
+        let report_evidence = build_and_store_commitment_evidence(
+            &coordinator,
+            attempt,
+            node_id,
+            request.commitment_bytes.clone(),
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        submit_public_contribution(
+            &coordinator,
+            attempt,
+            DkgPublicPayload::Commitment {
+                commitment: request.commitment_bytes,
+                report_evidence: report_evidence.map(Box::new),
+            },
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitOrganicConflictingCommitmentResponse {}))
+    }
+
+    async fn submit_organic_noncanonical_prepare(
+        &self,
+        request: Request<SubmitOrganicNoncanonicalPrepareRequest>,
+    ) -> Result<Response<SubmitOrganicNoncanonicalPrepareResponse>, Status> {
+        let request = request.into_inner();
+        if request.ring_id.trim().is_empty() {
+            return Err(Status::invalid_argument("ring_id is required"));
+        }
+        if request.ring_pk.trim().is_empty() {
+            return Err(Status::invalid_argument("ring_pk is required"));
+        }
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+
+        let ring = read_ring_for_route(&*app_state.bulletin, &request.ring_id, network::V0.version)
+            .await
+            .map_err(Status::failed_precondition)?;
+        if !ring_payload_matches_ring_key(&request.ring_pk, &ring.ring_pk) {
+            return Err(Status::failed_precondition(
+                "ring_pk does not match SourceHub state",
+            ));
+        }
+
+        // Skips the canonical-leader check `coordinate_refresh` itself does —
+        // that check is exactly the fault this RPC exists to exercise.
+        let outcome = coordinate_refresh_as_claimed_leader::<DkgImpl>(
+            app_state,
+            &network::V0,
+            request.ring_id,
+            request.ring_pk,
+            ring,
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        if !matches!(outcome, RefreshStartOutcome::Started(_, _)) {
+            return Err(Status::failed_precondition(format!(
+                "refresh Prepare was not sent as a fresh attempt: {outcome:?}"
+            )));
+        }
+
+        Ok(Response::new(SubmitOrganicNoncanonicalPrepareResponse {}))
     }
 }
 

@@ -12,6 +12,8 @@ service UnsafeTestingService {
   rpc SubmitDkgInvalidRefreshCommitmentEvidence(SubmitDkgInvalidRefreshCommitmentEvidenceRequest) returns (SubmitDkgInvalidRefreshCommitmentEvidenceResponse);
   rpc SubmitPssStallOfflineReport(SubmitPssStallOfflineReportRequest) returns (SubmitPssStallOfflineReportResponse);
   rpc SubmitUnauthorizedRelayEvidence(SubmitUnauthorizedRelayEvidenceRequest) returns (SubmitUnauthorizedRelayEvidenceResponse);
+  rpc SubmitOrganicConflictingCommitment(SubmitOrganicConflictingCommitmentRequest) returns (SubmitOrganicConflictingCommitmentResponse);
+  rpc SubmitOrganicNoncanonicalPrepare(SubmitOrganicNoncanonicalPrepareRequest) returns (SubmitOrganicNoncanonicalPrepareResponse);
 }
 
 enum LocalStorageKeyType {
@@ -120,3 +122,29 @@ message SubmitUnauthorizedRelayEvidenceRequest {
 }
 
 message SubmitUnauthorizedRelayEvidenceResponse {}
+
+// Makes this node broadcast a second, conflicting Phase1 commitment for its own slot in the given
+// live ceremony, through the real public-contribution path (the same functions the honest Phase1
+// flow uses) — organically exercising the *other* committee members' real equivocation detection
+// (`record_public_batch`'s ConflictingDuplicate path) instead of injecting pre-verified evidence
+// directly. Requires this node to have already broadcast its real first commitment for the
+// session, so the two share the session's fixed `session_nonce` and differ only in content.
+message SubmitOrganicConflictingCommitmentRequest {
+  string session_id = 1;
+  bytes commitment_bytes = 2;
+}
+
+message SubmitOrganicConflictingCommitmentResponse {}
+
+// Makes this node build, sign, and broadcast a real refresh Prepare as if it were the canonical
+// current-committee leader, through the real coordination path minus the one leader-identity check
+// — organically exercising the *other* committee members' real `leader_prepare_fault` detection
+// instead of injecting evidence directly. No membership check is added here: callers should target a
+// genuine (non-canonical) committee member to exercise the intended fault. Fails if PSS refresh is
+// not yet due for the ring (see `pss_interval`).
+message SubmitOrganicNoncanonicalPrepareRequest {
+  string ring_id = 1;
+  string ring_pk = 2;
+}
+
+message SubmitOrganicNoncanonicalPrepareResponse {}
