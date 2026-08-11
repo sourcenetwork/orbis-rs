@@ -2,6 +2,7 @@ use super::SignCoordinator;
 use crate::constants::{
     JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_SIGN_MESSAGE_BYTES, MAX_TOKEN_LIFETIME_SECS,
 };
+use crate::helpers::auth::request_actor;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, InvalidCryptoResponse, NodeOffline, ReportEnvelope,
@@ -267,6 +268,8 @@ where
                     JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+                let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
+                    .map_err(SignError::Unauthorized)?;
                 validate_sign_claims(&token, derivation_id, None)?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
@@ -279,7 +282,7 @@ where
                     &*self.app_state.authz,
                     &key_derivation,
                     derivation_id,
-                    &token.issuer_id,
+                    &actor_id,
                     valid_window.clone(),
                 )
                 .await
@@ -298,7 +301,7 @@ where
                                 chain_id,
                                 request_id: relay_request_id.to_string(),
                                 origin_protocol: "sign".to_string(),
-                                actor_id: token.issuer_id.clone(),
+                                actor_id: actor_id.clone(),
                                 object_id: derivation_id.clone(),
                                 user_signed_at: token.issued_time,
                                 valid_window: valid_window.clone(),
@@ -547,6 +550,8 @@ where
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
+        let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
+            .map_err(SignError::Unauthorized)?;
 
         validate_sign_claims(&token, derivation_id, Some(message))?;
 
@@ -566,7 +571,7 @@ where
             &*self.app_state.authz,
             &key_derivation,
             derivation_id,
-            &token.issuer_id,
+            &actor_id,
             valid_window.clone(),
         )
         .await
@@ -583,7 +588,7 @@ where
                         chain_id,
                         request_id: request_id.to_string(),
                         origin_protocol: "sign".to_string(),
-                        actor_id: token.issuer_id.clone(),
+                        actor_id: actor_id.clone(),
                         object_id: derivation_id.clone(),
                         user_signed_at: token.issued_time,
                         valid_window: valid_window.clone(),

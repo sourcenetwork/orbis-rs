@@ -12,6 +12,7 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
 use crate::dkg::v0::transport::AttemptKey;
+use crate::helpers::auth::request_actor;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     node_key_for_peer, peer_ids_from_routes, resolve_node_routes, validate_node_route_bindings,

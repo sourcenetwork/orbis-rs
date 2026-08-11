@@ -18,8 +18,9 @@ use crate::{
     helpers::{
         launch::{create_and_store_node_key, LogLevel},
         test_helpers::{
-            cleanup_db, create_orbis_ring_policy, create_ring_on_chain, test_db_path,
-            wait_for_nodes_ready, wait_for_ring_finalized,
+            cleanup_db, create_authenticated_request, create_orbis_ring_policy,
+            create_ring_on_chain, test_db_path, wait_for_nodes_ready, wait_for_ring_finalized,
+            TestKeyPair,
         },
     },
     info::InfoServiceImpl,
@@ -37,6 +38,7 @@ use crate::{
     store_secret::StoreSecretServiceImpl,
     Args, NodeConfig,
 };
+use authn::DkgClaims;
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, RingPayload};
@@ -63,13 +65,15 @@ use proto::{
         info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
         GetRingStateRequest,
     },
-    v0::dkg::dkg_service_server::DkgServiceServer,
+    v0::dkg::{
+        dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
+    },
     v0::pre::pre_service_server::PreServiceServer,
     v0::sign::sign_service_server::SignServiceServer,
     v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
-use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{collections::HashSet, sync::Arc};
 use tokio::time::{sleep, Duration, Instant};
 use tonic::Request;
 
@@ -174,6 +178,14 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 ///
 /// Waits until all three gRPC servers are ready before returning.
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
+    setup_live_three_node_network_with_trusted_relays(db_prefix, base_port, HashSet::new()).await
+}
+
+async fn setup_live_three_node_network_with_trusted_relays(
+    db_prefix: &str,
+    base_port: u16,
+    trusted_auth_relay_dids: HashSet<String>,
+) -> LiveThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root()
@@ -271,6 +283,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                trusted_auth_relay_dids: trusted_auth_relay_dids.iter().cloned().collect(),
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
@@ -404,6 +417,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
                 node_whitelisted_ring_ids: vec![],
+                trusted_auth_relay_dids: vec![],
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
@@ -644,6 +658,52 @@ fn sorted_node_id(node_key: &str, peer_node_keys: &[String]) -> u32 {
 // =========================================================================
 // Tests
 // =========================================================================
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_delegated_dkg_with_sourcehub_end_to_end() {
+    let relay = TestKeyPair::new();
+    let net = setup_live_three_node_network_with_trusted_relays(
+        "delegated_dkg_sourcehub",
+        51120,
+        HashSet::from([relay.did_uri.clone()]),
+    )
+    .await;
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+    let token = relay
+        .sign_for_actor(
+            "did:opk:integration-user".to_string(),
+            DkgClaims {
+                ring_id: ring_id.clone(),
+            },
+            Duration::from_secs(60),
+        )
+        .expect("create delegated DKG token");
+    let request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: ring_id.clone(),
+        },
+        &token,
+    )
+    .expect("create authenticated DKG request");
+
+    let response = DkgServiceClient::connect(net.alice.grpc_endpoint.clone())
+        .await
+        .expect("connect DKG client")
+        .start_dkg(request)
+        .await
+        .expect("start delegated DKG")
+        .into_inner();
+    assert!(
+        !response.session_id.is_empty(),
+        "DKG session ID is required"
+    );
+
+    let ring_pk =
+        wait_for_ring_finalized(&net.chain_config, &ring_id, Duration::from_secs(90)).await;
+    assert!(!ring_pk.is_empty(), "delegated DKG must finalize the ring");
+}
 
 /// Two DKG sessions initiated simultaneously on the same three-node network
 /// must both complete independently without cross-session interference.

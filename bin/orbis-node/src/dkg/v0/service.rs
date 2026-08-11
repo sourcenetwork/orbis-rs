@@ -2,7 +2,7 @@ use crate::app_state::AppState;
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::{validate_dkg_claims, validate_fresh_dkg_ring_payload};
 use crate::dkg::v0::network as dkg_network;
-use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt};
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_actor};
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::metrics;
 use authn::DkgClaims;
@@ -65,6 +65,8 @@ where
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
             .map_err(DkgError::Unauthorized)?;
+        let actor_id = request_actor(&token, &self.state.trusted_auth_relay_dids)
+            .map_err(DkgError::Unauthorized)?;
         let req = request.into_inner();
 
         // 2. Authorize the request itself. Ring parameters are read from the bulletin.
@@ -84,6 +86,7 @@ where
             peer_node_keys = ?ring_payload.peer_node_keys,
             policy_id = ?ring_payload.policy_id,
             issuer = %token.issuer_id,
+            actor = %actor_id,
             "Authenticated StartDkg request; forwarding to canonical DKG leader"
         );
 

@@ -9,6 +9,7 @@ use crate::helpers::test_helpers::{
 };
 use crate::ring_state::RingIndexEntry;
 use crate::store_secret::StoreSecretServiceImpl;
+use authn::StoreSecretClaims;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
@@ -17,7 +18,8 @@ use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 use tonic::Request;
 
 /// Default test values for StoreSecret requests
@@ -186,6 +188,47 @@ async fn test_store_secret_fails_malformed_jwt() {
         tonic::Code::Unauthenticated,
         "Error code should be Unauthenticated for malformed JWT"
     );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_store_secret_rejects_delegated_actor() {
+    let db_name = "test_store_secret_rejects_delegated_actor";
+    let db_path = test_db_path(db_name);
+    let relay = TestKeyPair::new();
+    let app_state = create_test_app_state_default(db_name)
+        .await
+        .with_trusted_auth_relay_dids(HashSet::from([relay.did_uri.clone()]));
+    let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
+    let request = create_dummy_request();
+    let token = relay
+        .sign_for_actor(
+            "did:opk:user".to_string(),
+            StoreSecretClaims {
+                encrypted_document_sha256: Sha256::digest(&request.encrypted_document).to_vec(),
+                enc_cmt: request.enc_cmt.clone(),
+                ring_id: request.ring_id.clone(),
+                policy_id: request.policy_id.clone(),
+                resource: request.resource.clone(),
+                permission: request.permission.clone(),
+                shared_point: request.shared_point.clone(),
+                challenge: request.challenge.clone(),
+                response: request.response.clone(),
+                with_proof: request.with_proof,
+                tier: request.tier.clone(),
+                timestamp: request.timestamp,
+            },
+            Duration::from_secs(60),
+        )
+        .expect("sign delegated JWT");
+
+    let result = service
+        .store_secret(create_authenticated_request(request, &token).unwrap())
+        .await;
+
+    let status = result.expect_err("delegated StoreSecret must fail");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+    assert!(status.message().contains("SourceHub signer"));
     cleanup_db(&db_path);
 }
 

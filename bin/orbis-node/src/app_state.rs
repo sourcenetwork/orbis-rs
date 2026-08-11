@@ -308,6 +308,8 @@ where
     pub authz: Arc<dyn Authz + Send + Sync>,
     /// Bulletin implementation
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// JWT issuers allowed to delegate requests to another actor DID.
+    pub trusted_auth_relay_dids: Arc<HashSet<String>>,
     /// Serializes concurrent RingIndex read-modify-write operations in Phase 4.
     /// Without this, two simultaneous DKG completions can each read the same
     /// index and one will overwrite the other's appended entry.
@@ -338,10 +340,16 @@ where
             sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
+            trusted_auth_relay_dids: Arc::new(HashSet::new()),
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
             reporting_state: Arc::new(ReportingState::new()),
         }
+    }
+
+    pub fn with_trusted_auth_relay_dids(mut self, relay_dids: HashSet<String>) -> Self {
+        self.trusted_auth_relay_dids = Arc::new(relay_dids);
+        self
     }
 }
 
