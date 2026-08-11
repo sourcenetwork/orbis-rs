@@ -119,8 +119,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         // Loads from environment, if available,
         // otherwise uses default orbis location
         let password_file = std::env::var(constants::PASSWORD_FILE_ENV_VAR)
-            .map_err(|e| format!("Failed to load env var: {}", e))?;
-        let password_file = Some(password_file)
+            .ok()
             .filter(|file| !file.is_empty())
             .map(PathBuf::from);
         let password =
