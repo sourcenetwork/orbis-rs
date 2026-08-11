@@ -447,7 +447,20 @@ pub struct DkgCommitmentStatement {
     /// commitment it broadcasts for this attempt. Equivocation = same dealer signing
     /// two commitments with the SAME nonce but different bytes; an honest retry uses a
     /// fresh nonce, so it cannot be framed as equivocation. Opaque to receivers.
+    ///
+    /// NOT used for dedupe scoping: it's self-chosen by the dealer (part of what
+    /// they sign, but not assigned by the protocol), so a dealer could reuse the
+    /// same nonce across attempts to blunt its own demerit exposure. `attempt_id`
+    /// below is the network-assigned identity used for that instead.
     pub session_nonce: [u8; 16],
+    /// The live attempt this commitment was signed for. Chain-side dedupe folds
+    /// this into `sessionDedupeID` so independent faults across retries of the
+    /// same `CeremonyId` (which is intentionally reusable) each get independent
+    /// demerits, rather than colliding on one dedupe record for the whole
+    /// ceremony. Tamper-proof the same way every other field here is: it's
+    /// covered by the responder's own signature, not asserted by whoever
+    /// assembles the report.
+    pub attempt_id: [u8; 32],
     pub crypto_backend: String,
 }
 
@@ -471,6 +484,7 @@ impl DkgCommitmentStatement {
         write_u32(&mut out, self.from_node_id);
         write_bytes(&mut out, &self.commitment);
         write_bytes(&mut out, &self.session_nonce);
+        write_bytes(&mut out, &self.attempt_id);
         write_string(&mut out, &self.crypto_backend);
         out
     }
@@ -500,6 +514,13 @@ impl DkgCommitmentStatement {
                 bytes.len()
             ))
         })?;
+        let attempt_id_bytes = decoder.read_bytes("attempt_id")?;
+        let attempt_id = attempt_id_bytes.try_into().map_err(|bytes: Vec<u8>| {
+            ReportingError::InvalidReport(format!(
+                "DKG commitment attempt_id must be 32 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
         decoder.finish()?;
         Ok(Self {
@@ -518,6 +539,7 @@ impl DkgCommitmentStatement {
             from_node_id,
             commitment,
             session_nonce,
+            attempt_id,
             crypto_backend,
         })
     }
@@ -1792,6 +1814,7 @@ mod tests {
             from_node_id: 2,
             commitment: vec![1, 2, 3],
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: "dkg/test".to_string(),
         }
     }

@@ -3227,6 +3227,7 @@ mod tests {
             from_node_id: 2,
             commitment,
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         };
         DkgShareStatement {
@@ -3680,6 +3681,7 @@ mod tests {
                 from_node_id: 2,
                 commitment,
                 session_nonce,
+                attempt_id: [9; 32],
                 crypto_backend: DkgImpl::name(),
             },
             signature: vec![1; 64],
@@ -3787,6 +3789,7 @@ mod tests {
                 from_node_id: 2,
                 commitment,
                 session_nonce: [5u8; 16],
+                attempt_id: [9; 32],
                 crypto_backend: DkgImpl::name(),
             },
             signature: vec![1; 64],

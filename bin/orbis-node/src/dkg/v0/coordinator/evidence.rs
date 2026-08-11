@@ -41,6 +41,7 @@ pub(crate) struct DkgEvidenceBuildContext {
     binding: DkgReportEvidenceBinding,
     signing_key_hex: String,
     session_nonce: [u8; 16],
+    attempt_id: [u8; 32],
 }
 
 pub(crate) async fn evidence_build_context<D>(
@@ -64,6 +65,7 @@ where
         binding,
         signing_key_hex,
         session_nonce,
+        attempt_id: attempt.attempt_id.0,
     }))
 }
 
@@ -94,6 +96,7 @@ where
         from_node_id,
         commitment,
         session_nonce: context.session_nonce,
+        attempt_id: context.attempt_id,
         crypto_backend: D::name(),
     };
     let signature =
@@ -308,6 +311,10 @@ where
 {
     tokio::spawn(async move {
         if let Err(error) = relay.await {
+            crate::metrics::record_dkg_transport_event(
+                "private",
+                &format!("{evidence_kind}_relay_exhausted"),
+            );
             tracing::warn!(
                 session_id = session_id,
                 evidence_kind,
@@ -1798,6 +1805,7 @@ mod tests {
             from_node_id: 2,
             commitment: vec![1],
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         };
         SignedDkgShare {
@@ -1858,6 +1866,7 @@ mod tests {
             from_node_id: 1,
             commitment: vec![1, 2, 3],
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         }
     }

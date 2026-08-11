@@ -99,7 +99,7 @@ where
         attempt,
         DkgPublicPayload::Commitment {
             commitment: commitment_bytes,
-            report_evidence,
+            report_evidence: report_evidence.map(Box::new),
         },
     )
     .await?;

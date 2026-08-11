@@ -3579,6 +3579,7 @@ mod tests {
                 from_node_id: dealer_id,
                 commitment,
                 session_nonce,
+                attempt_id: [9; 32],
                 crypto_backend: "dkg/test".to_string(),
             },
             signature: vec![0; 64],

@@ -291,6 +291,7 @@ fn signed_bad_reshare_dkg_share(
         from_node_id,
         commitment,
         session_nonce: [0u8; 16],
+        attempt_id: [9; 32],
         crypto_backend: DkgImpl::name(),
     };
     let commitment_signature = sign_node_message_with_hex_key(
@@ -401,6 +402,7 @@ fn signed_equivocation_commitments(
             from_node_id,
             commitment,
             session_nonce,
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         };
         let signature =
@@ -463,6 +465,7 @@ fn signed_bad_refresh_commitment(
         from_node_id,
         commitment,
         session_nonce: [9u8; 16],
+        attempt_id: [9; 32],
         crypto_backend: DkgImpl::name(),
     };
     let signature =

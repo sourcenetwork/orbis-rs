@@ -374,10 +374,22 @@ Only after all of that does the keeper call `IncrementNodeDemerits` and emit
   payload, `session_id`, ...). This prevents the literal same signed artifact
   from being submitted twice.
 - **`sessionDedupeID`** = `SHA256(domain, chain_id, ring_id, report_type,
-  origin_protocol, accused_node_key, session_id)`. This is a coarser key that
-  prevents two *different* reports both claiming to cover the same session
-  from landing (e.g. two honest-but-redundant submissions of the same
-  underlying incident).
+  origin_protocol, accused_node_key, session_id, attempt_id)`. This is a
+  coarser key that prevents two *different* reports both claiming to cover
+  the same session from landing (e.g. two honest-but-redundant submissions of
+  the same underlying incident). `attempt_id` is folded in for DKG evidence
+  kinds only (empty for `node_offline`/`unauthorized_request`, which stay
+  session-only): `session_id` is `CeremonyID`, and `CeremonyID` is
+  intentionally reusable across an attempt's retries. Without `attempt_id`,
+  an accused still in the committee for a later independent attempt of the
+  same ceremony could repeat the same fault indefinitely after its first
+  demerit — the second report would collide with the first attempt's dedupe
+  record and be silently rejected, capping the whole ceremony's worth of
+  misbehavior at one demerit. `attempt_id` is carried directly on
+  `DkgCommitmentStatement` (covered by the responder's own signature, so it's
+  tamper-proof the same way every other field is; `dkg_share` inherits it via
+  its embedded commitment statement) or already present on
+  `DkgPublicOriginFaultStatement`/`DkgLeaderEquivocationStatement`/`DkgControlMessageFaultStatement`.
 
 Both records are pruned by `EndBlock` once the report's own 120s TTL has
 elapsed. That's safe to do unconditionally: the envelope's own

@@ -7335,7 +7335,7 @@ where
         attempt,
         evidence.origin.node_id,
         &retained_bytes,
-        Some(retained_evidence),
+        Some(*retained_evidence),
     )
     .await?
     else {
@@ -7346,7 +7346,7 @@ where
         attempt,
         evidence.origin.node_id,
         &conflicting_bytes,
-        Some(conflicting_evidence),
+        Some(*conflicting_evidence),
     )
     .await?
     else {
@@ -7871,7 +7871,7 @@ where
             attempt,
             contribution.origin.node_id,
             commitment,
-            report_evidence.as_ref(),
+            report_evidence.as_deref(),
             None,
         )
         .await
@@ -8071,7 +8071,7 @@ where
                 attempt,
                 contribution.origin.node_id,
                 commitment,
-                report_evidence,
+                report_evidence.map(|boxed| *boxed),
             ))
             .await?
         }

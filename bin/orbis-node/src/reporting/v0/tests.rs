@@ -1910,7 +1910,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: first_commitment.clone(),
-            report_evidence: Some(first_evidence.clone()),
+            report_evidence: Some(Box::new(first_evidence.clone())),
         },
     )
     .await;
@@ -1922,7 +1922,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(second_evidence.clone()),
+            report_evidence: Some(Box::new(second_evidence.clone())),
         },
     )
     .await;
@@ -1970,7 +1970,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(second_evidence.clone()),
+            report_evidence: Some(Box::new(second_evidence.clone())),
         },
     )
     .await;
@@ -2000,7 +2000,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(second_evidence.clone()),
+            report_evidence: Some(Box::new(second_evidence.clone())),
         },
     )
     .await;
@@ -2029,7 +2029,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         ParticipantRef::current(alice_node_id),
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(second_evidence.clone()),
+            report_evidence: Some(Box::new(second_evidence.clone())),
         },
     )
     .await;
@@ -2057,7 +2057,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(bad_signature_evidence),
+            report_evidence: Some(Box::new(bad_signature_evidence)),
         },
     )
     .await;
@@ -2101,7 +2101,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(wrong_binding_evidence),
+            report_evidence: Some(Box::new(wrong_binding_evidence)),
         },
     )
     .await;
@@ -2134,7 +2134,7 @@ async fn public_commitment_origin_equivocation_queues_report_before_abort() {
         origin,
         DkgPublicPayload::Commitment {
             commitment: second_commitment.clone(),
-            report_evidence: Some(different_nonce_evidence),
+            report_evidence: Some(Box::new(different_nonce_evidence)),
         },
     )
     .await;

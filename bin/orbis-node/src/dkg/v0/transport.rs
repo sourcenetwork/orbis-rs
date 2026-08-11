@@ -349,7 +349,7 @@ pub enum DkgPublicPayload {
     },
     Commitment {
         commitment: Vec<u8>,
-        report_evidence: Option<SignedDkgCommitment>,
+        report_evidence: Option<Box<SignedDkgCommitment>>,
     },
     CommitmentAudit {
         revealed: Vec<SignedDkgCommitment>,
