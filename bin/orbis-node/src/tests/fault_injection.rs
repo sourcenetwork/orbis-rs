@@ -1015,7 +1015,10 @@ async fn test_dkg_private_pair_terminal_stall_triggers_on_chain_report() {
     // Fire-and-forget: the ceremony runs to its hard deadline in the
     // background regardless of whether this triggering RPC call is still
     // being awaited.
-    tokio::spawn(cli_tool::do_dkg(lowest_endpoint.to_string(), ring_id.clone()));
+    tokio::spawn(cli_tool::do_dkg(
+        lowest_endpoint.to_string(),
+        ring_id.clone(),
+    ));
 
     println!("Waiting for organic private-pair-stall EventReportAccepted on chain (up to 240s)...");
     let event = sub
@@ -1104,7 +1107,9 @@ async fn test_dkg_missing_topology_ack_triggers_on_chain_report() {
         dkg_result.unwrap_err()
     );
 
-    println!("Waiting for organic missing-topology-ack EventReportAccepted on chain (up to 60s)...");
+    println!(
+        "Waiting for organic missing-topology-ack EventReportAccepted on chain (up to 60s)..."
+    );
     let event = sub
         .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(60), |event| {
             event.report_type == "node_offline" && event.accused_node_key == charlie_key

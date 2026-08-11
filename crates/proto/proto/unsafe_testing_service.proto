@@ -14,6 +14,8 @@ service UnsafeTestingService {
   rpc SubmitUnauthorizedRelayEvidence(SubmitUnauthorizedRelayEvidenceRequest) returns (SubmitUnauthorizedRelayEvidenceResponse);
   rpc SubmitOrganicConflictingCommitment(SubmitOrganicConflictingCommitmentRequest) returns (SubmitOrganicConflictingCommitmentResponse);
   rpc SubmitOrganicNoncanonicalPrepare(SubmitOrganicNoncanonicalPrepareRequest) returns (SubmitOrganicNoncanonicalPrepareResponse);
+  rpc SubmitOrganicConflictingManifest(SubmitOrganicConflictingManifestRequest) returns (SubmitOrganicConflictingManifestResponse);
+  rpc SubmitOrganicInvalidRefreshResult(SubmitOrganicInvalidRefreshResultRequest) returns (SubmitOrganicInvalidRefreshResultResponse);
 }
 
 enum LocalStorageKeyType {
@@ -148,3 +150,32 @@ message SubmitOrganicNoncanonicalPrepareRequest {
 }
 
 message SubmitOrganicNoncanonicalPrepareResponse {}
+
+// Makes this node (the real canonical leader) broadcast a second, conflicting Phase1-Commitments
+// manifest for a live ceremony it has already published the real manifest for: same phase_root and
+// contribution_ids (recomputed from the same real retained contributions, so it passes the
+// receiver's own self-consistency check), but a different chunk_count — organically exercising the
+// *other* committee members' real `dkg_leader_equivocation` detection (`PublicBatchAssembler::
+// insert_manifest`) instead of injecting evidence directly. Requires this node to have already
+// published the real manifest for the phase (so there is something on the wire to conflict with),
+// and requires at least 2 retained contributions (so a different, still-valid chunk_count exists).
+message SubmitOrganicConflictingManifestRequest {
+  string session_id = 1;
+}
+
+message SubmitOrganicConflictingManifestResponse {}
+
+// Makes this node (the real canonical refresh leader) broadcast a real RefreshHealthCheckResult
+// whose parameters (ring_pk, threshold, total_participants, peer_node_keys_sha256) match its own
+// real staged candidate — so it passes the receiver's coarse candidate-match check — but whose
+// public_polynomial_sha256 is wrong, and whose signature is a syntactically-valid placeholder rather
+// than a real threshold signature over the (wrong) statement. This organically exercises the *other*
+// committee members' real content-mismatch rejection (`verify_result_signature`, which compares
+// statement fields against the receiver's own independently-staged candidate before ever touching
+// the signature bytes) instead of injecting evidence directly. Requires this node to have already
+// reached the RefreshHealthCheck phase (i.e. staged its own real candidate).
+message SubmitOrganicInvalidRefreshResultRequest {
+  string session_id = 1;
+}
+
+message SubmitOrganicInvalidRefreshResultResponse {}

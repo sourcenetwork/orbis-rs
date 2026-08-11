@@ -8141,7 +8141,7 @@ where
     Ok(())
 }
 
-fn contribution_ids(
+pub(crate) fn contribution_ids(
     items: &BTreeMap<ParticipantRef, SignedPayload>,
 ) -> BTreeMap<ParticipantRef, transport::MessageId> {
     items

@@ -125,7 +125,7 @@ pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// reshare finalization. Deliberately decoupled from `DKG_ATTEMPT_TIMEOUT` so
 /// shortening the stall-detection deadline under test doesn't tighten this
 /// unrelated wait.
-#[cfg(test)]
+#[cfg(feature = "integration-test")]
 pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
