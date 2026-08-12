@@ -220,6 +220,7 @@ async fn setup_fault_three_node_network(
                 bulletin_grpc: None,
                 chain_rest: None,
                 chain_rpc: None,
+                chain_id: None,
                 denom: None,
                 chain_gas_multiplier: None,
                 metrics_addr: None,

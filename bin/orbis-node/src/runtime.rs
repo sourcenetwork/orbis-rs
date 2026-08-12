@@ -160,6 +160,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
         let authz_chain_config = ChainConfigBuilder::default()
+            .chain_id(args.chain_id.clone())
             .grpc_url(args.authz_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
@@ -173,6 +174,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         );
 
         let bulletin_chain_config = ChainConfigBuilder::default()
+            .chain_id(args.chain_id.clone())
             .grpc_url(args.bulletin_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
@@ -202,6 +204,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
                 // Build chain config with the provided RPC/REST URLs
                 let fund_config = ChainConfigBuilder::default()
+                    .chain_id(args.chain_id.clone())
                     .rpc_url(args.chain_rpc.clone())
                     .rest_url(args.chain_rest.clone())
                     .grpc_url(args.bulletin_grpc.clone())

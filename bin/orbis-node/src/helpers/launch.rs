@@ -63,6 +63,9 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// Chain ID used when signing transactions
+    #[arg(long)]
+    pub chain_id: Option<String>,
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
@@ -631,6 +634,20 @@ mod tests {
             args.runtime_base_path,
             Some(PathBuf::from("custom/runtime"))
         );
+    }
+
+    #[test]
+    fn parses_chain_id_argument() {
+        let args = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--chain-id",
+            "sourcehub-dev",
+        ])
+        .expect("parse arguments");
+
+        assert_eq!(args.chain_id.as_deref(), Some("sourcehub-dev"));
     }
 
     #[test]
