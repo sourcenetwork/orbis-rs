@@ -27,9 +27,9 @@ use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
     handle_leader_equivocation_evidence_relay, handle_public_origin_fault_evidence_relay,
     queue_or_relay_control_message_fault, queue_or_relay_equivocation,
-    queue_or_relay_leader_equivocation, queue_or_relay_public_origin_fault,
-    report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
-    verify_control_signature,
+    queue_or_relay_leader_equivocation, queue_or_relay_leader_public_fault,
+    queue_or_relay_public_origin_fault, report_leader_prepare_fault_best_effort,
+    sign_control_message, verify_commitment_evidence, verify_control_signature,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
@@ -191,12 +191,23 @@ struct PublicProtocolViolation {
     kind: PublicProtocolViolationKind,
     accused: PublicViolationAccused,
     phase: Option<PublicPhase>,
-    root: Option<[u8; 32]>,
+    // Boxed to keep this error type under clippy's `result_large_err`
+    // threshold now that every `Option<Box<...>>` evidence field is in
+    // play — this is otherwise a plain `[u8; 32]`, not "large" on its own.
+    root: Option<Box<[u8; 32]>>,
     message_ids: Vec<MessageId>,
     detail: String,
     commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
     public_origin_fault: Option<Box<PublicOriginFaultEvidence>>,
     leader_equivocation: Option<Box<LeaderDeliveryEquivocation>>,
+    /// A single leader-signed manifest that is independently provable as
+    /// invalid on its own (no conflicting counterpart needed) — currently
+    /// only attached for `InvalidManifest`. `None` whenever the violating
+    /// delivery wasn't retained (best-effort, same caveat as
+    /// `leader_equivocation`) or the phase isn't independently reportable
+    /// (Reshare's `Commitments` phase — see `reporting/v0/registry.rs`'s
+    /// `expected_leader_manifest_shape`).
+    leader_public_fault: Option<Box<PublicLeaderDelivery>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -270,12 +281,13 @@ impl PublicProtocolViolation {
             kind,
             accused: PublicViolationAccused::Leader,
             phase,
-            root,
+            root: root.map(Box::new),
             message_ids: Vec::new(),
             detail: detail.into(),
             commitment_equivocation: None,
             public_origin_fault: None,
             leader_equivocation: None,
+            leader_public_fault: None,
         }
     }
 
@@ -305,12 +317,13 @@ impl PublicProtocolViolation {
             kind,
             accused: PublicViolationAccused::Origin(origin),
             phase: Some(phase),
-            root,
+            root: root.map(Box::new),
             message_ids: Vec::new(),
             detail: detail.into(),
             commitment_equivocation: None,
             public_origin_fault: None,
             leader_equivocation: None,
+            leader_public_fault: None,
         }
     }
 
@@ -339,6 +352,11 @@ impl PublicProtocolViolation {
 
     fn with_leader_equivocation(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
         self.leader_equivocation = evidence.map(Box::new);
+        self
+    }
+
+    fn with_leader_public_fault(mut self, delivery: Option<PublicLeaderDelivery>) -> Self {
+        self.leader_public_fault = delivery.map(Box::new);
         self
     }
 }
@@ -462,6 +480,7 @@ impl PublicBatchAssembler {
                 Some(root),
                 detail,
             )
+            .with_leader_public_fault(delivery.clone())
         })?;
         let expected_complete = mode == PublicBatchMode::Complete;
         if manifest.complete != expected_complete {
@@ -473,7 +492,8 @@ impl PublicBatchAssembler {
                     "manifest complete={} does not match {mode:?} phase publication",
                     manifest.complete
                 ),
-            ));
+            )
+            .with_leader_public_fault(delivery.clone()));
         }
 
         let key = (phase, root);
@@ -5402,7 +5422,7 @@ async fn abort_public_protocol_violation<D>(
 ) where
     D: CoordinatorDkg,
 {
-    let root = violation.root.map(hex::encode);
+    let root = violation.root.as_deref().map(hex::encode);
     let message_ids: Vec<_> = violation
         .message_ids
         .iter()
@@ -5439,6 +5459,13 @@ async fn abort_public_protocol_violation<D>(
         routes,
         AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
         violation.leader_equivocation.as_deref(),
+    )
+    .await;
+    report_leader_public_fault_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_public_fault.as_deref(),
     )
     .await;
     state
@@ -7550,6 +7577,43 @@ async fn report_leader_equivocation_best_effort<D>(
                 attempt_id = %hex::encode(attempt.attempt_id.0),
                 error = %error,
                 "failed to queue or relay authenticated leader-equivocation evidence"
+            );
+        }
+    }
+}
+
+async fn report_leader_public_fault_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&PublicLeaderDelivery>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_public_fault_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let delivery = SignedPayload {
+        origin: evidence.origin.clone(),
+        signature: evidence.signature.clone(),
+        data: evidence.data.clone(),
+    };
+    match queue_or_relay_leader_public_fault(&coordinator, attempt, evidence.delivery_id, delivery)
+        .await
+    {
+        Ok(()) => {
+            crate::metrics::record_dkg_transport_event("public", "leader_public_fault_report_queued")
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("public", "leader_public_fault_report_failed");
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated leader public-fault evidence"
             );
         }
     }

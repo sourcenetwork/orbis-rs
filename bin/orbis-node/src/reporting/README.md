@@ -139,6 +139,34 @@ The current evidence kinds are:
   evidence kind — the endpoint signature that authenticated it at the
   transport layer is verified and then discarded before the DKG layer ever
   sees it, so there is currently nothing portable to retain for that case.
+- `dkg_leader_public_fault`: a single endpoint-signed Gossip manifest that is
+  independently provable as invalid on its own, with no conflicting
+  counterpart needed — unlike `dkg_leader_equivocation`. Currently one fault
+  kind, `invalid_manifest`: the leader published a manifest naming the wrong
+  origin set for its phase (fails `PhaseManifest::validate`), or whose
+  `complete` flag contradicts the phase's Complete/Incremental publication
+  mode. The statement uses domain `orbis-dkg-leader-public-fault-v1` and
+  retains the single raw signed delivery plus its `delivery_id`. Independent
+  verification re-checks the endpoint signature the same way as
+  `dkg_leader_equivocation`, then re-derives the phase's expected origin set
+  from chain-visible committee membership (`registry.rs`'s
+  `expected_leader_manifest_shape`, using the same canonical node-ID
+  assignment real ceremony setup uses) and re-runs `PhaseManifest::validate`
+  against it — a report is only signable if the manifest is genuinely,
+  independently provably wrong. **Deliberately unsupported: the Reshare
+  `Commitments` phase.** Its real expected-origins set is the ceremony's
+  *active dealers*, a live, leader-determined value only cryptographically
+  committed to via the leader's signed `activation_digest`
+  (`ControlSignature`) — not derivable from `ring.peer_node_keys`/
+  `new_peer_node_keys` alone. A report naming this phase is rejected outright
+  rather than validated against a wrong/looser membership set. No relay path
+  exists for this evidence kind (unlike `dkg_leader_equivocation`/
+  `dkg_control_message_fault`) — a pure pending-new reshare receiver that
+  alone detects this fault (no current-committee member also witnessed it)
+  cannot report it. This is a deliberate, accepted gap, not an oversight: it
+  only affects the two reshare phases where pending-new nodes are the ones
+  watching (`CommitmentAudit`, `ReshareParticipantSet`); Refresh phases are
+  unaffected since there is only ever one (current) committee.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
   fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
   messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry
@@ -394,8 +422,9 @@ change:
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
    `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
    `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`,
-   `dkg_public_origin_fault`, `dkg_leader_equivocation`, or
-   `dkg_control_message_fault`), checks the expected statement domain/shape,
+   `dkg_public_origin_fault`, `dkg_leader_equivocation`,
+   `dkg_leader_public_fault`, or `dkg_control_message_fault`), checks the
+   expected statement domain/shape,
    validates origin-protocol policy, and binds the signed evidence to the
    envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
@@ -541,9 +570,12 @@ elsewhere, closer to where they actually happen:
 - **fault detected** — for DKG control/public-plane evidence kinds, a
   `dkg_transport_events_total{plane, event}` `*_candidate` event
   (`origin_fault_candidate`, `equivocation_candidate`, `leader_equivocation_
-  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`)
-  fires at the moment a fault is first recognized, before any report is even
-  built. PRE/Sign/`dkg_share`/`dkg_invalid_refresh_commitment` evidence kinds
+  candidate`, `leader_public_fault_candidate`, `ack_equivocation_candidate`,
+  `leader_prepare_fault_candidate`) fires at the moment a fault is first
+  recognized, before any report is even built. `leader_public_fault` has no
+  relay path (see its bullet above), so it only ever emits `_report_queued`/
+  `_report_failed`, never a `_relay_accepted`/`_relay_exhausted` pair.
+  PRE/Sign/`dkg_share`/`dkg_invalid_refresh_commitment` evidence kinds
   don't have a separate "detected" moment distinct from "queued" — a
   signature-valid-but-failing response goes straight to
   `ReportObservation::InvalidCryptoResponse`, so `status="queued"` above is

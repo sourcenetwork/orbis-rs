@@ -7,7 +7,9 @@ use crate::dkg::v0::transport::{
     PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::identity::{determine_session_node_id, extract_node_part};
-use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::node_routes::{
+    canonical_node_id_assignments_from_node_keys, peer_ids_from_routes, resolve_node_routes,
+};
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::helpers::deserialize_secret;
 use crate::reporting::v0::error::{ReportingError, Result};
@@ -19,14 +21,16 @@ use crate::reporting::v0::observation::{
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgControlMessageFaultKind,
-    DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgPublicOriginFaultKind,
-    DkgPublicOriginFaultStatement, DkgShareStatement, EndpointSignedContribution,
-    InvalidCryptoResponse, NodeOffline, PreReencryptResponseStatement, RelayRequestStatement,
-    ReportEnvelope, SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
-    DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
-    NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN,
-    REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
+    DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind,
+    DkgLeaderPublicFaultStatement, DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement,
+    DkgShareStatement, EndpointSignedContribution, InvalidCryptoResponse, NodeOffline,
+    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, SignResponseStatement,
+    UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
+    DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
+    DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN,
+    UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::SigningOptions;
@@ -52,6 +56,7 @@ use crypto::{
 };
 use local_storage::LocalStorageImpl;
 use network::{Network, PeerId};
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -449,6 +454,10 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 self.validate_dkg_leader_equivocation_evidence(envelope, context, &ring, statement)
                     .await
             }
+            InvalidCryptoResponse::DkgLeaderPublicFault { statement } => {
+                self.validate_dkg_leader_public_fault_evidence(envelope, context, &ring, statement)
+                    .await
+            }
             InvalidCryptoResponse::DkgControlMessageFault { statement } => {
                 self.validate_dkg_control_message_fault_evidence(
                     envelope, context, &ring, statement,
@@ -760,6 +769,175 @@ impl InvalidCryptoResponseHandler {
             return Err(ReportingError::Unauthorized(
                 "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
             ));
+        }
+
+        Ok(())
+    }
+
+    async fn validate_dkg_leader_public_fault_evidence(
+        &self,
+        envelope: &ReportEnvelope,
+        context: &ReportValidationContext,
+        ring: &RingPayload,
+        statement: &DkgLeaderPublicFaultStatement,
+    ) -> Result<()> {
+        validate_invalid_crypto_statement_prologue(
+            envelope,
+            context,
+            InvalidCryptoStatementPrologue {
+                label: "DKG leader public fault".to_string(),
+                domain: statement.domain.clone(),
+                expected_domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
+                chain_id: statement.chain_id.clone(),
+                ring_id: statement.ring_id.clone(),
+                ring_pk: statement.ring_pk.clone(),
+                ring_state_sha256: statement.ring_state_sha256.clone(),
+                request_id: statement.request_id.clone(),
+                signed_at: statement.signed_at,
+                responder_node_key: statement.responder_node_key.clone(),
+                check_anchor: true,
+            },
+        )?;
+        if !is_valid_invalid_crypto_dkg_origin(&statement.origin_protocol) {
+            return Err(ReportingError::InvalidReport(format!(
+                "unsupported DKG leader public-fault origin protocol {}",
+                statement.origin_protocol
+            )));
+        }
+        if statement.signing_committee_scope != CommitteeScope::Current {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader public-fault reports must use the current signing committee"
+                    .to_string(),
+            ));
+        }
+        // The canonical leader is drawn from the current committee for a
+        // refresh (same committee throughout) and from the pending-new
+        // committee for a reshare (`PrepareSession::leader_committee`) —
+        // same rule as `dkg_leader_equivocation`, since this fault's accused
+        // is likewise always the canonical leader (only the leader publishes
+        // manifests).
+        let expected_accused_scope = match statement.origin_protocol.as_str() {
+            "pss_reshare" => CommitteeScope::PendingNew,
+            _ => CommitteeScope::Current,
+        };
+        if statement.accused_committee_scope != expected_accused_scope {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader public-fault accused committee scope does not match origin protocol"
+                    .to_string(),
+            ));
+        }
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "DKG leader public-fault protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            statement.accused_committee_scope,
+            CommitteeScope::Current,
+            "DKG leader public fault",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(
+            envelope,
+            context,
+            &signing_committee,
+            "DKG leader public fault",
+        )?;
+
+        // Independently re-derive who the leader should have been rather
+        // than trusting the reporter's characterization of the accused.
+        let accused_committee = committee_for_scope(ring, statement.accused_committee_scope)?;
+        let canonical_leader = transport::canonical_leader(&accused_committee.peer_node_keys)
+            .ok_or_else(|| {
+                ReportingError::InvalidReport(
+                    "DKG leader public-fault accused committee is empty".to_string(),
+                )
+            })?;
+        if canonical_leader != envelope.accused_node_key {
+            return Err(ReportingError::Unauthorized(
+                "accused node is not the canonical leader for this committee".to_string(),
+            ));
+        }
+
+        let next_peer_node_keys = if statement.origin_protocol == "pss_reshare" {
+            Some(ring.new_peer_node_keys.clone().ok_or_else(|| {
+                ReportingError::Unauthorized(
+                    "DKG leader public-fault reshare evidence requires a pending reshare"
+                        .to_string(),
+                )
+            })?)
+        } else {
+            None
+        };
+        let committee_digest = transport::ceremony_committee_digest(
+            &ring.peer_node_keys,
+            next_peer_node_keys.as_deref(),
+        );
+        let ceremony_id = statement.request_id.parse::<u128>().map_err(|_| {
+            ReportingError::InvalidReport(
+                "DKG leader public-fault request_id is not a ceremony ID".to_string(),
+            )
+        })?;
+        let attempt_id = transport::AttemptId(statement.attempt_id);
+        let topic = transport::derive_topic_id(
+            &statement.chain_id,
+            &statement.ring_id,
+            &committee_digest,
+            transport::CeremonyId(ceremony_id),
+            attempt_id,
+        );
+
+        let delivery = verify_leader_delivery_envelope(
+            envelope,
+            context,
+            topic,
+            statement.delivery_id,
+            &statement.delivery,
+        )
+        .await?;
+        let (delivery_ceremony_id, delivery_attempt_id, delivery_phase) =
+            leader_delivery_coordinates(&delivery).ok_or_else(|| {
+                ReportingError::Unauthorized(
+                    "leader delivery is not a manifest or chunk".to_string(),
+                )
+            })?;
+        if delivery_ceremony_id.0 != ceremony_id
+            || delivery_attempt_id != attempt_id
+            || delivery_phase.as_metric_label() != statement.phase
+        {
+            return Err(ReportingError::Unauthorized(
+                "leader delivery does not target the claimed attempt/phase".to_string(),
+            ));
+        }
+        if !public_origin_protocol_allows_phase(&statement.origin_protocol, delivery_phase) {
+            return Err(ReportingError::Unauthorized(
+                "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
+            ));
+        }
+
+        match statement.fault_kind {
+            DkgLeaderPublicFaultKind::InvalidManifest => {
+                let transport::DkgPublicMessage::Manifest(manifest) = &delivery else {
+                    return Err(ReportingError::Unauthorized(
+                        "invalid-manifest evidence must target a Manifest delivery".to_string(),
+                    ));
+                };
+                let expected =
+                    expected_leader_manifest_shape(ring, &statement.origin_protocol, delivery_phase)?;
+                let is_actually_invalid = manifest.validate(&expected.origins).is_err()
+                    || manifest.complete != expected.complete;
+                if !is_actually_invalid {
+                    return Err(ReportingError::Unauthorized(
+                        "reported manifest is independently verifiable as valid".to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -1802,6 +1980,96 @@ fn public_origin_protocol_allows_phase(origin_protocol: &str, phase: DkgPublicPh
                 | DkgPublicPhase::ReshareParticipantSet
         )
     )
+}
+
+/// Every canonical `ParticipantRef` for a committee's node-key list, using
+/// the same sort-then-assign scheme (`canonical_node_id_assignments_from_
+/// node_keys`) real ceremony setup uses to build `PhaseManifest::
+/// contribution_ids` keys — so this reproduces the exact set a real manifest
+/// would name, not just "the right people" in some other numbering.
+fn committee_participant_refs(
+    peer_node_keys: &[String],
+    scope: transport::CommitteeScope,
+) -> Result<BTreeSet<ParticipantRef>> {
+    let assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
+        .map_err(ReportingError::InvalidReport)?;
+    Ok(assignments
+        .into_values()
+        .map(|node_id| ParticipantRef { scope, node_id })
+        .collect())
+}
+
+/// The manifest shape (expected contributing origins, and whether it should
+/// be a `complete` publication) a `dkg_leader_public_fault`/
+/// `InvalidManifest` report must be checked against — independently
+/// re-derived from chain-visible committee membership, never from the
+/// reporter's own claim. Mirrors `expected_public_origins`/`public_batch_
+/// mode` (`dkg/v0/network.rs`), restricted to the phases/origin_protocols
+/// this evidence kind supports.
+///
+/// Deliberately unsupported: the Reshare `Commitments` phase. Its real
+/// expected-origins set is the ceremony's *active dealers*, a live,
+/// leader-determined value cryptographically committed to only via the
+/// leader's signed `activation_digest` (`ControlSignature`) — not
+/// derivable from `ring.peer_node_keys`/`new_peer_node_keys` alone. A
+/// report naming this phase is rejected outright rather than validated
+/// against a wrong/looser membership set.
+#[derive(Debug)]
+struct ExpectedLeaderManifestShape {
+    origins: BTreeSet<ParticipantRef>,
+    complete: bool,
+}
+
+fn expected_leader_manifest_shape(
+    ring: &RingPayload,
+    origin_protocol: &str,
+    phase: DkgPublicPhase,
+) -> Result<ExpectedLeaderManifestShape> {
+    match (origin_protocol, phase) {
+        ("pss_refresh", DkgPublicPhase::RefreshHealthCheck) => Ok(ExpectedLeaderManifestShape {
+            origins: BTreeSet::from([ParticipantRef::current(1)]),
+            complete: true,
+        }),
+        ("pss_refresh", DkgPublicPhase::Commitments) => Ok(ExpectedLeaderManifestShape {
+            origins: committee_participant_refs(
+                &ring.peer_node_keys,
+                transport::CommitteeScope::Current,
+            )?,
+            complete: true,
+        }),
+        ("pss_refresh", DkgPublicPhase::CommitmentAudit) => Ok(ExpectedLeaderManifestShape {
+            origins: committee_participant_refs(
+                &ring.peer_node_keys,
+                transport::CommitteeScope::Current,
+            )?,
+            complete: false,
+        }),
+        ("pss_reshare", DkgPublicPhase::ReshareParticipantSet) => Ok(ExpectedLeaderManifestShape {
+            origins: BTreeSet::from([ParticipantRef::next(1)]),
+            complete: true,
+        }),
+        ("pss_reshare", DkgPublicPhase::CommitmentAudit) => {
+            let next_keys = ring.new_peer_node_keys.as_deref().ok_or_else(|| {
+                ReportingError::Unauthorized(
+                    "DKG leader public-fault reshare evidence requires a pending reshare"
+                        .to_string(),
+                )
+            })?;
+            Ok(ExpectedLeaderManifestShape {
+                origins: committee_participant_refs(next_keys, transport::CommitteeScope::Next)?,
+                complete: false,
+            })
+        }
+        ("pss_reshare", DkgPublicPhase::Commitments) => Err(ReportingError::Unauthorized(
+            "DKG leader public-fault reporting is not supported for the Reshare Commitments \
+             phase: the expected origin set depends on live active-dealer selection, which is \
+             not independently derivable from chain state"
+                .to_string(),
+        )),
+        _ => Err(ReportingError::Unauthorized(format!(
+            "DKG leader public-fault phase {phase:?} is not valid for origin protocol {origin_protocol}"
+        ))),
+    }
 }
 
 fn public_origin_role_allowed(
@@ -4067,5 +4335,93 @@ mod tests {
         report.accused_node_key = "outsider".to_string();
         let error = validate_ring_and_membership(&report, &payload(&report), &ring).unwrap_err();
         assert!(error.to_string().contains("accused committee"));
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_rejects_reshare_commitments() {
+        // The one deliberately-unsupported phase: expected origins there
+        // depend on live active-dealer selection, not chain-derivable
+        // committee membership — see `expected_leader_manifest_shape`'s doc
+        // comment.
+        let ring = ring_fixture(2);
+        let error =
+            expected_leader_manifest_shape(&ring, "pss_reshare", DkgPublicPhase::Commitments)
+                .unwrap_err();
+        assert!(error.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_refresh_commitments_is_the_whole_current_committee() {
+        let ring = ring_fixture(2);
+        let shape =
+            expected_leader_manifest_shape(&ring, "pss_refresh", DkgPublicPhase::Commitments)
+                .unwrap();
+        assert!(shape.complete);
+        let expected: BTreeSet<ParticipantRef> =
+            committee_participant_refs(&ring.peer_node_keys, transport::CommitteeScope::Current)
+                .unwrap();
+        assert_eq!(shape.origins, expected);
+        assert_eq!(shape.origins.len(), ring.peer_node_keys.len());
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_refresh_health_check_is_leader_only() {
+        let ring = ring_fixture(2);
+        let shape = expected_leader_manifest_shape(
+            &ring,
+            "pss_refresh",
+            DkgPublicPhase::RefreshHealthCheck,
+        )
+        .unwrap();
+        assert!(shape.complete);
+        assert_eq!(shape.origins, BTreeSet::from([ParticipantRef::current(1)]));
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_reshare_commitment_audit_requires_pending_reshare() {
+        let mut ring = ring_fixture(2);
+        ring.new_peer_node_keys = None;
+        let error =
+            expected_leader_manifest_shape(&ring, "pss_reshare", DkgPublicPhase::CommitmentAudit)
+                .unwrap_err();
+        assert!(error.to_string().contains("pending reshare"));
+
+        ring.new_peer_node_keys = Some(vec!["accused".to_string(), "newcomer".to_string()]);
+        let shape =
+            expected_leader_manifest_shape(&ring, "pss_reshare", DkgPublicPhase::CommitmentAudit)
+                .unwrap();
+        assert!(!shape.complete);
+        let expected: BTreeSet<ParticipantRef> = committee_participant_refs(
+            ring.new_peer_node_keys.as_deref().unwrap(),
+            transport::CommitteeScope::Next,
+        )
+        .unwrap();
+        assert_eq!(shape.origins, expected);
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_reshare_participant_set_is_leader_only() {
+        let mut ring = ring_fixture(2);
+        ring.new_peer_node_keys = Some(vec!["accused".to_string(), "newcomer".to_string()]);
+        let shape = expected_leader_manifest_shape(
+            &ring,
+            "pss_reshare",
+            DkgPublicPhase::ReshareParticipantSet,
+        )
+        .unwrap();
+        assert!(shape.complete);
+        assert_eq!(shape.origins, BTreeSet::from([ParticipantRef::next(1)]));
+    }
+
+    #[test]
+    fn expected_leader_manifest_shape_rejects_unsupported_phase_for_origin_protocol() {
+        let ring = ring_fixture(2);
+        let error = expected_leader_manifest_shape(
+            &ring,
+            "pss_refresh",
+            DkgPublicPhase::ReshareParticipantSet,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("not valid for origin protocol"));
     }
 }
