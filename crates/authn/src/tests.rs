@@ -530,10 +530,7 @@ fn direct_token_uses_issuer_as_actor() {
         claims: (),
     };
 
-    assert_eq!(
-        resolve_actor_id(&token, &HashSet::new()).unwrap(),
-        token.issuer_id
-    );
+    assert_eq!(resolve_actor_id(&token, &[]).unwrap(), token.issuer_id);
 }
 
 #[test]
@@ -548,7 +545,7 @@ fn relay_issuer_must_use_ed25519_key() {
 }
 
 #[test]
-fn trusted_relay_may_delegate_actor() {
+fn delegation_is_scoped_to_supplied_relay_set() {
     let relay = JwtSigner::new();
     let jwt = relay
         .sign_for_actor("did:opk:user".to_string(), (), Duration::from_secs(60))
@@ -560,8 +557,9 @@ fn trusted_relay_may_delegate_actor() {
     let token: BearerToken =
         resolve_jwt_did(&jwt, now, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0).unwrap();
 
-    let trusted = HashSet::from([relay.did_uri]);
+    let trusted = vec![relay.did_uri];
     assert_eq!(resolve_actor_id(&token, &trusted).unwrap(), "did:opk:user");
+    assert!(resolve_actor_id(&token, &["did:key:other".to_string()]).is_err());
 }
 
 #[test]
@@ -576,7 +574,7 @@ fn untrusted_issuer_cannot_delegate_actor() {
     };
 
     assert!(matches!(
-        resolve_actor_id(&token, &HashSet::new()),
+        resolve_actor_id(&token, &[]),
         Err(AuthNError::Unauthorized(message)) if message.contains("not allowed")
     ));
 }
@@ -584,7 +582,7 @@ fn untrusted_issuer_cannot_delegate_actor() {
 #[test]
 fn trusted_relay_cannot_delegate_invalid_actor() {
     let relay = "did:key:relay".to_string();
-    let trusted = HashSet::from([relay.clone()]);
+    let trusted = vec![relay.clone()];
 
     for actor in [
         "did:",

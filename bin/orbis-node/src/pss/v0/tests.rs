@@ -199,6 +199,7 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -260,6 +261,7 @@ async fn test_removed_member_reconciliation_preserves_an_active_ring() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -315,6 +317,7 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -371,6 +374,7 @@ async fn test_refresh_follower_does_not_fall_back_when_canonical_route_is_missin
         pss_interval: 0,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -448,6 +452,7 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -494,6 +499,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -566,6 +572,7 @@ async fn test_pending_fresh_dkg_cancellation_failure_still_cleans_local_state() 
         pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -625,6 +632,7 @@ async fn test_pending_fresh_dkg_missing_bulletin_ring_cleans_local_state() {
         pss_interval: 86_400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let entry = post_ring_and_seed_index_with_local_key(
@@ -676,6 +684,7 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
         pss_interval: 1,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -748,6 +757,7 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         pss_interval: 86_400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -910,6 +920,7 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         pss_interval: u64::MAX, // interval far out — refresh would skip, but reshare must not
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -956,6 +967,7 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -998,6 +1010,7 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -1030,6 +1043,7 @@ async fn test_pss_ring_refresh_skips_before_interval_elapsed() {
         pss_interval: u64::MAX, // interval far in the future — refresh must skip
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -1068,6 +1082,7 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         pss_interval: 0,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 

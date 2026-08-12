@@ -194,7 +194,6 @@ pub async fn spawn_harness_node(
         node_peer_id: None,
         node_whitelisted_policy_ids: vec![params.policy_id],
         node_whitelisted_ring_ids: vec![],
-        trusted_auth_relay_dids: vec![],
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
     };

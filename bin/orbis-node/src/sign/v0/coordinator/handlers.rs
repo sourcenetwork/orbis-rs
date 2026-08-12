@@ -268,8 +268,6 @@ where
                     JWT_CLOCK_SKEW_LEEWAY_SECS,
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-                let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
-                    .map_err(SignError::Unauthorized)?;
                 validate_sign_claims(&token, derivation_id, None)?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
@@ -278,6 +276,9 @@ where
                     self.routes.version,
                 )
                 .await?;
+                let actor_id =
+                    request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+                        .map_err(SignError::Unauthorized)?;
                 if let Err(error) = check_policy_access(
                     &*self.app_state.authz,
                     &key_derivation,
@@ -550,9 +551,6 @@ where
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
-            .map_err(SignError::Unauthorized)?;
-
         validate_sign_claims(&token, derivation_id, Some(message))?;
 
         // Always fetch bulletin data — needed for ring_pk, pub_poly, derivation, metadata
@@ -563,6 +561,8 @@ where
             self.routes.version,
         )
         .await?;
+        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+            .map_err(SignError::Unauthorized)?;
 
         // For interactive (FROST), authz was already checked in handle_nonce_request
         // (Round 1) before the nonce was generated — can decide to skip the IO here (I choose not to but can if speed is needed).

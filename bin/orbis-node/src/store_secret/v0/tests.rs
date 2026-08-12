@@ -19,7 +19,7 @@ use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest,
 };
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tonic::Request;
 
 /// Default test values for StoreSecret requests
@@ -62,6 +62,7 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 
@@ -196,9 +197,7 @@ async fn test_store_secret_rejects_delegated_actor() {
     let db_name = "test_store_secret_rejects_delegated_actor";
     let db_path = test_db_path(db_name);
     let relay = TestKeyPair::new();
-    let app_state = create_test_app_state_default(db_name)
-        .await
-        .with_trusted_auth_relay_dids(HashSet::from([relay.did_uri.clone()]));
+    let app_state = create_test_app_state_default(db_name).await;
     let service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(app_state, &network::V0);
     let request = create_dummy_request();
     let token = relay
@@ -431,6 +430,7 @@ async fn test_store_secret_idempotent() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
 

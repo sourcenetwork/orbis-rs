@@ -44,6 +44,10 @@ pub struct Ring {
     pub upgrade_info: Option<UpgradeInfo>,
     #[prost(message, optional, tag = "13")]
     pub reporting: Option<ReportingConfig>,
+    #[prost(string, repeated, tag = "14")]
+    pub trusted_auth_relay_dids: Vec<String>,
+    #[prost(bool, tag = "15")]
+    pub allow_trusted_auth_relays: bool,
 }
 
 #[derive(Clone, Message)]
@@ -168,6 +172,10 @@ pub struct MsgCreateRing {
     pub current_version: u64,
     #[prost(message, optional, tag = "8")]
     pub reporting: Option<ReportingConfig>,
+    #[prost(string, repeated, tag = "9")]
+    pub trusted_auth_relay_dids: Vec<String>,
+    #[prost(bool, tag = "10")]
+    pub allow_trusted_auth_relays: bool,
 }
 
 impl MsgCreateRing {
@@ -182,7 +190,9 @@ impl MsgCreateRing {
         nonce: Option<String>,
         current_version: u64,
         reporting: Option<ReportingConfig>,
+        trusted_auth_relay_dids: Option<Vec<String>>,
     ) -> Self {
+        let allow_trusted_auth_relays = trusted_auth_relay_dids.is_some();
         Self {
             creator: creator.to_string(),
             peer_node_keys,
@@ -192,6 +202,8 @@ impl MsgCreateRing {
             nonce,
             current_version,
             reporting,
+            trusted_auth_relay_dids: trusted_auth_relay_dids.unwrap_or_default(),
+            allow_trusted_auth_relays,
         }
     }
 }
@@ -284,6 +296,31 @@ impl MsgSetRingReportingByAcp {
 
 #[derive(Clone, Message)]
 pub struct MsgSetRingReportingByAcpResponse {}
+
+#[derive(Clone, Message)]
+pub struct MsgRemoveRingTrustedAuthRelayByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(string, tag = "3")]
+    pub relay_did: String,
+}
+
+impl MsgRemoveRingTrustedAuthRelayByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgRemoveRingTrustedAuthRelayByAcp";
+
+    pub fn new(creator: &str, ring_id: &str, relay_did: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            relay_did: relay_did.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgRemoveRingTrustedAuthRelayByAcpResponse {}
 
 #[derive(Clone, Message)]
 pub struct MsgScheduleRingUpgradeByAcp {
@@ -834,6 +871,10 @@ pub struct RingReshareSignState {
     pub block_number_nonce: u64,
     #[prost(string, tag = "8")]
     pub policy_id: String,
+    #[prost(string, repeated, tag = "9")]
+    pub trusted_auth_relay_dids: Vec<String>,
+    #[prost(bool, tag = "10")]
+    pub allow_trusted_auth_relays: bool,
 }
 
 /// Build SourceHub-compatible sign bytes for a ring reshare finalization.
@@ -877,6 +918,7 @@ pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
     let mut canonical = state.clone();
     canonical.peer_node_keys.sort();
     canonical.new_peer_node_keys.sort();
+    canonical.trusted_auth_relay_dids.sort();
     Sha256::digest(canonical.encode_to_vec()).into()
 }
 
@@ -1042,6 +1084,7 @@ impl SourceHubClient {
         nonce: Option<String>,
         current_version: u64,
         reporting: Option<ReportingConfig>,
+        trusted_auth_relay_dids: Option<Vec<String>>,
     ) -> Result<BroadcastResult> {
         let signer = self
             .signer()
@@ -1055,6 +1098,7 @@ impl SourceHubClient {
             nonce,
             current_version,
             reporting,
+            trusted_auth_relay_dids,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -1076,6 +1120,7 @@ impl SourceHubClient {
         nonce: Option<String>,
         current_version: u64,
         reporting: Option<ReportingConfig>,
+        trusted_auth_relay_dids: Option<Vec<String>>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -1086,6 +1131,7 @@ impl SourceHubClient {
                 nonce,
                 current_version,
                 reporting,
+                trusted_auth_relay_dids,
             )
             .await?;
 
@@ -1308,6 +1354,23 @@ impl SourceHubClient {
         let msg = MsgSetRingReportingByAcp::new(&signer.address(), ring_id, reporting);
         self.broadcast_proto_msg_with_gas(
             MsgSetRingReportingByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_remove_ring_trusted_auth_relay_by_acp(
+        &self,
+        ring_id: &str,
+        relay_did: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgRemoveRingTrustedAuthRelayByAcp::new(&signer.address(), ring_id, relay_did);
+        self.broadcast_proto_msg_with_gas(
+            MsgRemoveRingTrustedAuthRelayByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )
@@ -1635,11 +1698,14 @@ mod tests {
             None,
             0,
             None,
+            Some(vec!["did:key:relay".to_string()]),
         );
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         assert_eq!(decoded.pss_interval, 86400);
         assert!(decoded.reporting.is_none());
+        assert_eq!(decoded.trusted_auth_relay_dids, vec!["did:key:relay"]);
+        assert!(decoded.allow_trusted_auth_relays);
     }
 
     #[test]
@@ -1662,11 +1728,13 @@ mod tests {
                 backup_node_keys: vec!["backup-2".to_string(), "backup-1".to_string()],
                 kick_threshold: 4,
             }),
+            None,
         );
         let bytes = msg.encode_to_vec();
         let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
         let reporting = decoded.reporting.expect("reporting");
         let config = reporting.demerit_config.expect("demerit_config");
+        assert!(!decoded.allow_trusted_auth_relays);
 
         assert_eq!(config.node_offline_demerits, 3);
         assert_eq!(config.reset_interval_seconds, 42);
@@ -1758,10 +1826,13 @@ mod tests {
             new_threshold: Some(1),
             block_number_nonce: 9,
             policy_id: "policy".to_string(),
+            trusted_auth_relay_dids: vec!["relay-b".to_string(), "relay-a".to_string()],
+            allow_trusted_auth_relays: true,
         };
         let reordered = RingReshareSignState {
             peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
             new_peer_node_keys: vec!["node-c".to_string(), "node-d".to_string()],
+            trusted_auth_relay_dids: vec!["relay-a".to_string(), "relay-b".to_string()],
             ..state.clone()
         };
 

@@ -9,7 +9,7 @@ use crypto::r#trait::Dkg;
 use local_storage::LocalStorageImpl;
 use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -293,8 +293,6 @@ where
     pub authz: Arc<dyn Authz + Send + Sync>,
     /// Bulletin implementation
     pub bulletin: Arc<dyn Bulletin + Send + Sync>,
-    /// JWT issuers allowed to delegate requests to another actor DID.
-    pub trusted_auth_relay_dids: Arc<HashSet<String>>,
     /// Serializes concurrent RingIndex read-modify-write operations in Phase 4.
     /// Without this, two simultaneous DKG completions can each read the same
     /// index and one will overwrite the other's appended entry.
@@ -337,7 +335,6 @@ where
             sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
-            trusted_auth_relay_dids: Arc::new(HashSet::new()),
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
             dkg_private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
@@ -347,11 +344,6 @@ where
             dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
-    }
-
-    pub fn with_trusted_auth_relay_dids(mut self, relay_dids: HashSet<String>) -> Self {
-        self.trusted_auth_relay_dids = Arc::new(relay_dids);
-        self
     }
 }
 
