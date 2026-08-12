@@ -3185,7 +3185,8 @@ async fn test_reshare_pure_new_receiver_stalled_on_old_dealer_triggers_on_chain_
     // acks land would abort the whole ceremony at the topology barrier
     // instead of exercising the share-stall path this test targets.
     println!("Waiting for node4 to join the reshare ceremony...");
-    wait_for_active_pss_session(endpoints[3], &ring_pk_hex, Duration::from_secs(60)).await;
+    let local_ring_key = ring_key_from_ring_pk_hex(&ring_pk_hex);
+    wait_for_active_pss_session(endpoints[3], &local_ring_key, Duration::from_secs(60)).await;
     sleep(Duration::from_secs(5)).await;
 
     // Stop node3 — an old-only dealer, not part of the new committee — so
@@ -4006,13 +4007,29 @@ async fn test_reshare_organic_dkg_equivocation_triggers_on_chain_report() {
     sleep(Duration::from_secs(5)).await;
 
     println!("Making node3 organically broadcast a second, conflicting Phase1 commitment...");
+    // Must be a structurally valid commitment (exactly `reshare_threshold`
+    // real G1 points) — an arbitrary or wrong-length byte string is rejected
+    // by `prepare_commitment_message`'s length/coefficient-count/deserialize
+    // preconditions before genuine equivocation-comparison logic ever runs,
+    // which would silently collapse this test onto the same InvalidPayload
+    // path already covered by the invalid-commitment test above.
+    let conflicting_commitment_coefficients: Vec<GroupAffine> = (0..reshare_threshold)
+        .map(|_| {
+            generate_keypair()
+                .expect("generate conflicting commitment coefficient")
+                .1
+        })
+        .collect();
+    let conflicting_commitment_bytes =
+        serialize_commitment_coefficients(&conflicting_commitment_coefficients)
+            .expect("serialize conflicting commitment bytes");
     let mut node3_unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint)
         .await
         .expect("connect unsafe-testing client to node3");
     node3_unsafe_client
         .submit_organic_conflicting_commitment(SubmitOrganicConflictingCommitmentRequest {
             session_id: session_id.to_string(),
-            commitment_bytes: vec![0x42; 32],
+            commitment_bytes: conflicting_commitment_bytes,
         })
         .await
         .expect("node3 should organically broadcast a conflicting commitment");

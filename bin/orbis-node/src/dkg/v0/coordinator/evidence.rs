@@ -1633,15 +1633,27 @@ where
                 "Fresh DKG control-message faults are not reportable".to_string(),
             )
         })?;
-    let accused_committee_scope = if binding.current_node_keys.contains(&accused_node_key) {
-        CommitteeScope::Current
-    } else if binding.receiver_node_keys.contains(&accused_node_key) {
+    // The expected scope is fixed by origin_protocol (mirrors the registry's
+    // validation rule and the leader-fault/leader-equivocation call sites) —
+    // not derived from whichever committee list the accused happens to be in
+    // first. A Reshare dealer-receiver sits in both `current_node_keys` and
+    // `receiver_node_keys`; checking `current_node_keys` first mis-scoped
+    // that common case as `Current` when the registry always requires
+    // `PendingNew` for `pss_reshare`.
+    let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {
+        CommitteeScope::Current
+    };
+    let accused_committee_keys = match accused_committee_scope {
+        CommitteeScope::Current => &binding.current_node_keys,
+        CommitteeScope::PendingNew => &binding.receiver_node_keys,
+    };
+    if !accused_committee_keys.contains(&accused_node_key) {
         return Err(DkgError::Unauthorized(
             "control-message fault accused is not in the bound committee".to_string(),
         ));
-    };
+    }
     let signed_at = now_unix_secs()?;
     let accused_info = read_node_info(&app_state, &accused_node_key).await?;
     let statement = DkgControlMessageFaultStatement {
