@@ -182,6 +182,7 @@ pub async fn spawn_harness_node(
         bulletin_grpc: None,
         chain_rpc: None,
         chain_rest: None,
+        chain_id: None,
         denom: None,
         chain_gas_multiplier: None,
         metrics_addr: None,
