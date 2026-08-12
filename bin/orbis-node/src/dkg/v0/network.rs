@@ -431,11 +431,16 @@ impl ManifestRepairSchedule {
     }
 }
 
+struct CompletePhaseRootClaim {
+    root: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
+}
+
 #[derive(Default)]
 struct PublicBatchAssembler {
     pending: HashMap<(PublicPhase, [u8; 32]), PendingPublicBatch>,
     completed: HashMap<(PublicPhase, [u8; 32]), CompletedPublicBatch>,
-    complete_phase_roots: HashMap<PublicPhase, [u8; 32]>,
+    complete_phase_roots: HashMap<PublicPhase, CompletePhaseRootClaim>,
     observed_origins: HashMap<(PublicPhase, ParticipantRef), ObservedPublicOrigin>,
 }
 
@@ -509,7 +514,13 @@ impl PublicBatchAssembler {
             };
         }
 
-        self.claim_phase_root(mode, phase, root, expected_origins.len())?;
+        self.claim_phase_root(
+            mode,
+            phase,
+            root,
+            expected_origins.len(),
+            delivery.as_ref(),
+        )?;
         let buffered_manifest_entries: usize = self
             .pending
             .iter()
@@ -605,7 +616,13 @@ impl PublicBatchAssembler {
         if mode == PublicBatchMode::Incremental {
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
-        if let Err(violation) = self.claim_phase_root(mode, phase, root, expected_origin_count) {
+        if let Err(violation) = self.claim_phase_root(
+            mode,
+            phase,
+            root,
+            expected_origin_count,
+            delivery.as_ref(),
+        ) {
             return Err(violation
                 .with_commitment_equivocation(commitment_equivocation)
                 .with_public_origin_fault(public_origin_fault));
@@ -840,22 +857,33 @@ impl PublicBatchAssembler {
         phase: PublicPhase,
         root: [u8; 32],
         expected_origin_count: usize,
+        delivery: Option<&PublicLeaderDelivery>,
     ) -> std::result::Result<(), PublicProtocolViolation> {
         if mode == PublicBatchMode::Complete {
             if let Some(existing) = self.complete_phase_roots.get(&phase) {
-                if existing != &root {
+                if existing.root != root {
                     return Err(PublicProtocolViolation::leader(
                         PublicProtocolViolationKind::ConflictingManifest,
                         Some(phase),
                         Some(root),
                         format!(
                             "complete phase already committed to root {}",
-                            hex::encode(existing)
+                            hex::encode(existing.root)
                         ),
-                    ));
+                    )
+                    .with_leader_equivocation(leader_delivery_equivocation(
+                        existing.delivery.as_ref(),
+                        delivery,
+                    )));
                 }
             } else {
-                self.complete_phase_roots.insert(phase, root);
+                self.complete_phase_roots.insert(
+                    phase,
+                    CompletePhaseRootClaim {
+                        root,
+                        delivery: delivery.cloned(),
+                    },
+                );
             }
             return Ok(());
         }
@@ -13265,6 +13293,8 @@ mod stability_tests {
         let first_root = [1; 32];
         let second_root = [2; 32];
         let conflicting = assembled_contribution(ParticipantRef::current(1), 2);
+        let first_chunk_delivery = sample_leader_delivery(1);
+        let second_chunk_delivery = sample_leader_delivery(2);
         assembler
             .insert_chunk(
                 PublicBatchMode::Complete,
@@ -13274,7 +13304,7 @@ mod stability_tests {
                 vec![contribution.clone()],
                 [2; 32],
                 expected.len(),
-                None,
+                Some(first_chunk_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -13286,7 +13316,7 @@ mod stability_tests {
                 vec![conflicting.clone()],
                 [3; 32],
                 expected.len(),
-                None,
+                Some(second_chunk_delivery.clone()),
             )
             .expect_err("a complete phase cannot advertise two roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
@@ -13299,6 +13329,14 @@ mod stability_tests {
                 conflicting: conflicting.signed,
             }),
             "leader-first attribution must still preserve provable dealer equivocation"
+        );
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: first_chunk_delivery,
+                conflicting: second_chunk_delivery,
+            }),
+            "a leader claiming two different complete-phase roots must be provably attributable"
         );
     }
 
