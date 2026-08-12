@@ -928,8 +928,11 @@ impl InvalidCryptoResponseHandler {
                         "invalid-manifest evidence must target a Manifest delivery".to_string(),
                     ));
                 };
-                let expected =
-                    expected_leader_manifest_shape(ring, &statement.origin_protocol, delivery_phase)?;
+                let expected = expected_leader_manifest_shape(
+                    ring,
+                    &statement.origin_protocol,
+                    delivery_phase,
+                )?;
                 let is_actually_invalid = manifest.validate(&expected.origins).is_err()
                     || manifest.complete != expected.complete;
                 if !is_actually_invalid {
@@ -941,11 +944,15 @@ impl InvalidCryptoResponseHandler {
             DkgLeaderPublicFaultKind::ChunkIndexOutOfRange => {
                 let transport::DkgPublicMessage::Chunk { index, .. } = &delivery else {
                     return Err(ReportingError::Unauthorized(
-                        "chunk-index-out-of-range evidence must target a Chunk delivery".to_string(),
+                        "chunk-index-out-of-range evidence must target a Chunk delivery"
+                            .to_string(),
                     ));
                 };
-                let expected =
-                    expected_leader_manifest_shape(ring, &statement.origin_protocol, delivery_phase)?;
+                let expected = expected_leader_manifest_shape(
+                    ring,
+                    &statement.origin_protocol,
+                    delivery_phase,
+                )?;
                 if (*index as usize) < expected.origins.len() {
                     return Err(ReportingError::Unauthorized(
                         "reported chunk index is independently verifiable as within range"

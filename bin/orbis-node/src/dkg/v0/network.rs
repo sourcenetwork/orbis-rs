@@ -509,7 +509,10 @@ impl PublicBatchAssembler {
                     manifest.complete
                 ),
             )
-            .with_leader_public_fault(DkgLeaderPublicFaultKind::InvalidManifest, delivery.clone()));
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::InvalidManifest,
+                delivery.clone(),
+            ));
         }
 
         let key = (phase, root);
@@ -550,13 +553,7 @@ impl PublicBatchAssembler {
             };
         }
 
-        self.claim_phase_root(
-            mode,
-            phase,
-            root,
-            expected_origins.len(),
-            delivery.as_ref(),
-        )?;
+        self.claim_phase_root(mode, phase, root, expected_origins.len(), delivery.as_ref())?;
         let buffered_manifest_entries: usize = self
             .pending
             .iter()
@@ -656,13 +653,9 @@ impl PublicBatchAssembler {
         if mode == PublicBatchMode::Incremental {
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
-        if let Err(violation) = self.claim_phase_root(
-            mode,
-            phase,
-            root,
-            expected_origin_count,
-            delivery.as_ref(),
-        ) {
+        if let Err(violation) =
+            self.claim_phase_root(mode, phase, root, expected_origin_count, delivery.as_ref())
+        {
             return Err(violation
                 .with_commitment_equivocation(commitment_equivocation)
                 .with_public_origin_fault(public_origin_fault));
@@ -7634,11 +7627,15 @@ async fn report_leader_public_fault_best_effort<D>(
     )
     .await
     {
-        Ok(()) => {
-            crate::metrics::record_dkg_transport_event("public", "leader_public_fault_report_queued")
-        }
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_public_fault_report_queued",
+        ),
         Err(error) => {
-            crate::metrics::record_dkg_transport_event("public", "leader_public_fault_report_failed");
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_public_fault_report_failed",
+            );
             tracing::warn!(
                 session_id = attempt.session_id(),
                 attempt_id = %hex::encode(attempt.attempt_id.0),
@@ -13510,7 +13507,10 @@ mod stability_tests {
             Some([1; 32]),
             "encoded chunk exceeds the byte limit",
         )
-        .with_leader_public_fault(DkgLeaderPublicFaultKind::OversizedChunk, Some(oversized.clone()));
+        .with_leader_public_fault(
+            DkgLeaderPublicFaultKind::OversizedChunk,
+            Some(oversized.clone()),
+        );
         assert_eq!(violation.kind, PublicProtocolViolationKind::BufferLimit);
         assert_eq!(
             violation.leader_public_fault.as_deref(),

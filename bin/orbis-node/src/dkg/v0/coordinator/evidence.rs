@@ -1630,16 +1630,16 @@ where
         })?;
     let canonical_leader = transport::canonical_leader(&binding.receiver_node_keys)
         .ok_or_else(|| {
-            DkgError::InvalidState("leader public-fault evidence has an empty committee".to_string())
+            DkgError::InvalidState(
+                "leader public-fault evidence has an empty committee".to_string(),
+            )
         })?
         .to_string();
-    let decoded: transport::DkgPublicMessage = transport::decode(
-        &delivery.data,
-        transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
-    )
-    .map_err(DkgError::Deserialization)?;
-    let (ceremony_id, attempt_id, phase) = leader_delivery_attempt_and_phase(&decoded)
-        .ok_or_else(|| {
+    let decoded: transport::DkgPublicMessage =
+        transport::decode(&delivery.data, transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES)
+            .map_err(DkgError::Deserialization)?;
+    let (ceremony_id, attempt_id, phase) =
+        leader_delivery_attempt_and_phase(&decoded).ok_or_else(|| {
             DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
         })?;
     if ceremony_id != attempt.ceremony_id || attempt_id != attempt.attempt_id {
