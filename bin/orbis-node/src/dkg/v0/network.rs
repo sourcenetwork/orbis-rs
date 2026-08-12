@@ -78,7 +78,8 @@ use crate::helpers::test_helpers::{
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::reporting::v0::types::{
-    ControlMessageArtifact, DkgControlMessageFaultKind, DkgPublicOriginFaultKind,
+    ControlMessageArtifact, DkgControlMessageFaultKind, DkgLeaderPublicFaultKind,
+    DkgPublicOriginFaultKind,
 };
 use crate::ring_state::RingShareBundle;
 #[cfg(test)]
@@ -200,14 +201,20 @@ struct PublicProtocolViolation {
     commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
     public_origin_fault: Option<Box<PublicOriginFaultEvidence>>,
     leader_equivocation: Option<Box<LeaderDeliveryEquivocation>>,
-    /// A single leader-signed manifest that is independently provable as
-    /// invalid on its own (no conflicting counterpart needed) — currently
-    /// only attached for `InvalidManifest`. `None` whenever the violating
-    /// delivery wasn't retained (best-effort, same caveat as
-    /// `leader_equivocation`) or the phase isn't independently reportable
-    /// (Reshare's `Commitments` phase — see `reporting/v0/registry.rs`'s
-    /// `expected_leader_manifest_shape`).
-    leader_public_fault: Option<Box<PublicLeaderDelivery>>,
+    /// A single leader-signed delivery that is independently provable as
+    /// invalid on its own (no conflicting counterpart needed) — see
+    /// `DkgLeaderPublicFaultKind` for the covered fault kinds. `None`
+    /// whenever the violating delivery wasn't retained (best-effort, same
+    /// caveat as `leader_equivocation`) or the phase isn't independently
+    /// reportable (Reshare's `Commitments` phase — see
+    /// `reporting/v0/registry.rs`'s `expected_leader_manifest_shape`).
+    leader_public_fault: Option<Box<LeaderPublicFaultEvidence>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LeaderPublicFaultEvidence {
+    fault_kind: DkgLeaderPublicFaultKind,
+    delivery: PublicLeaderDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -355,8 +362,17 @@ impl PublicProtocolViolation {
         self
     }
 
-    fn with_leader_public_fault(mut self, delivery: Option<PublicLeaderDelivery>) -> Self {
-        self.leader_public_fault = delivery.map(Box::new);
+    fn with_leader_public_fault(
+        mut self,
+        fault_kind: DkgLeaderPublicFaultKind,
+        delivery: Option<PublicLeaderDelivery>,
+    ) -> Self {
+        self.leader_public_fault = delivery.map(|delivery| {
+            Box::new(LeaderPublicFaultEvidence {
+                fault_kind,
+                delivery,
+            })
+        });
         self
     }
 }
@@ -480,7 +496,7 @@ impl PublicBatchAssembler {
                 Some(root),
                 detail,
             )
-            .with_leader_public_fault(delivery.clone())
+            .with_leader_public_fault(DkgLeaderPublicFaultKind::InvalidManifest, delivery.clone())
         })?;
         let expected_complete = mode == PublicBatchMode::Complete;
         if manifest.complete != expected_complete {
@@ -493,7 +509,7 @@ impl PublicBatchAssembler {
                     manifest.complete
                 ),
             )
-            .with_leader_public_fault(delivery.clone()));
+            .with_leader_public_fault(DkgLeaderPublicFaultKind::InvalidManifest, delivery.clone()));
         }
 
         let key = (phase, root);
@@ -597,6 +613,10 @@ impl PublicBatchAssembler {
                     "chunk index {index} exceeds the maximum {} chunks for this phase",
                     expected_origin_count
                 ),
+            )
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+                delivery.clone(),
             ));
         }
 
@@ -5853,6 +5873,10 @@ async fn topic_listener<D>(
                                     message.data.len(),
                                     transport::MAX_PUBLIC_CHUNK_BYTES
                                 ),
+                            )
+                            .with_leader_public_fault(
+                                DkgLeaderPublicFaultKind::OversizedChunk,
+                                public_leader_delivery_from_message(&message),
                             );
                             abort_public_protocol_violation_from_listener(
                                 &state, routes, &prepare, &violation,
@@ -7586,7 +7610,7 @@ async fn report_leader_public_fault_best_effort<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     attempt: AttemptKey,
-    evidence: Option<&PublicLeaderDelivery>,
+    evidence: Option<&LeaderPublicFaultEvidence>,
 ) where
     D: CoordinatorDkg,
     SignImpl: CoordinatorReportSigner<D>,
@@ -7597,12 +7621,18 @@ async fn report_leader_public_fault_best_effort<D>(
     crate::metrics::record_dkg_transport_event("public", "leader_public_fault_candidate");
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     let delivery = SignedPayload {
-        origin: evidence.origin.clone(),
-        signature: evidence.signature.clone(),
-        data: evidence.data.clone(),
+        origin: evidence.delivery.origin.clone(),
+        signature: evidence.delivery.signature.clone(),
+        data: evidence.delivery.data.clone(),
     };
-    match queue_or_relay_leader_public_fault(&coordinator, attempt, evidence.delivery_id, delivery)
-        .await
+    match queue_or_relay_leader_public_fault(
+        &coordinator,
+        attempt,
+        evidence.fault_kind,
+        evidence.delivery.delivery_id,
+        delivery,
+    )
+    .await
     {
         Ok(()) => {
             crate::metrics::record_dkg_transport_event("public", "leader_public_fault_report_queued")
@@ -13401,6 +13431,94 @@ mod stability_tests {
                 conflicting: second_chunk_delivery,
             }),
             "a leader claiming two different complete-phase roots must be provably attributable"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_manifest_naming_the_wrong_origin_set_with_leader_public_fault_evidence()
+    {
+        // A Complete-mode manifest must name every expected origin. This one
+        // names only origin 1, but the phase's committee has two members —
+        // a genuine `PhaseManifest::validate` failure, not an equivocation
+        // (no earlier manifest exists to conflict with).
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let manifest = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+        let delivery = sample_leader_delivery(1);
+        let error = assembler
+            .insert_manifest(
+                PublicBatchMode::Complete,
+                manifest,
+                [1; 32],
+                &expected,
+                Some(delivery.clone()),
+            )
+            .expect_err("a manifest naming an incomplete origin set must be rejected");
+        assert_eq!(error.kind, PublicProtocolViolationKind::InvalidManifest);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::InvalidManifest,
+                delivery,
+            }),
+            "an invalid manifest must retain the leader's signed delivery as evidence, \
+             independently provable without any conflicting counterpart"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_chunk_index_out_of_range_with_leader_public_fault_evidence() {
+        // The phase's committee has one member, so any chunk index other
+        // than 0 is out of range — a genuine, single-artifact-provable
+        // `BufferLimit` fault, distinct from `InvalidManifest`.
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let mut assembler = PublicBatchAssembler::default();
+        let delivery = sample_leader_delivery(1);
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [1; 32],
+                1,
+                vec![contribution],
+                [2; 32],
+                1,
+                Some(delivery.clone()),
+            )
+            .expect_err("a chunk index at or beyond the expected origin count must be rejected");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+                delivery,
+            }),
+            "an out-of-range chunk index must retain the leader's signed delivery as evidence"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_oversized_chunk_bytes_with_leader_public_fault_evidence() {
+        let mut oversized = sample_leader_delivery(1);
+        oversized.data = vec![0u8; transport::MAX_PUBLIC_CHUNK_BYTES + 1];
+        let violation = PublicProtocolViolation::leader(
+            PublicProtocolViolationKind::BufferLimit,
+            Some(PublicPhase::Commitments),
+            Some([1; 32]),
+            "encoded chunk exceeds the byte limit",
+        )
+        .with_leader_public_fault(DkgLeaderPublicFaultKind::OversizedChunk, Some(oversized.clone()));
+        assert_eq!(violation.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(
+            violation.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::OversizedChunk,
+                delivery: oversized,
+            }),
+            "an oversized chunk must retain the leader's signed delivery as evidence"
         );
     }
 

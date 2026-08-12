@@ -16,7 +16,6 @@ service UnsafeTestingService {
   rpc SubmitOrganicNoncanonicalPrepare(SubmitOrganicNoncanonicalPrepareRequest) returns (SubmitOrganicNoncanonicalPrepareResponse);
   rpc SubmitOrganicConflictingManifest(SubmitOrganicConflictingManifestRequest) returns (SubmitOrganicConflictingManifestResponse);
   rpc SubmitOrganicInvalidRefreshResult(SubmitOrganicInvalidRefreshResultRequest) returns (SubmitOrganicInvalidRefreshResultResponse);
-  rpc SubmitOrganicInvalidManifest(SubmitOrganicInvalidManifestRequest) returns (SubmitOrganicInvalidManifestResponse);
 }
 
 enum LocalStorageKeyType {
@@ -165,22 +164,6 @@ message SubmitOrganicConflictingManifestRequest {
 }
 
 message SubmitOrganicConflictingManifestResponse {}
-
-// Makes this node (the real canonical leader) broadcast a first, standalone Phase1-Commitments
-// manifest that names an incomplete origin set for the phase: one real retained contribution is
-// dropped from `contribution_ids` before recomputing `phase_root`, so the manifest is internally
-// self-consistent (real signed data, correctly-recomputed root) but fails `PhaseManifest::validate`'s
-// "origins must match the phase's expected committee" check — organically exercising the *other*
-// committee members' real `dkg_leader_public_fault`/`InvalidManifest` detection
-// (`PublicBatchAssembler::insert_manifest`) instead of injecting evidence directly. Unlike
-// SubmitOrganicConflictingManifest, this must be the *first* manifest for the phase (there is nothing
-// to conflict with — the fault is in the manifest's own content), and requires at least 2 retained
-// contributions (so dropping one still leaves a distinguishable, non-empty manifest).
-message SubmitOrganicInvalidManifestRequest {
-  string session_id = 1;
-}
-
-message SubmitOrganicInvalidManifestResponse {}
 
 // Makes this node (the real canonical refresh leader) broadcast a real RefreshHealthCheckResult
 // whose parameters (ring_pk, threshold, total_participants, peer_node_keys_sha256) match its own

@@ -878,18 +878,32 @@ pub enum DkgLeaderPublicFaultKind {
     /// phase's committee-derived expected-origins set — no conflicting
     /// counterpart needed, unlike `DkgLeaderEquivocationStatement`.
     InvalidManifest,
+    /// A single leader-signed Chunk whose `index` is outside the phase's
+    /// valid range (`index >= expected_origin_count`). Independently
+    /// provable from the one signed delivery plus the same committee-derived
+    /// bound `InvalidManifest` uses.
+    ChunkIndexOutOfRange,
+    /// A single leader-signed Chunk whose encoded size exceeds
+    /// `MAX_PUBLIC_CHUNK_BYTES`. Independently provable from the one signed
+    /// delivery's own byte length against a fixed protocol constant — no
+    /// committee/ring lookup needed at all.
+    OversizedChunk,
 }
 
 impl DkgLeaderPublicFaultKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::InvalidManifest => "invalid_manifest",
+            Self::ChunkIndexOutOfRange => "chunk_index_out_of_range",
+            Self::OversizedChunk => "oversized_chunk",
         }
     }
 
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "invalid_manifest" => Ok(Self::InvalidManifest),
+            "chunk_index_out_of_range" => Ok(Self::ChunkIndexOutOfRange),
+            "oversized_chunk" => Ok(Self::OversizedChunk),
             _ => Err(ReportingError::InvalidReport(format!(
                 "unknown DKG leader public-fault kind {value}"
             ))),
@@ -2283,6 +2297,45 @@ mod tests {
             InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
             payload
         );
+    }
+
+    #[test]
+    fn dkg_leader_public_fault_statement_round_trips_for_every_fault_kind() {
+        for fault_kind in [
+            DkgLeaderPublicFaultKind::InvalidManifest,
+            DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+            DkgLeaderPublicFaultKind::OversizedChunk,
+        ] {
+            let statement = DkgLeaderPublicFaultStatement {
+                domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
+                chain_id: "sourcehub-test".to_string(),
+                ring_id: "ring-1".to_string(),
+                ring_pk: "aabb".to_string(),
+                ring_state_sha256: "11".repeat(32),
+                protocol_version: 7,
+                request_id: "900".to_string(),
+                signed_at: 1_700_000_010,
+                responder_node_key: "accused".to_string(),
+                origin_protocol: "pss_refresh".to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                attempt_id: [9; 32],
+                phase: "commitment_audit".to_string(),
+                fault_kind,
+                delivery_id: [0xaa; 16],
+                delivery: EndpointSignedContribution {
+                    origin: vec![0x22; 32],
+                    signature: vec![1; 64],
+                    data: vec![1, 2, 3],
+                },
+            };
+            let encoded = statement.canonical_bytes();
+            assert_eq!(
+                DkgLeaderPublicFaultStatement::from_canonical_bytes(&encoded).unwrap(),
+                statement,
+                "fault_kind {fault_kind:?} did not round-trip"
+            );
+        }
     }
 
     #[test]

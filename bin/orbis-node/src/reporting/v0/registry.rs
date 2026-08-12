@@ -938,6 +938,40 @@ impl InvalidCryptoResponseHandler {
                     ));
                 }
             }
+            DkgLeaderPublicFaultKind::ChunkIndexOutOfRange => {
+                let transport::DkgPublicMessage::Chunk { index, .. } = &delivery else {
+                    return Err(ReportingError::Unauthorized(
+                        "chunk-index-out-of-range evidence must target a Chunk delivery".to_string(),
+                    ));
+                };
+                let expected =
+                    expected_leader_manifest_shape(ring, &statement.origin_protocol, delivery_phase)?;
+                if (*index as usize) < expected.origins.len() {
+                    return Err(ReportingError::Unauthorized(
+                        "reported chunk index is independently verifiable as within range"
+                            .to_string(),
+                    ));
+                }
+            }
+            DkgLeaderPublicFaultKind::OversizedChunk => {
+                if !matches!(delivery, transport::DkgPublicMessage::Chunk { .. }) {
+                    return Err(ReportingError::Unauthorized(
+                        "oversized-chunk evidence must target a Chunk delivery".to_string(),
+                    ));
+                }
+                // Pure byte-length check against a fixed protocol constant —
+                // no committee/ring lookup needed, unlike the other two
+                // kinds, so this is provable even for the one phase
+                // (`expected_leader_manifest_shape`'s Reshare-Commitments
+                // exclusion) that InvalidManifest/ChunkIndexOutOfRange can't
+                // independently verify.
+                if statement.delivery.data.len() <= transport::MAX_PUBLIC_CHUNK_BYTES {
+                    return Err(ReportingError::Unauthorized(
+                        "reported chunk is independently verifiable as within the size limit"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())

@@ -1614,6 +1614,7 @@ async fn queue_leader_public_fault_report<D>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     attempt: AttemptKey,
+    fault_kind: DkgLeaderPublicFaultKind,
     delivery_id: [u8; 16],
     delivery: network::SignedPayload,
 ) -> Result<()>
@@ -1668,7 +1669,7 @@ where
         signing_committee_scope: CommitteeScope::Current,
         attempt_id: attempt.attempt_id.0,
         phase: phase.as_metric_label().to_string(),
-        fault_kind: DkgLeaderPublicFaultKind::InvalidManifest,
+        fault_kind,
         delivery_id,
         delivery: EndpointSignedContribution {
             origin: delivery.origin,
@@ -1705,6 +1706,7 @@ where
 pub async fn queue_or_relay_leader_public_fault<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
+    fault_kind: DkgLeaderPublicFaultKind,
     delivery_id: [u8; 16],
     delivery: network::SignedPayload,
 ) -> Result<()>
@@ -1717,6 +1719,7 @@ where
             coord.app_state.clone(),
             coord.routes,
             attempt,
+            fault_kind,
             delivery_id,
             delivery,
         )

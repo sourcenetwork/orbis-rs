@@ -139,34 +139,60 @@ The current evidence kinds are:
   evidence kind — the endpoint signature that authenticated it at the
   transport layer is verified and then discarded before the DKG layer ever
   sees it, so there is currently nothing portable to retain for that case.
-- `dkg_leader_public_fault`: a single endpoint-signed Gossip manifest that is
-  independently provable as invalid on its own, with no conflicting
-  counterpart needed — unlike `dkg_leader_equivocation`. Currently one fault
-  kind, `invalid_manifest`: the leader published a manifest naming the wrong
-  origin set for its phase (fails `PhaseManifest::validate`), or whose
-  `complete` flag contradicts the phase's Complete/Incremental publication
-  mode. The statement uses domain `orbis-dkg-leader-public-fault-v1` and
-  retains the single raw signed delivery plus its `delivery_id`. Independent
-  verification re-checks the endpoint signature the same way as
-  `dkg_leader_equivocation`, then re-derives the phase's expected origin set
-  from chain-visible committee membership (`registry.rs`'s
-  `expected_leader_manifest_shape`, using the same canonical node-ID
-  assignment real ceremony setup uses) and re-runs `PhaseManifest::validate`
-  against it — a report is only signable if the manifest is genuinely,
-  independently provably wrong. **Deliberately unsupported: the Reshare
-  `Commitments` phase.** Its real expected-origins set is the ceremony's
-  *active dealers*, a live, leader-determined value only cryptographically
-  committed to via the leader's signed `activation_digest`
-  (`ControlSignature`) — not derivable from `ring.peer_node_keys`/
-  `new_peer_node_keys` alone. A report naming this phase is rejected outright
-  rather than validated against a wrong/looser membership set. No relay path
-  exists for this evidence kind (unlike `dkg_leader_equivocation`/
-  `dkg_control_message_fault`) — a pure pending-new reshare receiver that
-  alone detects this fault (no current-committee member also witnessed it)
-  cannot report it. This is a deliberate, accepted gap, not an oversight: it
-  only affects the two reshare phases where pending-new nodes are the ones
-  watching (`CommitmentAudit`, `ReshareParticipantSet`); Refresh phases are
+- `dkg_leader_public_fault`: a single endpoint-signed Gossip delivery (a
+  manifest or chunk) that is independently provable as invalid on its own,
+  with no conflicting counterpart needed — unlike `dkg_leader_equivocation`.
+  The statement uses domain `orbis-dkg-leader-public-fault-v1` and retains
+  the single raw signed delivery plus its `delivery_id`. Independent
+  verification always re-checks the endpoint signature the same way as
+  `dkg_leader_equivocation`; what else it checks depends on `fault_kind`:
+  - `invalid_manifest`: the leader published a manifest naming the wrong
+    origin set for its phase (fails `PhaseManifest::validate`), or whose
+    `complete` flag contradicts the phase's Complete/Incremental publication
+    mode. Re-derives the phase's expected origin set from chain-visible
+    committee membership (`registry.rs`'s `expected_leader_manifest_shape`,
+    using the same canonical node-ID assignment real ceremony setup uses)
+    and re-runs `PhaseManifest::validate` against it.
+  - `chunk_index_out_of_range`: a chunk whose `index` is `>=` the phase's
+    expected origin count. Reuses the same chain-derivable bound as
+    `invalid_manifest` (`expected_leader_manifest_shape(...).origins.len()`).
+  - `oversized_chunk`: a chunk whose encoded size exceeds
+    `MAX_PUBLIC_CHUNK_BYTES`. A pure byte-length check against a fixed
+    protocol constant — no committee/ring lookup needed at all, so (unlike
+    the other two kinds) this one is provable even for the Reshare
+    `Commitments` phase.
+
+  A report is only signable if the delivery is genuinely, independently
+  provably wrong. **`invalid_manifest`/`chunk_index_out_of_range` are
+  deliberately unsupported for the Reshare `Commitments` phase.** Its real
+  expected-origins set is the ceremony's *active dealers*, a live,
+  leader-determined value only cryptographically committed to via the
+  leader's signed `activation_digest` (`ControlSignature`) — not derivable
+  from `ring.peer_node_keys`/`new_peer_node_keys` alone. A report naming
+  this phase (for those two kinds) is rejected outright rather than
+  validated against a wrong/looser membership set.
+
+  No relay path exists for this evidence kind (unlike
+  `dkg_leader_equivocation`/`dkg_control_message_fault`) — a pure
+  pending-new reshare receiver that alone detects a fault (no
+  current-committee member also witnessed it) cannot report it. This is a
+  deliberate, accepted gap, not an oversight: it only affects the two
+  reshare phases where pending-new nodes are the ones watching
+  (`CommitmentAudit`, `ReshareParticipantSet`); Refresh phases are
   unaffected since there is only ever one (current) committee.
+
+  **Not covered by any `fault_kind` here**: the leader's remaining
+  `BufferLimit` violations that require proving against *multiple*
+  buffered/retained deliveries at once (too many pending manifest entries,
+  too many buffered chunk contributions, too many distinct incremental
+  batch roots) — these need an evidence shape that can carry a set of
+  deliveries, not a new `fault_kind` on this single-delivery statement.
+  Also not covered: an oversized direct-QUIC repair-page response — unlike
+  Gossip chunks, `DkgControlMessage::PublicPhaseResponse` carries no
+  reclaimable signature of its own (direct-QUIC control messages other than
+  `Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun` were never
+  given a `ControlSignature`), so there is nothing to authenticate that
+  claim to a third-party co-signer.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
   fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
   messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry

@@ -48,8 +48,7 @@ use proto::unsafe_testing::{
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
     SubmitDkgInvalidShareEvidenceResponse, SubmitOrganicConflictingCommitmentRequest,
     SubmitOrganicConflictingCommitmentResponse, SubmitOrganicConflictingManifestRequest,
-    SubmitOrganicConflictingManifestResponse, SubmitOrganicInvalidManifestRequest,
-    SubmitOrganicInvalidManifestResponse, SubmitOrganicInvalidRefreshResultRequest,
+    SubmitOrganicConflictingManifestResponse, SubmitOrganicInvalidRefreshResultRequest,
     SubmitOrganicInvalidRefreshResultResponse, SubmitOrganicNoncanonicalPrepareRequest,
     SubmitOrganicNoncanonicalPrepareResponse, SubmitPssStallOfflineReportRequest,
     SubmitPssStallOfflineReportResponse, SubmitUnauthorizedRelayEvidenceRequest,
@@ -670,83 +669,6 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(|error| Status::failed_precondition(error.to_string()))?;
 
         Ok(Response::new(SubmitOrganicConflictingManifestResponse {}))
-    }
-
-    async fn submit_organic_invalid_manifest(
-        &self,
-        request: Request<SubmitOrganicInvalidManifestRequest>,
-    ) -> Result<Response<SubmitOrganicInvalidManifestResponse>, Status> {
-        let request = request.into_inner();
-        let session_id = request
-            .session_id
-            .parse::<u128>()
-            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
-        let app_state = self.app_state.clone().ok_or_else(|| {
-            Status::failed_precondition("unsafe DKG evidence injection requires app state")
-        })?;
-        let attempt_id = app_state
-            .dkg_session_state
-            .transport_attempt(&session_id)
-            .await
-            .ok_or_else(|| {
-                Status::failed_precondition("DKG report evidence is not active for this session")
-            })?;
-        let ceremony_id = CeremonyId(session_id);
-        let phase = PublicPhase::Commitments;
-
-        let items = app_state
-            .dkg_session_state
-            .public_contributions(&session_id, attempt_id, phase)
-            .await
-            .ok_or_else(|| {
-                Status::failed_precondition("no retained public contributions for this phase")
-            })?;
-        if items.len() < 2 {
-            return Err(Status::failed_precondition(
-                "at least 2 retained contributions are required to drop one and still have a \
-                 distinguishable manifest",
-            ));
-        }
-        let mut ids = contribution_ids(&items);
-        // Drop exactly one real origin so the manifest names an incomplete
-        // committee for a phase that requires the full set — a genuine
-        // `PhaseManifest::validate` failure (wrong origin set), not merely a
-        // different chunk_count the way `SubmitOrganicConflictingManifest`
-        // is. `phase_root` is recomputed over the truncated set so it's
-        // still internally self-consistent (real signed data, correctly
-        // recomputed root) — the only thing wrong is which origins it names.
-        let dropped_origin = *ids
-            .keys()
-            .next()
-            .expect("checked at least 2 entries above");
-        ids.remove(&dropped_origin);
-        let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
-
-        let manifest = DkgPublicMessage::Manifest(PhaseManifest {
-            ceremony_id,
-            attempt_id,
-            phase,
-            phase_root: root,
-            contribution_ids: ids,
-            chunk_count: 1,
-            complete: true,
-        });
-        let encoded = transport::encode(&manifest)
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-
-        let topic = app_state
-            .dkg_session_state
-            .transport_topic_for_attempt(&session_id, attempt_id)
-            .await
-            .ok_or_else(|| {
-                Status::failed_precondition("transport topic is missing or attempt is stale")
-            })?;
-        topic
-            .broadcast(bytes::Bytes::from(encoded))
-            .await
-            .map_err(|error| Status::failed_precondition(error.to_string()))?;
-
-        Ok(Response::new(SubmitOrganicInvalidManifestResponse {}))
     }
 
     async fn submit_organic_invalid_refresh_result(
