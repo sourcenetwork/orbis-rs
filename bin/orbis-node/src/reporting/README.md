@@ -230,6 +230,33 @@ The current evidence kinds are:
   much smaller lift here — the underlying relay mechanism and
   `DkgControlMessage` wire variant pattern already exist for
   `dkg_leader_equivocation` and could be mirrored directly.
+
+**Evidence anchoring for these three kinds**: `PhaseManifest`/`DkgPublicMessage::
+Chunk` each carry a `signed_at: u64` field — when the leader constructed that
+delivery, authenticated for free by the same Gossip delivery signature every
+other field here already relies on (no new signing scheme). Each statement's
+top-level `signed_at` is derived from this rather than report-construction
+time: the single decoded delivery's own `signed_at` for `dkg_leader_public_
+fault`, or the later of the two decoded deliveries' for `dkg_leader_
+equivocation`/`dkg_leader_batch_mismatch` (mirroring `dkg_public_origin_
+fault`'s `OriginEquivocation` case and `dkg_equivocation`'s own fix — see
+"DKG-specific expiry" below). Independent verification re-derives the same
+value from the decoded delivery/deliveries and rejects a report whose claimed
+`signed_at` doesn't match — otherwise a reporter could anchor to an arbitrary
+value regardless of what the deliveries themselves say, defeating the point.
+Before this, all three anchored to `now()` at report-construction time
+instead, since `PhaseManifest`/`Chunk` had no timestamp field at all — meaning
+these reports never really expired relative to when the leader fault actually
+happened (an issue for the two kinds with a relay path, since each relay hop
+would reset the clock again). **`dkg_control_message_fault` was deliberately
+left out of this fix**: `ControlSignature` does carry a `signed_at`, but it
+isn't covered by `control_ack_signing_bytes` — the actual signed bytes — so
+it's an unauthenticated, self-reported claim. Wiring it in as-is would let an
+accused leader/follower forge a favorable timestamp; a real fix needs
+`control_ack_signing_bytes` extended to bind `signed_at` into what's signed,
+which is a live protocol-message signing-scheme change (touches Prepare/
+Prepared/Activate/Activated/Begin/Begun verification broadly, not just these
+two fault-report paths) — out of scope for this pass.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
   fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
   messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry

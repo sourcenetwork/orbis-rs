@@ -1239,7 +1239,7 @@ fn sign_statement_with_key(signing_key_hex: &str, message: &[u8]) -> Result<Vec<
         .map_err(|error| DkgError::Crypto(format!("Failed to sign DKG evidence: {error}")))
 }
 
-fn now_unix_secs() -> Result<u64> {
+pub(crate) fn now_unix_secs() -> Result<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -1502,6 +1502,21 @@ fn leader_delivery_attempt_and_phase(
     }
 }
 
+/// When the leader claims to have constructed a decoded delivery, or `None`
+/// for `TopologyProbe`. Used to anchor leader-fault reports to when the
+/// fault actually happened instead of report-construction time — unlike
+/// `DkgPublicContribution`/`DkgCommitmentStatement`, `PhaseManifest`/`Chunk`
+/// only gained a `signed_at` field for this purpose; both are authenticated
+/// by the same enclosing Gossip delivery signature every other field here
+/// already relies on.
+fn leader_delivery_signed_at(message: &transport::DkgPublicMessage) -> Option<u64> {
+    match message {
+        transport::DkgPublicMessage::Manifest(manifest) => Some(manifest.signed_at),
+        transport::DkgPublicMessage::Chunk { signed_at, .. } => Some(*signed_at),
+        transport::DkgPublicMessage::TopologyProbe { .. } => None,
+    }
+}
+
 /// Package two conflicting endpoint-signed leader deliveries (a manifest, or
 /// a chunk) into a report. This step does not itself re-prove they conflict
 /// — that already happened structurally before this was called (direct
@@ -1540,6 +1555,11 @@ where
         transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
     )
     .map_err(DkgError::Deserialization)?;
+    let decoded_b: transport::DkgPublicMessage = transport::decode(
+        &delivery_b.data,
+        transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+    )
+    .map_err(DkgError::Deserialization)?;
     let (ceremony_id, attempt_id, phase) = leader_delivery_attempt_and_phase(&decoded_a)
         .ok_or_else(|| {
             DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
@@ -1549,7 +1569,17 @@ where
             "leader-equivocation evidence does not target the active attempt".to_string(),
         ));
     }
-    let signed_at = now_unix_secs()?;
+    // Anchored to when the leader actually broadcast the conflicting content
+    // (the later of the two, mirroring `queue_public_origin_fault_report`'s
+    // `OriginEquivocation` case), not report-construction time — otherwise a
+    // delayed relay/detection would always look artificially fresh.
+    let signed_at = leader_delivery_signed_at(&decoded_a)
+        .ok_or_else(|| {
+            DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
+        })?
+        .max(leader_delivery_signed_at(&decoded_b).ok_or_else(|| {
+            DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
+        })?);
     let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {
@@ -1640,6 +1670,11 @@ where
         transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
     )
     .map_err(DkgError::Deserialization)?;
+    let decoded_b: transport::DkgPublicMessage = transport::decode(
+        &delivery_b.data,
+        transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+    )
+    .map_err(DkgError::Deserialization)?;
     let (ceremony_id, attempt_id, phase) = leader_delivery_attempt_and_phase(&decoded_a)
         .ok_or_else(|| {
             DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
@@ -1649,7 +1684,16 @@ where
             "leader batch-mismatch evidence does not target the active attempt".to_string(),
         ));
     }
-    let signed_at = now_unix_secs()?;
+    // See `queue_leader_equivocation_report`'s matching comment: anchor to
+    // when the leader actually broadcast the conflicting content, not
+    // report-construction time.
+    let signed_at = leader_delivery_signed_at(&decoded_a)
+        .ok_or_else(|| {
+            DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
+        })?
+        .max(leader_delivery_signed_at(&decoded_b).ok_or_else(|| {
+            DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
+        })?);
     let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {
@@ -1787,7 +1831,12 @@ where
             "leader public-fault evidence does not target the active attempt".to_string(),
         ));
     }
-    let signed_at = now_unix_secs()?;
+    // See `queue_leader_equivocation_report`'s matching comment: anchor to
+    // when the leader actually broadcast this delivery, not
+    // report-construction time.
+    let signed_at = leader_delivery_signed_at(&decoded).ok_or_else(|| {
+        DkgError::InvalidInput("leader delivery is not a manifest or chunk".to_string())
+    })?;
     let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {

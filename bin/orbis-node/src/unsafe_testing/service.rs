@@ -630,10 +630,17 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         // this node fully controls independent of the underlying signed
         // contributions, which can't be forged without a valid signature from
         // their original signer.
-        let real_chunk_count =
-            transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, items)
-                .map_err(Status::failed_precondition)?
-                .len();
+        let signed_at = current_unix_time()?;
+        let real_chunk_count = transport::chunk_public_contributions(
+            ceremony_id,
+            attempt_id,
+            phase,
+            root,
+            items,
+            signed_at,
+        )
+        .map_err(Status::failed_precondition)?
+        .len();
         let rogue_chunk_count = if real_chunk_count > 1 {
             real_chunk_count - 1
         } else if real_chunk_count < ids.len() {
@@ -652,6 +659,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             contribution_ids: ids,
             chunk_count: rogue_chunk_count as u32,
             complete: true,
+            signed_at,
         });
         let encoded = transport::encode(&manifest)
             .map_err(|error| Status::failed_precondition(error.to_string()))?;

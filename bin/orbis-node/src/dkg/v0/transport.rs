@@ -483,6 +483,13 @@ pub struct PhaseManifest {
     /// Complete phases name every expected origin. Incremental reshare batches
     /// name a non-empty subset and are independently rooted.
     pub complete: bool,
+    /// When the leader constructed this manifest. A self-reported claim, but
+    /// authenticated for free by the enclosing Gossip delivery signature
+    /// (`AuthenticatedMessage.signature`) — the same signature `dkg_leader_
+    /// equivocation`/`dkg_leader_batch_mismatch`/`dkg_leader_public_fault`
+    /// evidence already relies on. Lets fault evidence anchor to when the
+    /// leader actually broadcast this, instead of report-construction time.
+    pub signed_at: u64,
 }
 
 impl PhaseManifest {
@@ -537,6 +544,10 @@ pub enum DkgPublicMessage {
         phase_root: [u8; 32],
         index: u32,
         contributions: Vec<network::SignedPayload>,
+        /// See `PhaseManifest::signed_at` — same meaning, same authentication
+        /// (the enclosing Gossip delivery signature), set once per batch and
+        /// shared by the manifest and every one of its chunks.
+        signed_at: u64,
     },
 }
 
@@ -549,6 +560,7 @@ pub fn chunk_public_contributions(
     phase: PublicPhase,
     phase_root: [u8; 32],
     contributions: BTreeMap<ParticipantRef, network::SignedPayload>,
+    signed_at: u64,
 ) -> Result<Vec<DkgPublicMessage>, String> {
     chunk_public_contributions_with_limit(
         ceremony_id,
@@ -556,6 +568,7 @@ pub fn chunk_public_contributions(
         phase,
         phase_root,
         contributions,
+        signed_at,
         MAX_PUBLIC_CHUNK_BYTES,
     )
 }
@@ -566,6 +579,7 @@ fn chunk_public_contributions_with_limit(
     phase: PublicPhase,
     phase_root: [u8; 32],
     contributions: BTreeMap<ParticipantRef, network::SignedPayload>,
+    signed_at: u64,
     max_bytes: usize,
 ) -> Result<Vec<DkgPublicMessage>, String> {
     let mut chunks: Vec<Vec<network::SignedPayload>> = Vec::new();
@@ -580,6 +594,7 @@ fn chunk_public_contributions_with_limit(
             phase_root,
             index: chunks.len() as u32,
             contributions: current.clone(),
+            signed_at,
         };
         if encode(&candidate)?.len() <= max_bytes {
             continue;
@@ -603,6 +618,7 @@ fn chunk_public_contributions_with_limit(
             phase_root,
             index: chunks.len() as u32,
             contributions: current.clone(),
+            signed_at,
         };
         if encode(&next)?.len() > max_bytes {
             return Err(format!(
@@ -624,6 +640,7 @@ fn chunk_public_contributions_with_limit(
                 phase,
                 phase_root,
                 index: index as u32,
+                signed_at,
                 contributions,
             })
         })
@@ -1747,6 +1764,7 @@ mod tests {
             contribution_ids,
             chunk_count: 1,
             complete: true,
+            signed_at: 1_700_000_000,
         });
 
         let encoded = encode(&message).unwrap();
@@ -1774,6 +1792,7 @@ mod tests {
             contribution_ids: ids,
             chunk_count: 1,
             complete: true,
+            signed_at: 1_700_000_000,
         };
         let committee = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
         assert!(manifest.validate(&committee).is_ok());
@@ -1835,6 +1854,7 @@ mod tests {
             PublicPhase::Commitments,
             [3; 32],
             contributions,
+            1_700_000_000,
             limit,
         )
         .unwrap();

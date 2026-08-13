@@ -27,7 +27,7 @@ use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
     handle_leader_equivocation_evidence_relay, handle_public_origin_fault_evidence_relay,
     queue_or_relay_control_message_fault, queue_or_relay_equivocation,
-    queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
+    now_unix_secs, queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
     queue_or_relay_leader_public_fault, queue_or_relay_public_origin_fault,
     report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
     verify_control_signature,
@@ -5991,6 +5991,7 @@ async fn topic_listener<D>(
                         phase_root,
                         index,
                         contributions,
+                        signed_at: _,
                     } if ceremony_id == prepare.ceremony_id && attempt_id == prepare.attempt_id => {
                         let Some(mode) = public_batch_mode(&prepare.kind, phase) else {
                             let violation = PublicProtocolViolation::leader(
@@ -8306,6 +8307,10 @@ where
         phase_root: root,
         index: 0,
         contributions: vec![signed.clone()],
+        // Sizing probe only — this instance is never broadcast, just measured
+        // below to enforce `MAX_PUBLIC_CHUNK_BYTES` before accepting the
+        // contribution.
+        signed_at: now_unix_secs()?,
     };
     let encoded_len = transport::encode(&single)
         .map_err(DkgError::Serialization)?
@@ -8622,12 +8627,16 @@ where
             let candidate_ids = contribution_ids(&candidate);
             let candidate_root =
                 transport::phase_root(ceremony_id, attempt_id, phase, &candidate_ids);
+            // Sizing probe only — `chunks` here is just measured (`.len()`) to
+            // decide batch boundaries; the real broadcast batch (and its real
+            // `signed_at`) is built by `prepare_public_batch` below.
             let chunks = transport::chunk_public_contributions(
                 ceremony_id,
                 attempt_id,
                 phase,
                 candidate_root,
                 candidate.clone(),
+                now_unix_secs()?,
             )
             .map_err(DkgError::Serialization)?;
             if chunks.len() > 1 && !current.is_empty() {
@@ -8696,9 +8705,16 @@ fn prepare_public_batch(
     let contribution_count = contributions.len();
     let ids = contribution_ids(&contributions);
     let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
-    let chunks =
-        transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, contributions)
-            .map_err(DkgError::Serialization)?;
+    let signed_at = now_unix_secs()?;
+    let chunks = transport::chunk_public_contributions(
+        ceremony_id,
+        attempt_id,
+        phase,
+        root,
+        contributions,
+        signed_at,
+    )
+    .map_err(DkgError::Serialization)?;
     let manifest = DkgPublicMessage::Manifest(PhaseManifest {
         ceremony_id,
         attempt_id,
@@ -8707,6 +8723,7 @@ fn prepare_public_batch(
         contribution_ids: ids,
         chunk_count: chunks.len() as u32,
         complete,
+        signed_at,
     });
     let mut messages = Vec::with_capacity(chunks.len() + 1);
     messages.push(Bytes::from(
@@ -13354,6 +13371,7 @@ mod stability_tests {
             contribution_ids: ids,
             chunk_count,
             complete,
+            signed_at: 1_700_000_000,
         }
     }
 

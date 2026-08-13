@@ -777,6 +777,26 @@ impl InvalidCryptoResponseHandler {
                 "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
             ));
         }
+        // The prologue only checked `signed_at` is self-consistent with the
+        // envelope's own `observed_at` — it never cross-checked it against
+        // what the leader actually claimed inside the (now independently
+        // decoded) deliveries. Without this, a reporter could still anchor
+        // to an arbitrary `signed_at` regardless of the deliveries' real
+        // content, defeating the point of anchoring to evidence instead of
+        // report-construction time.
+        let signed_at_a = leader_delivery_signed_at(&delivery_a).ok_or_else(|| {
+            ReportingError::Unauthorized("leader delivery A is not a manifest or chunk".to_string())
+        })?;
+        let signed_at_b = leader_delivery_signed_at(&delivery_b).ok_or_else(|| {
+            ReportingError::Unauthorized("leader delivery B is not a manifest or chunk".to_string())
+        })?;
+        if statement.signed_at != signed_at_a.max(signed_at_b) {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader-equivocation signed_at does not match the deliveries' own claimed \
+                 timestamps"
+                    .to_string(),
+            ));
+        }
 
         Ok(())
     }
@@ -969,6 +989,22 @@ impl InvalidCryptoResponseHandler {
                 "leader deliveries do not prove a shared-origin batch mismatch".to_string(),
             ));
         }
+        // See `validate_dkg_leader_equivocation_evidence`'s matching check —
+        // the prologue anchor alone doesn't tie `signed_at` to what the
+        // deliveries themselves claim.
+        let signed_at_a = leader_delivery_signed_at(&delivery_a).ok_or_else(|| {
+            ReportingError::Unauthorized("leader delivery A is not a manifest or chunk".to_string())
+        })?;
+        let signed_at_b = leader_delivery_signed_at(&delivery_b).ok_or_else(|| {
+            ReportingError::Unauthorized("leader delivery B is not a manifest or chunk".to_string())
+        })?;
+        if statement.signed_at != signed_at_a.max(signed_at_b) {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader batch-mismatch signed_at does not match the deliveries' own claimed \
+                 timestamps"
+                    .to_string(),
+            ));
+        }
 
         Ok(())
     }
@@ -1117,6 +1153,19 @@ impl InvalidCryptoResponseHandler {
         if !public_origin_protocol_allows_phase(&statement.origin_protocol, delivery_phase) {
             return Err(ReportingError::Unauthorized(
                 "leader delivery phase is not valid for the claimed PSS protocol".to_string(),
+            ));
+        }
+        // See `validate_dkg_leader_equivocation_evidence`'s matching check —
+        // the prologue anchor alone doesn't tie `signed_at` to what the
+        // delivery itself claims.
+        let delivery_signed_at = leader_delivery_signed_at(&delivery).ok_or_else(|| {
+            ReportingError::Unauthorized("leader delivery is not a manifest or chunk".to_string())
+        })?;
+        if statement.signed_at != delivery_signed_at {
+            return Err(ReportingError::Unauthorized(
+                "DKG leader public-fault signed_at does not match the delivery's own claimed \
+                 timestamp"
+                    .to_string(),
             ));
         }
 
@@ -2167,6 +2216,20 @@ fn leader_delivery_root(message: &transport::DkgPublicMessage) -> Option<[u8; 32
     }
 }
 
+/// When the leader claims to have constructed a decoded delivery, or `None`
+/// for `TopologyProbe`. Used to independently re-derive what a leader-fault
+/// statement's own `signed_at` *should* be, rather than trusting the
+/// reporter's claim — `signed_at` is authenticated by the same enclosing
+/// Gossip delivery signature `verify_leader_delivery_envelope` already
+/// checked, so this is exactly as trustworthy as `leader_delivery_root`.
+fn leader_delivery_signed_at(message: &transport::DkgPublicMessage) -> Option<u64> {
+    match message {
+        transport::DkgPublicMessage::Manifest(manifest) => Some(manifest.signed_at),
+        transport::DkgPublicMessage::Chunk { signed_at, .. } => Some(*signed_at),
+        transport::DkgPublicMessage::TopologyProbe { .. } => None,
+    }
+}
+
 /// The origin → message_id map a leader delivery (manifest or chunk)
 /// claims, or `None` for `TopologyProbe`. For chunks, each nested
 /// `SignedPayload` is independently decoded to recover its origin/
@@ -2222,6 +2285,7 @@ fn leader_deliveries_prove_equivocation(
                 phase_root: root_a,
                 index: index_a,
                 contributions: contributions_a,
+                signed_at: _,
             },
             transport::DkgPublicMessage::Chunk {
                 ceremony_id: ceremony_b,
@@ -2230,6 +2294,7 @@ fn leader_deliveries_prove_equivocation(
                 phase_root: root_b,
                 index: index_b,
                 contributions: contributions_b,
+                signed_at: _,
             },
         ) => {
             ceremony_a == ceremony_b
