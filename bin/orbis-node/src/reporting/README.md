@@ -161,6 +161,23 @@ The current evidence kinds are:
     protocol constant — no committee/ring lookup needed at all, so (unlike
     the other two kinds) this one is provable even for the Reshare
     `Commitments` phase.
+  - `duplicate_chunk_origin`: a chunk that names the same origin more than
+    once among its own contributions. Manifests can't have this problem —
+    `contribution_ids` is a `BTreeMap`, which can't contain the same key
+    twice — but a chunk's `contributions` is a plain `Vec`, built from a
+    `BTreeMap` at construction time (so an honest leader can never produce
+    one), which means a duplicate can only be the leader's own packaging
+    fault. Like `oversized_chunk`, a pure structural check on the delivery's
+    own content — no committee/ring lookup needed, provable even for the
+    Reshare `Commitments` phase. This is additive alongside, not a
+    replacement for, origin-side equivocation evidence
+    (`commitment_equivocation`/`public_origin_fault`): if the duplicated
+    entries also conflict in content, the origin's own double-signing is
+    still separately, correctly attributed via those — this fault kind
+    proves the leader's packaging is wrong either way, matching or
+    conflicting content alike. Without it, a same-content duplicate (nothing
+    conflicts, so no equivocation evidence applies) silently fell through to
+    the aggregate `BufferLimit` checks below with no evidence at all.
 
   A report is only signable if the delivery is genuinely, independently
   provably wrong. **`invalid_manifest`/`chunk_index_out_of_range` are
@@ -184,13 +201,18 @@ The current evidence kinds are:
   The leader's aggregate `BufferLimit` violations (too many pending
   manifest entries, too many buffered chunk contributions, too many
   distinct incremental batch roots) used to be uncovered here too — see
-  `dkg_leader_batch_mismatch` below for why they're now structurally
-  unreachable in the cases that matter. The leader's oversized direct-QUIC
-  repair-page response (also `BufferLimit`-shaped) is covered too, but under
-  `dkg_control_message_fault`'s `oversized_repair_page` fault kind below —
-  not here — since it's `ControlSignature`-authenticated like `Prepare`, not
+  `dkg_leader_batch_mismatch` below for why the cross-delivery cases are now
+  structurally unreachable, and `duplicate_chunk_origin` above for the one
+  within-delivery case (`claim_origins` only compares against *other*
+  deliveries, not duplicates inside the one currently being validated) that
+  needed its own dedicated fault kind. Between the two, every `BufferLimit`
+  site under this evidence family's scope is now covered. The leader's
+  oversized direct-QUIC repair-page response (also `BufferLimit`-shaped) is
+  covered too, but under `dkg_control_message_fault`'s
+  `oversized_repair_page` fault kind below — not here — since it's
+  `ControlSignature`-authenticated like `Prepare`, not
   Gossip-envelope-authenticated like a chunk. The one remaining uncovered
-  case is the *origin*-side repair-response oversize check
+  case anywhere is the *origin*-side repair-response oversize check
   (`GetPublicContribution`'s reply) — same shape, but `accused = Origin`, so
   it would belong under `dkg_public_origin_fault`'s family if ever built,
   not here or under `dkg_control_message_fault`.

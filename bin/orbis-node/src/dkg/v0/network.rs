@@ -684,6 +684,25 @@ impl PublicBatchAssembler {
         let commitment_equivocation =
             self.find_commitment_origin_equivocation(phase, &contributions);
         let public_origin_fault = self.find_public_origin_equivocation(phase, &contributions);
+        // A chunk is built from a `BTreeMap<ParticipantRef, SignedPayload>`
+        // (`chunk_public_contributions_with_limit`), which cannot contain the
+        // same key twice — so any duplicate origin among a chunk's own
+        // contributions can only be the leader's own packaging, honest or
+        // not, independent of whether the two entries also happen to
+        // conflict in content (that's `commitment_equivocation`/
+        // `public_origin_fault`'s separate, additive finding above). This is
+        // the only case `claim_origins` doesn't cover — it only compares
+        // against already-recorded claims from *earlier* deliveries, not
+        // duplicates within the batch currently being validated — so without
+        // this, a same-content duplicate silently falls through to the
+        // aggregate `BufferLimit` checks below with no evidence at all.
+        let duplicate_chunk_origin_evidence = {
+            let mut seen_origins = BTreeSet::new();
+            let has_duplicate = contributions
+                .iter()
+                .any(|verified| !seen_origins.insert(verified.contribution.origin));
+            has_duplicate.then(|| delivery.clone()).flatten()
+        };
         if let Some(completed) = self.completed.get(&key) {
             return match completed.chunk_digests.get(&index) {
                 Some(existing) if existing == &event_digest => Ok(PublicBatchAssembly::Duplicate),
@@ -695,6 +714,10 @@ impl PublicBatchAssembler {
                 )
                 .with_commitment_equivocation(commitment_equivocation)
                 .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                )
                 .with_leader_equivocation(leader_delivery_equivocation(
                     completed.chunk_deliveries.get(&index),
                     delivery.as_ref(),
@@ -706,7 +729,11 @@ impl PublicBatchAssembler {
                     format!("extra chunk {index} follows the completed batch"),
                 )
                 .with_commitment_equivocation(commitment_equivocation)
-                .with_public_origin_fault(public_origin_fault)),
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                )),
             };
         }
         // For incremental publications, attribute a proven origin contradiction
@@ -732,7 +759,11 @@ impl PublicBatchAssembler {
             ) {
                 return Err(violation
                     .with_commitment_equivocation(commitment_equivocation)
-                    .with_public_origin_fault(public_origin_fault));
+                    .with_public_origin_fault(public_origin_fault)
+                    .with_leader_public_fault(
+                        DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                        duplicate_chunk_origin_evidence,
+                    ));
             }
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
@@ -741,7 +772,11 @@ impl PublicBatchAssembler {
         {
             return Err(violation
                 .with_commitment_equivocation(commitment_equivocation)
-                .with_public_origin_fault(public_origin_fault));
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                ));
         }
         if let Some(existing) = self
             .pending
@@ -761,6 +796,10 @@ impl PublicBatchAssembler {
                 )
                 .with_commitment_equivocation(commitment_equivocation)
                 .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                )
                 .with_leader_equivocation(leader_delivery_equivocation(
                     existing.delivery.as_ref(),
                     delivery.as_ref(),
@@ -781,7 +820,11 @@ impl PublicBatchAssembler {
             ) {
                 return Err(violation
                     .with_commitment_equivocation(commitment_equivocation)
-                    .with_public_origin_fault(public_origin_fault));
+                    .with_public_origin_fault(public_origin_fault)
+                    .with_leader_public_fault(
+                        DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                        duplicate_chunk_origin_evidence,
+                    ));
             }
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
@@ -802,7 +845,11 @@ impl PublicBatchAssembler {
                 ),
             )
             .with_commitment_equivocation(commitment_equivocation)
-            .with_public_origin_fault(public_origin_fault));
+            .with_public_origin_fault(public_origin_fault)
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                duplicate_chunk_origin_evidence,
+            ));
         }
         let buffered_for_phase: usize = self
             .pending
@@ -821,7 +868,11 @@ impl PublicBatchAssembler {
                 ),
             )
             .with_commitment_equivocation(commitment_equivocation)
-            .with_public_origin_fault(public_origin_fault));
+            .with_public_origin_fault(public_origin_fault)
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                duplicate_chunk_origin_evidence,
+            ));
         }
         for verified in &contributions {
             let contribution = &verified.contribution;
@@ -13975,6 +14026,43 @@ mod stability_tests {
                 delivery: oversized,
             }),
             "an oversized chunk must retain the leader's signed delivery as evidence"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_duplicate_chunk_origin_with_leader_public_fault_evidence() {
+        // Same origin twice in one chunk, matching content both times — no
+        // equivocation to attribute to the origin, so without dedicated
+        // detection this would fall through to the aggregate `BufferLimit`
+        // check with zero evidence.
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let duplicate = assembled_contribution(ParticipantRef::current(1), 1);
+        let delivery = sample_leader_delivery(1);
+        let error = PublicBatchAssembler::default()
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [1; 32],
+                0,
+                vec![first, duplicate],
+                [1; 32],
+                1,
+                Some(delivery.clone()),
+            )
+            .expect_err("a chunk cannot name the same origin twice");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                delivery,
+            }),
+            "a duplicate origin within one chunk must retain the leader's signed delivery as evidence"
+        );
+        assert_eq!(
+            error.commitment_equivocation, None,
+            "matching content both times is not origin equivocation"
         );
     }
 

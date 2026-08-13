@@ -1246,6 +1246,23 @@ impl InvalidCryptoResponseHandler {
                     ));
                 }
             }
+            DkgLeaderPublicFaultKind::DuplicateChunkOrigin => {
+                let transport::DkgPublicMessage::Chunk { contributions, .. } = &delivery else {
+                    return Err(ReportingError::Unauthorized(
+                        "duplicate-chunk-origin evidence must target a Chunk delivery".to_string(),
+                    ));
+                };
+                // Pure structural check on the delivery's own contributions —
+                // no committee/ring lookup needed, unlike InvalidManifest/
+                // ChunkIndexOutOfRange, so (like OversizedChunk) this is
+                // provable even for the Reshare-Commitments exclusion.
+                if !chunk_has_duplicate_origin(contributions) {
+                    return Err(ReportingError::Unauthorized(
+                        "reported chunk is independently verifiable as free of duplicate origins"
+                            .to_string(),
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -2382,6 +2399,25 @@ fn leader_delivery_origins(
         ),
         transport::DkgPublicMessage::TopologyProbe { .. } => None,
     }
+}
+
+/// Whether a chunk's own contributions name the same origin more than once.
+/// Each nested `SignedPayload` is independently decoded (same tolerance as
+/// `leader_delivery_origins`: an undecodable entry can't back a duplicate
+/// claim either way, so skipping it can only make this check *more*
+/// conservative, never wrongly permissive). Manifests can't have this
+/// problem — `contribution_ids` is a `BTreeMap`, which cannot contain the
+/// same key twice by construction.
+fn chunk_has_duplicate_origin(contributions: &[network::SignedPayload]) -> bool {
+    let mut seen = BTreeSet::new();
+    contributions.iter().any(|signed| {
+        transport::decode::<DkgPublicContribution>(
+            &signed.data,
+            transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+        )
+        .ok()
+        .is_some_and(|contribution| !seen.insert(contribution.origin))
+    })
 }
 
 /// Two leader deliveries prove equivocation only if they claim the exact

@@ -889,6 +889,19 @@ pub enum DkgLeaderPublicFaultKind {
     /// delivery's own byte length against a fixed protocol constant — no
     /// committee/ring lookup needed at all.
     OversizedChunk,
+    /// A single leader-signed Chunk that names the same origin more than
+    /// once among its own contributions. Independently provable from the
+    /// one signed delivery alone — a chunk is built from a
+    /// `BTreeMap<ParticipantRef, SignedPayload>`, which cannot contain the
+    /// same key twice, so any duplicate can only come from the leader's own
+    /// packaging, honest or not. No committee/ring lookup needed, so (like
+    /// `oversized_chunk`) this is provable even for the Reshare
+    /// `Commitments` phase. Additive alongside origin-side equivocation
+    /// evidence — a duplicate with conflicting content still separately
+    /// proves the origin double-signed (`commitment_equivocation`/
+    /// `public_origin_fault`), but the leader's packaging fault is
+    /// provable either way, matching or conflicting content alike.
+    DuplicateChunkOrigin,
 }
 
 impl DkgLeaderPublicFaultKind {
@@ -897,6 +910,7 @@ impl DkgLeaderPublicFaultKind {
             Self::InvalidManifest => "invalid_manifest",
             Self::ChunkIndexOutOfRange => "chunk_index_out_of_range",
             Self::OversizedChunk => "oversized_chunk",
+            Self::DuplicateChunkOrigin => "duplicate_chunk_origin",
         }
     }
 
@@ -905,6 +919,7 @@ impl DkgLeaderPublicFaultKind {
             "invalid_manifest" => Ok(Self::InvalidManifest),
             "chunk_index_out_of_range" => Ok(Self::ChunkIndexOutOfRange),
             "oversized_chunk" => Ok(Self::OversizedChunk),
+            "duplicate_chunk_origin" => Ok(Self::DuplicateChunkOrigin),
             _ => Err(ReportingError::InvalidReport(format!(
                 "unknown DKG leader public-fault kind {value}"
             ))),
@@ -2405,6 +2420,7 @@ mod tests {
             DkgLeaderPublicFaultKind::InvalidManifest,
             DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
             DkgLeaderPublicFaultKind::OversizedChunk,
+            DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
         ] {
             let statement = DkgLeaderPublicFaultStatement {
                 domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
