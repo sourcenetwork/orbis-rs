@@ -27,9 +27,10 @@ use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
     handle_leader_equivocation_evidence_relay, handle_public_origin_fault_evidence_relay,
     queue_or_relay_control_message_fault, queue_or_relay_equivocation,
-    queue_or_relay_leader_equivocation, queue_or_relay_leader_public_fault,
-    queue_or_relay_public_origin_fault, report_leader_prepare_fault_best_effort,
-    sign_control_message, verify_commitment_evidence, verify_control_signature,
+    queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
+    queue_or_relay_leader_public_fault, queue_or_relay_public_origin_fault,
+    report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
+    verify_control_signature,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
@@ -209,6 +210,14 @@ struct PublicProtocolViolation {
     /// reportable (Reshare's `Commitments` phase — see
     /// `reporting/v0/registry.rs`'s `expected_leader_manifest_shape`).
     leader_public_fault: Option<Box<LeaderPublicFaultEvidence>>,
+    /// Two leader deliveries (any combination of manifest/chunk) that each
+    /// reference the same origin under two *different* phase roots — the
+    /// leader's own packaging contradiction, distinct from
+    /// `leader_equivocation` (same coordinate, different content). Reuses
+    /// `LeaderDeliveryEquivocation`'s shape (it's the same "two signed
+    /// deliveries" pair, just a different violation predicate). See
+    /// `claim_origins`.
+    leader_batch_mismatch: Option<Box<LeaderDeliveryEquivocation>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -295,6 +304,7 @@ impl PublicProtocolViolation {
             public_origin_fault: None,
             leader_equivocation: None,
             leader_public_fault: None,
+            leader_batch_mismatch: None,
         }
     }
 
@@ -331,6 +341,7 @@ impl PublicProtocolViolation {
             public_origin_fault: None,
             leader_equivocation: None,
             leader_public_fault: None,
+            leader_batch_mismatch: None,
         }
     }
 
@@ -375,6 +386,11 @@ impl PublicProtocolViolation {
         });
         self
     }
+
+    fn with_leader_batch_mismatch(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
+        self.leader_batch_mismatch = evidence.map(Box::new);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -413,6 +429,21 @@ struct ObservedPublicOrigin {
     message_id: MessageId,
     root: [u8; 32],
     signed_envelope: SignedPayload,
+}
+
+/// Which root the leader has packaged a given origin under so far, and the
+/// leader's own delivery (manifest or chunk) that first did so — separate
+/// from `ObservedPublicOrigin` (which tracks the *origin's own* signed
+/// content, for detecting the origin double-signing). This tracks the
+/// *leader's* packaging choice instead, populated by both `insert_manifest`
+/// and `insert_chunk`, so a leader claiming the same origin under two
+/// different roots (via any combination of manifests/chunks) is
+/// attributable — see `claim_origins`.
+#[derive(Debug, Clone)]
+struct LeaderOriginClaim {
+    root: [u8; 32],
+    message_id: MessageId,
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 #[derive(Debug)]
@@ -476,6 +507,7 @@ struct PublicBatchAssembler {
     completed: HashMap<(PublicPhase, [u8; 32]), CompletedPublicBatch>,
     complete_phase_roots: HashMap<PublicPhase, CompletePhaseRootClaim>,
     observed_origins: HashMap<(PublicPhase, ParticipantRef), ObservedPublicOrigin>,
+    origin_claims: HashMap<(PublicPhase, ParticipantRef), LeaderOriginClaim>,
 }
 
 impl PublicBatchAssembler {
@@ -554,6 +586,15 @@ impl PublicBatchAssembler {
         }
 
         self.claim_phase_root(mode, phase, root, expected_origins.len(), delivery.as_ref())?;
+        self.claim_origins(
+            phase,
+            root,
+            manifest
+                .contribution_ids
+                .iter()
+                .map(|(&origin, &message_id)| (origin, message_id)),
+            delivery.as_ref(),
+        )?;
         let buffered_manifest_entries: usize = self
             .pending
             .iter()
@@ -650,7 +691,27 @@ impl PublicBatchAssembler {
         // before enforcing the root-count bound. For complete publications, claim
         // the single allowed root first so a second root remains an attributable
         // leader contradiction even when it contains an origin equivocation.
+        // `claim_origins` runs first in both cases — it's what makes the
+        // aggregate BufferLimit checks below structurally unreachable (see its
+        // doc comment) — so it should attribute a cross-root packaging
+        // contradiction before `ensure_no_origin_equivocation`'s own (weaker,
+        // message-id-only-evidenced) fallback for the same situation.
         if mode == PublicBatchMode::Incremental {
+            if let Err(violation) = self.claim_origins(
+                phase,
+                root,
+                contributions.iter().map(|verified| {
+                    (
+                        verified.contribution.origin,
+                        verified.contribution.message_id,
+                    )
+                }),
+                delivery.as_ref(),
+            ) {
+                return Err(violation
+                    .with_commitment_equivocation(commitment_equivocation)
+                    .with_public_origin_fault(public_origin_fault));
+            }
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
         if let Err(violation) =
@@ -685,6 +746,21 @@ impl PublicBatchAssembler {
             };
         }
         if mode == PublicBatchMode::Complete {
+            if let Err(violation) = self.claim_origins(
+                phase,
+                root,
+                contributions.iter().map(|verified| {
+                    (
+                        verified.contribution.origin,
+                        verified.contribution.message_id,
+                    )
+                }),
+                delivery.as_ref(),
+            ) {
+                return Err(violation
+                    .with_commitment_equivocation(commitment_equivocation)
+                    .with_public_origin_fault(public_origin_fault));
+            }
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
         let buffered_for_root: usize = self
@@ -744,6 +820,72 @@ impl PublicBatchAssembler {
             },
         );
         self.try_complete(key, false)
+    }
+
+    /// Record that the leader packaged each `(origin, message_id)` pair
+    /// under `root` for `phase`, rejecting any origin already packaged
+    /// under a *different* root by an earlier manifest or chunk — but only
+    /// when it's the *same* `message_id` both times. A differing
+    /// `message_id` means the origin itself signed two different messages,
+    /// which is the origin's own fault (`ensure_no_origin_equivocation`'s
+    /// `OriginEquivocation` case), not the leader's packaging choice; this
+    /// check only fires when the leader is unambiguously the one at fault —
+    /// it received one canonical signed message from this origin, yet chose
+    /// to package that exact message under two different roots.
+    ///
+    /// This is what makes the aggregate `BufferLimit` checks (buffered
+    /// entries/contributions exceeding the committee size, too many
+    /// distinct incremental roots) structurally unreachable in the cases
+    /// that matter: pairwise-disjoint non-empty origin subsets of an
+    /// N-member committee can never sum past N, so exceeding any of those
+    /// bounds would always require some origin to have been claimed under
+    /// two different roots first — which this check catches earlier, with
+    /// real two-delivery evidence, before the aggregate ever accumulates
+    /// that high. The one case this does *not* cover (and where the
+    /// aggregate checks remain the active, still-needed mechanism): the
+    /// same origin appearing twice *within a single delivery's own
+    /// contributions* — this check only compares against already-recorded
+    /// claims from *earlier* deliveries, not duplicates within the batch
+    /// currently being validated.
+    ///
+    /// Mutating eagerly (before every other check in the caller has passed)
+    /// is safe: any rejection here or later is terminal for the whole
+    /// ceremony attempt, so there is no scenario where a premature record
+    /// could be queried again.
+    fn claim_origins(
+        &mut self,
+        phase: PublicPhase,
+        root: [u8; 32],
+        origins: impl IntoIterator<Item = (ParticipantRef, MessageId)>,
+        delivery: Option<&PublicLeaderDelivery>,
+    ) -> std::result::Result<(), PublicProtocolViolation> {
+        let origins: Vec<(ParticipantRef, MessageId)> = origins.into_iter().collect();
+        for &(origin, message_id) in &origins {
+            if let Some(existing) = self.origin_claims.get(&(phase, origin)) {
+                if existing.message_id == message_id && existing.root != root {
+                    return Err(PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::BatchMismatch,
+                        Some(phase),
+                        Some(root),
+                        format!("origin {origin:?} was packaged under two different phase roots"),
+                    )
+                    .with_leader_batch_mismatch(leader_delivery_equivocation(
+                        existing.delivery.as_ref(),
+                        delivery,
+                    )));
+                }
+            }
+        }
+        for (origin, message_id) in origins {
+            self.origin_claims
+                .entry((phase, origin))
+                .or_insert_with(|| LeaderOriginClaim {
+                    root,
+                    message_id,
+                    delivery: delivery.cloned(),
+                });
+        }
+        Ok(())
     }
 
     fn ensure_no_origin_equivocation(
@@ -5481,6 +5623,13 @@ async fn abort_public_protocol_violation<D>(
         violation.leader_public_fault.as_deref(),
     )
     .await;
+    report_leader_batch_mismatch_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_batch_mismatch.as_deref(),
+    )
+    .await;
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -7641,6 +7790,59 @@ async fn report_leader_public_fault_best_effort<D>(
                 attempt_id = %hex::encode(attempt.attempt_id.0),
                 error = %error,
                 "failed to queue authenticated leader public-fault evidence"
+            );
+        }
+    }
+}
+
+async fn report_leader_batch_mismatch_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&LeaderDeliveryEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_batch_mismatch_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let retained = SignedPayload {
+        origin: evidence.retained.origin.clone(),
+        signature: evidence.retained.signature.clone(),
+        data: evidence.retained.data.clone(),
+    };
+    let conflicting = SignedPayload {
+        origin: evidence.conflicting.origin.clone(),
+        signature: evidence.conflicting.signature.clone(),
+        data: evidence.conflicting.data.clone(),
+    };
+    match queue_or_relay_leader_batch_mismatch(
+        &coordinator,
+        attempt,
+        evidence.retained.delivery_id,
+        retained,
+        evidence.conflicting.delivery_id,
+        conflicting,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_batch_mismatch_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_batch_mismatch_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated leader batch-mismatch evidence"
             );
         }
     }
@@ -13835,6 +14037,8 @@ mod stability_tests {
         let second = assembled_contribution(ParticipantRef::current(2), 2);
         let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
         let mut assembler = PublicBatchAssembler::default();
+        let first_chunk_delivery = sample_leader_delivery(1);
+        let second_chunk_delivery = sample_leader_delivery(2);
 
         assembler
             .insert_chunk(
@@ -13845,7 +14049,7 @@ mod stability_tests {
                 vec![first.clone()],
                 [1; 32],
                 expected.len(),
-                None,
+                Some(first_chunk_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -13857,22 +14061,40 @@ mod stability_tests {
                 vec![first],
                 [2; 32],
                 expected.len(),
-                None,
+                Some(second_chunk_delivery.clone()),
             )
             .expect_err("a leader cannot retain one contribution under multiple roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+        assert_eq!(
+            error.leader_batch_mismatch.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: first_chunk_delivery,
+                conflicting: second_chunk_delivery,
+            }),
+            "a leader repackaging one origin under two different roots must be provably \
+             attributable via claim_origins, not just the weaker message-id-only evidence \
+             ensure_no_origin_equivocation's own fallback branch would have attached"
+        );
 
+        // The same cross-root duplication, but detected at the *manifest*
+        // level (no chunks involved at all) — this is what `insert_manifest`
+        // had no equivalent check for before `claim_origins`, so this
+        // scenario used to only be caught by the much weaker aggregate
+        // `BufferLimit` bound (see the pigeonhole argument on
+        // `claim_origins`'s doc comment).
         let mut assembler = PublicBatchAssembler::default();
         let first = assembled_contribution(ParticipantRef::current(1), 1);
         let one_origin = assembled_manifest(std::slice::from_ref(&first), 1, false);
         let overlapping = assembled_manifest(&[first, second], 1, false);
+        let one_origin_delivery = sample_leader_delivery(3);
+        let overlapping_delivery = sample_leader_delivery(4);
         assembler
             .insert_manifest(
                 PublicBatchMode::Incremental,
                 one_origin,
                 [3; 32],
                 &expected,
-                None,
+                Some(one_origin_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -13881,10 +14103,19 @@ mod stability_tests {
                 overlapping,
                 [4; 32],
                 &expected,
-                None,
+                Some(overlapping_delivery.clone()),
             )
             .expect_err("pending manifest entries must remain committee-bounded");
-        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+        assert_eq!(
+            error.leader_batch_mismatch.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: one_origin_delivery,
+                conflicting: overlapping_delivery,
+            }),
+            "a leader repackaging one origin across two different manifests must be provably \
+             attributable, not just caught by the aggregate BufferLimit backstop"
+        );
     }
 
     fn retained_repair_contribution(node_id: u8, data_len: usize) -> SignedPayload {

@@ -181,18 +181,55 @@ The current evidence kinds are:
   (`CommitmentAudit`, `ReshareParticipantSet`); Refresh phases are
   unaffected since there is only ever one (current) committee.
 
-  **Not covered by any `fault_kind` here**: the leader's remaining
-  `BufferLimit` violations that require proving against *multiple*
-  buffered/retained deliveries at once (too many pending manifest entries,
-  too many buffered chunk contributions, too many distinct incremental
-  batch roots) — these need an evidence shape that can carry a set of
-  deliveries, not a new `fault_kind` on this single-delivery statement.
-  Also not covered: an oversized direct-QUIC repair-page response — unlike
-  Gossip chunks, `DkgControlMessage::PublicPhaseResponse` carries no
-  reclaimable signature of its own (direct-QUIC control messages other than
-  `Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun` were never
-  given a `ControlSignature`), so there is nothing to authenticate that
-  claim to a third-party co-signer.
+  **Not covered by any `fault_kind` here**: an oversized direct-QUIC
+  repair-page response — unlike Gossip chunks, `DkgControlMessage::
+  PublicPhaseResponse` carries no reclaimable signature of its own
+  (direct-QUIC control messages other than `Prepare`/`Prepared`/`Activate`/
+  `Activated`/`Begin`/`Begun` were never given a `ControlSignature`), so
+  there is nothing to authenticate that claim to a third-party co-signer.
+  The leader's aggregate `BufferLimit` violations (too many pending
+  manifest entries, too many buffered chunk contributions, too many
+  distinct incremental batch roots) used to be uncovered here too — see
+  `dkg_leader_batch_mismatch` below for why they're now structurally
+  unreachable in the cases that matter.
+- `dkg_leader_batch_mismatch`: two leader-signed Gossip deliveries (any
+  combination of manifest and chunk) that each reference the same origin
+  (same `ParticipantRef`, same `MessageId`) under two *different* phase
+  roots. Reuses `DkgLeaderEquivocationStatement`'s wire shape verbatim (same
+  "two signed deliveries, one phase" format) under its own domain
+  (`orbis-dkg-leader-batch-mismatch-v1`) and evidence-kind tag — the fault
+  predicate differs from `dkg_leader_equivocation` (shared origin across
+  different coordinates, rather than identical coordinate with different
+  content). Detected locally by `network.rs`'s `claim_origins`, called from
+  both `insert_manifest` and `insert_chunk` (`PublicBatchAssembler`) — a
+  origin-tracking check `insert_manifest` had no equivalent of before this
+  kind existed. Independent verification re-checks both endpoint signatures
+  the same way as `dkg_leader_equivocation`, decodes each delivery
+  (a chunk's nested per-origin `SignedPayload`s are individually decoded
+  too), and confirms the phase roots differ while at least one
+  `(origin, message_id)` pair appears in both.
+
+  **Why this closes the aggregate `BufferLimit` checks, not just
+  `BatchMismatch`**: pairwise-disjoint non-empty origin subsets of an
+  N-member committee can never sum past N. So once every origin-claiming
+  delivery is checked against every other one it could conflict with (which
+  `claim_origins` now does for both manifests and chunks — previously only
+  chunks were checked, and only against other chunks), exceeding any of the
+  aggregate buffer/root-count bounds becomes impossible without an earlier
+  origin conflict already having fired, with strictly better (two real
+  deliveries, not just a message id) evidence. The aggregate checks stay in
+  the code as defensive backstops, not because they're expected to fire.
+  **One case they remain the active, still-needed mechanism for**: the same
+  origin appearing twice *within a single delivery's own contributions* —
+  `claim_origins` only compares against already-recorded claims from
+  *earlier* deliveries, not duplicates within the batch currently being
+  validated.
+
+  No relay path exists for this evidence kind yet either (see
+  `dkg_leader_public_fault` above), though unlike that kind, one would be a
+  much smaller lift here — the underlying relay mechanism and
+  `DkgControlMessage` wire variant pattern already exist for
+  `dkg_leader_equivocation` and could be mirrored directly.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
   fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
   messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry
@@ -449,8 +486,8 @@ change:
    `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
    `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`,
    `dkg_public_origin_fault`, `dkg_leader_equivocation`,
-   `dkg_leader_public_fault`, or `dkg_control_message_fault`), checks the
-   expected statement domain/shape,
+   `dkg_leader_public_fault`, `dkg_leader_batch_mismatch`, or
+   `dkg_control_message_fault`), checks the expected statement domain/shape,
    validates origin-protocol policy, and binds the signed evidence to the
    envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
@@ -596,10 +633,11 @@ elsewhere, closer to where they actually happen:
 - **fault detected** — for DKG control/public-plane evidence kinds, a
   `dkg_transport_events_total{plane, event}` `*_candidate` event
   (`origin_fault_candidate`, `equivocation_candidate`, `leader_equivocation_
-  candidate`, `leader_public_fault_candidate`, `ack_equivocation_candidate`,
-  `leader_prepare_fault_candidate`) fires at the moment a fault is first
-  recognized, before any report is even built. `leader_public_fault` has no
-  relay path (see its bullet above), so it only ever emits `_report_queued`/
+  candidate`, `leader_public_fault_candidate`, `leader_batch_mismatch_
+  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`)
+  fires at the moment a fault is first recognized, before any report is even
+  built. `leader_public_fault`/`leader_batch_mismatch` have no relay path
+  (see their bullets above), so they only ever emit `_report_queued`/
   `_report_failed`, never a `_relay_accepted`/`_relay_exhausted` pair.
   PRE/Sign/`dkg_share`/`dkg_invalid_refresh_commitment` evidence kinds
   don't have a separate "detected" moment distinct from "queued" — a

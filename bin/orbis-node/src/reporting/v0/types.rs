@@ -15,6 +15,7 @@ pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";
 pub const DKG_LEADER_EQUIVOCATION_DOMAIN: &str = "orbis-dkg-leader-equivocation-v1";
 pub const DKG_LEADER_PUBLIC_FAULT_DOMAIN: &str = "orbis-dkg-leader-public-fault-v1";
+pub const DKG_LEADER_BATCH_MISMATCH_DOMAIN: &str = "orbis-dkg-leader-batch-mismatch-v1";
 pub const DKG_CONTROL_MESSAGE_FAULT_DOMAIN: &str = "orbis-dkg-control-message-fault-v1";
 pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
@@ -1338,6 +1339,17 @@ pub enum InvalidCryptoResponse {
     DkgLeaderPublicFault {
         statement: Box<DkgLeaderPublicFaultStatement>,
     },
+    /// Two leader-signed Gossip broadcasts (any combination of manifest and
+    /// chunk) that each reference the same origin (same `ParticipantRef`,
+    /// same `MessageId`) under two *different* phase roots. Reuses
+    /// `DkgLeaderEquivocationStatement`'s shape (it's the same "two signed
+    /// deliveries, same phase" wire format) under a distinct domain/kind —
+    /// the fault predicate differs from `DkgLeaderEquivocation` (different
+    /// coordinate, shared origin, rather than same coordinate, different
+    /// content).
+    DkgLeaderBatchMismatch {
+        statement: Box<DkgLeaderEquivocationStatement>,
+    },
     /// A direct-QUIC control-handshake fault: a noncanonical leader's
     /// `Prepare`, a `Prepare` whose routes/digests contradict SourceHub, or
     /// a follower equivocating on a `Prepared`/`Activated`/`Begun` ack.
@@ -1402,6 +1414,10 @@ impl InvalidCryptoResponse {
             }
             Self::DkgLeaderPublicFault { statement } => {
                 write_string(&mut out, "dkg_leader_public_fault");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgLeaderBatchMismatch { statement } => {
+                write_string(&mut out, "dkg_leader_batch_mismatch");
                 write_bytes(&mut out, &statement.canonical_bytes());
             }
             Self::DkgControlMessageFault { statement } => {
@@ -1494,6 +1510,14 @@ impl InvalidCryptoResponse {
                     )?),
                 }
             }
+            "dkg_leader_batch_mismatch" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgLeaderBatchMismatch {
+                    statement: Box::new(DkgLeaderEquivocationStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
             "dkg_control_message_fault" => {
                 let statement = decoder.read_bytes("statement")?;
                 Self::DkgControlMessageFault {
@@ -1522,6 +1546,7 @@ impl InvalidCryptoResponse {
             Self::DkgPublicOriginFault { statement } => &statement.request_id,
             Self::DkgLeaderEquivocation { statement } => &statement.request_id,
             Self::DkgLeaderPublicFault { statement } => &statement.request_id,
+            Self::DkgLeaderBatchMismatch { statement } => &statement.request_id,
             Self::DkgControlMessageFault { statement } => &statement.request_id,
         }
     }
@@ -1538,6 +1563,7 @@ impl InvalidCryptoResponse {
             Self::DkgPublicOriginFault { statement } => statement.signing_committee_scope,
             Self::DkgLeaderEquivocation { statement } => statement.signing_committee_scope,
             Self::DkgLeaderPublicFault { statement } => statement.signing_committee_scope,
+            Self::DkgLeaderBatchMismatch { statement } => statement.signing_committee_scope,
             Self::DkgControlMessageFault { statement } => statement.signing_committee_scope,
         }
     }
@@ -2255,6 +2281,52 @@ mod tests {
             },
         };
         let payload = InvalidCryptoResponse::DkgLeaderEquivocation {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_leader_batch_mismatch_payload_round_trips() {
+        // Same wire shape as `dkg_leader_equivocation` (this evidence kind
+        // reuses `DkgLeaderEquivocationStatement` directly), but a distinct
+        // domain and evidence_kind tag, so round-tripping through the outer
+        // `InvalidCryptoResponse` wrapper must still land on the right
+        // variant rather than being confused with real leader-equivocation
+        // evidence.
+        let statement = DkgLeaderEquivocationStatement {
+            domain: DKG_LEADER_BATCH_MISMATCH_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitment_audit".to_string(),
+            delivery_id_a: [0xaa; 16],
+            delivery_a: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            delivery_id_b: [0xbb; 16],
+            delivery_b: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![2; 64],
+                data: vec![4, 5, 6],
+            },
+        };
+        let payload = InvalidCryptoResponse::DkgLeaderBatchMismatch {
             statement: Box::new(statement),
         };
         let encoded = payload.canonical_bytes();
