@@ -99,8 +99,6 @@ where
         let (token_string, token) =
             extract_and_validate_jwt::<SignClaims, _>(&request, current_time)
                 .map_err(SignError::Unauthorized)?;
-        let actor_id = request_actor(&token, &self.state.trusted_auth_relay_dids)
-            .map_err(SignError::Unauthorized)?;
 
         let req = request.into_inner();
 
@@ -122,6 +120,8 @@ where
             self.routes.version,
         )
         .await?;
+        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+            .map_err(SignError::Unauthorized)?;
 
         // Authorize: check on-chain policy access (IO) ---
         let relay_acp_timestamp = policy_access_timestamp(valid_window.as_ref())?;

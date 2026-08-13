@@ -191,6 +191,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let post_id = "test-mismatched-ring-pk".to_string();
@@ -306,6 +307,7 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: None,
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -421,6 +423,7 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -569,6 +572,7 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     dummy_bulletin
@@ -702,6 +706,7 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     dummy_bulletin
@@ -817,6 +822,7 @@ async fn write_ring_with_announced_reshare(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let post_id = format!("test-reshare-{ring_pk}");
@@ -1134,6 +1140,7 @@ async fn post_ring_for_validation(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let post_id = format!("test-validation-{ring_pk}");
@@ -1466,6 +1473,7 @@ async fn post_reshare_announcement(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     bulletin

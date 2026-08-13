@@ -93,8 +93,6 @@ where
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
             .map_err(PreError::Unauthorized)?;
-        let actor_id = request_actor(&token, &self.state.trusted_auth_relay_dids)
-            .map_err(PreError::Unauthorized)?;
 
         let req = request.into_inner();
 
@@ -102,6 +100,14 @@ where
             start: w.start,
             end: w.end,
         });
+
+        validate_pre_claims(
+            &token,
+            &req.rdr_pk,
+            &req.object_id,
+            &req.derivation,
+            &req.salt,
+        )?;
 
         // Fetch document and ring payloads from bulletin (IO).
         // Validates that the ring's effective protocol version matches this service (v0).
@@ -112,6 +118,8 @@ where
             self.routes.version,
         )
         .await?;
+        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+            .map_err(PreError::Unauthorized)?;
         check_policy_access(
             &*self.state.authz,
             &document_payload,
@@ -120,15 +128,6 @@ where
             valid_window.clone(),
         )
         .await?;
-
-        // 2. Authorize: Validate JWT claims match request fields
-        validate_pre_claims(
-            &token,
-            &req.rdr_pk,
-            &req.object_id,
-            &req.derivation,
-            &req.salt,
-        )?;
 
         // Validate metadata not tampered
         // Generate policy metadata for proof binding verification (before fields are moved)

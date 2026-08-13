@@ -53,7 +53,7 @@ use local_storage::{
 };
 use network::{NetworkImpl, Router};
 use proto::info_service::NodeStatus;
-use std::{collections::HashSet, fs, sync::Arc};
+use std::{fs, sync::Arc};
 use tokio::time::Duration;
 use zeroize::Zeroizing;
 
@@ -290,6 +290,7 @@ impl ThreeNodeNetwork {
 fn seed_three_node_dummy_bulletin(
     dummy_bulletin: &Arc<DummyBulletin>,
     nodes: [(&AppState<DkgImpl>, &str); 3],
+    trusted_auth_relay_dids: Vec<String>,
 ) {
     let peer_node_keys: Vec<String> = nodes
         .iter()
@@ -320,6 +321,11 @@ fn seed_three_node_dummy_bulletin(
         pss_interval: 86400,
         block_number_nonce: 0,
         policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: if trusted_auth_relay_dids.is_empty() {
+            None
+        } else {
+            Some(trusted_auth_relay_dids)
+        },
         reporting: Default::default(),
     };
     dummy_bulletin
@@ -363,7 +369,7 @@ pub async fn setup_three_node_network(start_routers: bool, db_name: &str) -> Thr
         true,
         db_name,
         TestRouterHandlers::All,
-        HashSet::new(),
+        vec![],
     )
     .await
 }
@@ -463,7 +469,7 @@ async fn setup_three_node_network_impl(
     dummy_bulletin: bool,
     db_name: &str,
     handlers: TestRouterHandlers,
-    trusted_auth_relay_dids: HashSet<String>,
+    trusted_auth_relay_dids: Vec<String>,
 ) -> ThreeNodeNetwork {
     println!(
         "Setting up three-node test network with {} handlers...",
@@ -501,7 +507,6 @@ async fn setup_three_node_network_impl(
         &format!("{}_1", db_name),
     )
     .await;
-    let alice_state = alice_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids.clone());
     let (bob_state, bob_peer_id, bob_peer_id_with_addr) = setup_test_node(
         "Bob",
         dummy_authz,
@@ -510,7 +515,6 @@ async fn setup_three_node_network_impl(
         &format!("{}_2", db_name),
     )
     .await;
-    let bob_state = bob_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids.clone());
     let (charlie_state, charlie_peer_id, charlie_peer_id_with_addr) = setup_test_node(
         "Charlie",
         dummy_authz,
@@ -519,7 +523,6 @@ async fn setup_three_node_network_impl(
         &format!("{}_3", db_name),
     )
     .await;
-    let charlie_state = charlie_state.with_trusted_auth_relay_dids(trusted_auth_relay_dids);
 
     if let Some(dummy_bulletin) = &dummy_bulletin_arc {
         seed_three_node_dummy_bulletin(
@@ -529,6 +532,7 @@ async fn setup_three_node_network_impl(
                 (&bob_state, &bob_peer_id_with_addr),
                 (&charlie_state, &charlie_peer_id_with_addr),
             ],
+            trusted_auth_relay_dids,
         );
     }
 
@@ -588,14 +592,14 @@ pub async fn setup_three_node_network_with_pre(
         dummy_bulletin,
         db_name,
         TestRouterHandlers::DkgPre,
-        HashSet::new(),
+        vec![],
     )
     .await
 }
 
 pub async fn setup_three_node_network_with_pre_and_trusted_relays(
     db_name: &str,
-    trusted_auth_relay_dids: HashSet<String>,
+    trusted_auth_relay_dids: Vec<String>,
 ) -> ThreeNodeNetwork {
     setup_three_node_network_impl(
         true,
@@ -634,14 +638,14 @@ pub async fn setup_three_node_network_with_sign(
         dummy_bulletin,
         db_name,
         TestRouterHandlers::All,
-        HashSet::new(),
+        vec![],
     )
     .await
 }
 
 pub async fn setup_three_node_network_with_sign_and_trusted_relays(
     db_name: &str,
-    trusted_auth_relay_dids: HashSet<String>,
+    trusted_auth_relay_dids: Vec<String>,
 ) -> ThreeNodeNetwork {
     setup_three_node_network_impl(
         true,
@@ -674,6 +678,7 @@ pub async fn write_ring_to_bulletin(
         pss_interval,
         block_number_nonce: 0,
         policy_id: None,
+        trusted_auth_relay_dids: None,
         reporting: Default::default(),
     };
     let post_id = format!("test-ring-{ring_pk}");
@@ -958,6 +963,26 @@ pub async fn create_ring_on_chain(
     policy_id: &str,
     nonce: Option<&str>,
 ) -> String {
+    create_ring_on_chain_with_trusted_relays(
+        chain_config,
+        node_keys,
+        threshold,
+        policy_id,
+        nonce,
+        vec![],
+    )
+    .await
+}
+
+#[cfg(feature = "integration-test")]
+pub async fn create_ring_on_chain_with_trusted_relays(
+    chain_config: &ChainConfig,
+    node_keys: &[String],
+    threshold: u32,
+    policy_id: &str,
+    nonce: Option<&str>,
+    trusted_auth_relay_dids: Vec<String>,
+) -> String {
     let client = SourceHubClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
@@ -975,6 +1000,7 @@ pub async fn create_ring_on_chain(
             nonce.map(String::from),
             network::V0.version,
             None,
+            (!trusted_auth_relay_dids.is_empty()).then_some(trusted_auth_relay_dids),
         )
         .await
         .expect("create ring on-chain");

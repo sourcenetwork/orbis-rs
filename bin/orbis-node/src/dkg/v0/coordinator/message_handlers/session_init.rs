@@ -314,8 +314,6 @@ where
         JWT_CLOCK_SKEW_LEEWAY_SECS,
     )
     .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-    let actor_id = request_actor(&token, &coord.app_state.trusted_auth_relay_dids)
-        .map_err(DkgError::Unauthorized)?;
     validate_dkg_claims(&token, ring_id)?;
 
     let (bulletin_ring_payload, effective_routes) =
@@ -329,6 +327,11 @@ where
         )));
     }
     validate_fresh_dkg_ring_payload(ring_id, &bulletin_ring_payload)?;
+    let actor_id = request_actor(
+        &token,
+        bulletin_ring_payload.trusted_auth_relay_dids.as_deref(),
+    )
+    .map_err(DkgError::Unauthorized)?;
 
     validate_fresh_session_init_params(
         ring_id,

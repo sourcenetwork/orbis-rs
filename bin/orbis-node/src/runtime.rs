@@ -17,7 +17,6 @@ use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
 use std::{
-    collections::HashSet,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -350,14 +349,6 @@ pub(crate) async fn init_node(
         config.local_storage,
         config.authz,
         config.bulletin,
-    )
-    .with_trusted_auth_relay_dids(
-        config
-            .args
-            .trusted_auth_relay_dids
-            .iter()
-            .cloned()
-            .collect::<HashSet<_>>(),
     );
     let app_state_arc = Arc::new(app_state);
 

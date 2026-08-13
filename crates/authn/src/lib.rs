@@ -6,7 +6,6 @@ use did_key::{resolve, DIDCore, KeyMaterial, CONFIG_LD_PUBLIC};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::HashSet;
 use std::fmt::Debug;
 
 // Re-export commonly used items from jwt_builder
@@ -44,7 +43,7 @@ pub struct BearerToken<T = ()> {
 /// Returns the actor represented by a verified token.
 pub fn resolve_actor_id<'a, T>(
     token: &'a BearerToken<T>,
-    trusted_relay_issuers: &HashSet<String>,
+    trusted_relay_issuers: &[String],
 ) -> Result<&'a str> {
     let Some(subject_id) = token.subject_id.as_deref() else {
         return Ok(&token.issuer_id);

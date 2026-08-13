@@ -8432,6 +8432,7 @@ mod stability_tests {
             pss_interval: 60,
             block_number_nonce: 0,
             policy_id: None,
+            trusted_auth_relay_dids: None,
             reporting: Default::default(),
         }
     }
@@ -10776,6 +10777,7 @@ mod stability_tests {
             pss_interval: 60,
             block_number_nonce: 0,
             policy_id: Some("test-policy".to_string()),
+            trusted_auth_relay_dids: None,
             reporting: Default::default(),
         }
     }

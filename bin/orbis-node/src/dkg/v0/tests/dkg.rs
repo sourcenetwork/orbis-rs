@@ -16,6 +16,7 @@ use crate::helpers::test_helpers::{
     test_db_path, TestKeyPair,
 };
 use crate::ring_state::RingIndexEntry;
+use authn::DkgClaims;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
@@ -380,6 +381,7 @@ async fn test_start_dkg_fails_on_connection_failure() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -738,6 +740,45 @@ async fn test_start_dkg_fails_wrong_signature() {
     cleanup_db(&db_path);
 }
 
+#[tokio::test]
+async fn test_start_dkg_rejects_relay_not_trusted_by_ring() {
+    let db_name = "test_start_dkg_rejects_relay_not_trusted_by_ring";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+    let mut network = setup_three_node_network(false, db_name).await;
+    let service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let relay = TestKeyPair::new();
+    let token = relay
+        .sign_for_actor(
+            "did:opk:user".to_string(),
+            DkgClaims {
+                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            },
+            Duration::from_secs(60),
+        )
+        .expect("create delegated DKG token");
+    let request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .expect("create authenticated request");
+
+    let status = service.start_dkg(request).await.expect_err("reject relay");
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    drop(network);
+    for path in db_paths {
+        cleanup_db(&path);
+    }
+}
+
 /// Test: Verify that SessionInit with invalid JWT token is rejected by peer nodes
 ///
 /// This test verifies that when a peer node receives a SessionInit message
@@ -834,6 +875,7 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -980,6 +1022,7 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
                 pss_interval: 86400,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -1041,6 +1084,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
                 pss_interval,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )
@@ -1140,6 +1184,7 @@ async fn test_fresh_session_init_rejects_swapped_sourcehub_route_bindings() {
                 pss_interval: 60,
                 block_number_nonce: 0,
                 policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
                 reporting: Default::default(),
             },
         )

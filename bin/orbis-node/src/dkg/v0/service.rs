@@ -65,8 +65,6 @@ where
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
             .map_err(DkgError::Unauthorized)?;
-        let actor_id = request_actor(&token, &self.state.trusted_auth_relay_dids)
-            .map_err(DkgError::Unauthorized)?;
         let req = request.into_inner();
 
         // 2. Authorize the request itself. Ring parameters are read from the bulletin.
@@ -80,6 +78,8 @@ where
                 .await
                 .map_err(DkgError::ProtocolError)?;
         validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
+        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+            .map_err(DkgError::Unauthorized)?;
 
         tracing::info!(
             threshold = ring_payload.threshold,

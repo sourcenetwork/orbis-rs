@@ -182,6 +182,10 @@ pub struct RingPayload {
     /// If set, the ring is updated externally governed by this policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_id: Option<String>,
+    /// Relays allowed to authenticate requests for another actor.
+    /// `None` permanently disables relays; `Some` enables relay updates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trusted_auth_relay_dids: Option<Vec<String>>,
     /// Protocol epoch used by this ring and its optional scheduled successor.
     pub upgrade_info: UpgradeInfo,
     /// Fault-report policy and automatic replacement settings for this ring.

@@ -1,7 +1,6 @@
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
 use authn::{extract_bearer_token, resolve_actor_id, resolve_jwt_did, BearerToken};
 use serde::de::DeserializeOwned;
-use std::collections::HashSet;
 use std::fmt::Debug;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -44,9 +43,9 @@ where
 
 pub fn request_actor<C>(
     token: &BearerToken<C>,
-    trusted_relay_issuers: &HashSet<String>,
+    trusted_relay_issuers: Option<&[String]>,
 ) -> Result<String, String> {
-    resolve_actor_id(token, trusted_relay_issuers)
+    resolve_actor_id(token, trusted_relay_issuers.unwrap_or_default())
         .map(str::to_string)
         .map_err(|error| error.to_string())
 }

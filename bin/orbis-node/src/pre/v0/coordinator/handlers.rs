@@ -111,9 +111,6 @@ where
             JWT_CLOCK_SKEW_LEEWAY_SECS,
         )
         .map_err(|e| PreError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-        let actor_id = request_actor(&token, &self.app_state.trusted_auth_relay_dids)
-            .map_err(PreError::Unauthorized)?;
-
         // 2. Authorize: Validate JWT claims match request fields
         validate_pre_claims(
             &token,
@@ -129,6 +126,8 @@ where
             self.routes.version,
         )
         .await?;
+        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+            .map_err(PreError::Unauthorized)?;
 
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator
         // may not be in the ring (external requesters use node_id=0).
