@@ -1961,7 +1961,23 @@ where
     // `receiver_node_keys`; checking `current_node_keys` first mis-scoped
     // that common case as `Current` when the registry always requires
     // `PendingNew` for `pss_reshare`.
-    let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
+    //
+    // `LeaderPrepareFault`'s accused is always the canonical leader, who for
+    // Reshare is always drawn from the new/pending committee (`canonical_
+    // leader()`'s reshare rule) — origin_protocol alone determines scope, as
+    // above. `AckEquivocation`'s accused is whichever follower equivocated,
+    // which can be a pure old-committee dealer (never in `receiver_node_
+    // keys`, unlike a dealer-receiver or pure-new receiver) — for that one
+    // fault kind, derive the scope from where the accused actually sits,
+    // preferring `PendingNew` when both apply so dealer-receivers keep their
+    // existing, already-correct classification.
+    let accused_committee_scope = if binding.origin_protocol == "pss_reshare"
+        && fault_kind == DkgControlMessageFaultKind::AckEquivocation
+        && !binding.receiver_node_keys.contains(&accused_node_key)
+        && binding.current_node_keys.contains(&accused_node_key)
+    {
+        CommitteeScope::Current
+    } else if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {
         CommitteeScope::Current

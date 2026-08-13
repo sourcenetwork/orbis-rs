@@ -1287,15 +1287,29 @@ impl InvalidCryptoResponseHandler {
                     .to_string(),
             ));
         }
+        // `AckEquivocation`'s accused can be a pure old-committee Reshare
+        // dealer (never a member of the new/pending committee) — unlike
+        // `LeaderPrepareFault`, whose accused is always the canonical leader
+        // and therefore always drawn from the new committee for Reshare —
+        // so this one fault kind accepts either scope here. The real
+        // enforcement isn't this equality check, it's the accused-membership
+        // containment check below (`accused_committee.peer_node_keys.
+        // contains(...)`), which independently confirms the accused is a
+        // genuine member of whichever scope the statement actually claims.
         let expected_accused_scope = match statement.origin_protocol.as_str() {
-            "pss_reshare" => CommitteeScope::PendingNew,
-            _ => CommitteeScope::Current,
+            "pss_reshare" if statement.fault_kind == DkgControlMessageFaultKind::AckEquivocation => {
+                None
+            }
+            "pss_reshare" => Some(CommitteeScope::PendingNew),
+            _ => Some(CommitteeScope::Current),
         };
-        if statement.accused_committee_scope != expected_accused_scope {
-            return Err(ReportingError::Unauthorized(
-                "DKG control-message fault accused committee scope does not match origin protocol"
-                    .to_string(),
-            ));
+        if let Some(expected_accused_scope) = expected_accused_scope {
+            if statement.accused_committee_scope != expected_accused_scope {
+                return Err(ReportingError::Unauthorized(
+                    "DKG control-message fault accused committee scope does not match origin protocol"
+                        .to_string(),
+                ));
+            }
         }
         let effective_version =
             validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;

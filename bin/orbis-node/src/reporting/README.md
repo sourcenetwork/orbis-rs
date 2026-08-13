@@ -306,6 +306,19 @@ two fault-report paths) — out of scope for this pass.
     follower-side detector for the leader itself sending conflicting
     `Activate`/`Begin` messages is not built in this pass.
 
+    Unlike `leader_prepare_fault` (whose accused is always the canonical
+    leader, always drawn from the new/pending committee for Reshare),
+    `ack_equivocation`'s accused can be *any* follower the leader sent a
+    Prepare to — for Reshare that includes pure old-committee dealers who are
+    never members of the new committee at all. `accused_committee_scope` is
+    derived from where the accused actually sits (preferring `PendingNew`
+    when they're in both, so dealer-receivers keep their existing
+    classification), not hardcoded to `PendingNew` for every Reshare report
+    the way `leader_prepare_fault` correctly is. Independent verification
+    accepts either scope for this one fault kind — the real enforcement is
+    the accused-membership containment check that already runs regardless of
+    which scope is claimed, not an equality check against a fixed expectation.
+
 PRE, Sign, and nested DKG statements are signed by the accused node's
 secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
 that key's compressed public key hex). Public-origin and leader-equivocation
