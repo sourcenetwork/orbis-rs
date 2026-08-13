@@ -1508,6 +1508,95 @@ impl InvalidCryptoResponseHandler {
                     })?;
                 }
             }
+            DkgControlMessageFaultKind::OversizedRepairPage => {
+                if statement.artifact_b.is_some() {
+                    return Err(ReportingError::InvalidReport(
+                        "oversized-repair-page evidence must contain exactly one artifact"
+                            .to_string(),
+                    ));
+                }
+                if statement.message_kind != "public_phase_response" {
+                    return Err(ReportingError::InvalidReport(
+                        "oversized-repair-page evidence must target the PublicPhaseResponse \
+                         message"
+                            .to_string(),
+                    ));
+                }
+                // Pure byte-length check against a fixed protocol constant,
+                // against the artifact's own raw bytes (not a re-encoding) —
+                // same precedent as `dkg_leader_public_fault`'s
+                // `oversized_chunk`.
+                if statement.artifact_a.data.len() <= transport::MAX_PUBLIC_REPAIR_PAGE_BYTES {
+                    return Err(ReportingError::Unauthorized(
+                        "reported repair page is independently verifiable as within the size \
+                         limit"
+                            .to_string(),
+                    ));
+                }
+                let response: transport::DkgControlMessage = transport::decode(
+                    &statement.artifact_a.data,
+                    transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+                )
+                .map_err(ReportingError::InvalidReport)?;
+                let transport::DkgControlMessage::PublicPhaseResponse {
+                    ceremony_id: response_ceremony_id,
+                    attempt_id: response_attempt_id,
+                    phase,
+                    contributions,
+                    next_cursor,
+                    page_digest,
+                    report_signature,
+                } = response
+                else {
+                    return Err(ReportingError::InvalidReport(
+                        "oversized-repair-page evidence does not decode as a PublicPhaseResponse"
+                            .to_string(),
+                    ));
+                };
+                if response_ceremony_id.0 != ceremony_id
+                    || response_attempt_id.0 != statement.attempt_id
+                {
+                    return Err(ReportingError::Unauthorized(
+                        "oversized-repair-page evidence does not target the claimed attempt"
+                            .to_string(),
+                    ));
+                }
+                let recomputed_digest = transport::public_repair_page_digest(
+                    response_ceremony_id,
+                    response_attempt_id,
+                    phase,
+                    &contributions,
+                    next_cursor,
+                );
+                if recomputed_digest != page_digest {
+                    return Err(ReportingError::Unauthorized(
+                        "oversized-repair-page evidence content does not match its own \
+                         page_digest"
+                            .to_string(),
+                    ));
+                }
+                if report_signature.is_none() {
+                    return Err(ReportingError::Unauthorized(
+                        "oversized-repair-page evidence has no report signature".to_string(),
+                    ));
+                }
+                let signed_bytes = transport::control_ack_signing_bytes(
+                    response_ceremony_id,
+                    response_attempt_id,
+                    "public_phase_response",
+                    page_digest,
+                );
+                verify_node_message(
+                    &statement.responder_node_key,
+                    &signed_bytes,
+                    &statement.artifact_a.signature,
+                )
+                .map_err(|error| {
+                    ReportingError::Unauthorized(format!(
+                        "invalid oversized-repair-page signature: {error}"
+                    ))
+                })?;
+            }
         }
 
         Ok(())

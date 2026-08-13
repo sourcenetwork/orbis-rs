@@ -89,8 +89,15 @@ use bulletin::r#trait::RingPayload;
 use crypto::SignImpl;
 
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
-/// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
-const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
+/// Generous upper bound on the encoded size of a `page_digest` +
+/// `report_signature` pair. `public_phase_response_page` sizes its
+/// candidates against `MAX_PUBLIC_REPAIR_PAGE_BYTES` minus this margin
+/// (`sign_public_phase_response` attaches the real signature afterward,
+/// once the final contributions/next_cursor are settled) — without it, an
+/// honest leader's page could land a few hundred bytes over the true limit
+/// purely from signature overhead, and get flagged as a fault it didn't
+/// commit.
+const PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES: usize = 512;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const PRIVATE_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
@@ -218,6 +225,14 @@ struct PublicProtocolViolation {
     /// deliveries" pair, just a different violation predicate). See
     /// `claim_origins`.
     leader_batch_mismatch: Option<Box<LeaderDeliveryEquivocation>>,
+    /// A single leader-signed `PublicPhaseResponse` (direct-QUIC repair-page
+    /// reply) that is independently provable as invalid on its own — reuses
+    /// `dkg_control_message_fault`'s `ControlMessageArtifact` shape (a
+    /// `ControlSignature`, not a Gossip envelope, backs this one) rather than
+    /// `LeaderPublicFaultEvidence`, which is Gossip-delivery-shaped. `None`
+    /// whenever the leader response wasn't signed (Fresh DKG — no ring to
+    /// bind evidence to) or the violation is a different kind entirely.
+    control_message_fault: Option<Box<ControlMessageArtifact>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -305,6 +320,7 @@ impl PublicProtocolViolation {
             leader_equivocation: None,
             leader_public_fault: None,
             leader_batch_mismatch: None,
+            control_message_fault: None,
         }
     }
 
@@ -342,6 +358,7 @@ impl PublicProtocolViolation {
             leader_equivocation: None,
             leader_public_fault: None,
             leader_batch_mismatch: None,
+            control_message_fault: None,
         }
     }
 
@@ -389,6 +406,11 @@ impl PublicProtocolViolation {
 
     fn with_leader_batch_mismatch(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
         self.leader_batch_mismatch = evidence.map(Box::new);
+        self
+    }
+
+    fn with_control_message_fault(mut self, evidence: Option<ControlMessageArtifact>) -> Self {
+        self.control_message_fault = evidence.map(Box::new);
         self
     }
 }
@@ -1352,6 +1374,16 @@ fn public_phase_response_page(
             phase,
             contributions: Vec::new(),
             next_cursor: None,
+            // Placeholder — the real digest/signature are computed by the
+            // caller once the final contributions/next_cursor are settled
+            // (`sign_public_phase_response`), since signing needs access to
+            // the local signing key this pure/sync sizing loop doesn't have.
+            // Candidates below are sized against a smaller effective budget
+            // (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES` margin) so the
+            // real signature's byte cost can never push the final signed
+            // message over `MAX_PUBLIC_REPAIR_PAGE_BYTES`.
+            page_digest: [0; 32],
+            report_signature: None,
         });
     }
 
@@ -1366,11 +1398,15 @@ fn public_phase_response_page(
             phase,
             contributions: contributions.clone(),
             next_cursor: has_more.then_some(**origin),
+            page_digest: [0; 32],
+            report_signature: None,
         };
         let encoded_len = transport::encode(&candidate)
             .map_err(DkgError::Serialization)?
             .len();
-        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+        if encoded_len
+            > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES - PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES
+        {
             contributions.pop();
             let Some(cursor) = last_origin else {
                 crate::metrics::record_dkg_transport_event(
@@ -1379,7 +1415,7 @@ fn public_phase_response_page(
                 );
                 return Err(DkgError::ProtocolError(format!(
                     "one signed public contribution exceeds the {}-byte repair page limit",
-                    MAX_PUBLIC_REPAIR_PAGE_BYTES
+                    transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                 )));
             };
             return Ok(DkgControlMessage::PublicPhaseResponse {
@@ -1388,6 +1424,8 @@ fn public_phase_response_page(
                 phase,
                 contributions,
                 next_cursor: Some(cursor),
+                page_digest: [0; 32],
+                report_signature: None,
             });
         }
         last_origin = Some(**origin);
@@ -1397,6 +1435,51 @@ fn public_phase_response_page(
     }
 
     unreachable!("a non-empty retained page returns from the loop")
+}
+
+/// Attach a real `page_digest`/`report_signature` to a `PublicPhaseResponse`
+/// built by `public_phase_response_page` (which fills placeholders, since it
+/// has no access to the local signing key). Lets an oversized or otherwise
+/// invalid repair page be attributed to the leader later — unlike Gossip
+/// broadcasts, direct-QUIC control messages have no transport-layer
+/// signature to reclaim, and `PublicPhaseResponse` didn't carry one of its
+/// own the way `Prepare`/`Prepared`/etc. do.
+fn sign_public_phase_response<D>(
+    state: &Arc<AppState<D>>,
+    response: DkgControlMessage,
+) -> Result<DkgControlMessage>
+where
+    D: crypto::r#trait::Dkg + Clone + 'static,
+{
+    let DkgControlMessage::PublicPhaseResponse {
+        ceremony_id,
+        attempt_id,
+        phase,
+        contributions,
+        next_cursor,
+        ..
+    } = response
+    else {
+        return Ok(response);
+    };
+    let page_digest =
+        transport::public_repair_page_digest(ceremony_id, attempt_id, phase, &contributions, next_cursor);
+    let report_signature = Some(sign_control_message(
+        state,
+        ceremony_id,
+        attempt_id,
+        "public_phase_response",
+        page_digest,
+    )?);
+    Ok(DkgControlMessage::PublicPhaseResponse {
+        ceremony_id,
+        attempt_id,
+        phase,
+        contributions,
+        next_cursor,
+        page_digest,
+        report_signature,
+    })
 }
 
 fn validate_public_repair_page_progress(
@@ -3365,6 +3448,7 @@ where
                 .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
             let response =
                 public_phase_response_page(ceremony_id, attempt_id, phase, &retained, after)?;
+            let response = sign_public_phase_response(&state, response)?;
             let encoded_len = transport::encode(&response)
                 .map_err(DkgError::Serialization)?
                 .len();
@@ -5633,6 +5717,14 @@ async fn abort_public_protocol_violation<D>(
         violation.leader_batch_mismatch.as_deref(),
     )
     .await;
+    report_oversized_repair_page_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        &prepare.leader_node_key,
+        violation.control_message_fault.as_deref(),
+    )
+    .await;
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -6816,19 +6908,39 @@ where
             }
             Err(error) => return Err(PublicRepairFailure::Error(error)),
         };
-        let encoded_len = transport::encode(&response)
-            .map_err(DkgError::Serialization)?
-            .len();
-        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+        let encoded = transport::encode(&response).map_err(DkgError::Serialization)?;
+        let encoded_len = encoded.len();
+        if encoded_len > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES {
+            // Only attributable if the leader actually signed this response
+            // (`None` for Fresh DKG, which has no ring to bind evidence to —
+            // see `PublicPhaseResponse::report_signature`). Re-encodes the
+            // whole decoded response (not just the oversized field) as the
+            // artifact data, matching `leader_prepare_fault`'s pattern, so
+            // independent re-verification can recompute `page_digest` from
+            // it directly.
+            let control_message_fault = if let DkgControlMessage::PublicPhaseResponse {
+                report_signature: Some(signature),
+                ..
+            } = &response
+            {
+                Some(ControlMessageArtifact {
+                    signature: signature.signature.clone(),
+                    data: encoded,
+                })
+            } else {
+                None
+            };
             return Err(PublicRepairFailure::Violation(
                 PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::BufferLimit,
                     Some(phase),
                     None,
                     format!(
-                        "encoded public repair page is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                        "encoded public repair page is {encoded_len} bytes, exceeding the {}-byte limit",
+                        transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                     ),
-                ),
+                )
+                .with_control_message_fault(control_message_fault),
             ));
         }
         let DkgControlMessage::PublicPhaseResponse {
@@ -6837,6 +6949,8 @@ where
             phase: response_phase,
             contributions,
             next_cursor,
+            page_digest: _,
+            report_signature: _,
         } = response
         else {
             return Err(PublicRepairFailure::Violation(
@@ -7001,7 +7115,7 @@ where
             return OriginPublicRepairOutcome::Error(DkgError::Serialization(error));
         }
     };
-    if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+    if encoded_len > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES {
         return OriginPublicRepairOutcome::Violation(
             PublicProtocolViolation::origin_with_kind(
                 PublicProtocolViolationKind::BufferLimit,
@@ -7009,7 +7123,8 @@ where
                 None,
                 origin,
                 format!(
-                    "encoded origin repair response is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                    "encoded origin repair response is {encoded_len} bytes, exceeding the {}-byte limit",
+                    transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                 ),
             ),
         );
@@ -7847,6 +7962,57 @@ async fn report_leader_batch_mismatch_best_effort<D>(
                 attempt_id = %hex::encode(attempt.attempt_id.0),
                 error = %error,
                 "failed to queue authenticated leader batch-mismatch evidence"
+            );
+        }
+    }
+}
+
+/// A leader-signed `PublicPhaseResponse` that's independently provable as
+/// invalid on its own (currently just `oversized_repair_page` — see
+/// `DkgControlMessageFaultKind`). Unlike the Gossip-delivery leader-fault
+/// kinds, the accused here is always exactly `prepare.leader_node_key` (the
+/// canonical leader that served the direct-QUIC repair connection), so the
+/// caller supplies it directly rather than this function re-deriving it.
+async fn report_oversized_repair_page_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    accused_node_key: &str,
+    evidence: Option<&ControlMessageArtifact>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "oversized_repair_page_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    match queue_or_relay_control_message_fault(
+        &coordinator,
+        attempt,
+        accused_node_key.to_string(),
+        "public_phase_response".to_string(),
+        DkgControlMessageFaultKind::OversizedRepairPage,
+        evidence.clone(),
+        None,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "oversized_repair_page_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "oversized_repair_page_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated oversized repair-page evidence"
             );
         }
     }
@@ -12458,6 +12624,8 @@ mod stability_tests {
                         phase: PublicPhase::CommitmentHashes,
                         contributions: vec![first_signed],
                         next_cursor: Some(first),
+                        page_digest: [0; 32],
+                        report_signature: None,
                     }),
                     Err(DkgError::NetworkCommunication(
                         "leader failed on the second page".into(),
@@ -13130,6 +13298,71 @@ mod stability_tests {
                 .await,
             Some(newer_attempt),
             "a stale attributable response must not remove a newer attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_signed_repair_page_is_attributable_with_control_message_fault_evidence() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, _, _guard) = contribution_test_state(
+            "oversized_signed_repair_page_is_attributable",
+            4255,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 1);
+        let oversized_contribution = SignedPayload {
+            origin: vec![1; 32],
+            signature: vec![2; 64],
+            data: vec![9; 700_000],
+        };
+        let report_signature_bytes = vec![3u8; 64];
+        let oversized_response = DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase: PublicPhase::Commitments,
+            contributions: vec![oversized_contribution],
+            next_cursor: None,
+            page_digest: [4; 32],
+            report_signature: Some(ControlSignature {
+                signer_node_key: "repair-node-1".to_string(),
+                signed_at: 1_700_000_000,
+                signature: report_signature_bytes.clone(),
+            }),
+        };
+        let expected_data = transport::encode(&oversized_response).unwrap();
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([(
+            "repair-route-1".to_string(),
+            std::collections::VecDeque::from([Ok(oversized_response)]),
+        )]));
+
+        let violation = match collect_public_phase_from_leader(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::Commitments,
+            &BTreeSet::from([origin]),
+        )
+        .await
+        .expect_err("an oversized signed repair page must be attributable")
+        {
+            PublicRepairFailure::Violation(violation) => violation,
+            other => panic!("expected typed protocol violation, got {other:?}"),
+        };
+        assert_eq!(violation.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(violation.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            violation.control_message_fault.as_deref(),
+            Some(&ControlMessageArtifact {
+                signature: report_signature_bytes,
+                data: expected_data,
+            }),
+            "an oversized leader-signed repair page must retain the signed artifact as evidence"
         );
     }
 
@@ -14173,7 +14406,10 @@ mod stability_tests {
                 after,
             )
             .unwrap();
-            assert!(transport::encode(&response).unwrap().len() <= MAX_PUBLIC_REPAIR_PAGE_BYTES);
+            assert!(
+                transport::encode(&response).unwrap().len()
+                    <= transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
+            );
             let DkgControlMessage::PublicPhaseResponse {
                 contributions,
                 next_cursor,
@@ -14220,7 +14456,7 @@ mod stability_tests {
     fn public_phase_repair_rejects_one_oversized_contribution() {
         let retained = BTreeMap::from([(
             ParticipantRef::current(1),
-            retained_repair_contribution(1, MAX_PUBLIC_REPAIR_PAGE_BYTES / 2),
+            retained_repair_contribution(1, transport::MAX_PUBLIC_REPAIR_PAGE_BYTES / 2),
         )]);
         let error = public_phase_response_page(
             CeremonyId(778),

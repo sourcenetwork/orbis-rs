@@ -1064,6 +1064,12 @@ pub enum DkgControlMessageFaultKind {
     /// request — a single wrong/stale-looking ack is not enough on its own,
     /// since that can happen honestly on a retry race.
     AckEquivocation,
+    /// One signed `PublicPhaseResponse` (a direct-QUIC repair-page reply)
+    /// whose encoded size exceeds `MAX_PUBLIC_REPAIR_PAGE_BYTES` — a pure
+    /// byte-length check against a fixed protocol constant, independently
+    /// provable the same way `dkg_leader_public_fault`'s `oversized_chunk`
+    /// is, just for the direct-QUIC repair path instead of Gossip.
+    OversizedRepairPage,
 }
 
 impl DkgControlMessageFaultKind {
@@ -1071,6 +1077,7 @@ impl DkgControlMessageFaultKind {
         match self {
             Self::LeaderPrepareFault => "leader_prepare_fault",
             Self::AckEquivocation => "ack_equivocation",
+            Self::OversizedRepairPage => "oversized_repair_page",
         }
     }
 
@@ -1078,6 +1085,7 @@ impl DkgControlMessageFaultKind {
         match value {
             "leader_prepare_fault" => Ok(Self::LeaderPrepareFault),
             "ack_equivocation" => Ok(Self::AckEquivocation),
+            "oversized_repair_page" => Ok(Self::OversizedRepairPage),
             _ => Err(ReportingError::InvalidReport(format!(
                 "unknown DKG control-message fault kind {value}"
             ))),
@@ -2490,6 +2498,41 @@ mod tests {
                 signature: vec![3; 64],
                 data: vec![0xbb; 32],
             }),
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_oversized_repair_page_payload_round_trips(
+    ) {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "public_phase_response".to_string(),
+            fault_kind: DkgControlMessageFaultKind::OversizedRepairPage,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![4; 64],
+                data: vec![0xcc; 128],
+            },
+            artifact_b: None,
         };
         let payload = InvalidCryptoResponse::DkgControlMessageFault {
             statement: Box::new(statement),

@@ -16,6 +16,11 @@ use crate::sign::v0::messages::RefreshHealthCheckStatement;
 pub const PUBLIC_CONTRIBUTION_SIGNING_DOMAIN: &[u8] = b"orbis-dkg-public-contribution-v1";
 pub const MAX_PUBLIC_CHUNK_BYTES: usize = 256 * 1024;
 pub const MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES: usize = 2 * 1024 * 1024;
+/// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
+/// `pub` (not `network.rs`-local) so the reporting registry can
+/// independently re-derive whether a signed repair page genuinely exceeds
+/// this bound.
+pub const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
 
 /// Stable logical ceremony identity. Existing session IDs remain its source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -919,6 +924,16 @@ pub enum DkgControlMessage {
         phase: PublicPhase,
         contributions: Vec<network::SignedPayload>,
         next_cursor: Option<ParticipantRef>,
+        /// `public_repair_page_digest` over this message's other fields —
+        /// what `report_signature` actually covers. Lets a leader-served
+        /// direct-QUIC repair page be attributed the same way
+        /// `Prepare`/`Prepared`/etc. are, since (unlike Gossip broadcasts)
+        /// this message has no transport-layer signature to reclaim.
+        page_digest: [u8; 32],
+        /// Node-key signature over `page_digest`, binding the leader to this
+        /// exact repair-page content — see `ControlSignature`. `None` only
+        /// for Fresh DKG, which has no ring to bind evidence to.
+        report_signature: Option<ControlSignature>,
     },
     Error {
         ceremony_id: Option<CeremonyId>,
@@ -1224,6 +1239,37 @@ pub fn phase_root(
     hasher.finalize().into()
 }
 
+/// What a leader's `ControlSignature` on a `PublicPhaseResponse` actually
+/// covers — every field of the response except the digest/signature
+/// themselves. Independently re-derivable by any co-signer from a retained
+/// copy of the response, the same way `config_digest` is for `Prepare`.
+pub fn public_repair_page_digest(
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    phase: PublicPhase,
+    contributions: &[network::SignedPayload],
+    next_cursor: Option<ParticipantRef>,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"orbis-dkg-public-repair-page-v1");
+    hasher.update(ceremony_id.0.to_be_bytes());
+    hasher.update(attempt_id.0);
+    hasher.update(encode(&phase).expect("public phase serialization is infallible"));
+    hasher.update((contributions.len() as u64).to_be_bytes());
+    for signed in contributions {
+        hasher.update((signed.origin.len() as u64).to_be_bytes());
+        hasher.update(&signed.origin);
+        hasher.update((signed.signature.len() as u64).to_be_bytes());
+        hasher.update(&signed.signature);
+        hasher.update((signed.data.len() as u64).to_be_bytes());
+        hasher.update(&signed.data);
+    }
+    hasher.update(
+        encode(&next_cursor).expect("optional participant serialization is infallible"),
+    );
+    hasher.finalize().into()
+}
+
 pub fn share_digest(
     ceremony_id: CeremonyId,
     attempt_id: AttemptId,
@@ -1518,6 +1564,12 @@ mod tests {
                 data: vec![3; 128],
             }],
             next_cursor: Some(ParticipantRef::current(8)),
+            page_digest: [9; 32],
+            report_signature: Some(ControlSignature {
+                signer_node_key: "leader".to_string(),
+                signed_at: 1_700_000_000,
+                signature: vec![4; 64],
+            }),
         };
         let encoded = encode(&response).unwrap();
         assert_eq!(

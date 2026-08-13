@@ -181,17 +181,19 @@ The current evidence kinds are:
   (`CommitmentAudit`, `ReshareParticipantSet`); Refresh phases are
   unaffected since there is only ever one (current) committee.
 
-  **Not covered by any `fault_kind` here**: an oversized direct-QUIC
-  repair-page response — unlike Gossip chunks, `DkgControlMessage::
-  PublicPhaseResponse` carries no reclaimable signature of its own
-  (direct-QUIC control messages other than `Prepare`/`Prepared`/`Activate`/
-  `Activated`/`Begin`/`Begun` were never given a `ControlSignature`), so
-  there is nothing to authenticate that claim to a third-party co-signer.
   The leader's aggregate `BufferLimit` violations (too many pending
   manifest entries, too many buffered chunk contributions, too many
   distinct incremental batch roots) used to be uncovered here too — see
   `dkg_leader_batch_mismatch` below for why they're now structurally
-  unreachable in the cases that matter.
+  unreachable in the cases that matter. The leader's oversized direct-QUIC
+  repair-page response (also `BufferLimit`-shaped) is covered too, but under
+  `dkg_control_message_fault`'s `oversized_repair_page` fault kind below —
+  not here — since it's `ControlSignature`-authenticated like `Prepare`, not
+  Gossip-envelope-authenticated like a chunk. The one remaining uncovered
+  case is the *origin*-side repair-response oversize check
+  (`GetPublicContribution`'s reply) — same shape, but `accused = Origin`, so
+  it would belong under `dkg_public_origin_fault`'s family if ever built,
+  not here or under `dkg_control_message_fault`.
 - `dkg_leader_batch_mismatch`: two leader-signed Gossip deliveries (any
   combination of manifest and chunk) that each reference the same origin
   (same `ParticipantRef`, same `MessageId`) under two *different* phase
@@ -318,6 +320,36 @@ two fault-report paths) — out of scope for this pass.
     accepts either scope for this one fault kind — the real enforcement is
     the accused-membership containment check that already runs regardless of
     which scope is claimed, not an equality check against a fixed expectation.
+  - `oversized_repair_page`: one signed `PublicPhaseResponse` (a direct-QUIC
+    repair-page reply, requested via `GetPublicPhase`) whose encoded size
+    exceeds `MAX_PUBLIC_REPAIR_PAGE_BYTES`. A pure byte-length check against
+    a fixed protocol constant, the same shape as `dkg_leader_public_fault`'s
+    `oversized_chunk` — just for the direct-QUIC repair path instead of
+    Gossip. `PublicPhaseResponse` didn't carry a signature at all until this
+    fault kind was added: it gained `page_digest: [u8; 32]` (a hash over
+    every other field, computed the same way `config_digest` is for
+    `Prepare`) and `report_signature: Option<ControlSignature>`
+    (`None` only for Fresh DKG, which has no ring to bind evidence to — same
+    reasoning as `Prepare.report_signature`), signed once at the single real
+    construction site (`GetPublicPhase`'s responder) via the same
+    `sign_control_message`/`control_ack_signing_bytes` primitives every other
+    `ControlSignature` already uses — no new signing scheme. Like
+    `leader_prepare_fault`, the accused is always the canonical leader (the
+    one who served the repair connection), so a Reshare report always
+    requires `PendingNew` accused scope, unlike `ack_equivocation`.
+    Independent verification recomputes `page_digest` from the decoded
+    artifact's own fields (self-consistency, mirroring `leader_prepare_
+    fault`'s `config_digest` recheck) and independently re-derives the
+    size claim from the artifact's own raw byte length rather than trusting
+    the reporter's characterization. `MAX_PUBLIC_REPAIR_PAGE_BYTES` moved
+    from `network.rs` to `transport.rs` (now `pub`) so both the sender and
+    the registry can share one definition. The page-building sizing loop
+    reserves a small fixed margin (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_
+    BYTES`) below the true limit, since it sizes candidates *before* the real
+    signature is attached (signing needs the local signing key, which that
+    pure/sync loop doesn't have) — without the margin, an honest leader's
+    page landing within a few hundred bytes of the limit could tip over once
+    signed and get flagged as a fault it didn't commit.
 
 PRE, Sign, and nested DKG statements are signed by the accused node's
 secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
@@ -696,13 +728,18 @@ elsewhere, closer to where they actually happen:
   `dkg_transport_events_total{plane, event}` `*_candidate` event
   (`origin_fault_candidate`, `equivocation_candidate`, `leader_equivocation_
   candidate`, `leader_public_fault_candidate`, `leader_batch_mismatch_
-  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`)
-  fires at the moment a fault is first recognized, before any report is even
-  built. `leader_public_fault`/`leader_batch_mismatch` have no relay path
-  (see their bullets above), so they only ever emit `_report_queued`/
-  `_report_failed`, never a `_relay_accepted`/`_relay_exhausted` pair.
-  PRE/Sign/`dkg_share`/`dkg_invalid_refresh_commitment` evidence kinds
-  don't have a separate "detected" moment distinct from "queued" — a
+  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`,
+  `oversized_repair_page_candidate`) fires at the moment a fault is first
+  recognized, before any report is even built. `leader_public_fault`/
+  `leader_batch_mismatch` have no relay path (see their bullets above), so
+  they only ever emit `_report_queued`/`_report_failed`, never a
+  `_relay_accepted`/`_relay_exhausted` pair — `oversized_repair_page` does
+  have one, sharing `dkg_control_message_fault`'s generic relay path (its
+  own `_relay_accepted`/`_relay_exhausted` pair is keyed by evidence kind
+  `dkg_control_message_fault`, not `oversized_repair_page`, so it shows up
+  under that label instead). PRE/Sign/`dkg_share`/`dkg_invalid_refresh_
+  commitment` evidence kinds don't have a separate "detected" moment
+  distinct from "queued" — a
   signature-valid-but-failing response goes straight to
   `ReportObservation::InvalidCryptoResponse`, so `status="queued"` above is
   the first and only signal for those.
