@@ -1380,38 +1380,41 @@ impl InvalidCryptoResponseHandler {
                 let routes_contradict_sourcehub = if noncanonical_leader {
                     false
                 } else {
-                    let (claimed, expected_node_keys) = match statement.accused_committee_scope {
-                        CommitteeScope::Current => {
-                            (&prepare.committees.current, &ring.peer_node_keys)
-                        }
-                        CommitteeScope::PendingNew => {
-                            let next = prepare.committees.next.as_ref().ok_or_else(|| {
-                                ReportingError::InvalidReport(
-                                    "leader-prepare-fault Reshare Prepare omits the next committee"
-                                        .to_string(),
-                                )
-                            })?;
-                            (next, &accused_committee.peer_node_keys)
-                        }
+                    // Reshare (`PendingNew` scope) always attributes the accused
+                    // via the *new* committee — `report_leader_prepare_fault_
+                    // best_effort` scopes it that way since the leader is always
+                    // drawn from there — but the disputed route claim inside the
+                    // same signed Prepare could be about either committee it
+                    // names. So for Reshare, independently re-check both: the
+                    // old/current committee against the ring's still-current
+                    // membership, and the new/next committee against the
+                    // accused's own claimed scope. Refresh only ever has a
+                    // current committee, so only that one applies.
+                    let current_contradicts = committee_routes_contradict_sourcehub(
+                        context,
+                        &prepare.committees.current,
+                        &ring.peer_node_keys,
+                    )
+                    .await;
+                    let next_contradicts = if statement.accused_committee_scope
+                        == CommitteeScope::PendingNew
+                    {
+                        let next = prepare.committees.next.as_ref().ok_or_else(|| {
+                            ReportingError::InvalidReport(
+                                "leader-prepare-fault Reshare Prepare omits the next committee"
+                                    .to_string(),
+                            )
+                        })?;
+                        committee_routes_contradict_sourcehub(
+                            context,
+                            next,
+                            &accused_committee.peer_node_keys,
+                        )
+                        .await
+                    } else {
+                        false
                     };
-                    let claimed_keys: std::collections::BTreeSet<_> =
-                        claimed.node_keys.iter().collect();
-                    let expected_keys: std::collections::BTreeSet<_> =
-                        expected_node_keys.iter().collect();
-                    claimed_keys != expected_keys
-                        || resolve_node_routes(&context.bulletin, expected_node_keys)
-                            .await
-                            .is_ok_and(|resolved| {
-                                let resolved_routes: std::collections::BTreeMap<_, _> = resolved
-                                    .into_iter()
-                                    .map(|route| (route.node_key, route.peer_id))
-                                    .collect();
-                                claimed.node_keys.iter().zip(&claimed.peer_routes).any(
-                                    |(node_key, route)| {
-                                        resolved_routes.get(node_key) != Some(route)
-                                    },
-                                )
-                            })
+                    current_contradicts || next_contradicts
                 };
                 if !noncanonical_leader && !routes_contradict_sourcehub {
                     return Err(ReportingError::Unauthorized(
@@ -2306,6 +2309,36 @@ fn leader_deliveries_prove_equivocation(
         }
         _ => false,
     }
+}
+
+/// Whether a claimed committee's node_keys/routes (from a signed Prepare)
+/// contradict SourceHub's own authoritative NodeInfo for the given expected
+/// membership. Degrades to "no contradiction" if routes can't currently be
+/// resolved — an unrelated resolution hiccup should not manufacture a false
+/// attribution.
+async fn committee_routes_contradict_sourcehub(
+    context: &ReportValidationContext,
+    claimed: &transport::CommitteeConfig,
+    expected_node_keys: &[String],
+) -> bool {
+    let claimed_keys: std::collections::BTreeSet<_> = claimed.node_keys.iter().collect();
+    let expected_keys: std::collections::BTreeSet<_> = expected_node_keys.iter().collect();
+    if claimed_keys != expected_keys {
+        return true;
+    }
+    resolve_node_routes(&context.bulletin, expected_node_keys)
+        .await
+        .is_ok_and(|resolved| {
+            let resolved_routes: std::collections::BTreeMap<_, _> = resolved
+                .into_iter()
+                .map(|route| (route.node_key, route.peer_id))
+                .collect();
+            claimed
+                .node_keys
+                .iter()
+                .zip(&claimed.peer_routes)
+                .any(|(node_key, route)| resolved_routes.get(node_key) != Some(route))
+        })
 }
 
 fn public_origin_protocol_allows_phase(origin_protocol: &str, phase: DkgPublicPhase) -> bool {

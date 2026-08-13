@@ -267,15 +267,30 @@ two fault-report paths) — out of scope for this pass.
   under the sender's own chain node key. Two fault kinds share the statement
   (domain `orbis-dkg-control-message-fault-v1`):
   - `leader_prepare_fault`: one signed `Prepare`, independently provable as
-    invalid because it names a noncanonical leader (or, when self-consistent
-    routes/digests still contradict current SourceHub `NodeInfo`/ring state).
-    Reported before any session is created for it — the noncanonical-leader
-    and route/digest checks in `prepare_participant` all fire earlier than
-    `handle_session_init`. A signature only covers `config_digest`, so before
-    attributing fault the reporter recomputes `config_digest` from the full
-    retained `Prepare` and only reports if it's self-consistent — otherwise a
-    relay could tamper with `leader_node_key`/`committees` post-signature
-    while leaving an innocent signer's original digest intact. Any
+    invalid because it names a noncanonical leader, or because self-consistent
+    committee routes it claims contradict current SourceHub `NodeInfo`/ring
+    state. Reported at whichever point the specific, unambiguous failure is
+    first detected — `prepare_participant` itself catches the noncanonical-
+    leader case and (Reshare only) the new/next-committee route mismatch
+    before any session exists; `handle_session_init`'s per-kind validators
+    (`validate_refresh_init`/`validate_reshare_init`) catch the current/old-
+    committee route mismatch for Refresh and Reshare respectively (Fresh DKG
+    has the same check but isn't reportable — no ring exists yet to bind
+    evidence to). Every one of these is reached only after the leader identity
+    and `config_digest` self-consistency already passed, so there is no
+    tampering ambiguity by the time any of them fires. A signature only covers
+    `config_digest`, so before attributing fault the reporter recomputes
+    `config_digest` from the full retained `Prepare` and only reports if it's
+    self-consistent — otherwise a relay could tamper with `leader_node_key`/
+    `committees` post-signature while leaving an innocent signer's original
+    digest intact. Independent re-verification re-derives `noncanonical_leader`
+    the same way, and re-checks route contradictions for *both* committees a
+    Reshare Prepare names (old/current against the ring's still-current
+    membership, new/next against the accused's claimed scope) regardless of
+    which one the reporting node actually caught — since Reshare always
+    attributes the accused via the new/next committee (the leader is always
+    drawn from there), independently re-deriving only that one committee would
+    silently reject an otherwise-valid old-committee report. Any
     current-committee recipient can queue this report directly; a pure
     pending-new reshare receiver that detects it cannot relay it yet (relaying
     needs the current-committee routing that normally comes from live session

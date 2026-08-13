@@ -1896,8 +1896,10 @@ fn validate_reshare_next_transport_committee(
     if let Err(detail) =
         validate_node_route_bindings(&next.node_keys, &next.peer_routes, resolved_routes)
     {
-        // TODO(reporting): retain evidence that the authenticated reshare
-        // leader supplied transport routes contradicting SourceHub NodeInfo.
+        // Reported: this function's only caller, `validate_reshare_transport_
+        // routes`, has its own error wrapped by `prepare_participant` in a
+        // `report_leader_prepare_fault_best_effort` call — no separate
+        // reporting needed here.
         return Err(DkgError::Unauthorized(format!(
             "Reshare next transport routes do not match resolved SourceHub NodeInfo routes: {detail}"
         )));
@@ -5332,6 +5334,7 @@ where
         prepare.policy_id.clone(),
         prepare.ring_id.clone(),
         sender,
+        Some(&prepare),
     )
     .await?;
 
