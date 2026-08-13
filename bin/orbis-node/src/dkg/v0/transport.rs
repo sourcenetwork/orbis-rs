@@ -867,6 +867,30 @@ pub enum DkgControlMessage {
         delivery_id_b: [u8; 16],
         delivery_b: network::SignedPayload,
     },
+    /// Relay two leader-signed Gossip deliveries (any combination of
+    /// manifest and chunk) that each reference the same origin under two
+    /// different phase roots — same shape as `RelayLeaderEquivocationEvidence`,
+    /// different fault predicate (see `DkgLeaderBatchMismatchStatement`).
+    RelayLeaderBatchMismatchEvidence {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        delivery_id_a: [u8; 16],
+        delivery_a: network::SignedPayload,
+        delivery_id_b: [u8; 16],
+        delivery_b: network::SignedPayload,
+    },
+    /// Relay a single leader-signed Gossip delivery (a manifest or chunk)
+    /// that is independently provable as invalid on its own — see
+    /// `DkgLeaderPublicFaultKind` for the covered fault kinds.
+    RelayLeaderPublicFaultEvidence {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+        idempotency_key: MessageId,
+        fault_kind: crate::reporting::v0::types::DkgLeaderPublicFaultKind,
+        delivery_id: [u8; 16],
+        delivery: network::SignedPayload,
+    },
     /// Relay a node-key-signed control-handshake fault (a bad `Prepare`, or
     /// a follower's conflicting `Prepared`/`Activated`/`Begun` acks) from a
     /// pure pending-new reshare member to a current-committee signer.
@@ -970,6 +994,8 @@ impl DkgControlMessage {
             Self::RelayInvalidCommitmentEvidence { .. } => "relay_invalid_commitment_evidence",
             Self::RelayPublicOriginFaultEvidence { .. } => "relay_public_origin_fault_evidence",
             Self::RelayLeaderEquivocationEvidence { .. } => "relay_leader_equivocation_evidence",
+            Self::RelayLeaderBatchMismatchEvidence { .. } => "relay_leader_batch_mismatch_evidence",
+            Self::RelayLeaderPublicFaultEvidence { .. } => "relay_leader_public_fault_evidence",
             Self::RelayControlMessageFaultEvidence { .. } => "relay_control_message_fault_evidence",
             Self::EvidenceAccepted { .. } => "evidence_accepted",
             Self::RelayOfflineCandidates { .. } => "relay_offline_candidates",

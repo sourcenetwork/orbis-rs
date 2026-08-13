@@ -702,6 +702,71 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
+pub async fn handle_leader_batch_mismatch_evidence_relay<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    delivery_id_a: [u8; 16],
+    delivery_a: network::SignedPayload,
+    delivery_id_b: [u8; 16],
+    delivery_b: network::SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    verify_relay_is_current_signer(coord, attempt).await?;
+    let binding = evidence_binding(coord, attempt).await?.ok_or_else(|| {
+        DkgError::Unauthorized("Fresh DKG leader batch mismatch is not reportable".to_string())
+    })?;
+    if binding.origin_protocol != "pss_reshare" {
+        return Err(DkgError::Unauthorized(
+            "leader batch-mismatch evidence relay is only valid for Reshare".to_string(),
+        ));
+    }
+    queue_leader_batch_mismatch_report(
+        coord.app_state.clone(),
+        coord.routes,
+        attempt,
+        delivery_id_a,
+        delivery_a,
+        delivery_id_b,
+        delivery_b,
+    )
+    .await
+}
+
+pub async fn handle_leader_public_fault_evidence_relay<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgLeaderPublicFaultKind,
+    delivery_id: [u8; 16],
+    delivery: network::SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    verify_relay_is_current_signer(coord, attempt).await?;
+    let binding = evidence_binding(coord, attempt).await?.ok_or_else(|| {
+        DkgError::Unauthorized("Fresh DKG leader public fault is not reportable".to_string())
+    })?;
+    if binding.origin_protocol != "pss_reshare" {
+        return Err(DkgError::Unauthorized(
+            "leader public-fault evidence relay is only valid for Reshare".to_string(),
+        ));
+    }
+    queue_leader_public_fault_report(
+        coord.app_state.clone(),
+        coord.routes,
+        attempt,
+        fault_kind,
+        delivery_id,
+        delivery,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn handle_control_message_fault_evidence_relay<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -1747,13 +1812,9 @@ where
     Ok(())
 }
 
-/// Direct-queue only for now — this evidence kind has no relay path yet,
-/// matching `dkg_leader_public_fault`'s deliberate scope cut (see its own
-/// doc comment). Unlike that kind, a relay path here would be a much
-/// smaller lift (the `relay_private_evidence` mechanism and a
-/// `DkgControlMessage` variant already exist for
-/// `dkg_leader_equivocation` — this could reuse the same shape), but it
-/// wasn't built in this pass; check the project memory before adding one.
+/// Relays via the same mechanism as `dkg_leader_equivocation` (same wire
+/// shape, `relay_private_evidence`, non-blocking spawn — see RPT-13) for a
+/// pure pending-new reshare receiver that alone witnesses the fault.
 pub async fn queue_or_relay_leader_batch_mismatch<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -1778,11 +1839,38 @@ where
         )
         .await
     } else {
-        Err(DkgError::Unauthorized(
-            "local node is not in the report signing committee, and dkg_leader_batch_mismatch \
-             has no relay path yet"
-                .to_string(),
-        ))
+        let origin_protocol = evidence_binding(coord, attempt)
+            .await?
+            .ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "Fresh DKG leader batch mismatch is not reportable".to_string(),
+                )
+            })?
+            .origin_protocol;
+        if origin_protocol != "pss_reshare" {
+            return Err(DkgError::Unauthorized(
+                "local node is not in the report signing committee".to_string(),
+            ));
+        }
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(
+            attempt.session_id(),
+            "dkg_leader_batch_mismatch",
+            async move {
+                let coordinator = DkgCoordinator::with_routes(app_state, routes);
+                crate::dkg::v0::network::relay_leader_batch_mismatch_evidence(
+                    &coordinator,
+                    attempt,
+                    delivery_id_a,
+                    delivery_a,
+                    delivery_id_b,
+                    delivery_b,
+                )
+                .await
+            },
+        );
+        Ok(())
     }
 }
 
@@ -1885,13 +1973,12 @@ where
     Ok(())
 }
 
-/// Direct-queue only for now — this fault kind has no relay path yet.
-/// Reporting a Reshare-phase `InvalidManifest` still requires the local
-/// node to be a current-committee member (the report signing committee);
-/// a pure pending-new receiver that alone detects this fault cannot yet
-/// relay it onward the way `dkg_leader_equivocation`/`dkg_control_message_
-/// fault` can. Flagged as a known, narrow gap rather than silently built —
-/// see the project memory for this branch before adding a relay path.
+/// Relays via the same mechanism as `dkg_leader_equivocation`/
+/// `dkg_leader_batch_mismatch` (`relay_private_evidence`, non-blocking
+/// spawn — see RPT-13) for a pure pending-new reshare receiver that alone
+/// detects a Reshare-phase fault (Reshare's `Commitments` phase itself is
+/// still excluded — see `expected_leader_manifest_shape` — but
+/// `CommitmentAudit`/`ReshareParticipantSet` are covered).
 pub async fn queue_or_relay_leader_public_fault<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -1914,11 +2001,37 @@ where
         )
         .await
     } else {
-        Err(DkgError::Unauthorized(
-            "local node is not in the report signing committee, and dkg_leader_public_fault has \
-             no relay path yet"
-                .to_string(),
-        ))
+        let origin_protocol = evidence_binding(coord, attempt)
+            .await?
+            .ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "Fresh DKG leader public fault is not reportable".to_string(),
+                )
+            })?
+            .origin_protocol;
+        if origin_protocol != "pss_reshare" {
+            return Err(DkgError::Unauthorized(
+                "local node is not in the report signing committee".to_string(),
+            ));
+        }
+        let app_state = coord.app_state.clone();
+        let routes = coord.routes;
+        spawn_evidence_relay(
+            attempt.session_id(),
+            "dkg_leader_public_fault",
+            async move {
+                let coordinator = DkgCoordinator::with_routes(app_state, routes);
+                crate::dkg::v0::network::relay_leader_public_fault_evidence(
+                    &coordinator,
+                    attempt,
+                    fault_kind,
+                    delivery_id,
+                    delivery,
+                )
+                .await
+            },
+        );
+        Ok(())
     }
 }
 

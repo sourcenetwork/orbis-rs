@@ -25,7 +25,8 @@ use crate::constants::{
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
-    handle_leader_equivocation_evidence_relay, handle_public_origin_fault_evidence_relay,
+    handle_leader_batch_mismatch_evidence_relay, handle_leader_equivocation_evidence_relay,
+    handle_leader_public_fault_evidence_relay, handle_public_origin_fault_evidence_relay,
     queue_or_relay_control_message_fault, queue_or_relay_equivocation,
     now_unix_secs, queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
     queue_or_relay_leader_public_fault, queue_or_relay_public_origin_fault,
@@ -3253,6 +3254,167 @@ where
                 delivery_a,
                 delivery_id_b,
                 delivery_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderBatchMismatchEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader batch-mismatch evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (
+                delivery_id_a,
+                delivery_a.clone(),
+                delivery_id_b,
+                delivery_b.clone(),
+            );
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-batch-mismatch-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader batch-mismatch evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_batch_mismatch_evidence_relay(
+                &coordinator,
+                attempt,
+                delivery_id_a,
+                delivery_a,
+                delivery_id_b,
+                delivery_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderPublicFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            fault_kind,
+            delivery_id,
+            delivery,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader public-fault evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (fault_kind, delivery_id, delivery.clone());
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-public-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader public-fault evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_public_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                fault_kind,
+                delivery_id,
+                delivery,
             )
             .await;
             state
@@ -9853,6 +10015,109 @@ where
             delivery_b: delivery_b.clone(),
         },
         "leader-equivocation-evidence",
+        &payload,
+    )
+    .await
+}
+
+/// Same shape as `relay_leader_equivocation_evidence` — see
+/// `DkgControlMessage::RelayLeaderBatchMismatchEvidence`.
+pub(crate) async fn relay_leader_batch_mismatch_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    delivery_id_a: [u8; 16],
+    delivery_a: SignedPayload,
+    delivery_id_b: [u8; 16],
+    delivery_b: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader batch-mismatch evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (
+        delivery_id_a,
+        delivery_a.clone(),
+        delivery_id_b,
+        delivery_b.clone(),
+    );
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderBatchMismatchEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            delivery_id_a,
+            delivery_a: delivery_a.clone(),
+            delivery_id_b,
+            delivery_b: delivery_b.clone(),
+        },
+        "leader-batch-mismatch-evidence",
+        &payload,
+    )
+    .await
+}
+
+/// Same shape as `relay_control_message_fault_evidence`, minus the second
+/// artifact — see `DkgControlMessage::RelayLeaderPublicFaultEvidence`.
+pub(crate) async fn relay_leader_public_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgLeaderPublicFaultKind,
+    delivery_id: [u8; 16],
+    delivery: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader public-fault evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (fault_kind, delivery_id, delivery.clone());
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderPublicFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            fault_kind,
+            delivery_id,
+            delivery: delivery.clone(),
+        },
+        "leader-public-fault-evidence",
         &payload,
     )
     .await
