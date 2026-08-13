@@ -597,11 +597,6 @@ easy to conflate but govern different things:
   (`constants.rs`), 15 minutes in production.** This is a transport-layer
   concept, unrelated to reporting: it's when `expiration_worker` gives up on a
   stalled DKG/PSS attempt and tears down its session state (see
-  [Report-before-teardown (DKG transport)](#report-before-teardown-dkg-transport)
-  above for what gets reported before that teardown happens). Evidence that
-  depends on live session state (`transport_attempt`, a staged
-  `refresh.candidate`, etc.) can only be gathered before this deadline passes,
-  since the state it reads disappears at that point.
 - **Post-completion session retention — `DKG_COMPLETED_SESSION_TTL`
   (`constants.rs`), 5 minutes.** A *successfully completed* ceremony's session
   state isn't torn down immediately — it's kept queryable for this long
@@ -707,6 +702,27 @@ elsewhere, closer to where they actually happen:
 `report_in_flight` (gauge) tracks the current size of the in-flight set
 directly. `report_health_checks_total{status}` covers `node_offline`'s
 independent health-probe outcomes, separate from the funnel above.
+
+`pss_offline_observations_total{stage, outcome}` (`dkg/v0/coordinator/
+reporting.rs`, `dkg/v0/network.rs`) sits upstream of the funnel above — it
+covers the terminal PSS peer-liveness detection pipeline that eventually
+calls `queue_report`, one counter per bounded transport stage. `stage` is
+`PssOfflineStage::as_metric_label()` (`start_forward`, `prepare`,
+`topology_probe`, `topology_ack`, `activate`, `begin`,
+`public_contribution`, `refresh_result_stage`, `refresh_result_commit`,
+`public_repair_leader`, `public_repair_origin`, `reshare_share_ack`,
+`private_pair`, `private_inbound`). `outcome` walks the same observation
+through detection, relay (pending-new reshare receivers only), and direct
+reporting: `version_mismatch`/`seed_missing` (rejected before an accused
+peer is even resolved), `candidate` (a genuine terminal observation was
+found), then either `relay_candidate` → `relayed`/`relay_failed` (relay
+path) or `direct_candidate` → `direct`/`report_failed` (direct-queue path),
+plus `not_reportable` (no ring to report against, e.g. Fresh DKG) and the
+receiving side's `relay_accepted`/`relay_rejected` (a current-committee peer
+accepting or declining a relayed candidate set). Distinct from `dkg_
+transport_events_total{plane="pss_stall_report", ...}` above — that's the
+*stall-detection* channel filling up; this is the *offline-observation*
+pipeline once a stall (or another terminal failure) has already produced one.
 
 ## Test expectations
 

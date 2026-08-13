@@ -309,6 +309,7 @@ pub fn init() {
     lazy_static::initialize(&DKG_TRANSPORT_MESSAGES_TOTAL);
     lazy_static::initialize(&DKG_ABANDONED_SESSIONS_TOTAL);
     lazy_static::initialize(&DKG_TRANSPORT_EVENTS_TOTAL);
+    lazy_static::initialize(&PSS_OFFLINE_OBSERVATIONS_TOTAL);
     lazy_static::initialize(&DKG_CONTROL_READINESS_DURATION_SECONDS);
     lazy_static::initialize(&DKG_PRIVATE_PAIR_DURATION_SECONDS);
     lazy_static::initialize(&DKG_PUBLIC_TRANSPORT_DURATION_SECONDS);
