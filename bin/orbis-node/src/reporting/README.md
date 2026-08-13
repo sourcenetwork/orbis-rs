@@ -271,15 +271,29 @@ these reports never really expired relative to when the leader fault actually
 happened (an issue for any kind with a relay path, since each relay hop
 would reset the clock again — at the time this was fixed only
 `dkg_leader_equivocation` had one; all three do now, see their own bullets).
-**`dkg_control_message_fault` was deliberately
-left out of this fix**: `ControlSignature` does carry a `signed_at`, but it
-isn't covered by `control_ack_signing_bytes` — the actual signed bytes — so
-it's an unauthenticated, self-reported claim. Wiring it in as-is would let an
-accused leader/follower forge a favorable timestamp; a real fix needs
-`control_ack_signing_bytes` extended to bind `signed_at` into what's signed,
-which is a live protocol-message signing-scheme change (touches Prepare/
-Prepared/Activate/Activated/Begin/Begun verification broadly, not just these
-two fault-report paths) — out of scope for this pass.
+**`dkg_control_message_fault` anchoring**: `ControlSignature.signed_at` is
+now bound into `control_ack_signing_bytes` itself (the actual signed bytes,
+alongside `ceremony_id`/`attempt_id`/`message_kind`/`digest`), so it's no
+longer a self-reported, unauthenticated claim a signer could forge without
+invalidating their own signature. `ControlMessageArtifact` gained a
+`signed_at: u64` field alongside `signature`/`data` — needed because
+`ack_equivocation`'s `data` is just a bare 32-byte digest with no embedded
+timestamp to recover by decoding, unlike `leader_prepare_fault`/
+`oversized_repair_page` where `data` is a full re-decodable message. Each
+statement's top-level `signed_at` is now derived from the artifact(s)' own
+authenticated value rather than report-construction time: `leader_prepare_
+fault`/`oversized_repair_page` use their single artifact's `signed_at`
+directly, `ack_equivocation` uses the later of its two artifacts' (mirroring
+the Gossip kinds' two-delivery `max()` above). Unlike the Gossip kinds,
+independent verification doesn't need to separately "recompute" `signed_at`
+from anything — verifying the `ControlSignature` itself over bytes that
+include `signed_at` is what proves it's authentic — so registry validation
+only adds a self-consistency check (`statement.signed_at` matches the
+artifact(s)' `signed_at`, and for `oversized_repair_page`, that the decoded
+`PublicPhaseResponse`'s embedded `report_signature.signed_at` also agrees).
+SourceHub's decoder reads the new wire field to stay positionally aligned
+but still never verifies the signature itself, matching every other
+control-message field.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
   fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
   messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry

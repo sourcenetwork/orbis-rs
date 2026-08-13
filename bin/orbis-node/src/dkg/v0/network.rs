@@ -7139,6 +7139,7 @@ where
                 Some(ControlMessageArtifact {
                     signature: signature.signature.clone(),
                     data: encoded,
+                    signed_at: signature.signed_at,
                 })
             } else {
                 None
@@ -8294,10 +8295,12 @@ async fn record_control_ack_best_effort<D>(
     crate::metrics::record_dkg_transport_event("control", "ack_equivocation_candidate");
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     let artifact_a = ControlMessageArtifact {
+        signed_at: existing_signature.signed_at,
         signature: existing_signature.signature,
         data: existing_digest.to_vec(),
     };
     let artifact_b = ControlMessageArtifact {
+        signed_at: signature.signed_at,
         signature: signature.signature,
         data: digest.to_vec(),
     };
@@ -13677,6 +13680,7 @@ mod stability_tests {
             Some(&ControlMessageArtifact {
                 signature: report_signature_bytes,
                 data: expected_data,
+                signed_at: 1_700_000_000,
             }),
             "an oversized leader-signed repair page must retain the signed artifact as evidence"
         );

@@ -1110,9 +1110,12 @@ pub(crate) async fn report_leader_prepare_fault_best_effort<D>(
             return;
         }
     };
-    let Ok(signed_at) = now_unix_secs() else {
-        return;
-    };
+    // Anchored to the leader's own signed `signed_at` (authenticated by
+    // `control_ack_signing_bytes` binding it into the signature) rather than
+    // report-construction time — a relay or delayed local processing must
+    // not be able to shift the report's observed_at/TTL basis away from
+    // when the leader actually signed the fault.
+    let signed_at = signature.signed_at;
     let accused_committee_scope = if binding.origin_protocol == "pss_reshare" {
         CommitteeScope::PendingNew
     } else {
@@ -1137,6 +1140,7 @@ pub(crate) async fn report_leader_prepare_fault_best_effort<D>(
         artifact_a: ControlMessageArtifact {
             signature: signature.signature,
             data,
+            signed_at,
         },
         artifact_b: None,
     };
@@ -1329,8 +1333,13 @@ where
 {
     let signing_key_hex = read_node_signing_key_hex(app_state)?;
     let signed_at = now_unix_secs()?;
-    let message =
-        transport::control_ack_signing_bytes(ceremony_id, attempt_id, message_kind, digest);
+    let message = transport::control_ack_signing_bytes(
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        signed_at,
+    );
     let signature = sign_statement_with_key(&signing_key_hex, &message)?;
     Ok(ControlSignature {
         signer_node_key: app_state.node_key.clone(),
@@ -1358,8 +1367,13 @@ pub(crate) fn verify_control_signature(
             signature.signer_node_key, expected_signer_node_key
         )));
     }
-    let message =
-        transport::control_ack_signing_bytes(ceremony_id, attempt_id, message_kind, digest);
+    let message = transport::control_ack_signing_bytes(
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        signature.signed_at,
+    );
     verify_node_message(expected_signer_node_key, &message, &signature.signature).map_err(|error| {
         DkgError::Unauthorized(format!("invalid control message signature: {error}"))
     })
@@ -2104,7 +2118,18 @@ where
             "control-message fault accused is not in the bound committee".to_string(),
         ));
     }
-    let signed_at = now_unix_secs()?;
+    // Anchored to the accused's own signed `signed_at` values (authenticated
+    // by `control_ack_signing_bytes` binding it into each artifact's
+    // signature) rather than report-construction time — see
+    // `report_leader_prepare_fault_best_effort`'s identical rationale.
+    // `AckEquivocation` has two independently-signed artifacts; the later of
+    // the two is used so the report's observed_at/TTL basis reflects when
+    // the fault actually became provable (both signatures existing), not
+    // just the earlier one.
+    let signed_at = match &artifact_b {
+        Some(b) => artifact_a.signed_at.max(b.signed_at),
+        None => artifact_a.signed_at,
+    };
     let accused_info = read_node_info(&app_state, &accused_node_key).await?;
     let statement = DkgControlMessageFaultStatement {
         domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),

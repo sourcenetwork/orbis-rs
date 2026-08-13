@@ -1408,11 +1408,23 @@ impl InvalidCryptoResponseHandler {
                             .to_string(),
                     ));
                 }
+                // `signed_at` is bound into `control_ack_signing_bytes` itself, so
+                // verifying the signature below already proves the accused leader
+                // authenticated this exact timestamp — only a self-consistency
+                // check against the statement's own top-level `signed_at` (its
+                // observed_at/TTL anchor) is needed on top of that.
+                if statement.signed_at != statement.artifact_a.signed_at {
+                    return Err(ReportingError::Unauthorized(
+                        "leader-prepare-fault statement signed_at does not match its artifact"
+                            .to_string(),
+                    ));
+                }
                 let signed_bytes = transport::control_ack_signing_bytes(
                     prepare.ceremony_id,
                     prepare.attempt_id,
                     "prepare",
                     recomputed_digest,
+                    statement.artifact_a.signed_at,
                 );
                 verify_node_message(
                     &statement.responder_node_key,
@@ -1503,6 +1515,18 @@ impl InvalidCryptoResponseHandler {
                         "ack-equivocation artifacts claim the identical digest".to_string(),
                     ));
                 }
+                // Same self-consistency rationale as `LeaderPrepareFault` above —
+                // the later of the two authenticated `signed_at` values is the
+                // statement's own anchor (matching `queue_control_message_fault_
+                // report`'s construction-side `max()`).
+                if statement.signed_at
+                    != statement.artifact_a.signed_at.max(artifact_b.signed_at)
+                {
+                    return Err(ReportingError::Unauthorized(
+                        "ack-equivocation statement signed_at does not match its artifacts"
+                            .to_string(),
+                    ));
+                }
                 let attempt_id = transport::AttemptId(statement.attempt_id);
                 for (digest, artifact) in
                     [(digest_a, &statement.artifact_a), (digest_b, artifact_b)]
@@ -1512,6 +1536,7 @@ impl InvalidCryptoResponseHandler {
                         attempt_id,
                         &statement.message_kind,
                         digest,
+                        artifact.signed_at,
                     );
                     verify_node_message(
                         &statement.responder_node_key,
@@ -1592,9 +1617,22 @@ impl InvalidCryptoResponseHandler {
                             .to_string(),
                     ));
                 }
-                if report_signature.is_none() {
+                let Some(embedded_signature) = report_signature else {
                     return Err(ReportingError::Unauthorized(
                         "oversized-repair-page evidence has no report signature".to_string(),
+                    ));
+                };
+                // `data` is a full re-decodable `PublicPhaseResponse`, whose
+                // embedded `report_signature.signed_at` must agree with the
+                // top-level artifact's `signed_at` — same self-consistency
+                // rationale as recomputing `page_digest` above, so a relay can't
+                // swap in a mismatched timestamp on either side.
+                if embedded_signature.signed_at != statement.artifact_a.signed_at
+                    || statement.signed_at != statement.artifact_a.signed_at
+                {
+                    return Err(ReportingError::Unauthorized(
+                        "oversized-repair-page statement signed_at does not match its artifact"
+                            .to_string(),
                     ));
                 }
                 let signed_bytes = transport::control_ack_signing_bytes(
@@ -1602,6 +1640,7 @@ impl InvalidCryptoResponseHandler {
                     response_attempt_id,
                     "public_phase_response",
                     page_digest,
+                    statement.artifact_a.signed_at,
                 );
                 verify_node_message(
                     &statement.responder_node_key,

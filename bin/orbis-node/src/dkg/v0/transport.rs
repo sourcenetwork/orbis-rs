@@ -1358,12 +1358,16 @@ pub fn derive_control_message_id<T: Serialize>(
 /// message. `digest` is that message's own existing `config_digest` or
 /// `activation_digest` field — reused rather than re-derived, so signing
 /// adds no new hashing surface beyond binding it to
-/// (ceremony_id, attempt_id, message_kind).
+/// (ceremony_id, attempt_id, message_kind). `signed_at` is bound in too —
+/// otherwise it's a self-reported, unauthenticated claim that a signer could
+/// forge without invalidating their own signature (see `ControlSignature`'s
+/// own doc comment for why that matters for fault-evidence anchoring).
 pub fn control_ack_signing_bytes(
     ceremony_id: CeremonyId,
     attempt_id: AttemptId,
     message_kind: &str,
     digest: [u8; 32],
+    signed_at: u64,
 ) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(b"orbis-dkg-control-ack-v1");
@@ -1371,6 +1375,7 @@ pub fn control_ack_signing_bytes(
     hasher.update(attempt_id.0);
     hash_string(&mut hasher, message_kind);
     hasher.update(digest);
+    hasher.update(signed_at.to_be_bytes());
     hasher.finalize().to_vec()
 }
 

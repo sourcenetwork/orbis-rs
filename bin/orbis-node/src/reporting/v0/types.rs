@@ -1046,23 +1046,30 @@ impl DkgLeaderPublicFaultStatement {
 /// recompute `config_digest` and inspect `leader_node_key`/`committees`
 /// directly), or the raw 32-byte `config_digest`/`activation_digest` for the
 /// ack kinds (already bound to ceremony/attempt/message_kind by the
-/// signature itself, so nothing else needs duplicating).
+/// signature itself, so nothing else needs duplicating). `signed_at` is the
+/// signer's own claimed timestamp, bound into the signature by
+/// `control_ack_signing_bytes` — carried here explicitly (rather than only
+/// recovered by decoding `data`) because the ack kinds' `data` is just a
+/// bare digest with no embedded timestamp to recover.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlMessageArtifact {
     pub signature: Vec<u8>,
     pub data: Vec<u8>,
+    pub signed_at: u64,
 }
 
 impl ControlMessageArtifact {
     fn write_canonical(&self, out: &mut Vec<u8>) {
         write_bytes(out, &self.signature);
         write_bytes(out, &self.data);
+        write_u64(out, self.signed_at);
     }
 
     fn read_canonical(decoder: &mut Decoder<'_>, prefix: &str) -> Result<Self> {
         Ok(Self {
             signature: decoder.read_bytes(&format!("{prefix}_signature"))?,
             data: decoder.read_bytes(&format!("{prefix}_data"))?,
+            signed_at: decoder.read_u64(&format!("{prefix}_signed_at"))?,
         })
     }
 }
@@ -2475,6 +2482,7 @@ mod tests {
             artifact_a: ControlMessageArtifact {
                 signature: vec![1; 64],
                 data: vec![1, 2, 3],
+                signed_at: 1_700_000_010,
             },
             artifact_b: None,
         };
@@ -2509,10 +2517,12 @@ mod tests {
             artifact_a: ControlMessageArtifact {
                 signature: vec![2; 64],
                 data: vec![0xaa; 32],
+                signed_at: 1_700_000_000,
             },
             artifact_b: Some(ControlMessageArtifact {
                 signature: vec![3; 64],
                 data: vec![0xbb; 32],
+                signed_at: 1_700_000_010,
             }),
         };
         let payload = InvalidCryptoResponse::DkgControlMessageFault {
@@ -2547,6 +2557,7 @@ mod tests {
             artifact_a: ControlMessageArtifact {
                 signature: vec![4; 64],
                 data: vec![0xcc; 128],
+                signed_at: 1_700_000_010,
             },
             artifact_b: None,
         };

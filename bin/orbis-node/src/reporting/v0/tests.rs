@@ -3150,7 +3150,7 @@ async fn control_ack_equivocation_queues_report() {
         "activated",
         first_digest,
         &follower_route,
-        Some(first_signature),
+        Some(first_signature.clone()),
     )
     .await;
     record_control_ack_best_effort_for_test(
@@ -3162,7 +3162,7 @@ async fn control_ack_equivocation_queues_report() {
         "activated",
         second_digest,
         &follower_route,
-        Some(second_signature),
+        Some(second_signature.clone()),
     )
     .await;
 
@@ -3201,6 +3201,23 @@ async fn control_ack_equivocation_queues_report() {
             assert_eq!(
                 digests,
                 std::collections::BTreeSet::from([first_digest.to_vec(), second_digest.to_vec()])
+            );
+            // Anchored to the later of the two followers' own authenticated
+            // signed_at values, not report-construction time.
+            let signed_ats: std::collections::BTreeSet<_> =
+                [statement.artifact_a.signed_at, artifact_b.signed_at]
+                    .into_iter()
+                    .collect();
+            assert_eq!(
+                signed_ats,
+                std::collections::BTreeSet::from([
+                    first_signature.signed_at,
+                    second_signature.signed_at
+                ])
+            );
+            assert_eq!(
+                statement.signed_at,
+                first_signature.signed_at.max(second_signature.signed_at)
             );
         }
         other => panic!("unexpected invalid-response payload: {other:?}"),
@@ -3300,16 +3317,15 @@ async fn leader_prepare_fault_queues_report_for_noncanonical_leader() {
         "test must construct a genuinely noncanonical leader claim"
     );
 
-    prepare.report_signature = Some(
-        sign_control_message(
-            &Arc::new(noncanonical_app_state.clone()),
-            prepare.ceremony_id,
-            prepare.attempt_id,
-            "prepare",
-            prepare.config_digest,
-        )
-        .expect("sign noncanonical Prepare"),
-    );
+    let prepare_signature = sign_control_message(
+        &Arc::new(noncanonical_app_state.clone()),
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )
+    .expect("sign noncanonical Prepare");
+    prepare.report_signature = Some(prepare_signature.clone());
 
     let recorder = Arc::new(recorder_app_state.clone());
     report_leader_prepare_fault_best_effort(&recorder, &network::V0, &prepare).await;
@@ -3349,6 +3365,10 @@ async fn leader_prepare_fault_queues_report_for_noncanonical_leader() {
             )
             .expect("decode retained Prepare artifact");
             assert_eq!(decoded.config_digest, prepare.config_digest);
+            // Anchored to the leader's own authenticated signed_at, not
+            // report-construction time.
+            assert_eq!(statement.artifact_a.signed_at, prepare_signature.signed_at);
+            assert_eq!(statement.signed_at, prepare_signature.signed_at);
         }
         other => panic!("unexpected invalid-response payload: {other:?}"),
     }
