@@ -582,6 +582,18 @@ elapsed. That's safe to do unconditionally: the envelope's own
 that point regardless of whether the dedupe record still exists, so there's
 no replay gap opened by forgetting it.
 
+These two are chain-side. There's a third, purely local one: `in_flight_key`
+(`registry.rs`, keyed `(report_type, ring_id, subject_key)`) collapses
+concurrent duplicate `queue_report` calls on *this* node before a report is
+even built — see the high-level flow above. `InvalidCryptoResponseHandler`'s
+`subject_key` folds in `attempt_id` too, for exactly the same DKG evidence
+kinds and the same reason as `sessionDedupeID` above (via `InvalidCryptoResponse::
+attempt_id()`): without it, a second attempt's fault against the same accused
+would collide with the first attempt's still-in-flight report and get
+silently dropped locally as a "duplicate" — before it ever reached the chain
+for the `sessionDedupeID` fix above to even apply. PRE/Sign have no
+`attempt_id` and keep the original `accused_node_key:request_id` shape.
+
 ### DKG-specific expiry
 
 DKG evidence and reports live under three independent timescales that are

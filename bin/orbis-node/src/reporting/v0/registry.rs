@@ -335,14 +335,33 @@ impl ReportHandler for InvalidCryptoResponseHandler {
 
     fn in_flight_key(&self, observation: &ReportObservation) -> Result<InFlightReportKey> {
         let observation = Self::observation(observation)?;
-        Ok(InFlightReportKey {
-            report_type: self.report_type(),
-            ring_id: observation.ring_id.clone(),
-            subject_key: format!(
+        // For DKG evidence kinds, fold in `attempt_id` too — `request_id`
+        // (the ceremony ID) is deliberately reused across an attempt's
+        // retries, so without this, a second attempt's genuinely
+        // independent fault against the same accused would collide with
+        // the first attempt's still-in-flight report and get silently
+        // dropped as a "duplicate" before it ever reaches the chain, even
+        // though the chain-side dedupe key (RPT-16) would have accepted it
+        // as a distinct report. PRE/Sign have no `attempt_id` at all
+        // (`InvalidCryptoResponse::attempt_id`'s own doc comment) and keep
+        // the original two-part key unchanged.
+        let subject_key = match observation.evidence.attempt_id() {
+            Some(attempt_id) => format!(
+                "{}:{}:{}",
+                observation.accused_node_key,
+                observation.evidence.request_id(),
+                hex::encode(attempt_id)
+            ),
+            None => format!(
                 "{}:{}",
                 observation.accused_node_key,
                 observation.evidence.request_id()
             ),
+        };
+        Ok(InFlightReportKey {
+            report_type: self.report_type(),
+            ring_id: observation.ring_id.clone(),
+            subject_key,
         })
     }
 
@@ -3987,7 +4006,14 @@ mod tests {
         let key = handler.in_flight_key(&report_observation).unwrap();
         assert_eq!(key.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);
         assert_eq!(key.ring_id, "ring");
-        assert_eq!(key.subject_key, "accused:dkg-session-1");
+        // DKG evidence kinds fold `attempt_id` into the subject key (unlike
+        // PRE/Sign) so two attempts of the same ceremony against the same
+        // accused don't collide in-flight — see `in_flight_key`'s own
+        // comment. `dkg_share_statement`'s fixture uses `attempt_id: [9; 32]`.
+        assert_eq!(
+            key.subject_key,
+            format!("accused:dkg-session-1:{}", hex::encode([9u8; 32]))
+        );
 
         let built = handler.build_envelope(&observation, &ring, "reporter", "chain".to_string());
         assert_eq!(built.report_type, INVALID_CRYPTO_RESPONSE_REPORT_TYPE);

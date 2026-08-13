@@ -1551,6 +1551,26 @@ impl InvalidCryptoResponse {
         }
     }
 
+    /// The DKG attempt this evidence targets, or `None` for `Pre`/`Sign` —
+    /// those aren't DKG-ceremony-scoped and have no `attempt_id` field at
+    /// all (matches RPT-16's chain-side dedupe key, which folds this in for
+    /// exactly the same set of DKG evidence kinds and leaves PRE/Sign
+    /// ceremony-scoped by `request_id` alone).
+    pub fn attempt_id(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Pre { .. } => None,
+            Self::Sign { .. } => None,
+            Self::DkgShare { statement, .. } => Some(statement.commitment_statement.attempt_id),
+            Self::DkgInvalidRefreshCommitment { statement, .. } => Some(statement.attempt_id),
+            Self::DkgEquivocation { commitment_a, .. } => Some(commitment_a.statement.attempt_id),
+            Self::DkgPublicOriginFault { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderEquivocation { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderPublicFault { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderBatchMismatch { statement } => Some(statement.attempt_id),
+            Self::DkgControlMessageFault { statement } => Some(statement.attempt_id),
+        }
+    }
+
     pub fn signing_committee_scope(&self) -> CommitteeScope {
         match self {
             Self::Pre { .. } => CommitteeScope::Current,
