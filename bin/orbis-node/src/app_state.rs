@@ -11,6 +11,7 @@ use local_storage::LocalStorageImpl;
 use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
