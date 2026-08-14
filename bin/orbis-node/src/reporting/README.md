@@ -12,6 +12,44 @@ threshold-signed artifact proving that a committee member appears offline,
 returned an attributable bad cryptographic response, or relayed a request that
 fails a re-check against Authz.
 
+## Methodology
+
+The question this framework asks at every failure point in every protocol is the
+same: can this be attributed to a specific node and a specific reason, and is
+there proof? "Proof" splits into two different evidentiary models depending on
+the report type. Most `invalid_crypto_response` kinds use *cryptographic*
+proof — the accused's own signature over the exact disputed content (a
+digest, a commitment, a signed control message) — so anyone can independently
+verify the claim without trusting whoever reported it. `node_offline` can't
+work that way (a node can't sign "I am offline"), so it instead requires each
+co-signer to run its own reachability probe against the accused before adding
+a signature — the "proof" there is a threshold of independent witnesses
+corroborating the same observation, not a single verifiable artifact. If
+neither kind of proof is available, the failure is logged but never attached
+to a report — an unattributable failure is a known, accepted gap, not
+something forced into a shape it doesn't fit.
+
+Threshold signing is the anti-framing step, and it's doing more than
+collecting signatures: each co-signer independently re-derives and
+re-verifies the evidence from scratch (recomputes the digest, re-reads
+committee membership from its own chain state, re-runs the same validation
+the reporter ran) before contributing a signature share — a relay only ever
+forwards raw evidence for someone else to independently check, never a
+pre-verified conclusion. That's what stops a single malicious or buggy node
+from getting another node demerited on its word alone. SourceHub's role at
+the end is correspondingly narrow: it doesn't re-determine truth (that
+already happened at the committee-signing step) — it checks the threshold
+signature, checks shape/policy/scope rules, applies demerits, dedupes, and
+kicks + promotes a backup once demerits cross a threshold. This whole
+pipeline exists because the DKG side of this codebase is deliberately
+abort-only, not self-healing — a ceremony fails fast on any ambiguity rather
+than trying to route around a bad actor mid-ceremony, and report → demerit →
+kick/backup → retry is the actual recovery loop, not an audit trail bolted on
+the side. Which is also why reporting is built to never become a liveness
+dependency for the protocol itself: every `queue_report` call is best-effort
+and non-blocking, so a failure to construct or submit a report must never
+change what the protocol does.
+
 ## High-level flow
 
 ```mermaid
