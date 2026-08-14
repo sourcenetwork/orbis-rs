@@ -1302,9 +1302,7 @@ pub fn public_repair_page_digest(
         hasher.update((signed.data.len() as u64).to_be_bytes());
         hasher.update(&signed.data);
     }
-    hasher.update(
-        encode(&next_cursor).expect("optional participant serialization is infallible"),
-    );
+    hasher.update(encode(&next_cursor).expect("optional participant serialization is infallible"));
     hasher.finalize().into()
 }
 

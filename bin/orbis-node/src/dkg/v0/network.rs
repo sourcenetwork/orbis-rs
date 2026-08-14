@@ -27,8 +27,8 @@ use crate::dkg::v0::coordinator::evidence::{
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
     handle_leader_batch_mismatch_evidence_relay, handle_leader_equivocation_evidence_relay,
     handle_leader_public_fault_evidence_relay, handle_public_origin_fault_evidence_relay,
-    queue_or_relay_control_message_fault, queue_or_relay_equivocation,
-    now_unix_secs, queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
+    now_unix_secs, queue_or_relay_control_message_fault, queue_or_relay_equivocation,
+    queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
     queue_or_relay_leader_public_fault, queue_or_relay_public_origin_fault,
     report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
     verify_control_signature,
@@ -1514,8 +1514,13 @@ where
     else {
         return Ok(response);
     };
-    let page_digest =
-        transport::public_repair_page_digest(ceremony_id, attempt_id, phase, &contributions, next_cursor);
+    let page_digest = transport::public_repair_page_digest(
+        ceremony_id,
+        attempt_id,
+        phase,
+        &contributions,
+        next_cursor,
+    );
     let report_signature = Some(sign_control_message(
         state,
         ceremony_id,

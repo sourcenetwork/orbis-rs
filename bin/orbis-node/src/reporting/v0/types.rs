@@ -2536,8 +2536,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_crypto_response_dkg_control_message_fault_oversized_repair_page_payload_round_trips(
-    ) {
+    fn invalid_crypto_response_dkg_control_message_fault_oversized_repair_page_payload_round_trips()
+    {
         let statement = DkgControlMessageFaultStatement {
             domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
             chain_id: "sourcehub-test".to_string(),

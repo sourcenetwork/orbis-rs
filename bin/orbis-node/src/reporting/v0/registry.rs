@@ -1314,7 +1314,9 @@ impl InvalidCryptoResponseHandler {
         // contains(...)`), which independently confirms the accused is a
         // genuine member of whichever scope the statement actually claims.
         let expected_accused_scope = match statement.origin_protocol.as_str() {
-            "pss_reshare" if statement.fault_kind == DkgControlMessageFaultKind::AckEquivocation => {
+            "pss_reshare"
+                if statement.fault_kind == DkgControlMessageFaultKind::AckEquivocation =>
+            {
                 None
             }
             "pss_reshare" => Some(CommitteeScope::PendingNew),
@@ -1458,24 +1460,23 @@ impl InvalidCryptoResponseHandler {
                         &ring.peer_node_keys,
                     )
                     .await;
-                    let next_contradicts = if statement.accused_committee_scope
-                        == CommitteeScope::PendingNew
-                    {
-                        let next = prepare.committees.next.as_ref().ok_or_else(|| {
-                            ReportingError::InvalidReport(
-                                "leader-prepare-fault Reshare Prepare omits the next committee"
-                                    .to_string(),
+                    let next_contradicts =
+                        if statement.accused_committee_scope == CommitteeScope::PendingNew {
+                            let next = prepare.committees.next.as_ref().ok_or_else(|| {
+                                ReportingError::InvalidReport(
+                                    "leader-prepare-fault Reshare Prepare omits the next committee"
+                                        .to_string(),
+                                )
+                            })?;
+                            committee_routes_contradict_sourcehub(
+                                context,
+                                next,
+                                &accused_committee.peer_node_keys,
                             )
-                        })?;
-                        committee_routes_contradict_sourcehub(
-                            context,
-                            next,
-                            &accused_committee.peer_node_keys,
-                        )
-                        .await
-                    } else {
-                        false
-                    };
+                            .await
+                        } else {
+                            false
+                        };
                     current_contradicts || next_contradicts
                 };
                 if !noncanonical_leader && !routes_contradict_sourcehub {
@@ -1519,9 +1520,7 @@ impl InvalidCryptoResponseHandler {
                 // the later of the two authenticated `signed_at` values is the
                 // statement's own anchor (matching `queue_control_message_fault_
                 // report`'s construction-side `max()`).
-                if statement.signed_at
-                    != statement.artifact_a.signed_at.max(artifact_b.signed_at)
-                {
+                if statement.signed_at != statement.artifact_a.signed_at.max(artifact_b.signed_at) {
                     return Err(ReportingError::Unauthorized(
                         "ack-equivocation statement signed_at does not match its artifacts"
                             .to_string(),
