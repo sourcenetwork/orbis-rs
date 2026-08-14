@@ -379,3 +379,116 @@ where
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
+    use crypto::r#trait::DkgRole;
+    use std::sync::Arc;
+
+    /// A fresh single-node-view coordinator with a session whose threshold
+    /// (and therefore `expected_commitment_size()`) is `threshold`. Every
+    /// test below exercises `prepare_commitment_message`'s structural
+    /// preflight checks, which run unconditionally before evidence
+    /// verification or any per-`SessionKind` logic — this is the same
+    /// preflight the organic Docker integration test relies on real,
+    /// unmodified receiving nodes to run when a leader broadcasts a
+    /// structurally invalid commitment (`dkg_public_origin_fault`/
+    /// `InvalidPayload`); this covers that rejection directly and quickly,
+    /// without needing a live multi-node ceremony to reach it.
+    async fn test_coord(
+        db_name: &str,
+        threshold: usize,
+        total_nodes: usize,
+    ) -> (DkgCoordinator<crypto::DkgImpl>, AttemptKey) {
+        let app_state = create_test_app_state_default(db_name).await;
+        let coord = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
+        let attempt = AttemptKey::test(4242);
+        coord
+            .create_session(
+                attempt,
+                1,
+                threshold,
+                total_nodes,
+                DkgRole::Standard,
+                |_state| {},
+            )
+            .await
+            .expect("create test DKG session");
+        (coord, attempt)
+    }
+
+    fn assert_verification_failed(error: &DkgError) {
+        assert!(
+            matches!(error, DkgError::CommitmentVerificationFailed(_)),
+            "expected CommitmentVerificationFailed, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_commitment_message_rejects_empty_commitment() {
+        let db_name = "prepare_commitment_message_rejects_empty_commitment";
+        let db_path = test_db_path(db_name);
+        let (coord, attempt) = test_coord(db_name, 2, 3).await;
+
+        let error = prepare_commitment_message(&coord, attempt, 2, &[], None, None)
+            .await
+            .expect_err("empty commitment must be rejected");
+        assert_verification_failed(&error);
+
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn prepare_commitment_message_rejects_wrong_length_commitment() {
+        let db_name = "prepare_commitment_message_rejects_wrong_length_commitment";
+        let db_path = test_db_path(db_name);
+        let (coord, attempt) = test_coord(db_name, 2, 3).await;
+
+        // Deliberately not a multiple of G1_COMPRESSED_SIZE — the same shape
+        // of malformed payload the organic Docker test broadcasts to
+        // exercise this exact rejection.
+        let malformed = vec![0u8; 7];
+        let error = prepare_commitment_message(&coord, attempt, 2, &malformed, None, None)
+            .await
+            .expect_err("wrong-length commitment must be rejected");
+        assert_verification_failed(&error);
+
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn prepare_commitment_message_rejects_wrong_coefficient_count() {
+        let db_name = "prepare_commitment_message_rejects_wrong_coefficient_count";
+        let db_path = test_db_path(db_name);
+        let (coord, attempt) = test_coord(db_name, 2, 3).await;
+
+        // Correct length-multiple, but the wrong number of coefficients for
+        // this ceremony's threshold (2) — zero bytes are fine here since the
+        // coefficient-count check runs before any point deserialization is
+        // ever attempted.
+        let wrong_count = vec![0u8; G1_COMPRESSED_SIZE * 3];
+        let error = prepare_commitment_message(&coord, attempt, 2, &wrong_count, None, None)
+            .await
+            .expect_err("wrong coefficient count must be rejected");
+        assert_verification_failed(&error);
+
+        cleanup_db(&db_path);
+    }
+
+    #[tokio::test]
+    async fn prepare_commitment_message_rejects_too_many_coefficients() {
+        let db_name = "prepare_commitment_message_rejects_too_many_coefficients";
+        let db_path = test_db_path(db_name);
+        let (coord, attempt) = test_coord(db_name, 2, 3).await;
+
+        let oversized = vec![0u8; G1_COMPRESSED_SIZE * (MAX_COMMITMENT_COEFFICIENTS + 1)];
+        let error = prepare_commitment_message(&coord, attempt, 2, &oversized, None, None)
+            .await
+            .expect_err("commitment exceeding the coefficient cap must be rejected");
+        assert_verification_failed(&error);
+
+        cleanup_db(&db_path);
+    }
+}

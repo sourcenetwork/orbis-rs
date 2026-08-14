@@ -897,4 +897,52 @@ mod tests {
 
         cleanup_db(&db_path);
     }
+
+    /// Direct unit coverage for `verify_result_signature`'s content-mismatch
+    /// rejection — the same property the organic Docker integration test
+    /// (`SubmitOrganicInvalidRefreshResult`) exercises end-to-end, but
+    /// without needing a live multi-node refresh ceremony to reach it. Every
+    /// field matches the staged candidate except `public_polynomial_sha256`,
+    /// proving that check rejects on content alone before the signature
+    /// bytes (deliberately syntactically-fake here, matching the Docker
+    /// test's `"00".repeat(96)`) are ever parsed.
+    #[test]
+    fn verify_result_signature_rejects_mismatched_public_polynomial_hash() {
+        let pub_poly_bytes = b"fake-staged-polynomial-bytes".to_vec();
+        let candidate = RefreshHealthCheckCandidate {
+            ring_key: "test-ring-key".to_string(),
+            ring_pk_hex: "00".repeat(32),
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![1, 2, 3]),
+                public_polynomial: hex::encode(&pub_poly_bytes),
+                last_pss: 0,
+            },
+            peer_node_keys: vec!["node-1".to_string(), "node-2".to_string()],
+            peer_ids: vec!["peer-1".to_string(), "peer-2".to_string()],
+            threshold: 1,
+        };
+        let statement = RefreshHealthCheckStatement {
+            domain: REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
+            session_id: 4242,
+            ring_pk: candidate.ring_pk_hex.clone(),
+            public_polynomial_sha256: "00".repeat(32),
+            peer_node_keys_sha256: refresh_health_check_peer_node_keys_sha256(
+                &candidate.peer_node_keys,
+            ),
+            threshold: candidate.threshold as u32,
+            total_participants: candidate.peer_ids.len() as u32,
+        };
+        let fake_signature_hex = "00".repeat(96);
+
+        let error =
+            verify_result_signature::<crypto::DkgImpl>(&candidate, &statement, &fake_signature_hex)
+                .expect_err("mismatched public_polynomial_sha256 must be rejected");
+        let DkgError::Unauthorized(message) = error else {
+            panic!("expected Unauthorized, got {error:?}");
+        };
+        assert!(
+            message.contains("polynomial hash"),
+            "expected the polynomial-hash mismatch message, got {message:?}"
+        );
+    }
 }
