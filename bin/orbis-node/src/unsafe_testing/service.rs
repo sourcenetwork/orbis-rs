@@ -224,9 +224,30 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .dkg_session_state
             .active_ring_pss_session(&ring_pk)
             .await;
+        let activated = match session_id {
+            Some(session_id) => {
+                match app_state
+                    .dkg_session_state
+                    .transport_attempt(&session_id)
+                    .await
+                {
+                    Some(attempt_id) => {
+                        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
+                        app_state
+                            .dkg_session_state
+                            .with_attempt_state(attempt, |state| state.transport.activated)
+                            .await
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                }
+            }
+            None => false,
+        };
         Ok(Response::new(GetActivePssSessionResponse {
             found: session_id.is_some(),
             session_id: session_id.map(|id| id.to_string()).unwrap_or_default(),
+            activated,
         }))
     }
 

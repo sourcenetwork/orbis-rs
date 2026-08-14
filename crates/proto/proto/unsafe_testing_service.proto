@@ -70,6 +70,11 @@ message GetActivePssSessionRequest {
 message GetActivePssSessionResponse {
   bool found = 1;
   string session_id = 2;
+  // True once the session's transport control handshake has completed
+  // (Prepare/Prepared/Activate/Activated) — `found` alone only means the
+  // session was claimed, not that it's far enough along to accept a public
+  // contribution (`submit_public_contribution` rejects those pre-activation).
+  bool activated = 3;
 }
 
 message SubmitDkgInvalidShareEvidenceRequest {

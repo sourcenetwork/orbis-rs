@@ -129,6 +129,42 @@ async fn wait_for_active_pss_session(endpoint: &str, ring_pk: &str, timeout: Dur
     }
 }
 
+/// Like `wait_for_active_pss_session`, but also waits for the session's
+/// transport control handshake (Prepare/Prepared/Activate/Activated) to
+/// finish — `found` alone only means the session was claimed, which happens
+/// well before `submit_public_contribution` will accept a contribution
+/// (`DkgError::ProtocolError("public contribution generated before attempt
+/// activation")` otherwise). Callers that are about to organically broadcast
+/// a public contribution via the `unsafe_testing` RPCs need this, not the
+/// plain claimed-session check.
+async fn wait_for_activated_pss_session(
+    endpoint: &str,
+    ring_pk: &str,
+    timeout: Duration,
+) -> String {
+    let mut client = UnsafeTestingServiceClient::connect(endpoint.to_string())
+        .await
+        .expect("connect unsafe-testing client for activated PSS lookup");
+    let deadline = Instant::now() + timeout;
+    loop {
+        let response = client
+            .get_active_pss_session(GetActivePssSessionRequest {
+                ring_pk: ring_pk.to_string(),
+            })
+            .await
+            .expect("query active PSS session")
+            .into_inner();
+        if response.found && response.activated {
+            return response.session_id;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for activated PSS session for ring_pk {ring_pk}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn ensure_ring_index_on_nodes(endpoints: &[String], ring_pk_hex: &str, ring_id: &str) {
     let ring_key = ring_key_from_ring_pk_hex(ring_pk_hex);
     let indexed_at_secs = std::time::SystemTime::now()
@@ -3981,7 +4017,11 @@ async fn test_reshare_organic_dkg_equivocation_triggers_on_chain_report() {
     let (node1_session_id, node2_session_id, node3_session_id, node4_session_id) = tokio::join!(
         wait_for_active_pss_session(endpoints[0], &local_ring_key, Duration::from_secs(180)),
         wait_for_active_pss_session(endpoints[1], &local_ring_key, Duration::from_secs(180)),
-        wait_for_active_pss_session(&node3_endpoint, &local_ring_key, Duration::from_secs(180)),
+        // node3 is who the organic-broadcast RPC below actually runs against,
+        // and `submit_public_contribution` rejects a contribution submitted
+        // before the transport control handshake finishes — a plain
+        // "session claimed" check isn't enough here.
+        wait_for_activated_pss_session(&node3_endpoint, &local_ring_key, Duration::from_secs(180)),
         wait_for_active_pss_session(endpoints[3], &local_ring_key, Duration::from_secs(180)),
     );
     assert_eq!(
@@ -4000,11 +4040,6 @@ async fn test_reshare_organic_dkg_equivocation_triggers_on_chain_report() {
         .parse::<u128>()
         .expect("active PSS session id should parse");
     println!("node3 active reshare session: {session_id}");
-
-    // A little headroom for node3's own real Phase1 commitment to also be in
-    // flight — not required for correctness (see doc comment above), just
-    // keeps this test's timeline closer to a real conflicting-broadcast window.
-    sleep(Duration::from_secs(5)).await;
 
     println!("Making node3 organically broadcast a second, conflicting Phase1 commitment...");
     // Must be a structurally valid commitment (exactly `reshare_threshold`
@@ -4256,7 +4291,11 @@ async fn test_reshare_organic_invalid_commitment_triggers_on_chain_report() {
     let (node1_session_id, node2_session_id, node3_session_id, node4_session_id) = tokio::join!(
         wait_for_active_pss_session(endpoints[0], &local_ring_key, Duration::from_secs(180)),
         wait_for_active_pss_session(endpoints[1], &local_ring_key, Duration::from_secs(180)),
-        wait_for_active_pss_session(&node3_endpoint, &local_ring_key, Duration::from_secs(180)),
+        // node3 is who the organic-broadcast RPC below actually runs against,
+        // and `submit_public_contribution` rejects a contribution submitted
+        // before the transport control handshake finishes — a plain
+        // "session claimed" check isn't enough here.
+        wait_for_activated_pss_session(&node3_endpoint, &local_ring_key, Duration::from_secs(180)),
         wait_for_active_pss_session(endpoints[3], &local_ring_key, Duration::from_secs(180)),
     );
     assert_eq!(
@@ -4938,16 +4977,32 @@ async fn test_refresh_noncanonical_prepare_triggers_on_chain_report() {
     let mut node2_unsafe_client = UnsafeTestingServiceClient::connect(node2_endpoint)
         .await
         .expect("connect unsafe-testing client to node2");
-    node2_unsafe_client
+    match node2_unsafe_client
         .submit_organic_noncanonical_prepare(SubmitOrganicNoncanonicalPrepareRequest {
             ring_id: RING_ID.to_string(),
             ring_pk: local_ring_key,
         })
         .await
-        .expect(
+    {
+        // The expected, deterministic outcome: node1/node3 run completely
+        // unmodified `prepare_participant`, which rejects node2's
+        // self-claimed-leader Prepare — and since `prepare_transport_
+        // participants`'s no-next-committee (Refresh) branch propagates
+        // *any* participant's rejection straight back as the whole call's
+        // own error, this RPC returning that same rejection back to node2
+        // is exactly what "broadcast, and got correctly rejected" looks
+        // like from the caller's side, not a failure to broadcast at all.
+        // `report_leader_prepare_fault_best_effort` already ran as a side
+        // effect on node1/node3 before either of them returned that
+        // rejection, so the report should already be in flight.
+        Ok(_) => {}
+        Err(status) if status.message().contains("unauthorized leader") => {}
+        Err(status) => panic!(
             "node2 should organically broadcast a noncanonical Prepare \
-             (if this fails with AlreadyActive, node1's own scheduler won the race — rerun)",
-        );
+             (if this fails with AlreadyActive, node1's own scheduler won the race — rerun): \
+             {status}"
+        ),
+    }
 
     println!(
         "Waiting for organic leader-Prepare-fault EventReportAccepted on chain (up to 120s)..."
