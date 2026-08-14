@@ -301,7 +301,43 @@ control-message field.
   identity to the two live endpoints, not a portable per-message artifact —
   so `PrepareSession` and each ack now carry an explicit
   `ControlSignature` over `(ceremony_id, attempt_id, message_kind, digest)`
-  under the sender's own chain node key. Two fault kinds share the statement
+  under the sender's own chain node key.
+
+  **`ControlSignature` is purely an accountability layer, not a protocol
+  requirement — deliberate, accepted tradeoff, not a gap.**
+  `verify_control_signature` is only ever called from the fault-*reporting*
+  path (`report_leader_prepare_fault_best_effort`,
+  `record_control_ack_best_effort`), never from message *acceptance*
+  (`prepare_participant`, the repair-page responder, etc.). Every real
+  construction site signs unconditionally regardless of `SessionKind`
+  (Fresh DKG included), so `Option<ControlSignature>`/`report_signature:
+  None` never happens honestly — but nothing at the wire/protocol level
+  stops a Byzantine sender from omitting the signature (or sending garbage
+  bytes) on the one message it knows is faulty. That message is still
+  accepted and the ceremony proceeds exactly as if it had been validly
+  signed; only attribution for *that specific fault* is lost. Considered
+  making the signature mandatory and verified at message-acceptance time
+  (reject unsigned/invalid Prepare/ack/repair-response outright) — two of
+  the three fault kinds would degrade cleanly under that: a leader/follower
+  that won't produce a valid signature can no longer complete the handshake
+  at all, which looks identical to that peer simply being offline, and is
+  already caught by the existing `node_offline`/PSS-stall barrier reporting
+  (`leader_prepare_fault` via `PssOfflineStage::StartForward`,
+  `ack_equivocation` via the Activate/Begin barriers' unreachable-peer
+  detection). `oversized_repair_page` doesn't degrade the same way for
+  free — it's a request/response repair path with its own error
+  classification (`retryable_public_repair_control_error`), so an
+  invalid/missing signature there would need to be deliberately routed into
+  that same offline-classification, not left to fall into the neighboring
+  `MalformedLeaderMessage` bucket, which doesn't feed `node_offline`. Net
+  call: leave `ControlSignature` optional-and-unenforced. The residual gap
+  is narrow (evading attribution for one fault, not evading the ceremony's
+  abort-only fail-fast safety story, which fires either way) and turning it
+  into a hard acceptance requirement makes six control-message kinds a
+  liveness dependency on correct signing — a materially bigger blast radius
+  than the accountability gap it closes.
+
+  Two fault kinds share the statement
   (domain `orbis-dkg-control-message-fault-v1`):
   - `leader_prepare_fault`: one signed `Prepare`, independently provable as
     invalid because it names a noncanonical leader, or because self-consistent

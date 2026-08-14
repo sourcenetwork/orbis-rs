@@ -668,8 +668,16 @@ pub struct PrepareSession {
     /// Node-key signature over `config_digest`, binding the sender to this
     /// exact committee/config claim so a noncanonical-leader impersonation
     /// attempt or a route/digest claim contradicting SourceHub stays
-    /// provable after the fact. `None` only for Fresh DKG, which has no
-    /// ring to bind evidence to.
+    /// provable after the fact. Every real construction site always signs
+    /// (Fresh DKG included — it's the target of a `leader_prepare_fault`
+    /// report the same as Refresh/Reshare); `Option` exists only because
+    /// nothing at the protocol layer requires it to be `Some` — a sender
+    /// could send `None` or a garbage signature and the message is still
+    /// accepted and processed normally (`verify_control_signature` is only
+    /// ever called from the fault-*reporting* path, never from message
+    /// acceptance). This is a deliberate, accepted tradeoff, not an
+    /// oversight — see `reporting/README.md`'s `ControlSignature`
+    /// attribution-evasion note for the reasoning.
     pub report_signature: Option<ControlSignature>,
 }
 
@@ -955,8 +963,12 @@ pub enum DkgControlMessage {
         /// this message has no transport-layer signature to reclaim.
         page_digest: [u8; 32],
         /// Node-key signature over `page_digest`, binding the leader to this
-        /// exact repair-page content — see `ControlSignature`. `None` only
-        /// for Fresh DKG, which has no ring to bind evidence to.
+        /// exact repair-page content — see `ControlSignature`. Signed
+        /// unconditionally at the one real construction site
+        /// (`sign_public_phase_response`, Fresh DKG included); `Option`
+        /// exists only because nothing at the protocol layer requires it to
+        /// be `Some` before the response is accepted — same deliberate,
+        /// accepted tradeoff as `PrepareSession.report_signature`.
         report_signature: Option<ControlSignature>,
     },
     Error {

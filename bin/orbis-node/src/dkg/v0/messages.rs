@@ -64,14 +64,18 @@ pub struct SignedDkgShare {
 }
 
 /// A node-key signature over one control-plane handshake message
-/// (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`). Direct QUIC
-/// authentication proves the message to the two endpoints on that
-/// connection but produces no portable artifact — unlike Gossip, which signs
-/// each frame at the transport layer, control messages carry no such
-/// signature to reclaim. This is deliberately a thin, generic wrapper: what
-/// exactly was signed (the message's own existing digest field) is
-/// reconstructed by the caller from data it already has, not duplicated
-/// here.
+/// (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`,
+/// `PublicPhaseResponse`). Direct QUIC authentication proves the message to
+/// the two endpoints on that connection but produces no portable artifact —
+/// unlike Gossip, which signs each frame at the transport layer, control
+/// messages carry no such signature to reclaim. This is deliberately a thin,
+/// generic wrapper: what exactly was signed (the message's own existing
+/// digest field) is reconstructed by the caller from data it already has,
+/// not duplicated here. Purely an accountability layer, not a protocol
+/// requirement — a message with an absent/invalid signature is still
+/// accepted and processed normally, it's just unattributable if it turns
+/// out to be faulty; see `reporting/README.md` for why this is a deliberate,
+/// accepted tradeoff rather than a gap to close.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ControlSignature {
     pub signer_node_key: String,
