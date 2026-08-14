@@ -35,12 +35,6 @@ fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
-fn parse_trusted_auth_relay_did(value: &str) -> Result<String, String> {
-    let value = value.trim();
-    authn::validate_relay_issuer(value).map_err(|error| error.to_string())?;
-    Ok(value.to_string())
-}
-
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
@@ -63,6 +57,9 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// Chain ID used when signing transactions
+    #[arg(long)]
+    pub chain_id: Option<String>,
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
@@ -103,9 +100,6 @@ pub struct Args {
     /// Ring ID this node initially allows. Ignored if node info already exists.
     #[arg(long = "node-whitelisted-ring-id")]
     pub node_whitelisted_ring_ids: Vec<String>,
-    /// DID of a relay allowed to submit requests for another actor.
-    #[arg(long = "trusted-auth-relay-did", value_parser = parse_trusted_auth_relay_did)]
-    pub trusted_auth_relay_dids: Vec<String>,
     /// Maximum in-flight gRPC requests per client connection.
     #[arg(
         long,
@@ -634,18 +628,17 @@ mod tests {
     }
 
     #[test]
-    fn parses_trusted_auth_relay_did() {
-        let relay = authn::JwtSigner::new();
+    fn parses_chain_id_argument() {
         let args = Args::try_parse_from([
             "orbis-node",
             "--node-controller-key",
             "controller-key",
-            "--trusted-auth-relay-did",
-            &relay.did_uri,
+            "--chain-id",
+            "sourcehub-dev",
         ])
         .expect("parse arguments");
 
-        assert_eq!(args.trusted_auth_relay_dids, vec![relay.did_uri]);
+        assert_eq!(args.chain_id.as_deref(), Some("sourcehub-dev"));
     }
 
     #[test]

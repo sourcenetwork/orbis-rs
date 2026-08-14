@@ -412,6 +412,15 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
             ring.id
         )));
     }
+    if !ring.allow_trusted_auth_relays && !ring.trusted_auth_relay_dids.is_empty() {
+        return Err(BulletinError::ParseError(format!(
+            "ring {} has relays configured while relay updates are disabled",
+            ring.id
+        )));
+    }
+    let trusted_auth_relay_dids = ring
+        .allow_trusted_auth_relays
+        .then_some(ring.trusted_auth_relay_dids);
     let payload = RingPayload {
         ring_pk: ring.ring_pk,
         peer_node_keys: ring.peer_node_keys,
@@ -429,6 +438,7 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
         } else {
             Some(ring.policy_id)
         },
+        trusted_auth_relay_dids,
         upgrade_info: UpgradeInfo {
             current_version: upgrade_info.current_version,
             next_version: upgrade_info.next_version,

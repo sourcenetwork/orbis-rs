@@ -30,7 +30,7 @@ use crypto::{DkgImpl, SignImpl};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::sign::{sign_service_server::SignService, StartSignRequest};
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 /// End-to-end test: DKG → Sign message → Verify signature
 ///
@@ -1145,11 +1145,9 @@ async fn test_delegated_dkg_then_sign_policy_end_to_end() {
 
     let relay = TestKeyPair::new();
     let actor_id = "did:opk:alice";
-    let mut network = setup_three_node_network_with_sign_and_trusted_relays(
-        db_name,
-        HashSet::from([relay.did_uri.clone()]),
-    )
-    .await;
+    let mut network =
+        setup_three_node_network_with_sign_and_trusted_relays(db_name, vec![relay.did_uri.clone()])
+            .await;
     let peer_ids = network.get_all_peer_ids();
 
     // Run DKG

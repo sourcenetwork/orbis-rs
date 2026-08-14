@@ -19,7 +19,7 @@ use crypto::r#trait::{
 use crypto::{DkgImpl, PreImpl};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest};
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tonic::Request;
 use zeroize::Zeroizing;
@@ -114,11 +114,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     println!("Step 1: Setting up three-node network...");
     let relay = TestKeyPair::new();
     let actor_id = "did:opk:alice";
-    let mut network = setup_three_node_network_with_pre_and_trusted_relays(
-        db_name,
-        HashSet::from([relay.did_uri.clone()]),
-    )
-    .await;
+    let mut network =
+        setup_three_node_network_with_pre_and_trusted_relays(db_name, vec![relay.did_uri.clone()])
+            .await;
 
     // Get all peer IDs (including initiator) for participation
     let peer_ids = network.get_all_peer_ids();

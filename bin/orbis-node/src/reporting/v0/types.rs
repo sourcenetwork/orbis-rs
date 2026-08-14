@@ -1737,6 +1737,14 @@ pub fn canonical_ring_state_bytes(payload: &RingPayload) -> Vec<u8> {
     write_u64(&mut out, payload.pss_interval);
     write_u64(&mut out, payload.block_number_nonce);
     write_optional_string(&mut out, payload.policy_id.as_deref());
+    write_bool(&mut out, payload.trusted_auth_relay_dids.is_some());
+    write_string_vec(
+        &mut out,
+        payload
+            .trusted_auth_relay_dids
+            .as_deref()
+            .unwrap_or_default(),
+    );
     write_u64(&mut out, payload.upgrade_info.current_version);
     write_optional_u64(&mut out, payload.upgrade_info.next_version);
     write_optional_u64(&mut out, payload.upgrade_info.activation_time);
@@ -1750,6 +1758,10 @@ fn write_u32(out: &mut Vec<u8>, value: u32) {
 
 fn write_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn write_bool(out: &mut Vec<u8>, value: bool) {
+    out.push(u8::from(value));
 }
 
 fn write_bytes(out: &mut Vec<u8>, value: &[u8]) {
@@ -2629,7 +2641,31 @@ mod tests {
         assert_ne!(ring_state_sha256(&a), ring_state_sha256(&b));
         assert_eq!(
             ring_state_sha256(&a),
-            "d33ea6fdeda388fa0e31f128a5e649714887308e75220414d7a2df96222f5cb7"
+            "1dd783721bbfc90f5960d9f2ebd99244c22ab147113d22bd39f9bccf6bf73c39"
+        );
+
+        let mut with_empty_relays = b.clone();
+        with_empty_relays.trusted_auth_relay_dids = Some(vec![]);
+        assert_ne!(ring_state_sha256(&with_empty_relays), ring_state_sha256(&b));
+
+        let mut with_relay = b.clone();
+        with_relay.trusted_auth_relay_dids = Some(vec![
+            "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".into(),
+            "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
+        ]);
+        assert_eq!(
+            ring_state_sha256(&with_relay),
+            "6d093b9e03af27c7b679341367306e67b64b0afdb5f31ec9e0f5133ebc145ca6"
+        );
+        assert_ne!(ring_state_sha256(&with_relay), ring_state_sha256(&b));
+        with_relay
+            .trusted_auth_relay_dids
+            .as_mut()
+            .expect("relay list")
+            .reverse();
+        assert_ne!(
+            ring_state_sha256(&with_relay),
+            "6d093b9e03af27c7b679341367306e67b64b0afdb5f31ec9e0f5133ebc145ca6"
         );
 
         a.threshold = 1;

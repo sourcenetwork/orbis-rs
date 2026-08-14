@@ -5,9 +5,12 @@ use crate::r#trait::{
 };
 use common::{
     blockchain::{
-        acp::Object, orbis::DemeritConfig as ChainDemeritConfig,
-        orbis::ReportingConfig as ChainReportingConfig, BlockchainError, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
+        acp::Object,
+        orbis::{
+            DemeritConfig as ChainDemeritConfig, ReportingConfig as ChainReportingConfig,
+            Ring as ChainRing, UpgradeInfo as ChainUpgradeInfo,
+        },
+        BlockchainError, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
     },
     SourceHubTestContainer,
 };
@@ -32,6 +35,35 @@ resources:
     types:
     - actor
 "#;
+
+#[test]
+fn ring_relay_configuration_preserves_opt_in() {
+    let mut ring = ChainRing {
+        id: "ring".to_string(),
+        upgrade_info: Some(ChainUpgradeInfo::default()),
+        ..Default::default()
+    };
+    let post = ring_to_bulletin_post(ring.clone()).expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(payload.trusted_auth_relay_dids, None);
+
+    ring.trusted_auth_relay_dids = vec!["did:key:relay".to_string()];
+    assert!(ring_to_bulletin_post(ring.clone()).is_err());
+
+    ring.allow_trusted_auth_relays = true;
+    ring.trusted_auth_relay_dids.clear();
+    let post = ring_to_bulletin_post(ring.clone()).expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(payload.trusted_auth_relay_dids, Some(vec![]));
+
+    ring.trusted_auth_relay_dids = vec!["did:key:relay".to_string()];
+    let post = ring_to_bulletin_post(ring).expect("convert ring");
+    let payload = RingPayload::try_from(post).expect("parse ring payload");
+    assert_eq!(
+        payload.trusted_auth_relay_dids,
+        Some(vec!["did:key:relay".to_string()])
+    );
+}
 
 async fn create_orbis_ring_policy(client: &SourceHubClient) -> String {
     let ids_before: std::collections::HashSet<String> = client
@@ -169,6 +201,7 @@ async fn test_bulletin_document() {
             Some("document-test".to_string()),
             0,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -236,6 +269,7 @@ async fn test_bulletin_ring() {
 
     let peer_node_keys = vec![node_key];
     let threshold = 1u32;
+    let relay_did = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
 
     let payload = RingPayload {
         ring_pk: String::new(),
@@ -243,6 +277,7 @@ async fn test_bulletin_ring() {
         threshold,
         pss_interval: 86400,
         policy_id: Some(policy_id.clone()),
+        trusted_auth_relay_dids: Some(vec![relay_did.clone()]),
         ..Default::default()
     };
     let (_, ring_id) = bulletin
@@ -255,6 +290,7 @@ async fn test_bulletin_ring() {
             Some("ring-test".to_string()),
             0,
             None,
+            Some(vec![relay_did]),
         )
         .await
         .unwrap();
@@ -316,6 +352,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             &policy_id,
             Some("ring-demerit-default-test".to_string()),
             0,
+            None,
             None,
         )
         .await
@@ -406,6 +443,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             Some("ring-demerit-explicit-test".to_string()),
             0,
             Some(explicit_reporting),
+            None,
         )
         .await
         .unwrap();
@@ -457,6 +495,7 @@ async fn test_bulletin_cancel_pending_ring() {
             &policy_id,
             Some("cancel-pending-ring-test".to_string()),
             0,
+            None,
             None,
         )
         .await

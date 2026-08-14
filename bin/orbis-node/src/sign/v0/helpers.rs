@@ -66,6 +66,8 @@ fn ring_reshare_sign_state_from_payload(payload: &RingPayload) -> RingReshareSig
         new_threshold: payload.new_threshold,
         block_number_nonce: payload.block_number_nonce,
         policy_id: payload.policy_id.clone().unwrap_or_default(),
+        trusted_auth_relay_dids: payload.trusted_auth_relay_dids.clone().unwrap_or_default(),
+        allow_trusted_auth_relays: payload.trusted_auth_relay_dids.is_some(),
     }
 }
 
@@ -805,6 +807,7 @@ mod ring_reshare_update_tests {
             pss_interval: 30,
             block_number_nonce,
             policy_id: None,
+            trusted_auth_relay_dids: None,
             reporting: Default::default(),
         };
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
@@ -861,6 +864,7 @@ mod ring_reshare_update_tests {
             pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
+            trusted_auth_relay_dids: Some(vec!["did:key:relay".to_string()]),
             reporting: Default::default(),
         };
         let reordered = RingPayload {
@@ -888,6 +892,7 @@ mod ring_reshare_update_tests {
             pss_interval: 0,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
+            trusted_auth_relay_dids: None,
             reporting: Default::default(),
         };
         let with_pss_interval = RingPayload {
@@ -913,6 +918,7 @@ mod ring_reshare_update_tests {
             pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
+            trusted_auth_relay_dids: None,
             reporting: Default::default(),
         };
         let with_upgrade = RingPayload {
@@ -942,6 +948,7 @@ mod ring_reshare_update_tests {
             pss_interval: 30,
             block_number_nonce: 9,
             policy_id: Some("policy".to_string()),
+            trusted_auth_relay_dids: Some(vec!["did:key:relay".to_string()]),
             reporting: Default::default(),
         };
         let expected = RingReshareSignState {
@@ -952,6 +959,8 @@ mod ring_reshare_update_tests {
             new_threshold: None,
             block_number_nonce: 9,
             policy_id: "policy".to_string(),
+            trusted_auth_relay_dids: vec!["did:key:relay".to_string()],
+            allow_trusted_auth_relays: true,
         };
 
         assert_eq!(
