@@ -41,6 +41,7 @@ use zeroize::Zeroize;
 const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
 const MAX_OFFLINE_RELAY_RECEIPTS: usize = 4096;
 const MAX_OFFLINE_CANDIDATE_CLAIMS: usize = 4096;
+const MAX_OFFLINE_RELAY_RECEIPT_PROCESSED_KEYS: usize = 4096;
 
 /// DKG Protocol Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1321,17 +1322,41 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     /// Claim `idempotency_key` against the retained offline-relay receipt for
-    /// `attempt`. Returns `None` if the receipt has already expired or was
-    /// never recorded, `Some(true)` on a new claim, `Some(false)` if it was
-    /// already claimed.
+    /// `attempt`. Returns `None` if the receipt has already expired, was
+    /// never recorded, or its bounded set of processed keys is full —
+    /// callers must treat this the same as "unavailable", not as a
+    /// duplicate: `Some(false)` is reserved exclusively for a key that was
+    /// genuinely already claimed. Returns `Some(true)` on a new claim.
+    ///
+    /// Re-checks `recorded_at` here (not just in `offline_relay_receipt`,
+    /// which callers typically call first) because the two are separate
+    /// lock acquisitions with real async work — e.g. a chain read in
+    /// `validate_offline_relay_transition` — in between; a receipt that was
+    /// still fresh at that first check can cross `DKG_ATTEMPT_TIMEOUT`
+    /// before this call runs.
     pub(crate) async fn claim_offline_relay_idempotency(
         &self,
         attempt: AttemptKey,
         idempotency_key: MessageId,
     ) -> Option<bool> {
+        let now = tokio::time::Instant::now();
         let mut receipts = self.offline_relay_receipts.lock().await;
+        let expired = receipts
+            .get(&attempt)
+            .is_some_and(|receipt| now.duration_since(receipt.recorded_at) > DKG_ATTEMPT_TIMEOUT);
+        if expired {
+            receipts.remove(&attempt);
+            return None;
+        }
         let receipt = receipts.get_mut(&attempt)?;
-        Some(receipt.processed.insert(idempotency_key))
+        if receipt.processed.contains(&idempotency_key) {
+            return Some(false);
+        }
+        if receipt.processed.len() >= MAX_OFFLINE_RELAY_RECEIPT_PROCESSED_KEYS {
+            return None;
+        }
+        receipt.processed.insert(idempotency_key);
+        Some(true)
     }
 
     /// Record a fresh offline-relay receipt for `attempt`, pruning expired

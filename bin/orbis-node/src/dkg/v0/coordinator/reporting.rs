@@ -300,6 +300,10 @@ async fn report_or_relay_pss_offline_observations<D>(
                     .map(str::to_owned)
             });
             let Some(peer_id) = peer_id else {
+                crate::metrics::record_pss_offline_observation(
+                    seed.stage.as_metric_label(),
+                    "route_unresolved",
+                );
                 continue;
             };
             match queue_pss_offline_report_for_peer(
