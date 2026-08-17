@@ -298,6 +298,31 @@ impl MsgSetRingReportingByAcp {
 pub struct MsgSetRingReportingByAcpResponse {}
 
 #[derive(Clone, Message)]
+pub struct MsgAddRingTrustedAuthRelayByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+    #[prost(string, tag = "3")]
+    pub relay_did: String,
+}
+
+impl MsgAddRingTrustedAuthRelayByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgAddRingTrustedAuthRelayByAcp";
+
+    pub fn new(creator: &str, ring_id: &str, relay_did: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+            relay_did: relay_did.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgAddRingTrustedAuthRelayByAcpResponse {}
+
+#[derive(Clone, Message)]
 pub struct MsgRemoveRingTrustedAuthRelayByAcp {
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -1360,6 +1385,23 @@ impl SourceHubClient {
         .await
     }
 
+    pub async fn orbis_add_ring_trusted_auth_relay_by_acp(
+        &self,
+        ring_id: &str,
+        relay_did: &str,
+    ) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgAddRingTrustedAuthRelayByAcp::new(&signer.address(), ring_id, relay_did);
+        self.broadcast_proto_msg_with_gas(
+            MsgAddRingTrustedAuthRelayByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
     pub async fn orbis_remove_ring_trusted_auth_relay_by_acp(
         &self,
         ring_id: &str,
@@ -1681,8 +1723,8 @@ mod tests {
 
     use super::{
         decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
-        DemeritConfig, MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
-        MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
+        DemeritConfig, MsgAddRingTrustedAuthRelayByAcp, MsgCancelPendingRing, MsgCreateRing,
+        MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
         MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse,
         ReportingConfig, Ring, RingReshareSignState, UpgradeInfo,
     };
@@ -1804,6 +1846,17 @@ mod tests {
             "/sourcehub.orbis.MsgCancelPendingRing"
         );
         assert_eq!(hex::encode(msg.encode_to_vec()), "0a0163120172");
+    }
+
+    #[test]
+    fn add_ring_trusted_auth_relay_wire_fields_match_sourcehub_proto() {
+        let msg = MsgAddRingTrustedAuthRelayByAcp::new("c", "r", "d");
+
+        assert_eq!(
+            MsgAddRingTrustedAuthRelayByAcp::TYPE_URL,
+            "/sourcehub.orbis.MsgAddRingTrustedAuthRelayByAcp"
+        );
+        assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a0164");
     }
 
     #[test]

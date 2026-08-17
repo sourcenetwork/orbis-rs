@@ -269,7 +269,9 @@ async fn test_bulletin_ring() {
 
     let peer_node_keys = vec![node_key];
     let threshold = 1u32;
-    let relay_did = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
+    let original_relay_did = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".to_string();
+    let replacement_relay_did =
+        "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK".to_string();
 
     let payload = RingPayload {
         ring_pk: String::new(),
@@ -277,7 +279,7 @@ async fn test_bulletin_ring() {
         threshold,
         pss_interval: 86400,
         policy_id: Some(policy_id.clone()),
-        trusted_auth_relay_dids: Some(vec![relay_did.clone()]),
+        trusted_auth_relay_dids: Some(vec![original_relay_did.clone()]),
         ..Default::default()
     };
     let (_, ring_id) = bulletin
@@ -290,7 +292,7 @@ async fn test_bulletin_ring() {
             Some("ring-test".to_string()),
             0,
             None,
-            Some(vec![relay_did]),
+            Some(vec![original_relay_did.clone()]),
         )
         .await
         .unwrap();
@@ -311,6 +313,28 @@ async fn test_bulletin_ring() {
         ..payload
     };
     assert_eq!(read_payload, expected, "Read payload should match");
+
+    bulletin
+        .chain_client
+        .orbis_add_ring_trusted_auth_relay_by_acp(&ring_id, &replacement_relay_did)
+        .await
+        .unwrap();
+    bulletin
+        .chain_client
+        .orbis_remove_ring_trusted_auth_relay_by_acp(&ring_id, &original_relay_did)
+        .await
+        .unwrap();
+
+    let rotated_post = bulletin
+        .read(ring_id.clone(), BulletinKind::Ring)
+        .await
+        .unwrap();
+    let rotated_payload: RingPayload = rotated_post.try_into().unwrap();
+    let rotated_expected = RingPayload {
+        trusted_auth_relay_dids: Some(vec![replacement_relay_did]),
+        ..read_payload
+    };
+    assert_eq!(rotated_payload, rotated_expected, "Relay should be rotated");
 
     let finalization = bulletin
         .ring_finalization_status(ring_id)
