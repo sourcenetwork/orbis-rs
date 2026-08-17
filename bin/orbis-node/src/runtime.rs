@@ -183,6 +183,18 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let signer =
             create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
                 .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+        let signer = match args.fee_granter.as_deref() {
+            Some(granter) => {
+                tracing::info!(
+                    granter,
+                    "Transactions will request a fee grant from this address"
+                );
+                signer
+                    .with_fee_granter(granter)
+                    .map_err(|e| format!("Invalid --fee-granter address: {}", e))?
+            }
+            None => signer,
+        };
         let node_key = signer.public_key_hex();
 
         let grpc_addr: SocketAddr = args.addr.parse()?;
