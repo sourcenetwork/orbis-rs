@@ -184,6 +184,7 @@ pub async fn spawn_harness_node(
         chain_rest: None,
         chain_id: None,
         denom: None,
+        fee_granter: None,
         chain_gas_multiplier: None,
         metrics_addr: None,
         loki_url: None,
