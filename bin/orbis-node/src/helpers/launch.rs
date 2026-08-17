@@ -63,6 +63,18 @@ pub struct Args {
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
+    /// Bech32 address of an account that has granted this node a fee
+    /// allowance (Cosmos SDK x/feegrant). When set, outgoing transactions
+    /// request that account's fee grant instead of paying from the node's
+    /// own balance. The grant must already exist on chain. When unset, the
+    /// node pays its own transaction fees as usual.
+    ///
+    /// Not persisted: like the other chain connection flags, this must be
+    /// passed on every invocation. The signing key is the only thing this
+    /// node persists to disk; the fee grant itself lives in SourceHub's
+    /// chain state, not here.
+    #[arg(long)]
+    pub fee_granter: Option<String>,
     /// Safety multiplier applied to simulated chain gas before broadcasting transactions.
     /// Increase this when concurrent writers can change state between simulation and delivery.
     #[arg(long, value_parser = parse_gas_multiplier)]
@@ -639,6 +651,31 @@ mod tests {
         .expect("parse arguments");
 
         assert_eq!(args.chain_id.as_deref(), Some("sourcehub-dev"));
+    }
+
+    #[test]
+    fn parses_fee_granter_argument() {
+        let args = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--fee-granter",
+            "source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
+        ])
+        .expect("parse arguments");
+
+        assert_eq!(
+            args.fee_granter.as_deref(),
+            Some("source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
+        );
+    }
+
+    #[test]
+    fn fee_granter_defaults_to_none() {
+        let args = Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])
+            .expect("parse arguments");
+
+        assert_eq!(args.fee_granter, None);
     }
 
     #[test]

@@ -23,6 +23,9 @@ pub struct TxSigner {
     /// The current nonce (sequence number) for transaction signing.
     /// Uses atomic operations for thread-safe concurrent access.
     nonce: AtomicU64,
+    /// If set, transactions request this account's fee grant instead of
+    /// paying fees from `account_id`'s own balance.
+    fee_granter: Option<AccountId>,
 }
 
 impl TxSigner {
@@ -45,7 +48,23 @@ impl TxSigner {
             config,
             account_number: AtomicU64::new(0),
             nonce: AtomicU64::new(0),
+            fee_granter: None,
         })
+    }
+
+    /// Set the fee granter for this signer's transactions from a bech32 address.
+    ///
+    /// When set, signed transactions request that `granter` pays fees via an
+    /// existing on-chain fee grant instead of debiting this signer's own
+    /// balance (Cosmos SDK `x/feegrant`). The grant must already exist on
+    /// chain (e.g. via `sourcehubd tx feegrant grant`) or transactions will
+    /// be rejected by SourceHub's ante handler.
+    pub fn with_fee_granter(mut self, granter: &str) -> Result<Self> {
+        let granter = granter
+            .parse::<AccountId>()
+            .map_err(|e| BlockchainError::Signing(format!("Invalid fee granter address: {}", e)))?;
+        self.fee_granter = Some(granter);
+        Ok(self)
     }
 
     /// Create a TxSigner from a hex-encoded private key.
@@ -166,15 +185,17 @@ impl TxSigner {
         let fee_amount = self.config.calculate_fee(gas_limit);
 
         let fee =
-            Fee::from_amount_and_gas(
-                Coin {
+            Fee {
+                amount: vec![Coin {
                     denom: self.config.gas_price.denom.parse().map_err(|e| {
                         BlockchainError::Signing(format!("Invalid fee denom: {}", e))
                     })?,
                     amount: fee_amount.into(),
-                },
+                }],
                 gas_limit,
-            );
+                payer: None,
+                granter: self.fee_granter.clone(),
+            };
 
         let tx_body = tx::Body::new(messages, memo.unwrap_or(""), 0u32);
 
