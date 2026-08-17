@@ -412,16 +412,15 @@ where
     Ok(())
 }
 
-/// Two commitments are equivocation iff the same dealer signed both for the same session
-/// under the SAME per-attempt nonce with different bytes. Same nonce is what distinguishes
-/// genuine equivocation from an honest retry (which uses a fresh nonce).
+/// Two commitments are equivocation iff the same dealer signed both for the same attempt
+/// under the SAME per-attempt nonce with different bytes.
 pub(crate) fn commitments_prove_equivocation(
     commitment_a: &SignedDkgCommitment,
     commitment_b: &SignedDkgCommitment,
 ) -> bool {
-    commitment_a.statement.session_nonce == commitment_b.statement.session_nonce
-        && commitment_a.statement.commitment != commitment_b.statement.commitment
-        && commitment_a.statement.from_node_id == commitment_b.statement.from_node_id
+    commitment_a
+        .statement
+        .proves_equivocation_with(&commitment_b.statement)
 }
 
 pub async fn queue_or_relay_equivocation<D>(
@@ -2440,7 +2439,7 @@ mod tests {
     }
 
     #[test]
-    fn commitments_prove_equivocation_requires_same_nonce_and_different_bytes() {
+    fn commitments_prove_equivocation_requires_same_attempt_nonce_and_different_bytes() {
         let nonce = [5u8; 16];
         let a = signed_commitment_for_equivocation(vec![1, 2, 3], nonce);
 
@@ -2455,6 +2454,12 @@ mod tests {
         // Different nonce (honest retry), different bytes → not equivocation.
         let retry = signed_commitment_for_equivocation(vec![9, 9, 9], [6u8; 16]);
         assert!(!commitments_prove_equivocation(&a, &retry));
+
+        // Different attempt, even with a reused nonce and different bytes, is not
+        // equivocation within either attempt.
+        let mut other_attempt = signed_commitment_for_equivocation(vec![9, 9, 9], nonce);
+        other_attempt.statement.attempt_id = [10u8; 32];
+        assert!(!commitments_prove_equivocation(&a, &other_attempt));
 
         // Different dealer → not equivocation.
         let mut other_dealer = signed_commitment_for_equivocation(vec![9, 9, 9], nonce);

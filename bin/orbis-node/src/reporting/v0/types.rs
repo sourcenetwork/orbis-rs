@@ -447,8 +447,9 @@ pub struct DkgCommitmentStatement {
     pub commitment: Vec<u8>,
     /// Per-session-instance nonce the dealer generates once and signs into every
     /// commitment it broadcasts for this attempt. Equivocation = same dealer signing
-    /// two commitments with the SAME nonce but different bytes; an honest retry uses a
-    /// fresh nonce, so it cannot be framed as equivocation. Opaque to receivers.
+    /// two commitments for the SAME attempt with the SAME nonce but different bytes;
+    /// an honest retry has a different attempt ID and uses a fresh nonce, so it cannot
+    /// be framed as equivocation. Opaque to receivers.
     ///
     /// NOT used for dedupe scoping: it's self-chosen by the dealer (part of what
     /// they sign, but not assigned by the protocol), so a dealer could reuse the
@@ -489,6 +490,16 @@ impl DkgCommitmentStatement {
         write_bytes(&mut out, &self.attempt_id);
         write_string(&mut out, &self.crypto_backend);
         out
+    }
+
+    /// Returns true when two statements contain the conflicting commitment
+    /// pair required to prove dealer equivocation. Callers remain responsible
+    /// for validating the statements' signatures and surrounding bindings.
+    pub(crate) fn proves_equivocation_with(&self, other: &Self) -> bool {
+        self.attempt_id == other.attempt_id
+            && self.session_nonce == other.session_nonce
+            && self.from_node_id == other.from_node_id
+            && self.commitment != other.commitment
     }
 
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
@@ -1343,8 +1354,9 @@ pub enum InvalidCryptoResponse {
         response_signature: Vec<u8>,
     },
     /// DKG commitment equivocation: two conflicting commitments, each validly signed by
-    /// the same dealer (same ring/session/nonce, different bytes). Unlike the other kinds,
-    /// the fault is the *conflict between two signed statements*, not one statement failing.
+    /// the same dealer (same ring/session/attempt/nonce, different bytes). Unlike the other
+    /// kinds, the fault is the *conflict between two signed statements*, not one statement
+    /// failing.
     DkgEquivocation {
         commitment_a: Box<SignedDkgCommitment>,
         commitment_b: Box<SignedDkgCommitment>,

@@ -1966,10 +1966,12 @@ impl InvalidCryptoResponseHandler {
             ))
         })?;
 
-        // The refutation: equivocation requires the SAME per-attempt nonce with different
-        // bytes. Identical bytes, or a different nonce (honest retry), is not equivocation.
-        if commitment_a.statement.session_nonce != commitment_b.statement.session_nonce
-            || commitment_a.statement.commitment == commitment_b.statement.commitment
+        // The refutation: equivocation requires the same attempt and per-attempt nonce
+        // with different bytes. A cross-attempt pair is not equivocation even if a dealer
+        // reuses its nonce.
+        if !commitment_a
+            .statement
+            .proves_equivocation_with(&commitment_b.statement)
         {
             return Err(ReportingError::Unauthorized(
                 "reported commitments are not equivocation".to_string(),
