@@ -993,39 +993,57 @@ async fn test_dkg_fails_when_node_unreachable() {
 /// node IDs each open exactly one private pair with a higher ID, and the
 /// middle ID opens a stream only to the highest ID (it's a pure responder for
 /// the lowest ID's pair) — so stalling the middle node's outbound private
-/// responses deterministically implicates only the highest-ID node.
+/// responses deterministically implicates only the highest-ID node. This
+/// reasoning carries over unchanged to a same-committee Reshare below:
+/// `CeremonyConfig::canonical_pair_opener` resolves by comparing node *keys*
+/// rather than raw numeric IDs, but since old and new committees are
+/// identical here, Current- and Next-scope node IDs land in the same sorted
+/// order as Fresh DKG's, so it's the same three pairs.
+///
+/// Must be a Reshare, not a Fresh DKG, for the same reason as
+/// `test_reshare_missing_topology_ack_triggers_on_chain_report`:
+/// `spawn_pss_offline_observations` unconditionally skips `SessionKind::
+/// Fresh` because a report is threshold-signed under the ring's own key,
+/// which a Fresh DKG that stalls has never produced. The accused (highest
+/// key) can never be the reshare's canonical leader (lowest key), so unlike
+/// that sibling test there's no leader/accused collision to avoid here — the
+/// existing sort-by-key selection already guarantees it.
 #[tokio::test]
 #[serial_test::serial]
-async fn test_dkg_private_pair_terminal_stall_triggers_on_chain_report() {
-    let net = setup_fault_three_node_network("fault_dkg_private_terminal", 51078).await;
+async fn test_reshare_private_pair_terminal_stall_triggers_on_chain_report() {
+    let net = setup_fault_three_node_network_with_reshare_interval(
+        "fault_reshare_private_terminal",
+        51078,
+        1,
+    )
+    .await;
 
-    let mut ordered: Vec<(&str, &str, &FaultNetworkController)> = vec![
-        (
-            net.node_keys[0].as_str(),
-            net.alice.grpc_endpoint.as_str(),
-            &net.alice.fault_ctrl,
-        ),
-        (
-            net.node_keys[1].as_str(),
-            net.bob.grpc_endpoint.as_str(),
-            &net.bob.fault_ctrl,
-        ),
-        (
-            net.node_keys[2].as_str(),
-            net.charlie.grpc_endpoint.as_str(),
-            &net.charlie.fault_ctrl,
-        ),
+    let mut ordered: Vec<(&str, &FaultableNodeHandle)> = vec![
+        (net.node_keys[0].as_str(), &net.alice),
+        (net.node_keys[1].as_str(), &net.bob),
+        (net.node_keys[2].as_str(), &net.charlie),
     ];
     ordered.sort_by(|left, right| left.0.cmp(right.0));
-    let (_lowest_key, lowest_endpoint, _) = ordered[0];
-    let (_middle_key, _middle_endpoint, middle_ctrl) = ordered[1];
-    let (highest_key, _highest_endpoint, _) = ordered[2];
+    let (_lowest_key, lowest) = ordered[0];
+    let (_middle_key, middle) = ordered[1];
+    let (highest_key, _highest) = ordered[2];
 
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+
+    println!("Running the initial DKG so the ring has a real key to reshare...");
+    cli_tool::do_dkg(lowest.grpc_endpoint.clone(), ring_id.clone())
+        .await
+        .expect("initial DKG should succeed");
+    wait_for_ring_finalized(&net.chain_config, &ring_id, Duration::from_secs(90)).await;
+
+    println!("The middle node's outbound pair to the highest node will stall for the reshare...");
     // Every private-plane response the middle node's own outbound connections
     // receive stalls for the rest of the ceremony (a huge pass-through-0
     // count), well past PEER_RESPONSE_TIMEOUT, so retries never succeed and
     // the sender never observes a real reply from its higher-ID partner.
-    middle_ctrl
+    middle
+        .fault_ctrl
         .stall_protocol_responses_after(
             network::V0.dkg_private_alpn,
             0,
@@ -1033,22 +1051,32 @@ async fn test_dkg_private_pair_terminal_stall_triggers_on_chain_report() {
             PEER_RESPONSE_TIMEOUT + Duration::from_secs(1),
         )
         .await;
-
-    let ring_id =
-        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+    // See test_reshare_missing_topology_ack_triggers_on_chain_report's doc comment: an
+    // independent co-signer separately health-probes the accused over a dedicated direct QUIC
+    // protocol before signing, unaffected by the private-plane stall above, and correctly
+    // refuses to sign against a peer it can still reach — block it on both non-accused members,
+    // since either could end up being asked to co-sign.
+    for signer in [lowest, middle] {
+        signer
+            .fault_ctrl
+            .fail_protocol_responses_after(network::V0.reporting_health_alpn, 0, 1000)
+            .await;
+    }
 
     println!("Subscribing to report events...");
     let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
         .await
         .expect("connect report event subscription");
 
-    // Fire-and-forget: the ceremony runs to its hard deadline in the
-    // background regardless of whether this triggering RPC call is still
-    // being awaited.
-    tokio::spawn(cli_tool::do_dkg(
-        lowest_endpoint.to_string(),
+    println!("Triggering reshare (same committee, new threshold)...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
         ring_id.clone(),
-    ));
+        net.node_keys.clone(),
+        Some(3u32),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
 
     println!("Waiting for organic private-pair-stall EventReportAccepted on chain (up to 240s)...");
     let event = sub
