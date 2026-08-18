@@ -1137,9 +1137,12 @@ async fn test_dkg_private_pair_terminal_stall_triggers_on_chain_report() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_reshare_missing_topology_ack_triggers_on_chain_report() {
-    let net =
-        setup_fault_three_node_network_with_reshare_interval("fault_reshare_topology_ack", 51084, 1)
-            .await;
+    let net = setup_fault_three_node_network_with_reshare_interval(
+        "fault_reshare_topology_ack",
+        51084,
+        1,
+    )
+    .await;
 
     // The reshare's canonical leader is whichever committee member has the lexicographically
     // *smallest* node key (`transport::canonical_leader`, `.min()`) — a leader self-acks its own
