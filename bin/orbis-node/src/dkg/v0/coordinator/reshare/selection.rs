@@ -322,19 +322,30 @@ where
         .map_err(|error| attempt_state_error(attempt, error))??;
 
     if let Some((selected_dealer_ids, _new_route_peer_ids, newly_frozen)) = selection {
-        if newly_frozen {
-            tracing::info!(
-                session_id = session_id,
-                selected_dealers = ?selected_dealer_ids,
-                "Reshare: selector froze participant set"
-            );
-        } else {
+        if !newly_frozen {
+            // The participant set was already frozen and broadcast by an
+            // earlier (threshold-reaching) ack; this ack is a late/redundant
+            // arrival. Do not re-broadcast: `submit_public_contribution`
+            // stamps a fresh `signed_at` on every call, so re-signing the
+            // same logical selection would produce a distinct signed
+            // message from this origin for the same phase, which the
+            // leader's contribution ledger correctly treats as equivocation
+            // and aborts the attempt over. Nodes that missed the original
+            // broadcast recover it via completeness repair against the
+            // retained bytes instead.
             tracing::debug!(
                 session_id = session_id,
                 selected_dealers = ?selected_dealer_ids,
-                "Reshare: selector re-announcing frozen participant set"
+                "Reshare: ignoring share ack after participant set already frozen"
             );
+            return Ok(());
         }
+
+        tracing::info!(
+            session_id = session_id,
+            selected_dealers = ?selected_dealer_ids,
+            "Reshare: selector froze participant set"
+        );
 
         broadcast_reshare_participant_set(coord, attempt, &selected_dealer_ids).await?;
 
