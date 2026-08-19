@@ -4,6 +4,7 @@ package orbis.v0.dkg;
 
 service DkgService {
   rpc StartDkg(StartDkgRequest) returns (StartDkgResponse);
+  rpc GetDkgSessionStatus(GetDkgSessionStatusRequest) returns (GetDkgSessionStatusResponse);
 }
 
 message StartDkgRequest {
@@ -15,4 +16,34 @@ message StartDkgResponse {
   string status = 2;
   string message = 3;
   int64 created_at = 4;
+}
+
+// Fresh-DKG-only. Lets a client that called StartDkg poll for the outcome of a
+// ceremony that fails after the RPC has already returned (e.g. a stalled
+// cryptographic phase), including which committee member(s) caused it — the
+// original StartDkg response carries no failure information at all.
+message GetDkgSessionStatusRequest {
+  string ring_id = 1;
+}
+
+enum DkgSessionStatus {
+  DKG_SESSION_STATUS_UNSPECIFIED = 0;
+  DKG_SESSION_STATUS_IN_PROGRESS = 1;
+  DKG_SESSION_STATUS_COMPLETED = 2;
+  DKG_SESSION_STATUS_FAILED = 3;
+  DKG_SESSION_STATUS_NOT_FOUND = 4;
+}
+
+message MissingDkgParticipant {
+  uint32 node_id = 1;   // 1-based committee index, for log/support correlation
+  string node_key = 2;  // Matches an entry in this ring's peer_node_keys
+}
+
+message GetDkgSessionStatusResponse {
+  string session_id = 1;
+  DkgSessionStatus status = 2;
+  string stage = 3;  // e.g. "preparing" | "commitment_hashes" | "commitments" | "share_exchange"; empty unless status == FAILED
+  repeated MissingDkgParticipant missing_participants = 4;
+  string reason = 5;
+  int64 failed_at = 6;  // unix seconds; 0 unless status == FAILED
 }

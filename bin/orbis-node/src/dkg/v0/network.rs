@@ -6,6 +6,7 @@
 //! topic. Fresh DKG, refresh, and reshare all use this transport.
 
 use async_trait::async_trait;
+use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bytes::Bytes;
 use futures::{stream::FuturesUnordered, StreamExt};
 use network::{Connection, Message, PeerId, ProtocolHandler, PubSubEvent, SignedPayload, Topic};
@@ -17,9 +18,10 @@ use tokio::time::{sleep, timeout, Duration, Instant};
 
 use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
-    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE, DKG_MAX_REPAIR_BACKOFF,
-    DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT, DKG_REPAIR_STALL_INTERVAL,
-    DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE, PEER_RESPONSE_TIMEOUT,
+    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
+    DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
+    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, JWT_CLOCK_SKEW_LEEWAY_SECS,
+    MAX_DKG_COMMITTEE_SIZE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT,
     PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
@@ -48,7 +50,7 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
-    ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
+    ring_payload_matches_ring_key, validate_dkg_claims, validate_fresh_dkg_ring_payload,
 };
 use crate::dkg::v0::messages::{
     ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
@@ -56,7 +58,8 @@ use crate::dkg::v0::messages::{
 #[cfg(test)]
 use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
-    MessageProcessingClaim, PublicBatchRecordOutcome, PublicContributionRecordOutcome,
+    DkgFailureStage, DkgPhase, FailedDkgSessionRecord, MessageProcessingClaim,
+    MissingDkgParticipant, PublicBatchRecordOutcome, PublicContributionRecordOutcome,
     PublicRepairClaimOutcome, TopicTaskDisposition, TopologyAckRecordOutcome,
     TransportActivationOutcome, TransportBeginOutcome, TransportConfigureOutcome,
 };
@@ -1349,6 +1352,7 @@ fn control_request_scope(
         DkgControlMessage::StartFresh { .. } => ("start-fresh", None, None),
         DkgControlMessage::StartReshare { .. } => ("start-reshare", None, None),
         DkgControlMessage::StartRefresh { .. } => ("start-refresh", None, None),
+        DkgControlMessage::GetSessionStatus { .. } => ("get-session-status", None, None),
         DkgControlMessage::Prepare(prepare) => (
             "prepare",
             Some(prepare.ceremony_id),
@@ -1617,6 +1621,7 @@ fn dkg_error_category(error: &DkgError) -> &'static str {
         DkgError::ShareVerificationFailed(_) => "share_verification_failed",
         DkgError::InsufficientPeers { .. } => "insufficient_peers",
         DkgError::NetworkConnection(_) | DkgError::NetworkCommunication(_) => "network_error",
+        DkgError::BarrierFailure { .. } => "barrier_failure",
         DkgError::Serialization(_) | DkgError::Deserialization(_) => "serialization_error",
         DkgError::Crypto(_)
         | DkgError::Storage(_)
@@ -1654,6 +1659,7 @@ fn is_client_forwarded_start_request(request: &DkgControlMessage) -> bool {
         DkgControlMessage::StartFresh { .. }
             | DkgControlMessage::StartReshare { .. }
             | DkgControlMessage::StartRefresh { .. }
+            | DkgControlMessage::GetSessionStatus { .. }
     )
 }
 
@@ -2414,6 +2420,10 @@ where
                 attempt_id,
             })
         }
+        DkgControlMessage::GetSessionStatus {
+            ring_id,
+            token_string,
+        } => coordinate_dkg_session_status(state, routes, ring_id, token_string).await,
         DkgControlMessage::StartReshare {
             ring_id,
             expected_ring_pk,
@@ -3984,6 +3994,141 @@ where
     }
 }
 
+/// Fresh-DKG-only status query for a client that called `start_fresh`/`StartDkg` and wants to
+/// know what happened to a ceremony that failed after the RPC already returned "started" (or
+/// during the barrier, if the caller's own connection dropped before receiving that error).
+/// Forwards to the canonical leader exactly like `start_fresh`, since only the leader ever
+/// observes a barrier-phase failure and only the leader's `failed_sessions` record is
+/// authoritative — a follower has no way to know why a ceremony it never led failed.
+pub async fn fetch_dkg_session_status<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    token_string: String,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if leader == state.node_key {
+        return coordinate_dkg_session_status(state, routes, ring_id, token_string).await;
+    }
+    let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_peer = resolved
+        .iter()
+        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.as_str()))
+        .ok_or_else(|| DkgError::InvalidState("canonical leader route is missing".into()))?;
+    control_request_with_timeout(
+        &state,
+        routes,
+        leader_peer,
+        DkgControlMessage::GetSessionStatus {
+            ring_id,
+            token_string,
+        },
+        PEER_RESPONSE_TIMEOUT,
+    )
+    .await
+}
+
+/// Leader-local status lookup: a queryable failure record takes priority (it's only ever
+/// written for an attempt that is no longer live), then a still-live session in `states`, then
+/// `NotFound` for anything neither knows about (never started, or aged out of both).
+///
+/// Unlike `coordinate_fresh` (whose forwarded `token_string` is instead validated deeper in the
+/// flow, once per recipient, as part of accepting `Prepare`), this is a direct point answer with
+/// no further validated pipeline downstream — so the JWT is validated here, on the wire, before
+/// answering. `req.ring_id` is deliberately NOT checked against `validate_fresh_dkg_ring_payload`
+/// (which rejects a ring whose `ring_pk` is already set): unlike starting a ceremony, querying
+/// its status must still work for a ring whose Fresh DKG has already completed.
+async fn coordinate_dkg_session_status<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    token_string: String,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+{
+    let current_time = current_unix_time().map_err(DkgError::SystemTime)?;
+    let token: BearerToken<DkgClaims> = resolve_jwt_did(
+        &token_string,
+        current_time,
+        MAX_TOKEN_LIFETIME_SECS,
+        MAX_JWT_BYTES,
+        JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .map_err(|error| DkgError::Unauthorized(format!("JWT validation failed: {error}")))?;
+    validate_dkg_claims(&token, &ring_id)?;
+    // Confirms the ring exists and this leader is still authoritative for its protocol
+    // version — the narrower check the plan called for, deliberately not
+    // `validate_fresh_dkg_ring_payload`'s "must still be pending" rule.
+    read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+
+    let session_id = derive_fresh_dkg_session_id(&ring_id)?;
+    if let Some(record) = state.dkg_session_state.failed_session(&session_id).await {
+        tracing::debug!(
+            session_id,
+            ring_id = %record.ring_id,
+            attempt_id = ?record.attempt_id.map(|id| hex::encode(id.0)),
+            stage = record.stage.as_str(),
+            "returning queryable Fresh DKG failure record"
+        );
+        return Ok(DkgControlMessage::SessionStatusResponse {
+            session_id: Some(session_id),
+            status: transport::DkgSessionStatusValue::Failed,
+            stage: record.stage.as_str().to_string(),
+            missing: record
+                .missing
+                .into_iter()
+                .map(|p| (p.node_id, p.node_key))
+                .collect(),
+            reason: record.reason,
+            failed_at: record
+                .failed_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64),
+        });
+    }
+    if let Some(phase) = state
+        .dkg_session_state
+        .with_state(&session_id, |s| s.phase)
+        .await
+    {
+        let status = if phase == DkgPhase::Phase4Complete {
+            transport::DkgSessionStatusValue::Completed
+        } else {
+            transport::DkgSessionStatusValue::InProgress
+        };
+        return Ok(DkgControlMessage::SessionStatusResponse {
+            session_id: Some(session_id),
+            status,
+            stage: String::new(),
+            missing: Vec::new(),
+            reason: String::new(),
+            failed_at: None,
+        });
+    }
+    Ok(DkgControlMessage::SessionStatusResponse {
+        session_id: None,
+        status: transport::DkgSessionStatusValue::NotFound,
+        stage: String::new(),
+        missing: Vec::new(),
+        reason: String::new(),
+        failed_at: None,
+    })
+}
+
 /// Coordinate a due PSS refresh. Any current-committee member may call
 /// `start_refresh`; nonleaders forward to the one canonical leader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4663,6 +4808,26 @@ where
 {
     let result = coordinate_prepared_inner(state.clone(), routes, prepare.clone()).await;
     if let Err(error) = &result {
+        if matches!(prepare.kind, SessionKind::Fresh) {
+            if let DkgError::BarrierFailure {
+                barrier,
+                failed_peers,
+            } = error
+            {
+                state
+                    .dkg_session_state
+                    .record_failed_session(FailedDkgSessionRecord {
+                        session_id: prepare.ceremony_id.0,
+                        ring_id: prepare.ring_id.clone(),
+                        attempt_id: Some(prepare.attempt_id),
+                        stage: DkgFailureStage::Preparing,
+                        missing: resolve_barrier_failure_participants(&prepare, failed_peers),
+                        reason: format!("{barrier} barrier: {error}"),
+                        failed_at: std::time::SystemTime::now(),
+                    })
+                    .await;
+            }
+        }
         abort_prepared_attempt(&state, routes, &prepare, error.to_string()).await;
         state
             .dkg_session_state
@@ -4674,6 +4839,32 @@ where
             .await;
     }
     result
+}
+
+/// Resolve barrier-fan-out failures (peer route + reason) to client-facing
+/// participant identity via the current committee's index-aligned
+/// `node_keys`/`peer_routes`/`node_id_assignments` — no extra bulletin I/O
+/// needed since `prepare` already carries everything.
+fn resolve_barrier_failure_participants(
+    prepare: &PrepareSession,
+    failed_peers: &[(String, String)],
+) -> Vec<MissingDkgParticipant> {
+    let current = &prepare.committees.current;
+    failed_peers
+        .iter()
+        .filter_map(|(peer_route, _reason)| {
+            let index = current
+                .peer_routes
+                .iter()
+                .position(|route| route == peer_route)?;
+            let node_key = current.node_keys.get(index)?;
+            let node_id = current.node_id_assignments.get(node_key)?;
+            Some(MissingDkgParticipant {
+                node_id: *node_id,
+                node_key: node_key.clone(),
+            })
+        })
+        .collect()
 }
 
 const RESHARE_DEALER_INCLUSION_GRACE: Duration = Duration::from_secs(3);
@@ -4749,18 +4940,22 @@ where
             let peer = peer.clone();
             let prepare = prepare.clone();
             tasks.spawn(async move {
-                let response = retry_preparation_control_classified(
+                let result = retry_preparation_control_classified(
                     &state,
                     routes,
                     &peer,
-                    DkgControlMessage::Prepare(Box::new(prepare)),
+                    DkgControlMessage::Prepare(Box::new(prepare.clone())),
                     deadline,
                 )
                 .await;
-                (peer, response)
+                (peer, result)
             });
         }
-        let mut first_error = None;
+        // Drain the whole JoinSet unconditionally instead of returning on the first
+        // failure, so a second (or third) bad peer in the same barrier isn't silently
+        // dropped — mirrors how the TopologyProbe barrier below already accumulates
+        // every missing peer instead of stopping at the first.
+        let mut failed: Vec<(String, String)> = Vec::new();
         let mut offline = Vec::new();
         while let Some(result) = tasks.join_next().await {
             let (peer, response) =
@@ -4770,7 +4965,7 @@ where
                     if let Err(error) =
                         validate_prepared_response(state, routes, prepare, &peer, response).await
                     {
-                        first_error.get_or_insert(error);
+                        failed.push((peer, error.to_string()));
                     }
                 }
                 Err(error) => {
@@ -4783,7 +4978,7 @@ where
                             offline.push(participant);
                         }
                     }
-                    first_error.get_or_insert_with(|| error.into_error());
+                    failed.push((peer, error.into_error().to_string()));
                 }
             }
         }
@@ -4799,8 +4994,11 @@ where
                 ),
             );
         }
-        if let Some(error) = first_error {
-            return Err(error);
+        if !failed.is_empty() {
+            return Err(DkgError::BarrierFailure {
+                barrier: "prepare",
+                failed_peers: failed,
+            });
         }
         let mut dealers: Vec<_> = prepare
             .committees
@@ -5295,7 +5493,9 @@ where
             (peer, result)
         });
     }
-    let mut activation_error = None;
+    // Accumulate every failing peer instead of returning on the first (see the
+    // matching comment on the Prepare fan-out above).
+    let mut activation_failures: Vec<(String, String)> = Vec::new();
     let mut activation_offline = Vec::new();
     while let Some(result) = activations.join_next().await {
         let (peer, response) =
@@ -5324,9 +5524,10 @@ where
                 .await;
             }
             Ok(response) => {
-                activation_error.get_or_insert_with(|| {
-                    DkgError::ProtocolError(format!("invalid activation response: {response:?}"))
-                });
+                activation_failures.push((
+                    peer,
+                    format!("invalid activation response: {response:?}"),
+                ));
             }
             Err(error) => {
                 if error.is_unreachable() {
@@ -5336,7 +5537,7 @@ where
                         activation_offline.push(participant);
                     }
                 }
-                activation_error.get_or_insert_with(|| error.into_error());
+                activation_failures.push((peer, error.into_error().to_string()));
             }
         }
     }
@@ -5352,8 +5553,11 @@ where
             ),
         );
     }
-    if let Some(error) = activation_error {
-        return Err(error);
+    if !activation_failures.is_empty() {
+        return Err(DkgError::BarrierFailure {
+            barrier: "activate",
+            failed_peers: activation_failures,
+        });
     }
 
     match state
@@ -5410,7 +5614,9 @@ where
             (peer, result)
         });
     }
-    let mut begin_error = None;
+    // Accumulate every failing peer instead of returning on the first (see the
+    // matching comment on the Prepare fan-out above).
+    let mut begin_failures: Vec<(String, String)> = Vec::new();
     let mut begin_offline = Vec::new();
     while let Some(result) = beginnings.join_next().await {
         let (peer, response) =
@@ -5439,9 +5645,7 @@ where
                 .await;
             }
             Ok(response) => {
-                begin_error.get_or_insert_with(|| {
-                    DkgError::ProtocolError(format!("invalid begin response: {response:?}"))
-                });
+                begin_failures.push((peer, format!("invalid begin response: {response:?}")));
             }
             Err(error) => {
                 if error.is_unreachable() {
@@ -5451,7 +5655,7 @@ where
                         begin_offline.push(participant);
                     }
                 }
-                begin_error.get_or_insert_with(|| error.into_error());
+                begin_failures.push((peer, error.into_error().to_string()));
             }
         }
     }
@@ -5467,8 +5671,11 @@ where
             ),
         );
     }
-    if let Some(error) = begin_error {
-        return Err(error);
+    if !begin_failures.is_empty() {
+        return Err(DkgError::BarrierFailure {
+            barrier: "begin",
+            failed_peers: begin_failures,
+        });
     }
     crate::metrics::record_dkg_control_readiness(
         ceremony_kind,
@@ -5497,7 +5704,7 @@ async fn abort_prepared_attempt<D>(
     .await;
 }
 
-async fn broadcast_attempt_abort<D>(
+pub(crate) async fn broadcast_attempt_abort<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     participant_routes: Vec<String>,
@@ -7473,6 +7680,16 @@ where
                     origin = ?origin,
                     "origin has not retained the requested public contribution"
                 );
+                // Soft-stall gate: only counts once direct-origin repair (this
+                // function) has actually been attempted and come up short, not
+                // on the first ordinary miss.
+                state
+                    .dkg_session_state
+                    .record_peer_no_progress(
+                        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+                        origin.node_id,
+                    )
+                    .await;
             }
             OriginPublicRepairOutcome::Unavailable {
                 origin,
@@ -7491,6 +7708,13 @@ where
                     detail,
                     "public contribution origin is unavailable during direct repair"
                 );
+                state
+                    .dkg_session_state
+                    .record_peer_no_progress(
+                        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+                        origin.node_id,
+                    )
+                    .await;
             }
             OriginPublicRepairOutcome::Violation(violation) => {
                 return Err(PublicRepairFailure::Violation(violation));
@@ -11489,6 +11713,13 @@ where
                     %peer,
                     "private DKG pair exchange completed"
                 );
+                state
+                    .dkg_session_state
+                    .clear_peer_no_progress(
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        remote_participant.node_id,
+                    )
+                    .await;
                 if let Some(completion) = completion {
                     drive_private_completion(state.clone(), routes, completion).await?;
                 }
@@ -11526,6 +11757,18 @@ where
                     }
                 }
                 crate::metrics::record_dkg_transport_event("private", "retry");
+                // Soft-stall gate: unlike `last_failure_was_unreachable`/`peer_proved_reachable`
+                // above (local to this one retry loop, used only for the terminal
+                // node_offline-report decision at the hard deadline), this streak persists in
+                // session state across the whole attempt so the leader's soft-stall scan can
+                // detect a genuinely failing peer well before that deadline.
+                state
+                    .dkg_session_state
+                    .record_peer_no_progress(
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        remote_participant.node_id,
+                    )
+                    .await;
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 let retry_delay = private_retry_delay(
                     message_id,

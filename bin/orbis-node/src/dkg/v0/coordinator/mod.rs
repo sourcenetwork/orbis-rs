@@ -27,6 +27,7 @@ pub(crate) mod refresh_health_check;
 pub(crate) mod reporting;
 mod reshare;
 mod ring_storage;
+pub(crate) mod soft_stall;
 mod state_machine;
 pub(crate) mod types;
 

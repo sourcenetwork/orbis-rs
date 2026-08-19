@@ -162,6 +162,31 @@ pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 /// cleanup never runs.
 pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
 
+/// Cadence of the Fresh-DKG soft-stall scan. Matches `DKG_REPAIR_STALL_INTERVAL`
+/// so soft-stall detection is checked at least as often as repair itself runs.
+pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+
+/// How long a peer must have been failing repair/private-exchange retries
+/// before the leader treats a Fresh DKG crypto phase as genuinely stalled and
+/// aborts early rather than waiting for `DKG_ATTEMPT_TIMEOUT`. Public-plane
+/// repair backs off to `DKG_MAX_REPAIR_BACKOFF` (30s) after a failed attempt,
+/// so this comfortably spans at least two failed repair cycles (10s initial +
+/// 30s + margin) before concluding the peer, not transient Gossip loss, is
+/// the problem.
+pub const DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD: Duration = Duration::from_secs(60);
+
+/// Minimum consecutive failed repair/retry attempts against one peer before
+/// it counts toward soft-stall, in addition to the elapsed-time gate above.
+/// Prevents a single missed repair cycle (or a scan racing a phase's very
+/// first attempt) from being treated as a stall.
+pub const DKG_SOFT_STALL_MIN_REPAIR_ATTEMPTS: u32 = 2;
+
+/// TTL for a queryable Fresh DKG failure record after the attempt is torn
+/// down. Long enough for a client polling `GetDkgSessionStatus` on a normal
+/// interval to reliably observe the failure once before it ages out; short
+/// enough not to accumulate unboundedly across many retried ceremonies.
+pub const DKG_FAILED_SESSION_RECORD_TTL: Duration = Duration::from_secs(10 * 60);
+
 // ============================================================================
 // Ring Finalization Constants
 // ============================================================================
