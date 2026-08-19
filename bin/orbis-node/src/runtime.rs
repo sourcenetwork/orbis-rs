@@ -17,6 +17,7 @@ use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
 use std::{
+    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -24,7 +25,10 @@ use std::{
         Arc,
     },
 };
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tonic_web::GrpcWebLayer;
 // Concrete crypto implementations
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -76,10 +80,6 @@ impl BootstrapInfoServer {
         self.local_addr
     }
 
-    pub(crate) fn set_status(&self, status: NodeStatus) {
-        self.status.store(status as i32, Ordering::SeqCst);
-    }
-
     pub(crate) async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(());
         self.task.await??;
@@ -110,7 +110,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         network_impl = NetworkImpl::name(),
     );
 
-    async move {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_signal = async move {
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("Received shutdown signal");
+        let _ = shutdown_tx.send(true);
+        Ok::<(), std::io::Error>(())
+    };
+
+    let lifecycle = async move {
         // List implementations used for sanity
         tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
         tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
@@ -213,14 +221,15 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "Bootstrap info service started while waiting for funding"
         );
 
-        let init_result = async {
-            bootstrap_info_server.set_status(NodeStatus::ConnectingToChain);
+        let bootstrap_status = bootstrap_info_server.status.clone();
+        let init_result = async move {
+            bootstrap_status.store(NodeStatus::ConnectingToChain as i32, Ordering::SeqCst);
 
             // For integration tests, this funds the account, this is handled differently live
             // Only fund if both the feature is enabled AND we're in the integration test network
             #[cfg(feature = "integration-test")]
             {
-                bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+                bootstrap_status.store(NodeStatus::WaitingForFunding as i32, Ordering::SeqCst);
                 // Build chain config with the provided RPC/REST URLs
                 let fund_config = ChainConfigBuilder::default()
                     .chain_id(args.chain_id.clone())
@@ -235,7 +244,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-            bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+            bootstrap_status.store(NodeStatus::WaitingForFunding as i32, Ordering::SeqCst);
             let bulletin: Arc<BulletinImpl> = Arc::new(
                 BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
                     .await
@@ -244,7 +253,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
                 .await
                 .map_err(|e| format!("Failed to ensure node info: {}", e))?;
-            bootstrap_info_server.set_status(NodeStatus::Funded);
+            bootstrap_status.store(NodeStatus::Funded as i32, Ordering::SeqCst);
 
             let config = NodeConfig {
                 args,
@@ -259,13 +268,32 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             init_node(config).await
         };
 
-        let init_result = init_result.await;
-        let node = shutdown_bootstrap_after_init(bootstrap_info_server, init_result).await?;
+        let Some(node) = complete_initialization_or_shutdown(
+            bootstrap_info_server,
+            init_result,
+            shutdown_rx.clone(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
 
-        run_server(node).await
+        run_server(node, shutdown_rx).await
     }
-    .instrument(root_span)
-    .await
+    .instrument(root_span);
+
+    tokio::pin!(shutdown_signal);
+    tokio::pin!(lifecycle);
+    tokio::select! {
+        // Polling the signal future first installs the OS handler before the lifecycle reaches
+        // the blocking interactive password prompt.
+        biased;
+        signal_result = &mut shutdown_signal => {
+            signal_result.map_err(|error| format!("Failed to listen for shutdown signal: {error}"))?;
+            lifecycle.await
+        },
+        result = &mut lifecycle => result,
+    }
 }
 
 /// Start an info-only gRPC server before the full node is ready.
@@ -328,6 +356,43 @@ pub(crate) async fn shutdown_bootstrap_after_init(
                 "Bootstrap info service shutdown failed while handling initialization error"
             );
             Err(init_err)
+        }
+    }
+}
+
+/// Wait for node initialization or stop it promptly when process shutdown is requested.
+pub(crate) async fn complete_initialization_or_shutdown<F>(
+    bootstrap_info_server: BootstrapInfoServer,
+    init_result: F,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<Option<InitializedNode>, Box<dyn std::error::Error>>
+where
+    F: Future<Output = Result<InitializedNode, Box<dyn std::error::Error>>>,
+{
+    tokio::pin!(init_result);
+
+    tokio::select! {
+        init_result = &mut init_result => {
+            shutdown_bootstrap_after_init(bootstrap_info_server, init_result)
+                .await
+                .map(Some)
+        }
+        _ = wait_for_shutdown(shutdown_rx) => {
+            tracing::info!("Shutdown requested during node initialization; stopping bootstrap info service");
+            bootstrap_info_server.shutdown().await?;
+            Ok(None)
+        }
+    }
+}
+
+async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
+    if *shutdown_rx.borrow() {
+        return;
+    }
+
+    while shutdown_rx.changed().await.is_ok() {
+        if *shutdown_rx.borrow() {
+            return;
         }
     }
 }
@@ -399,7 +464,10 @@ pub(crate) async fn init_node(
 }
 
 /// Run the gRPC server with the initialized node
-async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    node: InitializedNode,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
@@ -529,8 +597,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         result = grpc_server => {
             result
         }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received shutdown signal");
+        _ = wait_for_shutdown(shutdown_rx) => {
             Ok(())
         }
     };

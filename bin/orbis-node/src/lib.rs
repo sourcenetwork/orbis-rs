@@ -21,8 +21,8 @@ pub use helpers::launch::Args;
 pub use runtime::run;
 #[cfg(test)]
 pub(crate) use runtime::{
-    init_node, shutdown_bootstrap_after_init, start_bootstrap_info_server, InitializedNode,
-    NodeConfig,
+    complete_initialization_or_shutdown, init_node, shutdown_bootstrap_after_init,
+    start_bootstrap_info_server, InitializedNode, NodeConfig,
 };
 
 #[cfg(test)]

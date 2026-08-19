@@ -2,6 +2,7 @@
 
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
+    complete_initialization_or_shutdown,
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_MESSAGE_BYTES,
         MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
@@ -21,7 +22,7 @@ use crate::{
     sign::v0::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
-    Args, NodeConfig,
+    Args, InitializedNode, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
@@ -56,7 +57,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::oneshot,
+    sync::{oneshot, watch},
     task::JoinHandle,
 };
 use tonic::Code;
@@ -925,6 +926,51 @@ async fn test_bootstrap_info_server_shutdown_on_init_error() {
 
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)
         .expect("bootstrap port should be released after init failure");
+    drop(incoming);
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port() {
+    let (network, local_storage, db_path, _) = make_bootstrap_identity(
+        "test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port",
+    )
+    .await;
+    let bootstrap = start_bootstrap_info_server(
+        "127.0.0.1:0".parse().expect("bootstrap bind addr"),
+        network,
+        local_storage,
+        CorsPolicy::Disabled,
+    )
+    .expect("start bootstrap info server");
+    let grpc_addr = bootstrap.local_addr();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (init_started_tx, init_started_rx) = oneshot::channel();
+    let pending_initialization = async move {
+        let _ = init_started_tx.send(());
+        std::future::pending::<Result<InitializedNode, Box<dyn std::error::Error>>>().await
+    };
+    let shutdown_task = tokio::spawn(async move {
+        init_started_rx
+            .await
+            .expect("pending initialization should start");
+        shutdown_tx.send(true).expect("request node shutdown");
+    });
+
+    let result =
+        complete_initialization_or_shutdown(bootstrap, pending_initialization, shutdown_rx)
+            .await
+            .expect("shutdown pending initialization cleanly");
+    shutdown_task.await.expect("join shutdown request task");
+    assert!(
+        result.is_none(),
+        "shutdown should cancel node initialization"
+    );
+
+    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)
+        .expect("bootstrap port should be released after shutdown");
     drop(incoming);
 
     cleanup_db(&db_path);
