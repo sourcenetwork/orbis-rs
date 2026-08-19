@@ -7,6 +7,7 @@ pub async fn record_and_ack_valid_reshare_share<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let ack = coord
         .app_state
@@ -78,6 +79,7 @@ fn spawn_reshare_share_ack_delivery<D>(
     selector_peer_id: String,
 ) where
     D: CoordinatorDkg + Send + Sync,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let coord = DkgCoordinator::with_routes(coord.app_state.clone(), coord.routes);
     tokio::spawn(async move {
@@ -100,11 +102,42 @@ async fn deliver_reshare_share_ack_until_done<D>(
     selector_peer_id: String,
 ) where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let session_id = attempt_key.session_id();
+    let Some(hard_deadline) = coord
+        .app_state
+        .dkg_session_state
+        .transport_hard_deadline(&session_id, attempt_key.attempt_id)
+        .await
+    else {
+        return;
+    };
     let mut delivery_attempt = 0usize;
+    let mut last_failure_was_unreachable = false;
+    let mut selector_proved_reachable = false;
     loop {
         if !reshare_share_ack_still_needed(&coord, attempt_key).await {
+            return;
+        }
+        if Instant::now() >= hard_deadline {
+            if last_failure_was_unreachable && !selector_proved_reachable {
+                spawn_pss_offline_for_attempt(
+                    &coord.app_state,
+                    coord.routes,
+                    attempt_key,
+                    PssOfflineStage::ReshareShareAck,
+                    [ParticipantRef::next(1)],
+                )
+                .await;
+            }
+            tracing::warn!(
+                session_id,
+                receiver_node_id,
+                dealer_id,
+                selector_peer_id = %selector_peer_id,
+                "Reshare: share acknowledgement delivery reached the hard attempt deadline"
+            );
             return;
         }
 
@@ -130,13 +163,15 @@ async fn deliver_reshare_share_ack_until_done<D>(
                 return;
             }
             Err(e) => {
+                last_failure_was_unreachable = e.is_unreachable();
+                selector_proved_reachable |= e.proves_reachable();
                 tracing::warn!(
                     session_id = session_id,
                     receiver_node_id = receiver_node_id,
                     dealer_id = dealer_id,
                     selector_peer_id = %selector_peer_id,
                     attempt = delivery_attempt,
-                    error = %e,
+                    error = %e.error(),
                     "Reshare: failed to deliver valid-share acknowledgement to selector, retrying"
                 );
             }
@@ -287,19 +322,30 @@ where
         .map_err(|error| attempt_state_error(attempt, error))??;
 
     if let Some((selected_dealer_ids, _new_route_peer_ids, newly_frozen)) = selection {
-        if newly_frozen {
-            tracing::info!(
-                session_id = session_id,
-                selected_dealers = ?selected_dealer_ids,
-                "Reshare: selector froze participant set"
-            );
-        } else {
+        if !newly_frozen {
+            // The participant set was already frozen and broadcast by an
+            // earlier (threshold-reaching) ack; this ack is a late/redundant
+            // arrival. Do not re-broadcast: `submit_public_contribution`
+            // stamps a fresh `signed_at` on every call, so re-signing the
+            // same logical selection would produce a distinct signed
+            // message from this origin for the same phase, which the
+            // leader's contribution ledger correctly treats as equivocation
+            // and aborts the attempt over. Nodes that missed the original
+            // broadcast recover it via completeness repair against the
+            // retained bytes instead.
             tracing::debug!(
                 session_id = session_id,
                 selected_dealers = ?selected_dealer_ids,
-                "Reshare: selector re-announcing frozen participant set"
+                "Reshare: ignoring share ack after participant set already frozen"
             );
+            return Ok(());
         }
+
+        tracing::info!(
+            session_id = session_id,
+            selected_dealers = ?selected_dealer_ids,
+            "Reshare: selector froze participant set"
+        );
 
         broadcast_reshare_participant_set(coord, attempt, &selected_dealer_ids).await?;
 

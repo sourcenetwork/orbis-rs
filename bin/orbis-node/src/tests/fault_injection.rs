@@ -35,7 +35,13 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{blockchain::ChainConfig, SourceHubTestContainer};
+use common::{
+    blockchain::{
+        events::ReportEventSubscription, ChainConfig, SourceHubClient, TxSigner,
+        TEST_ACCOUNT_HEX_KEY,
+    },
+    SourceHubTestContainer,
+};
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
@@ -65,6 +71,11 @@ struct FaultableNodeHandle {
     peer_hex: String,
     /// Fault controller for this node's outbound connections.
     fault_ctrl: FaultNetworkController,
+    /// `None` when `reshare_interval_secs` is 0. Dropping this (implicitly, with the rest of
+    /// the handle) closes its internal shutdown channel, which is what actually stops the
+    /// scheduler's background task — see the comment where it's spawned for why this needs to
+    /// be spawned here at all rather than coming for free from `init_node`.
+    _pss_scheduler: Option<crate::pss::v0::PssSchedulerHandle>,
 }
 
 impl Drop for FaultableNodeHandle {
@@ -135,6 +146,20 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 async fn setup_fault_three_node_network(
     db_prefix: &str,
     base_port: u16,
+) -> FaultableThreeNodeNetwork {
+    setup_fault_three_node_network_with_reshare_interval(db_prefix, base_port, 0).await
+}
+
+/// Same as [`setup_fault_three_node_network`], but lets the caller enable the
+/// background PSS scheduler (`reshare_interval_secs = 0` disables it
+/// entirely — see `pss::spawn_pss_scheduler`'s own doc comment). Needed by
+/// any test that expects a pending on-chain reshare/refresh to be picked up
+/// and driven automatically, the way a real node would, rather than relying
+/// on an explicit client-triggered ceremony like `do_dkg`.
+async fn setup_fault_three_node_network_with_reshare_interval(
+    db_prefix: &str,
+    base_port: u16,
+    reshare_interval_secs: u64,
 ) -> FaultableThreeNodeNetwork {
     let chain = SourceHubTestContainer::new();
     let chain_config = chain.chain_config();
@@ -227,7 +252,7 @@ async fn setup_fault_three_node_network(
                 metrics_addr: None,
                 loki_url: None,
                 runtime_base_path: None,
-                reshare_interval_secs: 0,
+                reshare_interval_secs,
                 network_private_routes_only: false,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
@@ -244,6 +269,14 @@ async fn setup_fault_three_node_network(
         };
 
         let node = init_node(config).await.expect("init_node");
+        // `init_node` alone never starts this — the production binary only spawns it from
+        // `run_server` (`runtime.rs`), which this harness deliberately doesn't call (it builds
+        // its own minimal tonic server in `spawn_test_grpc_server` instead of the full
+        // production server loop). Must spawn it here, before `node` moves into
+        // `spawn_test_grpc_server`, for any test that needs a pending on-chain reshare/refresh
+        // to be picked up and driven automatically.
+        let pss_scheduler =
+            crate::pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
         let task = spawn_test_grpc_server(node);
 
         handles.push(FaultableNodeHandle {
@@ -254,6 +287,7 @@ async fn setup_fault_three_node_network(
             task,
             peer_hex,
             fault_ctrl,
+            _pss_scheduler: pss_scheduler,
         });
     }
 
@@ -941,5 +975,310 @@ async fn test_dkg_fails_when_node_unreachable() {
     println!(
         "DKG correctly failed with charlie blocked: {:?}",
         dkg_result.unwrap_err()
+    );
+}
+
+/// A private DKG-share pair partner that silently stalls every response (never
+/// hangs up, never replies) is reported `node_offline` once the ceremony's
+/// hard attempt deadline passes — distinct from `test_dkg_repairs_gossip_loss_
+/// and_private_disconnects` above, which stalls exactly one response and
+/// proves the retry path recovers. Here every response stalls for the whole
+/// ceremony, so retries never succeed and the sender's terminal-offline check
+/// (`open_private_pair` in `network.rs`) fires at the deadline.
+///
+/// Fault injection here only wraps a node's own *outbound* connections, not
+/// its inbound/server side, and is scoped by protocol, not by peer — so it
+/// can't target "peer X's responses to peer Y" directly. Instead this stalls
+/// the canonical-middle node's outbound view: in a 3-node ring the two lower
+/// node IDs each open exactly one private pair with a higher ID, and the
+/// middle ID opens a stream only to the highest ID (it's a pure responder for
+/// the lowest ID's pair) — so stalling the middle node's outbound private
+/// responses deterministically implicates only the highest-ID node. This
+/// reasoning carries over unchanged to a same-committee Reshare below:
+/// `CeremonyConfig::canonical_pair_opener` resolves by comparing node *keys*
+/// rather than raw numeric IDs, but since old and new committees are
+/// identical here, Current- and Next-scope node IDs land in the same sorted
+/// order as Fresh DKG's, so it's the same three pairs.
+///
+/// Must be a Reshare, not a Fresh DKG, for the same reason as
+/// `test_reshare_missing_topology_ack_triggers_on_chain_report`:
+/// `spawn_pss_offline_observations` unconditionally skips `SessionKind::
+/// Fresh` because a report is threshold-signed under the ring's own key,
+/// which a Fresh DKG that stalls has never produced. The accused (highest
+/// key) can never be the reshare's canonical leader (lowest key), so unlike
+/// that sibling test there's no leader/accused collision to avoid here — the
+/// existing sort-by-key selection already guarantees it.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_private_pair_terminal_stall_triggers_on_chain_report() {
+    let net = setup_fault_three_node_network_with_reshare_interval(
+        "fault_reshare_private_terminal",
+        51078,
+        1,
+    )
+    .await;
+
+    let mut ordered: Vec<(&str, &FaultableNodeHandle)> = vec![
+        (net.node_keys[0].as_str(), &net.alice),
+        (net.node_keys[1].as_str(), &net.bob),
+        (net.node_keys[2].as_str(), &net.charlie),
+    ];
+    ordered.sort_by(|left, right| left.0.cmp(right.0));
+    let (_lowest_key, lowest) = ordered[0];
+    let (_middle_key, middle) = ordered[1];
+    let (highest_key, _highest) = ordered[2];
+
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+
+    println!("Running the initial DKG so the ring has a real key to reshare...");
+    cli_tool::do_dkg(lowest.grpc_endpoint.clone(), ring_id.clone())
+        .await
+        .expect("initial DKG should succeed");
+    wait_for_ring_finalized(&net.chain_config, &ring_id, Duration::from_secs(90)).await;
+
+    println!("The middle node's outbound pair to the highest node will stall for the reshare...");
+    // Every private-plane response the middle node's own outbound connections
+    // receive stalls for the rest of the ceremony (a huge pass-through-0
+    // count), well past PEER_RESPONSE_TIMEOUT, so retries never succeed and
+    // the sender never observes a real reply from its higher-ID partner.
+    middle
+        .fault_ctrl
+        .stall_protocol_responses_after(
+            network::V0.dkg_private_alpn,
+            0,
+            1000,
+            PEER_RESPONSE_TIMEOUT + Duration::from_secs(1),
+        )
+        .await;
+    // See test_reshare_missing_topology_ack_triggers_on_chain_report's doc comment: an
+    // independent co-signer separately health-probes the accused over a dedicated direct QUIC
+    // protocol before signing, unaffected by the private-plane stall above, and correctly
+    // refuses to sign against a peer it can still reach — block it on both non-accused members,
+    // since either could end up being asked to co-sign.
+    for signer in [lowest, middle] {
+        signer
+            .fault_ctrl
+            .fail_protocol_responses_after(network::V0.reporting_health_alpn, 0, 1000)
+            .await;
+    }
+
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
+        .await
+        .expect("connect report event subscription");
+
+    println!("Triggering reshare (same committee, new threshold)...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        ring_id.clone(),
+        net.node_keys.clone(),
+        Some(3u32),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    println!("Waiting for organic private-pair-stall EventReportAccepted on chain (up to 240s)...");
+    let event = sub
+        .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(240), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == highest_key
+        })
+        .await
+        .expect("stalled private pair should organically report the silent partner");
+
+    println!(
+        "Private-pair-stall report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, highest_key,
+        "the highest-ID node should be accused, since only the middle node's \
+         outbound pair to it was stalled"
+    );
+    assert_eq!(event.ring_id, ring_id, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert_ne!(
+        event.reporter_node_key, highest_key,
+        "the accused node should not be its own reporter"
+    );
+
+    let controller_client = SourceHubClient::with_signer(
+        net.chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, highest_key)
+        .await
+        .expect("query accused demerits");
+    assert!(
+        demerits > 0,
+        "silent private-pair partner should receive at least one demerit"
+    );
+}
+
+/// A committee member that never receives (hence never acks) the leader's
+/// Gossip topology probe during a **Reshare** is reported `node_offline` and
+/// the ceremony aborts at the preparation barrier — gated by
+/// `DKG_PREPARATION_TIMEOUT` (2 minutes, unaffected by the `DKG_ATTEMPT_
+/// TIMEOUT` test-mode shrink), not the ceremony's overall hard deadline.
+///
+/// This must be a Reshare (not a Fresh DKG): `spawn_pss_offline_observations`
+/// (`dkg/v0/coordinator/reporting.rs`) unconditionally skips
+/// `SessionKind::Fresh`, because every report is threshold-signed under the
+/// ring's own key (`sign_and_submit_report` → `SignCoordinator::
+/// initiate_signing`) — a Fresh DKG that fails before completing has no key
+/// yet to sign with, so a Fresh-DKG topology-ack failure can never
+/// organically produce a signed report. Reusing the same 3-node committee
+/// for both old and new (triggered by an ACP threshold-only change, no
+/// membership change) is the simplest way to get a Reshare with a real,
+/// already-completed ring key to sign under.
+///
+/// `drop_gossip_deliveries_after` drops every authenticated Gossip delivery
+/// the accused's own subscription receives, not just the topology probe —
+/// but nothing else is gossiped this early in a ceremony, so it's an
+/// effective stand-in for "the probe specifically never arrived." It's
+/// applied only after the initial DKG succeeds, so the accused participates
+/// normally in establishing the ring key and only goes silent for the
+/// reshare. The accused must not be the reshare's canonical leader — a
+/// leader self-acks its own topology probe immediately
+/// (`begin_topology_probe`) and never needs to receive it via Gossip, so
+/// blocking a leader's inbound Gossip would be a no-op (the ceremony
+/// completes normally in under a second and no report is ever due). Node
+/// keys are freshly randomized every run, so which physical node ends up as
+/// leader (`transport::canonical_leader`, `.min()` of the committee's keys)
+/// isn't fixed — the test picks whichever committee member is guaranteed
+/// *not* to be leader (the one with the largest key) as the accused.
+///
+/// Uses `setup_fault_three_node_network_with_reshare_interval` (not the
+/// plain helper) — a pending on-chain reshare is only ever picked up and
+/// driven by each node's own background PSS scheduler
+/// (`pss::spawn_pss_scheduler`), which every other test in this file
+/// deliberately disables (`reshare_interval_secs: 0`). Unlike Fresh DKG
+/// there is no explicit client RPC to start a reshare ceremony directly, so
+/// without a running scheduler the on-chain announcement here would never
+/// be discovered by anyone and the ceremony would simply never start.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_missing_topology_ack_triggers_on_chain_report() {
+    let net = setup_fault_three_node_network_with_reshare_interval(
+        "fault_reshare_topology_ack",
+        51084,
+        1,
+    )
+    .await;
+
+    // The reshare's canonical leader is whichever committee member has the lexicographically
+    // *smallest* node key (`transport::canonical_leader`, `.min()`) — a leader self-acks its own
+    // topology probe immediately (`begin_topology_probe` inserts itself before broadcasting) and
+    // never needs to receive it via Gossip at all, so blocking a leader's inbound Gossip is a
+    // no-op: the ceremony completes normally in well under a second and no report is ever due.
+    // Node keys are freshly randomized every run, so which of our three handles ends up as leader
+    // isn't fixed — accuse whichever one is guaranteed *not* to be it (the largest key) instead.
+    let handles = [&net.alice, &net.bob, &net.charlie];
+    let (accused_index, _) = net
+        .node_keys
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, key)| key.as_str())
+        .expect("three node keys");
+    let accused = handles[accused_index];
+    let accused_key = net.node_keys[accused_index].clone();
+    let signers: Vec<&FaultableNodeHandle> = handles
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != accused_index)
+        .map(|(_, handle)| *handle)
+        .collect();
+
+    let ring_id =
+        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
+
+    println!("Running the initial DKG so the ring has a real key to reshare...");
+    cli_tool::do_dkg(net.alice.grpc_endpoint.clone(), ring_id.clone())
+        .await
+        .expect("initial DKG should succeed");
+    wait_for_ring_finalized(&net.chain_config, &ring_id, Duration::from_secs(90)).await;
+
+    println!("The accused (non-leader) member will never see the reshare's topology probe...");
+    accused
+        .fault_ctrl
+        .drop_gossip_deliveries_after(0, usize::MAX)
+        .await;
+    // Blocking Gossip alone isn't enough to make the eventual `node_offline` report land:
+    // an independent co-signer separately health-probes the accused over a dedicated direct
+    // QUIC protocol (`reporting_health_alpn`, unaffected by the Gossip fault above) before
+    // signing, and correctly refuses to sign a report against a peer that's still reachable
+    // (`require_peer_offline`, `reporting/v0/health.rs`). `FaultNetworkController` only
+    // intercepts outbound connections, not inbound/server-side ones, so the accused's own
+    // controller can't block it from *answering* the probe — instead, block the other two
+    // members' outbound probes to it (the only ones who could ever be asked to co-sign here).
+    for signer in &signers {
+        signer
+            .fault_ctrl
+            .fail_protocol_responses_after(network::V0.reporting_health_alpn, 0, 1000)
+            .await;
+    }
+
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(&net.chain_config.rpc_url)
+        .await
+        .expect("connect report event subscription");
+
+    println!("Triggering reshare (same committee, new threshold)...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        ring_id.clone(),
+        net.node_keys.clone(),
+        Some(3u32),
+        net.chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    println!(
+        "Waiting for organic missing-topology-ack EventReportAccepted on chain (up to 180s)..."
+    );
+    let event = sub
+        .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(180), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == accused_key
+        })
+        .await
+        .expect("aborted reshare topology barrier should organically report the silent member");
+
+    println!(
+        "Missing-topology-ack report accepted on chain: report_id={} accused={} reporter={}",
+        event.report_id, event.accused_node_key, event.reporter_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, accused_key,
+        "the member that never received the reshare's topology probe should be accused"
+    );
+    assert_eq!(event.ring_id, ring_id, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert_ne!(
+        event.reporter_node_key, accused_key,
+        "the accused node should not be its own reporter"
+    );
+
+    let controller_client = SourceHubClient::with_signer(
+        net.chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, &accused_key)
+        .await
+        .expect("query accused demerits");
+    assert!(
+        demerits > 0,
+        "silent topology-probe partner should receive at least one demerit"
     );
 }

@@ -4,23 +4,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app_state::AppState;
 use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::coordinator::evidence::{
-    queue_invalid_refresh_commitment_report, queue_or_relay_equivocation,
-    queue_or_relay_invalid_share, share_evidence_proves_failure, verify_share_evidence,
+    build_and_store_commitment_evidence, queue_invalid_refresh_commitment_report,
+    queue_or_relay_equivocation, queue_or_relay_invalid_share, share_evidence_proves_failure,
+    verify_share_evidence,
 };
 use crate::dkg::v0::coordinator::reporting::report_abandoned_pss_session;
 use crate::dkg::v0::coordinator::DkgCoordinator;
-use crate::dkg::v0::helpers::deserialize_wire_commitment;
+use crate::dkg::v0::helpers::{deserialize_wire_commitment, ring_payload_matches_ring_key};
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::network::{
+    contribution_ids, coordinate_refresh_as_claimed_leader, submit_public_contribution,
+    RefreshStartOutcome,
+};
 use crate::dkg::v0::session_state::AbandonedPssSession;
-use crate::dkg::v0::transport::{AttemptKey, CeremonyId};
+use crate::dkg::v0::transport::{
+    self, AttemptKey, CeremonyId, DkgPublicMessage, DkgPublicPayload, PhaseManifest, PublicPhase,
+};
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pre::v0::coordinator::PreCoordinator;
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::RelayRequestStatement;
 use crate::sign::v0::coordinator::SignCoordinator;
-use crate::sign::v0::messages::{NonceRequest, PolicyContext, SignContext, SignMessage};
+use crate::sign::v0::helpers::refresh_health_check_peer_node_keys_sha256;
+use crate::sign::v0::messages::{
+    NonceRequest, PolicyContext, RefreshHealthCheckStatement, SignContext, SignMessage,
+    REFRESH_HEALTH_CHECK_DOMAIN,
+};
 use bulletin::r#trait::{BulletinKind, KeyDerivation};
 use common::blockchain::verify_node_message;
-use crypto::r#trait::PolynomialCommitment as _;
+use crypto::r#trait::{Dkg as _, PolynomialCommitment as _};
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -34,7 +46,11 @@ use proto::unsafe_testing::{
     SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
-    SubmitDkgInvalidShareEvidenceResponse, SubmitPssStallOfflineReportRequest,
+    SubmitDkgInvalidShareEvidenceResponse, SubmitOrganicConflictingCommitmentRequest,
+    SubmitOrganicConflictingCommitmentResponse, SubmitOrganicConflictingManifestRequest,
+    SubmitOrganicConflictingManifestResponse, SubmitOrganicInvalidRefreshResultRequest,
+    SubmitOrganicInvalidRefreshResultResponse, SubmitOrganicNoncanonicalPrepareRequest,
+    SubmitOrganicNoncanonicalPrepareResponse, SubmitPssStallOfflineReportRequest,
     SubmitPssStallOfflineReportResponse, SubmitUnauthorizedRelayEvidenceRequest,
     SubmitUnauthorizedRelayEvidenceResponse,
 };
@@ -208,9 +224,30 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .dkg_session_state
             .active_ring_pss_session(&ring_pk)
             .await;
+        let activated = match session_id {
+            Some(session_id) => {
+                match app_state
+                    .dkg_session_state
+                    .transport_attempt(&session_id)
+                    .await
+                {
+                    Some(attempt_id) => {
+                        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
+                        app_state
+                            .dkg_session_state
+                            .with_attempt_state(attempt, |state| state.transport.activated)
+                            .await
+                            .unwrap_or(false)
+                    }
+                    None => false,
+                }
+            }
+            None => false,
+        };
         Ok(Response::new(GetActivePssSessionResponse {
             found: session_id.is_some(),
             session_id: session_id.map(|id| id.to_string()).unwrap_or_default(),
+            activated,
         }))
     }
 
@@ -466,6 +503,268 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
         }
 
         Ok(Response::new(SubmitUnauthorizedRelayEvidenceResponse {}))
+    }
+
+    async fn submit_organic_conflicting_commitment(
+        &self,
+        request: Request<SubmitOrganicConflictingCommitmentRequest>,
+    ) -> Result<Response<SubmitOrganicConflictingCommitmentResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        if request.commitment_bytes.is_empty() {
+            return Err(Status::invalid_argument("commitment_bytes is required"));
+        }
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
+        let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
+
+        // This node's own node_id within the live attempt — the same identity
+        // its real (already-broadcast) first commitment used, so the second
+        // one lands as a conflict for the same origin rather than a new one.
+        let node_id = coordinator
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |state| state.node.node_id())
+            .await
+            .map_err(|error| Status::failed_precondition(format!("{error:?}")))?;
+
+        let report_evidence = build_and_store_commitment_evidence(
+            &coordinator,
+            attempt,
+            node_id,
+            request.commitment_bytes.clone(),
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        submit_public_contribution(
+            &coordinator,
+            attempt,
+            DkgPublicPayload::Commitment {
+                commitment: request.commitment_bytes,
+                report_evidence: report_evidence.map(Box::new),
+            },
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitOrganicConflictingCommitmentResponse {}))
+    }
+
+    async fn submit_organic_noncanonical_prepare(
+        &self,
+        request: Request<SubmitOrganicNoncanonicalPrepareRequest>,
+    ) -> Result<Response<SubmitOrganicNoncanonicalPrepareResponse>, Status> {
+        let request = request.into_inner();
+        if request.ring_id.trim().is_empty() {
+            return Err(Status::invalid_argument("ring_id is required"));
+        }
+        if request.ring_pk.trim().is_empty() {
+            return Err(Status::invalid_argument("ring_pk is required"));
+        }
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+
+        let ring = read_ring_for_route(&*app_state.bulletin, &request.ring_id, network::V0.version)
+            .await
+            .map_err(Status::failed_precondition)?;
+        if !ring_payload_matches_ring_key(&request.ring_pk, &ring.ring_pk) {
+            return Err(Status::failed_precondition(
+                "ring_pk does not match SourceHub state",
+            ));
+        }
+
+        // Skips the canonical-leader check `coordinate_refresh` itself does —
+        // that check is exactly the fault this RPC exists to exercise.
+        let outcome = coordinate_refresh_as_claimed_leader::<DkgImpl>(
+            app_state,
+            &network::V0,
+            request.ring_id,
+            request.ring_pk,
+            ring,
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        if !matches!(outcome, RefreshStartOutcome::Started(_, _)) {
+            return Err(Status::failed_precondition(format!(
+                "refresh Prepare was not sent as a fresh attempt: {outcome:?}"
+            )));
+        }
+
+        Ok(Response::new(SubmitOrganicNoncanonicalPrepareResponse {}))
+    }
+
+    async fn submit_organic_conflicting_manifest(
+        &self,
+        request: Request<SubmitOrganicConflictingManifestRequest>,
+    ) -> Result<Response<SubmitOrganicConflictingManifestResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let ceremony_id = CeremonyId(session_id);
+        let phase = PublicPhase::Commitments;
+
+        let items = app_state
+            .dkg_session_state
+            .public_contributions(&session_id, attempt_id, phase)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("no retained public contributions for this phase")
+            })?;
+        if items.len() < 2 {
+            return Err(Status::failed_precondition(
+                "at least 2 retained contributions are required to construct a \
+                 distinguishable conflicting manifest",
+            ));
+        }
+        let ids = contribution_ids(&items);
+        let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
+        // Same phase_root/contribution_ids as the real manifest (recomputed from
+        // the same real retained contributions, so it passes the receiver's own
+        // self-consistency recheck), but a different chunk_count — the one field
+        // this node fully controls independent of the underlying signed
+        // contributions, which can't be forged without a valid signature from
+        // their original signer.
+        let signed_at = current_unix_time()?;
+        let real_chunk_count = transport::chunk_public_contributions(
+            ceremony_id,
+            attempt_id,
+            phase,
+            root,
+            items,
+            signed_at,
+        )
+        .map_err(Status::failed_precondition)?
+        .len();
+        let rogue_chunk_count = if real_chunk_count > 1 {
+            real_chunk_count - 1
+        } else if real_chunk_count < ids.len() {
+            real_chunk_count + 1
+        } else {
+            return Err(Status::failed_precondition(
+                "no distinguishable chunk_count is available for this contribution set",
+            ));
+        };
+
+        let manifest = DkgPublicMessage::Manifest(PhaseManifest {
+            ceremony_id,
+            attempt_id,
+            phase,
+            phase_root: root,
+            contribution_ids: ids,
+            chunk_count: rogue_chunk_count as u32,
+            complete: true,
+            signed_at,
+        });
+        let encoded = transport::encode(&manifest)
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        let topic = app_state
+            .dkg_session_state
+            .transport_topic_for_attempt(&session_id, attempt_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("transport topic is missing or attempt is stale")
+            })?;
+        topic
+            .broadcast(bytes::Bytes::from(encoded))
+            .await
+            .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitOrganicConflictingManifestResponse {}))
+    }
+
+    async fn submit_organic_invalid_refresh_result(
+        &self,
+        request: Request<SubmitOrganicInvalidRefreshResultRequest>,
+    ) -> Result<Response<SubmitOrganicInvalidRefreshResultResponse>, Status> {
+        let request = request.into_inner();
+        let session_id = request
+            .session_id
+            .parse::<u128>()
+            .map_err(|error| Status::invalid_argument(format!("invalid session_id: {error}")))?;
+        let app_state = self.app_state.clone().ok_or_else(|| {
+            Status::failed_precondition("unsafe DKG evidence injection requires app state")
+        })?;
+        let attempt_id = app_state
+            .dkg_session_state
+            .transport_attempt(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition("DKG report evidence is not active for this session")
+            })?;
+        let candidate = app_state
+            .dkg_session_state
+            .refresh_health_check_candidate(&session_id)
+            .await
+            .ok_or_else(|| {
+                Status::failed_precondition(
+                    "no staged refresh health-check candidate — ceremony has not reached \
+                     RefreshHealthCheck yet",
+                )
+            })?;
+
+        // Every field matches this node's own real staged candidate except
+        // public_polynomial_sha256, so it passes the receiver's coarse
+        // candidate-identity check and is rejected specifically on content —
+        // the "invalid result" this scenario targets, not "wrong ceremony".
+        let statement = RefreshHealthCheckStatement {
+            domain: REFRESH_HEALTH_CHECK_DOMAIN.to_string(),
+            session_id,
+            ring_pk: candidate.ring_pk_hex,
+            public_polynomial_sha256: "0".repeat(64),
+            peer_node_keys_sha256: refresh_health_check_peer_node_keys_sha256(
+                &candidate.peer_node_keys,
+            ),
+            threshold: candidate.threshold as u32,
+            total_participants: candidate.peer_ids.len() as u32,
+        };
+
+        let coordinator = DkgCoordinator::<DkgImpl>::with_routes(app_state, &network::V0);
+        let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
+        submit_public_contribution(
+            &coordinator,
+            attempt,
+            DkgPublicPayload::RefreshHealthCheckResult {
+                statement,
+                // A syntactically-present placeholder, not a real threshold
+                // signature: `verify_result_signature`'s content-mismatch check
+                // (network.rs/refresh_health_check.rs) rejects on the wrong
+                // public_polynomial_sha256 before it ever parses this as a
+                // real signature.
+                signature: Some("00".repeat(96)),
+            },
+        )
+        .await
+        .map_err(|error| Status::failed_precondition(error.to_string()))?;
+
+        Ok(Response::new(SubmitOrganicInvalidRefreshResultResponse {}))
     }
 }
 

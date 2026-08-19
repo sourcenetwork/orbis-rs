@@ -7,15 +7,18 @@
 //! message deduplication) and the cryptographic state (the DKG node itself) into
 //! a single unified structure.
 
+use crate::app_state::DkgOfflineRelayReceipt;
 use crate::constants::{
-    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, MAX_DKG_SESSIONS,
-    SESSION_EXPIRATION_CHECK_INTERVAL,
+    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, DKG_PRIVATE_EXCHANGE_CONCURRENCY,
+    MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL,
 };
 use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
 #[cfg(test)]
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 use crate::dkg::v0::transport::{
     decode, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeScope, DkgPrivateMessage,
     MessageId, ParticipantRef, PublicPhase,
@@ -29,10 +32,16 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use zeroize::Zeroize;
+
+const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
+const MAX_OFFLINE_RELAY_RECEIPTS: usize = 4096;
+const MAX_OFFLINE_CANDIDATE_CLAIMS: usize = 4096;
+const MAX_OFFLINE_RELAY_RECEIPT_PROCESSED_KEYS: usize = 4096;
 
 /// DKG Protocol Phase
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,20 +306,27 @@ pub(crate) enum TopologyAckRecordOutcome {
     MissingSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PublicContributionRecordOutcome {
     Recorded,
     DuplicateSame,
-    ConflictingDuplicate,
+    ConflictingDuplicate {
+        retained: network::SignedPayload,
+        conflicting: network::SignedPayload,
+    },
     StaleAttempt,
     MissingSession,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum PublicBatchRecordOutcome {
     Recorded,
     DuplicateSame,
-    ConflictingDuplicate { origin: ParticipantRef },
+    ConflictingDuplicate {
+        origin: ParticipantRef,
+        retained: network::SignedPayload,
+        conflicting: network::SignedPayload,
+    },
     StaleAttempt,
     MissingSession,
 }
@@ -409,6 +425,11 @@ pub(crate) struct DkgSessionTransportState {
     pub topic: Option<Arc<dyn network::Topic>>,
     pub topology_probe_nonce: Option<[u8; 32]>,
     pub topology_probe_acknowledgements: BTreeSet<String>,
+    /// Authenticated peers that returned any topology ACK request for the
+    /// active attempt, including a wrong nonce. This is deliberately broader
+    /// than the valid-ACK set so protocol-invalid but reachable peers are not
+    /// later classified as offline.
+    pub topology_probe_responses: BTreeSet<String>,
     pub topology_probe_notify: Arc<Notify>,
     pub activated: bool,
     pub begun: bool,
@@ -427,10 +448,22 @@ pub(crate) struct DkgSessionTransportState {
     pub published_public_messages: HashSet<MessageId>,
     pub outbound_private_messages: HashMap<MessageId, Vec<u8>>,
     pub acknowledged_private_messages: HashSet<MessageId>,
+    /// Authenticated participants that opened an inbound private exchange for
+    /// this attempt. A later protocol or ACK failure must not turn that peer's
+    /// missing completion into an offline observation.
+    pub private_peer_responses: BTreeSet<ParticipantRef>,
     pub processing_message_ids: HashSet<MessageId>,
     pub processed_message_ids: HashSet<MessageId>,
     pub topic_task: Option<tokio::task::AbortHandle>,
     attempt_cancel_tx: watch::Sender<bool>,
+    /// The leader's record of each follower's first signed control-plane
+    /// acknowledgement (Prepared/Activated/Begun) per (follower_node_key,
+    /// message_kind) for this attempt, so a later conflicting signed answer
+    /// to the identical request is provable as equivocation rather than
+    /// trusted on the leader's own word. No separate TTL pruning needed here
+    /// (unlike a node-wide cache) because transport state is configured
+    /// exactly once per attempt and is torn down with the session.
+    pub(crate) control_ack_receipts: HashMap<(String, &'static str), ([u8; 32], ControlSignature)>,
 }
 
 impl Default for DkgSessionTransportState {
@@ -449,6 +482,7 @@ impl Default for DkgSessionTransportState {
             topic: None,
             topology_probe_nonce: None,
             topology_probe_acknowledgements: BTreeSet::new(),
+            topology_probe_responses: BTreeSet::new(),
             topology_probe_notify: Arc::new(Notify::new()),
             activated: false,
             begun: false,
@@ -466,10 +500,12 @@ impl Default for DkgSessionTransportState {
             published_public_messages: HashSet::new(),
             outbound_private_messages: HashMap::new(),
             acknowledged_private_messages: HashSet::new(),
+            private_peer_responses: BTreeSet::new(),
             processing_message_ids: HashSet::new(),
             processed_message_ids: HashSet::new(),
             topic_task: None,
             attempt_cancel_tx,
+            control_ack_receipts: HashMap::new(),
         }
     }
 }
@@ -777,6 +813,30 @@ pub struct SessionStateManager<D: Dkg> {
     /// offline-report attribution. Taken once via [`SessionStateManager::take_stall_report_receiver`]
     /// at node startup; the sender lives inside the expiration worker.
     stall_report_rx: StdMutex<Option<mpsc::Receiver<AbandonedPssSession>>>,
+    /// Ceremony-keyed leader singleflight locks. A node manages at most the
+    /// bounded local-ring limit, so retaining one small lock per seen ceremony
+    /// avoids duplicate-attempt races without serializing unrelated rings. Kept
+    /// as its own `Arc` (rather than folded into a plain field) because
+    /// `CeremonyStartGuard` needs to hold an owned clone independent of this
+    /// manager for its detached `Drop` cleanup task.
+    ceremony_start_locks: Arc<TokioMutex<HashMap<u128, Arc<TokioMutex<()>>>>>,
+    /// Recently completed public-result commits. Refresh result application
+    /// removes the ceremony state, so this bounded, short-lived receipt cache
+    /// lets an authenticated leader safely retry after an ACK is lost.
+    public_commit_receipts:
+        TokioMutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>,
+    /// Prepared PSS attempts retained briefly for authenticated offline relay
+    /// validation after abort/cleanup races with the detached reporting task.
+    offline_relay_receipts: TokioMutex<HashMap<AttemptKey, DkgOfflineRelayReceipt>>,
+    /// Ceremony/subject claims made at terminal transport boundaries. This
+    /// suppresses repeated work from later boundaries before a detached report
+    /// task is spawned; SourceHub session deduplication remains authoritative.
+    offline_candidate_dedup: StdMutex<HashMap<(CeremonyId, String), Instant>>,
+    /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
+    /// including ceremonies for different rings. A resource limit on the DKG
+    /// subsystem as a whole, not any one session, so it lives here rather than
+    /// on `DkgSessionState`.
+    private_exchange_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -816,6 +876,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             shutdown_tx,
             background_tasks: StdMutex::new(background_tasks),
             stall_report_rx: StdMutex::new(Some(stall_report_rx)),
+            ceremony_start_locks: Arc::new(TokioMutex::new(HashMap::new())),
+            public_commit_receipts: TokioMutex::new(HashMap::new()),
+            offline_relay_receipts: TokioMutex::new(HashMap::new()),
+            offline_candidate_dedup: StdMutex::new(HashMap::new()),
+            private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
+                DKG_PRIVATE_EXCHANGE_CONCURRENCY,
+            )),
         }
     }
 
@@ -893,11 +960,28 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     // means one or more dealers went silent. Publish the dealers we never heard
                     // from so the stall-report worker can attempt `node_offline` reports (the
                     // co-signer reachability probe filters to dealers that are actually unreachable).
-                    if matches!(
-                        state.phase,
-                        DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares
-                    ) {
-                        let missing_peer_ids = state.missing_dealer_peer_ids(state.phase);
+                    //
+                    // A pure reshare Receiver never generates commitments, so
+                    // `initiate_phase1_commitments` deliberately skips it and its `phase`
+                    // never leaves `Initializing` for the entire ceremony — even though it
+                    // is, in every meaningful sense, waiting on dealers' Phase 2 shares the
+                    // whole time. Classify by role/obligation, not only by phase: treat that
+                    // case the same as an explicit `Phase2Shares` stall. `missing_dealer_peer_ids`
+                    // itself is phase-parameterized, not role-gated (its own `Dealer`
+                    // exclusion for `Phase2Shares` doesn't apply to `Receiver`), so this reuses
+                    // its existing `received_shares` tracking rather than adding a new one.
+                    let stalled_phase = match state.phase {
+                        DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares => Some(state.phase),
+                        DkgPhase::Initializing
+                            if matches!(state.kind, SessionKind::Reshare { .. })
+                                && state.node.role() == DkgRole::Receiver =>
+                        {
+                            Some(DkgPhase::Phase2Shares)
+                        }
+                        _ => None,
+                    };
+                    if let Some(stalled_phase) = stalled_phase {
+                        let missing_peer_ids = state.missing_dealer_peer_ids(stalled_phase);
                         if !missing_peer_ids.is_empty() {
                             if let Err(error) = stall_report_tx.try_send(AbandonedPssSession {
                                 session_id: *session_id,
@@ -1172,6 +1256,232 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         {
             claims.remove(ring_pk_hex);
         }
+    }
+
+    /// Clone of the ceremony-start singleflight lock registry, for
+    /// `CeremonyStartGuard`'s independent `Drop`-time cleanup task.
+    pub(crate) fn ceremony_start_locks(
+        &self,
+    ) -> Arc<TokioMutex<HashMap<u128, Arc<TokioMutex<()>>>>> {
+        self.ceremony_start_locks.clone()
+    }
+
+    /// Clone of the node-wide private DKG pair-exchange concurrency permit.
+    pub(crate) fn private_exchange_permits(&self) -> Arc<tokio::sync::Semaphore> {
+        self.private_exchange_permits.clone()
+    }
+
+    /// Look up a retained `CommitRefreshResult` receipt for `key`, pruning
+    /// expired entries first. Returns the recorded leader peer bytes if a
+    /// live receipt exists.
+    pub(crate) async fn public_commit_receipt(
+        &self,
+        key: (CeremonyId, AttemptId, MessageId),
+    ) -> Option<Vec<u8>> {
+        let now = Instant::now();
+        let mut receipts = self.public_commit_receipts.lock().await;
+        receipts
+            .retain(|_, (_, recorded_at)| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+        receipts
+            .get(&key)
+            .map(|(leader_peer, _)| leader_peer.clone())
+    }
+
+    /// Record a completed `CommitRefreshResult` receipt for `key`, evicting the
+    /// oldest entry first if the bounded cache is full.
+    pub(crate) async fn record_public_commit_receipt(
+        &self,
+        key: (CeremonyId, AttemptId, MessageId),
+        leader_peer: Vec<u8>,
+    ) {
+        let now = Instant::now();
+        let mut receipts = self.public_commit_receipts.lock().await;
+        if receipts.len() >= MAX_PUBLIC_COMMIT_RECEIPTS {
+            if let Some(oldest) = receipts
+                .iter()
+                .min_by_key(|(_, (_, recorded_at))| *recorded_at)
+                .map(|(key, _)| *key)
+            {
+                receipts.remove(&oldest);
+            }
+        }
+        receipts.insert(key, (leader_peer, now));
+    }
+
+    /// Look up a retained offline-relay receipt for `attempt`, pruning expired
+    /// entries first.
+    pub(crate) async fn offline_relay_receipt(
+        &self,
+        attempt: AttemptKey,
+    ) -> Option<DkgOfflineRelayReceipt> {
+        let now = tokio::time::Instant::now();
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        receipts
+            .retain(|_, receipt| now.duration_since(receipt.recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+        receipts.get(&attempt).cloned()
+    }
+
+    /// Claim `idempotency_key` against the retained offline-relay receipt for
+    /// `attempt`. Returns `None` if the receipt has already expired, was
+    /// never recorded, or its bounded set of processed keys is full —
+    /// callers must treat this the same as "unavailable", not as a
+    /// duplicate: `Some(false)` is reserved exclusively for a key that was
+    /// genuinely already claimed. Returns `Some(true)` on a new claim.
+    ///
+    /// Re-checks `recorded_at` here (not just in `offline_relay_receipt`,
+    /// which callers typically call first) because the two are separate
+    /// lock acquisitions with real async work — e.g. a chain read in
+    /// `validate_offline_relay_transition` — in between; a receipt that was
+    /// still fresh at that first check can cross `DKG_ATTEMPT_TIMEOUT`
+    /// before this call runs.
+    pub(crate) async fn claim_offline_relay_idempotency(
+        &self,
+        attempt: AttemptKey,
+        idempotency_key: MessageId,
+    ) -> Option<bool> {
+        let now = tokio::time::Instant::now();
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        let expired = receipts
+            .get(&attempt)
+            .is_some_and(|receipt| now.duration_since(receipt.recorded_at) > DKG_ATTEMPT_TIMEOUT);
+        if expired {
+            receipts.remove(&attempt);
+            return None;
+        }
+        let receipt = receipts.get_mut(&attempt)?;
+        if receipt.processed.contains(&idempotency_key) {
+            return Some(false);
+        }
+        if receipt.processed.len() >= MAX_OFFLINE_RELAY_RECEIPT_PROCESSED_KEYS {
+            return None;
+        }
+        receipt.processed.insert(idempotency_key);
+        Some(true)
+    }
+
+    /// Record a fresh offline-relay receipt for `attempt`, pruning expired
+    /// entries and other attempts of the same ceremony first, then evicting
+    /// the oldest entry if the bounded cache is still full.
+    pub(crate) async fn record_offline_relay_receipt(
+        &self,
+        attempt: AttemptKey,
+        receipt: DkgOfflineRelayReceipt,
+    ) {
+        let now = tokio::time::Instant::now();
+        let mut receipts = self.offline_relay_receipts.lock().await;
+        receipts.retain(|existing, r| {
+            now.duration_since(r.recorded_at) <= DKG_ATTEMPT_TIMEOUT
+                && (existing.ceremony_id != attempt.ceremony_id
+                    || existing.attempt_id == attempt.attempt_id)
+        });
+        if receipts.len() >= MAX_OFFLINE_RELAY_RECEIPTS {
+            if let Some(oldest) = receipts
+                .iter()
+                .min_by_key(|(_, r)| r.recorded_at)
+                .map(|(attempt, _)| *attempt)
+            {
+                receipts.remove(&oldest);
+            }
+        }
+        receipts.insert(attempt, receipt);
+    }
+
+    /// Prune expired terminal-boundary offline-candidate claims. Called once
+    /// before a batch of [`SessionStateManager::claim_offline_candidate`] calls
+    /// rather than on every call, since the caller iterates a whole candidate set
+    /// under one logical dedup pass.
+    pub(crate) fn prune_offline_candidate_claims(&self) {
+        let now = Instant::now();
+        let mut claims = self
+            .offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        claims.retain(|_, recorded_at| now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT);
+    }
+
+    /// Claim `(ceremony_id, subject)` as an offline-candidate observation.
+    /// Returns `true` for a new claim (caller should keep the candidate) or
+    /// `false` if it was already claimed recently, refreshing its timestamp
+    /// (caller should drop it). Evicts the oldest claim first if the bounded
+    /// cache is full.
+    pub(crate) fn claim_offline_candidate(&self, ceremony_id: CeremonyId, subject: String) -> bool {
+        let now = Instant::now();
+        let mut claims = self
+            .offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (ceremony_id, subject);
+        if let Some(recorded_at) = claims.get_mut(&key) {
+            *recorded_at = now;
+            return false;
+        }
+        if claims.len() >= MAX_OFFLINE_CANDIDATE_CLAIMS {
+            if let Some(oldest) = claims
+                .iter()
+                .min_by_key(|(_, recorded_at)| **recorded_at)
+                .map(|(key, _)| key.clone())
+            {
+                claims.remove(&oldest);
+            }
+        }
+        claims.insert(key, now);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offline_candidate_claim_count(&self) -> usize {
+        self.offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    #[cfg(all(test, feature = "fault-injection"))]
+    pub(crate) fn offline_candidate_subjects_for_ceremony(&self, ceremony_id: u128) -> Vec<String> {
+        self.offline_candidate_dedup
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .keys()
+            .filter_map(|(candidate_ceremony, subject)| {
+                (candidate_ceremony.0 == ceremony_id).then_some(subject.clone())
+            })
+            .collect()
+    }
+
+    /// Record a follower's signed control-plane ack for `(follower_node_key,
+    /// message_kind)` within `attempt`. Returns `Some((existing_digest,
+    /// existing_signature))` when a *different* digest was already recorded
+    /// for this exact request — provable equivocation — or `None` when this
+    /// is either the first sighting (now recorded) or a duplicate of the
+    /// already-recorded digest (nothing to do). Also `None` if the attempt no
+    /// longer owns the session, matching this call's best-effort semantics.
+    pub(crate) async fn record_control_ack(
+        &self,
+        attempt: AttemptKey,
+        follower_node_key: String,
+        message_kind: &'static str,
+        digest: [u8; 32],
+        signature: &ControlSignature,
+    ) -> Option<([u8; 32], ControlSignature)> {
+        self.with_attempt_state_mut(attempt, |state| {
+            let key = (follower_node_key, message_kind);
+            match state.transport.control_ack_receipts.get(&key) {
+                Some((existing_digest, existing_signature)) if *existing_digest != digest => {
+                    Some((*existing_digest, existing_signature.clone()))
+                }
+                Some(_) => None,
+                None => {
+                    state
+                        .transport
+                        .control_ack_receipts
+                        .insert(key, (digest, signature.clone()));
+                    None
+                }
+            }
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     /// Stop and join the manager's background cleanup workers.
@@ -1670,7 +1980,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             }
             transport.topology_probe_nonce = Some(nonce);
             transport.topology_probe_acknowledgements.clear();
-            transport.topology_probe_acknowledgements.insert(self_peer);
+            transport.topology_probe_responses.clear();
+            transport
+                .topology_probe_acknowledgements
+                .insert(self_peer.clone());
+            transport.topology_probe_responses.insert(self_peer);
             transport.last_progress_at = Instant::now();
             Some(transport.topology_probe_notify.clone())
         })
@@ -1714,6 +2028,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             if transport.attempt_id != Some(attempt_id) {
                 return TopologyAckRecordOutcome::StaleAttempt;
             }
+            transport.topology_probe_responses.insert(peer.clone());
             if transport.topology_probe_nonce != Some(nonce) {
                 return TopologyAckRecordOutcome::WrongNonce;
             }
@@ -1744,6 +2059,20 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         .flatten()
     }
 
+    pub(crate) async fn topology_probe_responses(
+        &self,
+        session_id: &u128,
+        attempt_id: AttemptId,
+    ) -> Option<BTreeSet<String>> {
+        self.with_state(session_id, |state| {
+            let transport = &state.transport;
+            (transport.attempt_id == Some(attempt_id))
+                .then(|| transport.topology_probe_responses.clone())
+        })
+        .await
+        .flatten()
+    }
+
     pub(crate) async fn record_public_contribution(
         &self,
         session_id: &u128,
@@ -1765,7 +2094,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 Some(existing) if existing == &contribution => {
                     PublicContributionRecordOutcome::DuplicateSame
                 }
-                Some(_) => PublicContributionRecordOutcome::ConflictingDuplicate,
+                Some(existing) => PublicContributionRecordOutcome::ConflictingDuplicate {
+                    retained: existing.clone(),
+                    conflicting: contribution,
+                },
                 None => {
                     transport
                         .public_phase_started_at
@@ -1811,11 +2143,15 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
 
             let retained = transport.public_contributions.entry(phase).or_default();
             for (origin, contribution) in &contributions {
-                if retained
+                if let Some(existing) = retained
                     .get(origin)
-                    .is_some_and(|existing| existing != contribution)
+                    .filter(|existing| *existing != contribution)
                 {
-                    return PublicBatchRecordOutcome::ConflictingDuplicate { origin: *origin };
+                    return PublicBatchRecordOutcome::ConflictingDuplicate {
+                        origin: *origin,
+                        retained: existing.clone(),
+                        conflicting: contribution.clone(),
+                    };
                 }
             }
 
@@ -2260,6 +2596,27 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 .transport
                 .acknowledged_private_messages
                 .contains(&message_id)
+        })
+        .await
+    }
+
+    pub(crate) async fn record_private_peer_response(
+        &self,
+        attempt: AttemptKey,
+        participant: ParticipantRef,
+    ) -> std::result::Result<(), AttemptStateError> {
+        self.with_attempt_state_mut(attempt, |state| {
+            state.transport.private_peer_responses.insert(participant);
+        })
+        .await
+    }
+
+    pub(crate) async fn private_peer_responses_for_attempt(
+        &self,
+        attempt: AttemptKey,
+    ) -> std::result::Result<BTreeSet<ParticipantRef>, AttemptStateError> {
+        self.with_attempt_state(attempt, |state| {
+            state.transport.private_peer_responses.clone()
         })
         .await
     }
@@ -3247,6 +3604,7 @@ mod tests {
                 from_node_id: dealer_id,
                 commitment,
                 session_nonce,
+                attempt_id: [9; 32],
                 crypto_backend: "dkg/test".to_string(),
             },
             signature: vec![0; 64],
@@ -3657,9 +4015,12 @@ mod tests {
         let mut conflicting = exact.clone();
         conflicting.data[0] ^= 1;
         assert_eq!(
-            mgr.record_public_contribution(&22, attempt, phase, origin, conflicting)
+            mgr.record_public_contribution(&22, attempt, phase, origin, conflicting.clone())
                 .await,
-            PublicContributionRecordOutcome::ConflictingDuplicate
+            PublicContributionRecordOutcome::ConflictingDuplicate {
+                retained: exact.clone(),
+                conflicting,
+            }
         );
         assert_eq!(
             mgr.public_contributions(&22, attempt, phase)
@@ -3715,7 +4076,7 @@ mod tests {
             TopologyAckRecordOutcome::WrongNonce
         );
         assert_eq!(
-            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-b".into(),)
+            mgr.record_topology_probe_ack(&23, AttemptId([6; 32]), nonce, "peer-c".into(),)
                 .await,
             TopologyAckRecordOutcome::StaleAttempt
         );
@@ -3724,6 +4085,17 @@ mod tests {
                 .await
                 .expect("ack set"),
             BTreeSet::from(["leader".to_string(), "peer-a".to_string()])
+        );
+        assert_eq!(
+            mgr.topology_probe_responses(&23, attempt)
+                .await
+                .expect("response set"),
+            BTreeSet::from([
+                "leader".to_string(),
+                "peer-a".to_string(),
+                "peer-b".to_string(),
+            ]),
+            "a wrong-nonce ACK proves reachability without satisfying the barrier"
         );
     }
 
@@ -4081,6 +4453,84 @@ mod tests {
             mgr.session_exists(&31).await,
             "phase age must not override the attempt hard deadline"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expiration_worker_reports_stall_for_pure_reshare_receiver_stuck_initializing() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let mut stall_rx = mgr
+            .take_stall_report_receiver()
+            .expect("stall receiver available on a fresh manager");
+
+        let receiver_node =
+            *DkgImpl::new(1, 2, 3, 0, DkgRole::Receiver).expect("DkgImpl::new failed");
+        mgr.create_session(90, receiver_node, 3, |_| {}).await;
+        mgr.set_session_kind(
+            &90,
+            SessionKind::Reshare {
+                ring_pk_hex: "rk".to_string(),
+                new_peer_node_keys: vec!["k1".into(), "k2".into(), "k3".into()],
+                new_threshold: 2,
+                bulletin_post_id: "post".to_string(),
+            },
+        )
+        .await;
+        mgr.set_peer_node_keys(&90, vec!["k1".into(), "k2".into(), "k3".into()])
+            .await;
+        mgr.set_node_peer_mappings(
+            &90,
+            HashMap::from([
+                (1, "peer1".to_string()),
+                (2, "peer2".to_string()),
+                (3, "peer3".to_string()),
+            ]),
+        )
+        .await;
+
+        {
+            let mut states = mgr.states.write().await;
+            let s = states.get_mut(&90).expect("session must exist");
+            assert_eq!(
+                s.node.role(),
+                DkgRole::Receiver,
+                "test setup must construct a pure receiver"
+            );
+            s.reshare.params = Some(ReshareParams {
+                old_share: None,
+                participating_ids: vec![2, 3],
+                new_threshold: 2,
+                new_total_nodes: 3,
+                new_peer_node_keys: vec!["k1".into(), "k2".into(), "k3".into()],
+                new_node_id: Some(1),
+                bulletin_post_id: "post".to_string(),
+            });
+            s.transport.hard_deadline = Some(Instant::now());
+        }
+
+        // Only dealer 2 sent its share; dealer 3 stayed silent. A pure
+        // receiver never leaves `Initializing` (it has no commitments of its
+        // own to generate), so this must not rely on the phase reaching
+        // `Phase2Shares`.
+        mgr.record_received_share(&90, 2).await;
+        assert_eq!(
+            mgr.with_state(&90, |s| s.phase).await,
+            Some(DkgPhase::Initializing),
+            "a pure receiver must stay Initializing before Phase 4"
+        );
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + std::time::Duration::from_secs(1))
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            !mgr.session_exists(&90).await,
+            "session at the attempt hard deadline should be removed"
+        );
+        let event = stall_rx
+            .try_recv()
+            .expect("a stall report must be published for the silent dealer");
+        assert_eq!(event.session_id, 90);
+        assert_eq!(event.missing_peer_ids, vec!["peer3".to_string()]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -4517,15 +4967,18 @@ mod tests {
             PublicContributionRecordOutcome::Recorded
         );
 
+        let conflicting_first = test_signed_public(9);
         let conflicting = BTreeMap::from([
-            (ParticipantRef::current(1), test_signed_public(9)),
+            (ParticipantRef::current(1), conflicting_first.clone()),
             (ParticipantRef::current(2), test_signed_public(2)),
         ]);
         assert_eq!(
             mgr.record_public_batch(&session_id, attempt, phase, conflicting)
                 .await,
             PublicBatchRecordOutcome::ConflictingDuplicate {
-                origin: ParticipantRef::current(1)
+                origin: ParticipantRef::current(1),
+                retained: first.clone(),
+                conflicting: conflicting_first,
             }
         );
         let retained = mgr

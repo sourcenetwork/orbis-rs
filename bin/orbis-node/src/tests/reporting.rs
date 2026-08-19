@@ -10,7 +10,7 @@
 //! FROST variant (builds the node containers with decaf377 automatically):
 //!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,decaf377" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
 
-use crate::constants::DKG_ATTEMPT_TIMEOUT;
+use crate::constants::DKG_FINALIZE_WAIT_TIMEOUT;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
 use crate::dkg::v0::messages::{SignedDkgCommitment, SignedDkgShare};
 use crate::helpers::test_helpers::{
@@ -291,6 +291,7 @@ fn signed_bad_reshare_dkg_share(
         from_node_id,
         commitment,
         session_nonce: [0u8; 16],
+        attempt_id: [9; 32],
         crypto_backend: DkgImpl::name(),
     };
     let commitment_signature = sign_node_message_with_hex_key(
@@ -401,6 +402,7 @@ fn signed_equivocation_commitments(
             from_node_id,
             commitment,
             session_nonce,
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         };
         let signature =
@@ -463,6 +465,7 @@ fn signed_bad_refresh_commitment(
         from_node_id,
         commitment,
         session_nonce: [9u8; 16],
+        attempt_id: [9; 32],
         crypto_backend: DkgImpl::name(),
     };
     let signature =
@@ -584,7 +587,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -901,7 +905,8 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -1194,7 +1199,8 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -1598,7 +1604,8 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2057,16 +2064,9 @@ async fn sign_with_retry(
     }
 }
 
-/// Exercises the `node_offline` report/acceptance/demerit pipeline for a refresh-kind report by
-/// injecting it through the real `report_abandoned_pss_session` path (same mechanism as the G1
-/// stall→offline test), rather than relying on the PSS scheduler to organically detect node3 as
-/// offline. It currently can't detect that organically: refresh requires every current member to
-/// acknowledge the preparation topology probe (no threshold tolerance), so a node unreachable from
-/// the start never gets past preparation and never reaches the Phase1Commitments/Phase2Shares stall
-/// path that's the only current node_offline trigger (see TODO at network.rs's
-/// `coordinate_prepared_inner` topology-probe-barrier-expired handling — tracked for a follow-up
-/// PR). This test still exercises the full downstream pipeline: report construction, anti-framing
-/// reachability probe, on-chain acceptance, and demerit application.
+/// Exercises organic Refresh transport reporting: node3 goes offline after the
+/// initial DKG, the scheduled refresh exhausts its peer-specific preparation
+/// budget, and the terminal observation traverses the full report pipeline.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_refresh_offline_triggers_on_chain_report() {
@@ -2081,7 +2081,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
                     "ring_pk": "",
                     "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
                     "threshold": 2,
-                    "pss_interval": 86400,
+                    "pss_interval": 5,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "reporting": reporting_genesis_json(3, &[], 3)
                 }]
@@ -2174,7 +2174,8 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2190,32 +2191,13 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     println!("Stopping node3 to simulate offline node during PSS refresh...");
     network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
 
-    // Inject a real AbandonedPssSession through the drain-worker path on node1, naming node3 as
-    // the silent refresh dealer. See the doc comment above for why this is injected rather than
-    // driven organically by the scheduler.
-    let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
-        .await
-        .expect("connect unsafe-testing client to node1");
-    let session_id: u128 = 424_242_111_222_u128;
-    unsafe_client
-        .submit_pss_stall_offline_report(SubmitPssStallOfflineReportRequest {
-            ring_id: RING_ID.to_string(),
-            session_id: session_id.to_string(),
-            peer_id: peer_addresses[2].clone(),
-            ring_pk_hex: ring_pk_hex.clone(),
-            new_peer_node_keys: Vec::new(),
-            new_threshold: 0,
-            bulletin_post_id: String::new(),
+    println!("Waiting for organic PSS refresh EventReportAccepted on chain...");
+    let event = sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(180), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == NODE_KEY_3
         })
         .await
-        .expect("submit PSS stall offline report");
-    println!("Injected abandoned-PSS-session offline attribution for node3.");
-
-    println!("Waiting for PSS refresh EventReportAccepted on chain...");
-    let event = sub
-        .wait_for_report_accepted(RING_ID, Duration::from_secs(180))
-        .await
-        .expect("EventReportAccepted should be emitted after PSS refresh detects node3 offline");
+        .expect("Refresh transport should organically report unreachable node3");
 
     println!(
         "Refresh report accepted on chain: report_id={} accused={}",
@@ -2245,6 +2227,179 @@ async fn test_refresh_offline_triggers_on_chain_report() {
         "node3 should have exactly one report's worth of demerits (configured increment 3)"
     );
     println!("node3 demerit points: {demerits}");
+}
+
+/// Exercises the refresh **leader** being offline before any Prepare exists,
+/// distinct from `test_refresh_offline_triggers_on_chain_report` above (which
+/// stops the non-leader node3 mid-Prepare-fanout). Node1 is the canonical
+/// refresh leader (lexicographically smallest node key). With node1 stopped
+/// before `pss_interval` elapses, a non-leader's periodic health check forwards
+/// `StartRefresh` to the dead leader and hits `PssOfflineStage::StartForward`
+/// (`network.rs`) — a report path that fires before a Prepare is ever sent.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report() {
+    println!(
+        "Starting PSS refresh leader-offline-before-preparation reporting integration test..."
+    );
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 5,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(3, &[], 3)
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    // Subscribe before stopping node1 so we don't miss the event.
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    // Stop node1 — the canonical refresh leader — before any refresh attempt
+    // begins, so the very first forwarded StartRefresh from node2/node3 finds
+    // it unreachable and reports it via PssOfflineStage::StartForward.
+    println!("Stopping node1 (refresh leader) before preparation begins...");
+    network.stop_service(IntegrationTestNetwork::NODE1_SERVICE);
+
+    println!("Waiting for organic PSS refresh EventReportAccepted on chain...");
+    let event = sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(180), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == NODE_KEY_1
+        })
+        .await
+        .expect("Refresh transport should organically report unreachable leader node1");
+
+    println!(
+        "Refresh report accepted on chain: report_id={} accused={}",
+        event.report_id, event.accused_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_1,
+        "node1 (leader) should be the accused node"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert!(
+        [NODE_KEY_2, NODE_KEY_3].contains(&event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
+    );
+
+    println!("Checking node1 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_1)
+        .await
+        .expect("query node1 demerits");
+    assert_eq!(
+        demerits, 3,
+        "node1 should have exactly one report's worth of demerits (configured increment 3)"
+    );
+    println!("node1 demerit points: {demerits}");
 }
 
 /// Exercises the G1 stall→offline **report** path deterministically: a real `AbandonedPssSession`
@@ -2361,7 +2516,8 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2393,6 +2549,235 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
             new_peer_node_keys: Vec::new(),
             new_threshold: 0,
             bulletin_post_id: String::new(),
+        })
+        .await
+        .expect("submit PSS stall offline report");
+    println!("Injected abandoned-PSS-session offline attribution for node3.");
+
+    println!("Waiting for stall→offline EventReportAccepted on chain (up to 180s)...");
+    let event = sub
+        .wait_for_report_accepted(RING_ID, Duration::from_secs(180))
+        .await
+        .expect("EventReportAccepted should be emitted after the PSS stall offline attribution");
+
+    println!(
+        "Stall→offline report accepted on chain: report_id={} accused={}",
+        event.report_id, event.accused_node_key
+    );
+
+    assert_eq!(event.report_type, "node_offline", "unexpected report_type");
+    assert_eq!(
+        event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused node"
+    );
+    assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
+    assert!(!event.report_id.is_empty(), "report_id should be set");
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        event.reporter_node_key
+    );
+
+    println!("Checking node3 demerit points...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node3 should have exactly one demerit after a single stall offline report, got {demerits}"
+    );
+    println!("node3 demerit points: {demerits}");
+}
+
+/// Reshare counterpart to `test_refresh_stall_offline_triggers_on_chain_report`, same technique:
+/// a real `AbandonedPssSession` is injected through the drain worker's own logic
+/// (`report_abandoned_pss_session`) naming node3 as the silent **old-committee** dealer, with node3
+/// stopped so the co-signer reachability probe passes and the report is accepted. A real mid-reshare
+/// stall can't be used here either — old committee [1,2,3] threshold=2 means losing exactly node3
+/// never blocks quorum (dealer selection only needs threshold-many, tolerating one missing old
+/// dealer via the same `ExcludeOld` grace the reshare-equivocation tests rely on), so the reshare
+/// always completes cleanly regardless of node3. The new committee [node2, offline] excludes node3
+/// so it resolves to `Current` (old-only) scope, not `PendingNew` — distinct from
+/// `test_reshare_offline_triggers_on_chain_report`, which covers an unreachable *new* member instead.
+///
+/// The synthetic offline member in the new committee isn't for reachability-probe purposes — it's
+/// there so the real reshare (which node1/node2/node3 all still start processing the moment the
+/// announcement lands, since reshare bypasses `pss_interval`) can never actually finish: the Prepare
+/// barrier requires every new-committee route to respond, which the unroutable placeholder can never
+/// do. Without it, the real ceremony completes in well under a second (using whichever old dealers
+/// are reachable) and finalizes new ring state, which then makes the report's `ring_state_sha256` —
+/// computed from the pending-reshare snapshot — stale by the time its tx lands on chain.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_stall_offline_triggers_on_chain_report() {
+    println!("Starting PSS reshare stall→offline reporting integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 10)
+                }],
+                // The offline member has no container; seed its NodeInfo so the chain accepts it as
+                // a reshare target and the Prepare barrier never passes, keeping the reshare — and
+                // the ring state a report's digest is computed against — pending indefinitely.
+                "node_infos": [{
+                    "node_key": NODE_KEY_OFFLINE,
+                    "node_info": {
+                        "peer_id": OFFLINE_NODE_PEER_ID,
+                        "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+                        "whitelisted_policy_ids": [],
+                        "whitelisted_ring_ids": [RING_ID]
+                    }
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = SourceHubClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, RING_ID, &node_keys).await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for ring {RING_ID}...");
+    cli_tool::do_dkg(endpoint.clone(), RING_ID.to_string())
+        .await
+        .expect("DKG should succeed");
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
+    println!(
+        "DKG finalized. Ring PK: {}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())]
+    );
+
+    // Subscribe before announcing the reshare so we don't miss the event.
+    println!("Subscribing to report events...");
+    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        .await
+        .expect("connect report event subscription");
+
+    // Announce a real reshare targeting [node2, offline] — node3 is deliberately excluded from the
+    // new committee so it resolves to Current (old-only) scope, not PendingNew, once stalled. The
+    // offline placeholder keeps this reshare permanently pending (see the doc comment above) so the
+    // ring state the injected report's digest is computed against never changes out from under it.
+    let new_peer_node_keys = vec![NODE_KEY_2.to_string(), NODE_KEY_OFFLINE.to_string()];
+    let new_threshold = 1u32;
+    println!("Announcing reshare to [node2, offline] threshold=1...");
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        RING_ID.to_string(),
+        new_peer_node_keys.clone(),
+        Some(new_threshold),
+        chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    // Stop node3 so the co-signer reachability probe finds it unreachable and accepts the report.
+    // node3's on-chain NodeInfo (peer id) persists, so the report path still resolves it.
+    println!("Stopping node3 so it is unreachable at co-signer probe time...");
+    network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
+
+    // Inject a real AbandonedPssSession through the drain-worker path on node1, naming node3 as the
+    // silent old-committee dealer. This is the exact per-event logic the expiration sweep would
+    // drive. `new_peer_node_keys` being non-empty is what selects the Reshare branch of
+    // `SessionKind` in the unsafe-testing handler.
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
+        .await
+        .expect("connect unsafe-testing client to node1");
+    let session_id: u128 = 909_111_222_444_u128;
+    unsafe_client
+        .submit_pss_stall_offline_report(SubmitPssStallOfflineReportRequest {
+            ring_id: RING_ID.to_string(),
+            session_id: session_id.to_string(),
+            peer_id: peer_addresses[2].clone(),
+            ring_pk_hex: ring_pk_hex.clone(),
+            new_peer_node_keys,
+            new_threshold,
+            bulletin_post_id: RING_ID.to_string(),
         })
         .await
         .expect("submit PSS stall offline report");
@@ -2541,7 +2926,8 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -2640,17 +3026,10 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
     );
 }
 
-/// Exercises the `node_offline` report/acceptance/demerit pipeline for a reshare-kind report by
-/// injecting it through the real `report_abandoned_pss_session` path (same mechanism as the G1
-/// stall→offline test) once the reshare is genuinely announced and stuck, rather than relying on
-/// the PSS scheduler to organically detect node3 as offline. It currently can't detect that
-/// organically: every next-committee receiver must acknowledge the preparation topology probe (no
-/// threshold tolerance for receivers), so a receiver unreachable from the start never gets past
-/// preparation and never reaches the Phase1Commitments/Phase2Shares stall path that's the only
-/// current node_offline trigger (see TODO at network.rs's `coordinate_prepared_inner`
-/// topology-probe-barrier-expired handling — tracked for a follow-up PR). This test still exercises
-/// the real reshare announcement plus the full downstream report pipeline: construction,
-/// anti-framing reachability probe, on-chain acceptance, and demerit application.
+/// Exercises organic Reshare transport reporting through a pure-new leader.
+/// Node4 leads a pending committee containing one unreachable member, relays
+/// the terminal preparation candidate to a current signer, and the resulting
+/// `node_offline` report lands on chain.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_reshare_offline_triggers_on_chain_report() {
@@ -2662,6 +3041,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     // Reshare bypasses the pss_interval check entirely, so it still fires immediately
     // once new_peer_node_keys is announced on-chain.
     let network = IntegrationTestNetwork::builder()
+        .with_node_count(4)
         .with_module_genesis(
             "orbis",
             serde_json::json!({
@@ -2673,6 +3053,15 @@ async fn test_reshare_offline_triggers_on_chain_report() {
                     "pss_interval": 86400,
                     "policy_id": RING_GOVERNANCE_POLICY_ID,
                     "reporting": reporting_genesis_json(1, &[], 3)
+                }],
+                "node_infos": [{
+                    "node_key": NODE_KEY_OFFLINE,
+                    "node_info": {
+                        "peer_id": OFFLINE_NODE_PEER_ID,
+                        "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+                        "whitelisted_policy_ids": [],
+                        "whitelisted_ring_ids": [RING_ID]
+                    }
                 }]
             }),
         )
@@ -2693,10 +3082,14 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
         .await
         .expect("query node3 info");
+    let node4_info = cli_tool::query_node_info(endpoints[3].to_string())
+        .await
+        .expect("query node4 info");
 
     assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
     assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
     assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+    assert_eq!(node4_info.node_key, NODE_KEY_4, "node4 key mismatch");
 
     let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
         &node1_info.p2p_address,
@@ -2710,9 +3103,13 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         &node3_info.p2p_address,
         IntegrationTestNetwork::NODE3_SERVICE,
     );
+    let peer4_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node4_info.p2p_address,
+        IntegrationTestNetwork::NODE4_SERVICE,
+    );
 
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr, peer4_addr];
 
     let controller_client = SourceHubClient::with_signer(
         chain_config.clone(),
@@ -2729,7 +3126,10 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
     );
 
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+    for (node_key, peer_address) in [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, NODE_KEY_4]
+        .iter()
+        .zip(&peer_addresses)
+    {
         wait_for_node_info_on_chain(
             &controller_client,
             node_key,
@@ -2763,35 +3163,26 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
     );
 
-    // Subscribe before stopping node3 so we don't miss the event.
+    // Subscribe before announcing the pending committee so we don't miss the event.
     println!("Subscribing to report events...");
     let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
         .await
         .expect("connect report event subscription");
 
-    // Stop node3 so it is unreachable at co-signer reachability-probe time.
-    println!("Stopping node3 to simulate offline node during PSS reshare...");
-    network.stop_service(IntegrationTestNetwork::NODE3_SERVICE);
-
-    // Reshare to {node1, node2, node3} with new_threshold=3. Changing threshold (2→3)
-    // satisfies the chain's "must change committee or threshold" check. This still
-    // exercises the real on-chain reshare announcement; the offline report itself is
-    // injected below rather than waited for organically (see doc comment above).
-    println!("Triggering ring reshare to [node1, node2, node3] threshold=3...");
+    // node4 sorts before the synthetic offline key and is not in the current
+    // committee, making it the pure-new canonical Reshare leader.
+    println!("Triggering ring reshare to [node4, offline] threshold=1...");
     cli_tool::start_ring_reshare_by_acp_with_config(
         RING_ID.to_string(),
-        vec![
-            NODE_KEY_1.to_string(),
-            NODE_KEY_2.to_string(),
-            NODE_KEY_3.to_string(),
-        ],
-        Some(3u32),
+        vec![NODE_KEY_4.to_string(), NODE_KEY_OFFLINE.to_string()],
+        Some(1u32),
         chain_config.clone(),
     )
     .await
@@ -2812,36 +3203,25 @@ async fn test_reshare_offline_triggers_on_chain_report() {
         "MsgStartRingReshareByAcp returned success but ring's new_peer_node_keys is still None \
          — the reshare was not announced on-chain"
     );
+    assert_eq!(
+        ring_payload
+            .new_peer_node_keys
+            .as_ref()
+            .map(|keys| sorted_node_keys(keys)),
+        Some(sorted_node_keys(&[
+            NODE_KEY_4.to_string(),
+            NODE_KEY_OFFLINE.to_string(),
+        ])),
+        "reshare should target the pure-new leader and offline member"
+    );
     println!("Reshare announced on-chain.");
 
-    // Inject a real AbandonedPssSession through the drain-worker path on node1, naming node3 as
-    // the silent reshare dealer for the just-announced transition.
-    let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
-        .await
-        .expect("connect unsafe-testing client to node1");
-    let session_id: u128 = 424_242_333_444_u128;
-    unsafe_client
-        .submit_pss_stall_offline_report(SubmitPssStallOfflineReportRequest {
-            ring_id: RING_ID.to_string(),
-            session_id: session_id.to_string(),
-            peer_id: peer_addresses[2].clone(),
-            ring_pk_hex: ring_pk_hex.clone(),
-            new_peer_node_keys: vec![
-                NODE_KEY_1.to_string(),
-                NODE_KEY_2.to_string(),
-                NODE_KEY_3.to_string(),
-            ],
-            new_threshold: 3,
-            bulletin_post_id: RING_ID.to_string(),
+    let event = sub
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(180), |event| {
+            event.report_type == "node_offline" && event.accused_node_key == NODE_KEY_OFFLINE
         })
         .await
-        .expect("submit PSS stall offline report");
-    println!("Injected abandoned-PSS-session offline attribution for node3.");
-
-    let event = sub
-        .wait_for_report_accepted(RING_ID, Duration::from_secs(180))
-        .await
-        .expect("EventReportAccepted should be emitted after PSS reshare detects node3 offline");
+        .expect("pure-new Reshare leader should relay the organic offline observation");
 
     println!(
         "Reshare report accepted on chain: report_id={} accused={}",
@@ -2850,26 +3230,26 @@ async fn test_reshare_offline_triggers_on_chain_report() {
 
     assert_eq!(event.report_type, "node_offline", "unexpected report_type");
     assert_eq!(
-        event.accused_node_key, NODE_KEY_3,
-        "node3 should be the accused node"
+        event.accused_node_key, NODE_KEY_OFFLINE,
+        "the unreachable pending member should be accused"
     );
     assert_eq!(event.ring_id, RING_ID, "ring_id mismatch");
     assert!(!event.report_id.is_empty(), "report_id should be set");
-    assert_ne!(
-        event.reporter_node_key, NODE_KEY_3,
-        "the accused (offline) node should not be the reporter"
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3].contains(&event.reporter_node_key.as_str()),
+        "a current signer should submit the relayed report"
     );
 
-    println!("Checking node3 demerit points...");
+    println!("Checking offline pending-member demerit points...");
     let demerits = controller_client
-        .orbis_read_node_demerits(RING_ID, NODE_KEY_3)
+        .orbis_read_node_demerits(RING_ID, NODE_KEY_OFFLINE)
         .await
-        .expect("query node3 demerits");
+        .expect("query offline-node demerits");
     assert_eq!(
         demerits, 1,
-        "node3 should have exactly one report's worth of demerits after the injected offline report"
+        "the offline pending member should receive exactly one report's worth of demerits"
     );
-    println!("node3 demerit points: {demerits}");
+    println!("offline pending-member demerit points: {demerits}");
 }
 
 /// Verifies the reshare bad-DKG-share relay path: a pure-new receiver (node4) that
@@ -3021,7 +3401,8 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -3122,7 +3503,9 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
 
     println!("Waiting for DKG bad-share EventReportAccepted on chain (up to 120s)...");
     let event = sub
-        .wait_for_report_accepted(RING_ID, Duration::from_secs(120))
+        .wait_for_report_accepted_matching(RING_ID, Duration::from_secs(120), |event| {
+            event.report_type == "invalid_crypto_response" && event.accused_node_key == NODE_KEY_3
+        })
         .await
         .expect("DKG bad-share EventReportAccepted should be emitted");
 
@@ -3293,7 +3676,8 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]
@@ -3581,7 +3965,8 @@ async fn test_report_kick_promotes_backup_node() {
         .await
         .expect("DKG should succeed");
 
-    let ring_pk_hex = wait_for_ring_finalized(&chain_config, RING_ID, DKG_ATTEMPT_TIMEOUT).await;
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, RING_ID, DKG_FINALIZE_WAIT_TIMEOUT).await;
     println!(
         "DKG finalized. Ring PK: {}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())]

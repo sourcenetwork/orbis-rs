@@ -15,23 +15,34 @@ use std::sync::{Arc, Weak};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, timeout, Duration, Instant};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
-    DKG_ATTEMPT_TIMEOUT, DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
-    DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
-    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE,
-    PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
+    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE, DKG_MAX_REPAIR_BACKOFF,
+    DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT, DKG_REPAIR_STALL_INTERVAL,
+    DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE, PEER_RESPONSE_TIMEOUT,
+    PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
+    commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
     handle_invalid_commitment_evidence_relay, handle_invalid_share_evidence_relay,
+    handle_leader_batch_mismatch_evidence_relay, handle_leader_equivocation_evidence_relay,
+    handle_leader_public_fault_evidence_relay, handle_public_origin_fault_evidence_relay,
+    now_unix_secs, queue_or_relay_control_message_fault, queue_or_relay_equivocation,
+    queue_or_relay_leader_batch_mismatch, queue_or_relay_leader_equivocation,
+    queue_or_relay_leader_public_fault, queue_or_relay_public_origin_fault,
+    report_leader_prepare_fault_best_effort, sign_control_message, verify_commitment_evidence,
+    verify_control_signature,
 };
 use crate::dkg::v0::coordinator::message_handlers::{
     drive_accepted_share, handle_commitment_audit_message, handle_commitment_hash_message,
     handle_commitment_message, handle_reshare_participant_set, handle_reshare_share_ack,
     handle_session_init, preflight_commitment_audit_message, preflight_commitment_hash_message,
-    preflight_commitment_message, preflight_reshare_participant_set,
+    preflight_reshare_participant_set, prepare_commitment_message,
 };
 use crate::dkg::v0::coordinator::refresh_health_check::{handle_result, preflight_result};
+use crate::dkg::v0::coordinator::reporting::{
+    spawn_pss_offline_observations, PssOfflineObservationSeed,
+};
 use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner};
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
@@ -39,7 +50,9 @@ use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
     ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
 };
-use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
+use crate::dkg::v0::messages::{
+    ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
+};
 #[cfg(test)]
 use crate::dkg::v0::session_state::CreateSessionOutcome;
 use crate::dkg::v0::session_state::{
@@ -50,8 +63,8 @@ use crate::dkg::v0::session_state::{
 use crate::dkg::v0::transport::{
     self, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig, CommitteeScope,
     DkgControlMessage, DkgPrivateMessage, DkgPublicContribution, DkgPublicMessage,
-    DkgPublicPayload, MessageId, ParticipantRef, PhaseManifest, PrepareSession, PublicPhase,
-    PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
+    DkgPublicPayload, MessageId, ParticipantRef, PhaseManifest, PrepareSession, PssOfflineStage,
+    PublicPhase, PUBLIC_CONTRIBUTION_SIGNING_DOMAIN,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::identity::{extract_node_part, is_self_peer_id, validate_peer_id};
@@ -66,6 +79,10 @@ use crate::helpers::test_helpers::{
     TEST_FRESH_DKG_RING_ID,
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
+use crate::reporting::v0::types::{
+    ControlMessageArtifact, DkgControlMessageFaultKind, DkgLeaderPublicFaultKind,
+    DkgPublicOriginFaultKind,
+};
 use crate::ring_state::RingShareBundle;
 #[cfg(test)]
 use bulletin::dummy::DummyBulletin;
@@ -73,9 +90,15 @@ use bulletin::r#trait::RingPayload;
 use crypto::SignImpl;
 
 const MAX_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
-/// Keep repair pages comfortably below Iroh's current 1 MiB message ceiling.
-const MAX_PUBLIC_REPAIR_PAGE_BYTES: usize = 512 * 1024;
-const MAX_PUBLIC_COMMIT_RECEIPTS: usize = 4096;
+/// Generous upper bound on the encoded size of a `page_digest` +
+/// `report_signature` pair. `public_phase_response_page` sizes its
+/// candidates against `MAX_PUBLIC_REPAIR_PAGE_BYTES` minus this margin
+/// (`sign_public_phase_response` attaches the real signature afterward,
+/// once the final contributions/next_cursor are settled) — without it, an
+/// honest leader's page could land a few hundred bytes over the true limit
+/// purely from signature overhead, and get flagged as a fault it didn't
+/// commit.
+const PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES: usize = 512;
 const INITIAL_CONTROL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const INITIAL_PRIVATE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const PRIVATE_BUSY_RETRY_AFTER: Duration = Duration::from_millis(250);
@@ -173,14 +196,110 @@ enum PublicProtocolViolationKind {
     BufferLimit,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct PublicProtocolViolation {
     kind: PublicProtocolViolationKind,
     accused: PublicViolationAccused,
     phase: Option<PublicPhase>,
-    root: Option<[u8; 32]>,
+    // Boxed to keep this error type under clippy's `result_large_err`
+    // threshold now that every `Option<Box<...>>` evidence field is in
+    // play — this is otherwise a plain `[u8; 32]`, not "large" on its own.
+    root: Option<Box<[u8; 32]>>,
     message_ids: Vec<MessageId>,
     detail: String,
+    commitment_equivocation: Option<Box<PublicCommitmentEquivocation>>,
+    public_origin_fault: Option<Box<PublicOriginFaultEvidence>>,
+    leader_equivocation: Option<Box<LeaderDeliveryEquivocation>>,
+    /// A single leader-signed delivery that is independently provable as
+    /// invalid on its own (no conflicting counterpart needed) — see
+    /// `DkgLeaderPublicFaultKind` for the covered fault kinds. `None`
+    /// whenever the violating delivery wasn't retained (best-effort, same
+    /// caveat as `leader_equivocation`) or the phase isn't independently
+    /// reportable (Reshare's `Commitments` phase — see
+    /// `reporting/v0/registry.rs`'s `expected_leader_manifest_shape`).
+    leader_public_fault: Option<Box<LeaderPublicFaultEvidence>>,
+    /// Two leader deliveries (any combination of manifest/chunk) that each
+    /// reference the same origin under two *different* phase roots — the
+    /// leader's own packaging contradiction, distinct from
+    /// `leader_equivocation` (same coordinate, different content). Reuses
+    /// `LeaderDeliveryEquivocation`'s shape (it's the same "two signed
+    /// deliveries" pair, just a different violation predicate). See
+    /// `claim_origins`.
+    leader_batch_mismatch: Option<Box<LeaderDeliveryEquivocation>>,
+    /// A single leader-signed `PublicPhaseResponse` (direct-QUIC repair-page
+    /// reply) that is independently provable as invalid on its own — reuses
+    /// `dkg_control_message_fault`'s `ControlMessageArtifact` shape (a
+    /// `ControlSignature`, not a Gossip envelope, backs this one) rather than
+    /// `LeaderPublicFaultEvidence`, which is Gossip-delivery-shaped. `None`
+    /// whenever the leader response wasn't signed (Fresh DKG — no ring to
+    /// bind evidence to) or the violation is a different kind entirely.
+    control_message_fault: Option<Box<ControlMessageArtifact>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LeaderPublicFaultEvidence {
+    fault_kind: DkgLeaderPublicFaultKind,
+    delivery: PublicLeaderDelivery,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PublicCommitmentEquivocation {
+    origin: ParticipantRef,
+    retained: SignedPayload,
+    conflicting: SignedPayload,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PublicOriginFaultEvidence {
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: SignedPayload,
+    contribution_b: Option<SignedPayload>,
+}
+
+/// The raw endpoint-authenticated bytes of one canonical-leader Gossip
+/// broadcast (a Manifest or a Chunk), retained so an equivocating leader can
+/// be proven to a third party who never witnessed the live topic exchange.
+#[derive(Debug, Clone, PartialEq)]
+struct PublicLeaderDelivery {
+    origin: Vec<u8>,
+    delivery_id: [u8; 16],
+    signature: Vec<u8>,
+    data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LeaderDeliveryEquivocation {
+    retained: PublicLeaderDelivery,
+    conflicting: PublicLeaderDelivery,
+}
+
+/// `delivery_id` is only `None` for a message verified via a standalone
+/// `PubSub::verify` call, never for one delivered over a topic subscription
+/// — but retention here is best-effort by design, so a missing ID just
+/// means this particular delivery can't back a future equivocation report,
+/// not that the message is rejected.
+fn public_leader_delivery_from_message(
+    message: &network::AuthenticatedMessage,
+) -> Option<PublicLeaderDelivery> {
+    Some(PublicLeaderDelivery {
+        origin: message.origin.as_bytes().to_vec(),
+        delivery_id: message.delivery_id?,
+        signature: message.signature.clone(),
+        data: message.data.clone().into(),
+    })
+}
+
+/// Retention is best-effort (see `PublicLeaderDelivery`'s callers): a
+/// conflict is still rejected even when one side's raw delivery wasn't
+/// captured, but evidence can only be attached when both sides are present.
+fn leader_delivery_equivocation(
+    retained: Option<&PublicLeaderDelivery>,
+    conflicting: Option<&PublicLeaderDelivery>,
+) -> Option<LeaderDeliveryEquivocation> {
+    Some(LeaderDeliveryEquivocation {
+        retained: retained?.clone(),
+        conflicting: conflicting?.clone(),
+    })
 }
 
 impl PublicProtocolViolation {
@@ -194,9 +313,15 @@ impl PublicProtocolViolation {
             kind,
             accused: PublicViolationAccused::Leader,
             phase,
-            root,
+            root: root.map(Box::new),
             message_ids: Vec::new(),
             detail: detail.into(),
+            commitment_equivocation: None,
+            public_origin_fault: None,
+            leader_equivocation: None,
+            leader_public_fault: None,
+            leader_batch_mismatch: None,
+            control_message_fault: None,
         }
     }
 
@@ -226,9 +351,15 @@ impl PublicProtocolViolation {
             kind,
             accused: PublicViolationAccused::Origin(origin),
             phase: Some(phase),
-            root,
+            root: root.map(Box::new),
             message_ids: Vec::new(),
             detail: detail.into(),
+            commitment_equivocation: None,
+            public_origin_fault: None,
+            leader_equivocation: None,
+            leader_public_fault: None,
+            leader_batch_mismatch: None,
+            control_message_fault: None,
         }
     }
 
@@ -239,6 +370,48 @@ impl PublicProtocolViolation {
 
     fn with_message_id(mut self, message_id: MessageId) -> Self {
         self.message_ids = vec![message_id];
+        self
+    }
+
+    fn with_commitment_equivocation(
+        mut self,
+        evidence: Option<PublicCommitmentEquivocation>,
+    ) -> Self {
+        self.commitment_equivocation = evidence.map(Box::new);
+        self
+    }
+
+    fn with_public_origin_fault(mut self, evidence: Option<PublicOriginFaultEvidence>) -> Self {
+        self.public_origin_fault = evidence.map(Box::new);
+        self
+    }
+
+    fn with_leader_equivocation(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
+        self.leader_equivocation = evidence.map(Box::new);
+        self
+    }
+
+    fn with_leader_public_fault(
+        mut self,
+        fault_kind: DkgLeaderPublicFaultKind,
+        delivery: Option<PublicLeaderDelivery>,
+    ) -> Self {
+        self.leader_public_fault = delivery.map(|delivery| {
+            Box::new(LeaderPublicFaultEvidence {
+                fault_kind,
+                delivery,
+            })
+        });
+        self
+    }
+
+    fn with_leader_batch_mismatch(mut self, evidence: Option<LeaderDeliveryEquivocation>) -> Self {
+        self.leader_batch_mismatch = evidence.map(Box::new);
+        self
+    }
+
+    fn with_control_message_fault(mut self, evidence: Option<ControlMessageArtifact>) -> Self {
+        self.control_message_fault = evidence.map(Box::new);
         self
     }
 }
@@ -258,16 +431,42 @@ struct PendingPublicBatch {
 struct ReceivedPublicManifest {
     manifest: PhaseManifest,
     event_digest: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 struct ReceivedPublicChunk {
     contributions: Vec<VerifiedPublicContribution>,
     event_digest: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 struct CompletedPublicBatch {
     manifest_event_digest: [u8; 32],
+    manifest_delivery: Option<PublicLeaderDelivery>,
     chunk_digests: BTreeMap<u32, [u8; 32]>,
+    chunk_deliveries: BTreeMap<u32, PublicLeaderDelivery>,
+}
+
+#[derive(Debug, Clone)]
+struct ObservedPublicOrigin {
+    message_id: MessageId,
+    root: [u8; 32],
+    signed_envelope: SignedPayload,
+}
+
+/// Which root the leader has packaged a given origin under so far, and the
+/// leader's own delivery (manifest or chunk) that first did so — separate
+/// from `ObservedPublicOrigin` (which tracks the *origin's own* signed
+/// content, for detecting the origin double-signing). This tracks the
+/// *leader's* packaging choice instead, populated by both `insert_manifest`
+/// and `insert_chunk`, so a leader claiming the same origin under two
+/// different roots (via any combination of manifests/chunks) is
+/// attributable — see `claim_origins`.
+#[derive(Debug, Clone)]
+struct LeaderOriginClaim {
+    root: [u8; 32],
+    message_id: MessageId,
+    delivery: Option<PublicLeaderDelivery>,
 }
 
 #[derive(Debug)]
@@ -320,12 +519,18 @@ impl ManifestRepairSchedule {
     }
 }
 
+struct CompletePhaseRootClaim {
+    root: [u8; 32],
+    delivery: Option<PublicLeaderDelivery>,
+}
+
 #[derive(Default)]
 struct PublicBatchAssembler {
     pending: HashMap<(PublicPhase, [u8; 32]), PendingPublicBatch>,
     completed: HashMap<(PublicPhase, [u8; 32]), CompletedPublicBatch>,
-    complete_phase_roots: HashMap<PublicPhase, [u8; 32]>,
-    observed_origins: HashMap<(PublicPhase, ParticipantRef), (MessageId, [u8; 32])>,
+    complete_phase_roots: HashMap<PublicPhase, CompletePhaseRootClaim>,
+    observed_origins: HashMap<(PublicPhase, ParticipantRef), ObservedPublicOrigin>,
+    origin_claims: HashMap<(PublicPhase, ParticipantRef), LeaderOriginClaim>,
 }
 
 impl PublicBatchAssembler {
@@ -335,6 +540,7 @@ impl PublicBatchAssembler {
         manifest: PhaseManifest,
         event_digest: [u8; 32],
         expected_origins: &BTreeSet<ParticipantRef>,
+        delivery: Option<PublicLeaderDelivery>,
     ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
         let phase = manifest.phase;
         let root = manifest.phase_root;
@@ -345,6 +551,7 @@ impl PublicBatchAssembler {
                 Some(root),
                 detail,
             )
+            .with_leader_public_fault(DkgLeaderPublicFaultKind::InvalidManifest, delivery.clone())
         })?;
         let expected_complete = mode == PublicBatchMode::Complete;
         if manifest.complete != expected_complete {
@@ -356,6 +563,10 @@ impl PublicBatchAssembler {
                     "manifest complete={} does not match {mode:?} phase publication",
                     manifest.complete
                 ),
+            )
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::InvalidManifest,
+                delivery.clone(),
             ));
         }
 
@@ -369,7 +580,11 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     "manifest metadata conflicts with a completed batch",
-                ))
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    completed.manifest_delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
         }
         if let Some(existing) = self
@@ -385,11 +600,24 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     "manifest metadata conflicts for the same phase root",
-                ))
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    existing.delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
         }
 
-        self.claim_phase_root(mode, phase, root, expected_origins.len())?;
+        self.claim_phase_root(mode, phase, root, expected_origins.len(), delivery.as_ref())?;
+        self.claim_origins(
+            phase,
+            root,
+            manifest
+                .contribution_ids
+                .iter()
+                .map(|(&origin, &message_id)| (origin, message_id)),
+            delivery.as_ref(),
+        )?;
         let buffered_manifest_entries: usize = self
             .pending
             .iter()
@@ -413,6 +641,7 @@ impl PublicBatchAssembler {
         self.pending.entry(key).or_default().manifest = Some(ReceivedPublicManifest {
             manifest,
             event_digest,
+            delivery,
         });
         self.try_complete(key, true)
     }
@@ -426,6 +655,7 @@ impl PublicBatchAssembler {
         contributions: Vec<VerifiedPublicContribution>,
         event_digest: [u8; 32],
         expected_origin_count: usize,
+        delivery: Option<PublicLeaderDelivery>,
     ) -> std::result::Result<PublicBatchAssembly, PublicProtocolViolation> {
         if contributions.is_empty() {
             return Err(PublicProtocolViolation::leader(
@@ -444,10 +674,36 @@ impl PublicBatchAssembler {
                     "chunk index {index} exceeds the maximum {} chunks for this phase",
                     expected_origin_count
                 ),
+            )
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+                delivery.clone(),
             ));
         }
 
         let key = (phase, root);
+        let commitment_equivocation =
+            self.find_commitment_origin_equivocation(phase, &contributions);
+        let public_origin_fault = self.find_public_origin_equivocation(phase, &contributions);
+        // A chunk is built from a `BTreeMap<ParticipantRef, SignedPayload>`
+        // (`chunk_public_contributions_with_limit`), which cannot contain the
+        // same key twice — so any duplicate origin among a chunk's own
+        // contributions can only be the leader's own packaging, honest or
+        // not, independent of whether the two entries also happen to
+        // conflict in content (that's `commitment_equivocation`/
+        // `public_origin_fault`'s separate, additive finding above). This is
+        // the only case `claim_origins` doesn't cover — it only compares
+        // against already-recorded claims from *earlier* deliveries, not
+        // duplicates within the batch currently being validated — so without
+        // this, a same-content duplicate silently falls through to the
+        // aggregate `BufferLimit` checks below with no evidence at all.
+        let duplicate_chunk_origin_evidence = {
+            let mut seen_origins = BTreeSet::new();
+            let has_duplicate = contributions
+                .iter()
+                .any(|verified| !seen_origins.insert(verified.contribution.origin));
+            has_duplicate.then(|| delivery.clone()).flatten()
+        };
         if let Some(completed) = self.completed.get(&key) {
             return match completed.chunk_digests.get(&index) {
                 Some(existing) if existing == &event_digest => Ok(PublicBatchAssembly::Duplicate),
@@ -456,12 +712,28 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     format!("chunk {index} conflicts with the completed batch"),
-                )),
+                )
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    completed.chunk_deliveries.get(&index),
+                    delivery.as_ref(),
+                ))),
                 None => Err(PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::InvalidChunk,
                     Some(phase),
                     Some(root),
                     format!("extra chunk {index} follows the completed batch"),
+                )
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
                 )),
             };
         }
@@ -469,14 +741,44 @@ impl PublicBatchAssembler {
         // before enforcing the root-count bound. For complete publications, claim
         // the single allowed root first so a second root remains an attributable
         // leader contradiction even when it contains an origin equivocation.
+        // `claim_origins` runs first in both cases — it's what makes the
+        // aggregate BufferLimit checks below structurally unreachable (see its
+        // doc comment) — so it should attribute a cross-root packaging
+        // contradiction before `ensure_no_origin_equivocation`'s own (weaker,
+        // message-id-only-evidenced) fallback for the same situation.
         if mode == PublicBatchMode::Incremental {
+            if let Err(violation) = self.claim_origins(
+                phase,
+                root,
+                contributions.iter().map(|verified| {
+                    (
+                        verified.contribution.origin,
+                        verified.contribution.message_id,
+                    )
+                }),
+                delivery.as_ref(),
+            ) {
+                return Err(violation
+                    .with_commitment_equivocation(commitment_equivocation)
+                    .with_public_origin_fault(public_origin_fault)
+                    .with_leader_public_fault(
+                        DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                        duplicate_chunk_origin_evidence,
+                    ));
+            }
             self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
-        self.claim_phase_root(mode, phase, root, expected_origin_count)?;
-        if mode == PublicBatchMode::Complete {
-            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
+        if let Err(violation) =
+            self.claim_phase_root(mode, phase, root, expected_origin_count, delivery.as_ref())
+        {
+            return Err(violation
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                ));
         }
-
         if let Some(existing) = self
             .pending
             .get(&key)
@@ -492,8 +794,40 @@ impl PublicBatchAssembler {
                     Some(phase),
                     Some(root),
                     format!("leader published different contents for chunk {index}"),
-                ))
+                )
+                .with_commitment_equivocation(commitment_equivocation)
+                .with_public_origin_fault(public_origin_fault)
+                .with_leader_public_fault(
+                    DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                    duplicate_chunk_origin_evidence,
+                )
+                .with_leader_equivocation(leader_delivery_equivocation(
+                    existing.delivery.as_ref(),
+                    delivery.as_ref(),
+                )))
             };
+        }
+        if mode == PublicBatchMode::Complete {
+            if let Err(violation) = self.claim_origins(
+                phase,
+                root,
+                contributions.iter().map(|verified| {
+                    (
+                        verified.contribution.origin,
+                        verified.contribution.message_id,
+                    )
+                }),
+                delivery.as_ref(),
+            ) {
+                return Err(violation
+                    .with_commitment_equivocation(commitment_equivocation)
+                    .with_public_origin_fault(public_origin_fault)
+                    .with_leader_public_fault(
+                        DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                        duplicate_chunk_origin_evidence,
+                    ));
+            }
+            self.ensure_no_origin_equivocation(phase, root, &contributions)?;
         }
         let buffered_for_root: usize = self
             .pending
@@ -510,6 +844,12 @@ impl PublicBatchAssembler {
                 format!(
                     "buffered contributions exceed the expected origin count {expected_origin_count}"
                 ),
+            )
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault)
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                duplicate_chunk_origin_evidence,
             ));
         }
         let buffered_for_phase: usize = self
@@ -527,22 +867,99 @@ impl PublicBatchAssembler {
                 format!(
                     "pending contributions exceed the expected origin count {expected_origin_count}"
                 ),
+            )
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault)
+            .with_leader_public_fault(
+                DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                duplicate_chunk_origin_evidence,
             ));
         }
         for verified in &contributions {
             let contribution = &verified.contribution;
             self.observed_origins
                 .entry((phase, contribution.origin))
-                .or_insert((contribution.message_id, root));
+                .or_insert_with(|| ObservedPublicOrigin {
+                    message_id: contribution.message_id,
+                    root,
+                    signed_envelope: verified.signed.clone(),
+                });
         }
         self.pending.entry(key).or_default().chunks.insert(
             index,
             ReceivedPublicChunk {
                 contributions,
                 event_digest,
+                delivery,
             },
         );
         self.try_complete(key, false)
+    }
+
+    /// Record that the leader packaged each `(origin, message_id)` pair
+    /// under `root` for `phase`, rejecting any origin already packaged
+    /// under a *different* root by an earlier manifest or chunk — but only
+    /// when it's the *same* `message_id` both times. A differing
+    /// `message_id` means the origin itself signed two different messages,
+    /// which is the origin's own fault (`ensure_no_origin_equivocation`'s
+    /// `OriginEquivocation` case), not the leader's packaging choice; this
+    /// check only fires when the leader is unambiguously the one at fault —
+    /// it received one canonical signed message from this origin, yet chose
+    /// to package that exact message under two different roots.
+    ///
+    /// This is what makes the aggregate `BufferLimit` checks (buffered
+    /// entries/contributions exceeding the committee size, too many
+    /// distinct incremental roots) structurally unreachable in the cases
+    /// that matter: pairwise-disjoint non-empty origin subsets of an
+    /// N-member committee can never sum past N, so exceeding any of those
+    /// bounds would always require some origin to have been claimed under
+    /// two different roots first — which this check catches earlier, with
+    /// real two-delivery evidence, before the aggregate ever accumulates
+    /// that high. The one case this does *not* cover (and where the
+    /// aggregate checks remain the active, still-needed mechanism): the
+    /// same origin appearing twice *within a single delivery's own
+    /// contributions* — this check only compares against already-recorded
+    /// claims from *earlier* deliveries, not duplicates within the batch
+    /// currently being validated.
+    ///
+    /// Mutating eagerly (before every other check in the caller has passed)
+    /// is safe: any rejection here or later is terminal for the whole
+    /// ceremony attempt, so there is no scenario where a premature record
+    /// could be queried again.
+    fn claim_origins(
+        &mut self,
+        phase: PublicPhase,
+        root: [u8; 32],
+        origins: impl IntoIterator<Item = (ParticipantRef, MessageId)>,
+        delivery: Option<&PublicLeaderDelivery>,
+    ) -> std::result::Result<(), PublicProtocolViolation> {
+        let origins: Vec<(ParticipantRef, MessageId)> = origins.into_iter().collect();
+        for &(origin, message_id) in &origins {
+            if let Some(existing) = self.origin_claims.get(&(phase, origin)) {
+                if existing.message_id == message_id && existing.root != root {
+                    return Err(PublicProtocolViolation::leader(
+                        PublicProtocolViolationKind::BatchMismatch,
+                        Some(phase),
+                        Some(root),
+                        format!("origin {origin:?} was packaged under two different phase roots"),
+                    )
+                    .with_leader_batch_mismatch(leader_delivery_equivocation(
+                        existing.delivery.as_ref(),
+                        delivery,
+                    )));
+                }
+            }
+        }
+        for (origin, message_id) in origins {
+            self.origin_claims
+                .entry((phase, origin))
+                .or_insert_with(|| LeaderOriginClaim {
+                    root,
+                    message_id,
+                    delivery: delivery.cloned(),
+                });
+        }
+        Ok(())
     }
 
     fn ensure_no_origin_equivocation(
@@ -554,17 +971,23 @@ impl PublicBatchAssembler {
         for verified in contributions {
             let contribution = &verified.contribution;
             let origin_key = (phase, contribution.origin);
-            if let Some((existing_id, existing_root)) = self.observed_origins.get(&origin_key) {
-                if existing_id != &contribution.message_id {
+            if let Some(existing) = self.observed_origins.get(&origin_key) {
+                if existing.message_id != contribution.message_id {
                     return Err(PublicProtocolViolation::origin(
                         phase,
                         Some(root),
                         contribution.origin,
                         "origin signed different messages for the same attempt and phase",
                     )
-                    .with_message_ids(*existing_id, contribution.message_id));
+                    .with_message_ids(existing.message_id, contribution.message_id)
+                    .with_commitment_equivocation(
+                        self.commitment_origin_equivocation(existing, verified),
+                    )
+                    .with_public_origin_fault(
+                        self.public_origin_equivocation(existing, verified),
+                    ));
                 }
-                if existing_root != &root {
+                if existing.root != root {
                     return Err(PublicProtocolViolation::leader(
                         PublicProtocolViolationKind::BatchMismatch,
                         Some(phase),
@@ -581,28 +1004,135 @@ impl PublicBatchAssembler {
         Ok(())
     }
 
+    fn find_commitment_origin_equivocation(
+        &self,
+        phase: PublicPhase,
+        contributions: &[VerifiedPublicContribution],
+    ) -> Option<PublicCommitmentEquivocation> {
+        if phase != PublicPhase::Commitments {
+            return None;
+        }
+        let mut seen = HashMap::<ParticipantRef, &VerifiedPublicContribution>::new();
+        for verified in contributions {
+            let contribution = &verified.contribution;
+            if let Some(existing) = self.observed_origins.get(&(phase, contribution.origin)) {
+                if existing.message_id != contribution.message_id {
+                    return self.commitment_origin_equivocation(existing, verified);
+                }
+            }
+            if let Some(existing) = seen.insert(contribution.origin, verified) {
+                if existing.contribution.message_id != contribution.message_id {
+                    return Some(PublicCommitmentEquivocation {
+                        origin: contribution.origin,
+                        retained: existing.signed.clone(),
+                        conflicting: verified.signed.clone(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn find_public_origin_equivocation(
+        &self,
+        phase: PublicPhase,
+        contributions: &[VerifiedPublicContribution],
+    ) -> Option<PublicOriginFaultEvidence> {
+        if phase == PublicPhase::Commitments {
+            return None;
+        }
+        let mut seen = HashMap::<ParticipantRef, &VerifiedPublicContribution>::new();
+        for verified in contributions {
+            let contribution = &verified.contribution;
+            if let Some(existing) = self.observed_origins.get(&(phase, contribution.origin)) {
+                if let Some(evidence) = self.public_origin_equivocation(existing, verified) {
+                    return Some(evidence);
+                }
+            }
+            if let Some(existing) = seen.insert(contribution.origin, verified) {
+                if existing.contribution.payload != contribution.payload {
+                    return Some(PublicOriginFaultEvidence {
+                        fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                        contribution_a: existing.signed.clone(),
+                        contribution_b: Some(verified.signed.clone()),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    fn public_origin_equivocation(
+        &self,
+        existing: &ObservedPublicOrigin,
+        conflicting: &VerifiedPublicContribution,
+    ) -> Option<PublicOriginFaultEvidence> {
+        if conflicting.contribution.payload.phase() == PublicPhase::Commitments {
+            return None;
+        }
+        let retained: DkgPublicContribution = transport::decode(
+            &existing.signed_envelope.data,
+            transport::MAX_PUBLIC_ORIGIN_EVIDENCE_BYTES,
+        )
+        .ok()?;
+        if retained.payload == conflicting.contribution.payload {
+            return None;
+        }
+        Some(PublicOriginFaultEvidence {
+            fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+            contribution_a: existing.signed_envelope.clone(),
+            contribution_b: Some(conflicting.signed.clone()),
+        })
+    }
+
+    fn commitment_origin_equivocation(
+        &self,
+        existing: &ObservedPublicOrigin,
+        conflicting: &VerifiedPublicContribution,
+    ) -> Option<PublicCommitmentEquivocation> {
+        if conflicting.contribution.payload.phase() != PublicPhase::Commitments {
+            return None;
+        }
+        Some(PublicCommitmentEquivocation {
+            origin: conflicting.contribution.origin,
+            retained: existing.signed_envelope.clone(),
+            conflicting: conflicting.signed.clone(),
+        })
+    }
+
     fn claim_phase_root(
         &mut self,
         mode: PublicBatchMode,
         phase: PublicPhase,
         root: [u8; 32],
         expected_origin_count: usize,
+        delivery: Option<&PublicLeaderDelivery>,
     ) -> std::result::Result<(), PublicProtocolViolation> {
         if mode == PublicBatchMode::Complete {
             if let Some(existing) = self.complete_phase_roots.get(&phase) {
-                if existing != &root {
+                if existing.root != root {
                     return Err(PublicProtocolViolation::leader(
                         PublicProtocolViolationKind::ConflictingManifest,
                         Some(phase),
                         Some(root),
                         format!(
                             "complete phase already committed to root {}",
-                            hex::encode(existing)
+                            hex::encode(existing.root)
                         ),
-                    ));
+                    )
+                    .with_leader_equivocation(leader_delivery_equivocation(
+                        existing.delivery.as_ref(),
+                        delivery,
+                    )));
                 }
             } else {
-                self.complete_phase_roots.insert(phase, root);
+                self.complete_phase_roots.insert(
+                    phase,
+                    CompletePhaseRootClaim {
+                        root,
+                        delivery: delivery.cloned(),
+                    },
+                );
             }
             return Ok(());
         }
@@ -670,6 +1200,7 @@ impl PublicBatchAssembler {
         let manifest = received_manifest.manifest;
         let mut contributions = Vec::new();
         let mut chunk_digests = BTreeMap::new();
+        let mut chunk_deliveries = BTreeMap::new();
         for index in 0..manifest.chunk_count {
             let chunk = batch.chunks.get(&index).ok_or_else(|| {
                 PublicProtocolViolation::leader(
@@ -680,6 +1211,9 @@ impl PublicBatchAssembler {
                 )
             })?;
             chunk_digests.insert(index, chunk.event_digest);
+            if let Some(delivery) = &chunk.delivery {
+                chunk_deliveries.insert(index, delivery.clone());
+            }
             contributions.extend(chunk.contributions.iter().cloned());
         }
 
@@ -688,13 +1222,18 @@ impl PublicBatchAssembler {
             .iter()
             .map(|verified| verified.contribution.origin)
             .collect();
+        let commitment_equivocation =
+            self.find_commitment_origin_equivocation(key.0, &contributions);
+        let public_origin_fault = self.find_public_origin_equivocation(key.0, &contributions);
         if actual_origins != canonical_origins {
             return Err(PublicProtocolViolation::leader(
                 PublicProtocolViolationKind::BatchMismatch,
                 Some(key.0),
                 Some(key.1),
                 "chunk contributions are not in the manifest's canonical origin order",
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
         let actual_ids: BTreeMap<_, _> = contributions
             .iter()
@@ -711,14 +1250,18 @@ impl PublicBatchAssembler {
                 Some(key.0),
                 Some(key.1),
                 "chunk contribution IDs do not match the manifest",
-            ));
+            )
+            .with_commitment_equivocation(commitment_equivocation)
+            .with_public_origin_fault(public_origin_fault));
         }
 
         self.completed.insert(
             key,
             CompletedPublicBatch {
                 manifest_event_digest: received_manifest.event_digest,
+                manifest_delivery: received_manifest.delivery,
                 chunk_digests,
+                chunk_deliveries,
             },
         );
         Ok(PublicBatchAssembly::Complete {
@@ -883,6 +1426,16 @@ fn public_phase_response_page(
             phase,
             contributions: Vec::new(),
             next_cursor: None,
+            // Placeholder — the real digest/signature are computed by the
+            // caller once the final contributions/next_cursor are settled
+            // (`sign_public_phase_response`), since signing needs access to
+            // the local signing key this pure/sync sizing loop doesn't have.
+            // Candidates below are sized against a smaller effective budget
+            // (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES` margin) so the
+            // real signature's byte cost can never push the final signed
+            // message over `MAX_PUBLIC_REPAIR_PAGE_BYTES`.
+            page_digest: [0; 32],
+            report_signature: None,
         });
     }
 
@@ -897,11 +1450,15 @@ fn public_phase_response_page(
             phase,
             contributions: contributions.clone(),
             next_cursor: has_more.then_some(**origin),
+            page_digest: [0; 32],
+            report_signature: None,
         };
         let encoded_len = transport::encode(&candidate)
             .map_err(DkgError::Serialization)?
             .len();
-        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+        if encoded_len
+            > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES - PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_BYTES
+        {
             contributions.pop();
             let Some(cursor) = last_origin else {
                 crate::metrics::record_dkg_transport_event(
@@ -910,7 +1467,7 @@ fn public_phase_response_page(
                 );
                 return Err(DkgError::ProtocolError(format!(
                     "one signed public contribution exceeds the {}-byte repair page limit",
-                    MAX_PUBLIC_REPAIR_PAGE_BYTES
+                    transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                 )));
             };
             return Ok(DkgControlMessage::PublicPhaseResponse {
@@ -919,6 +1476,8 @@ fn public_phase_response_page(
                 phase,
                 contributions,
                 next_cursor: Some(cursor),
+                page_digest: [0; 32],
+                report_signature: None,
             });
         }
         last_origin = Some(**origin);
@@ -928,6 +1487,56 @@ fn public_phase_response_page(
     }
 
     unreachable!("a non-empty retained page returns from the loop")
+}
+
+/// Attach a real `page_digest`/`report_signature` to a `PublicPhaseResponse`
+/// built by `public_phase_response_page` (which fills placeholders, since it
+/// has no access to the local signing key). Lets an oversized or otherwise
+/// invalid repair page be attributed to the leader later — unlike Gossip
+/// broadcasts, direct-QUIC control messages have no transport-layer
+/// signature to reclaim, and `PublicPhaseResponse` didn't carry one of its
+/// own the way `Prepare`/`Prepared`/etc. do.
+fn sign_public_phase_response<D>(
+    state: &Arc<AppState<D>>,
+    response: DkgControlMessage,
+) -> Result<DkgControlMessage>
+where
+    D: crypto::r#trait::Dkg + Clone + 'static,
+{
+    let DkgControlMessage::PublicPhaseResponse {
+        ceremony_id,
+        attempt_id,
+        phase,
+        contributions,
+        next_cursor,
+        ..
+    } = response
+    else {
+        return Ok(response);
+    };
+    let page_digest = transport::public_repair_page_digest(
+        ceremony_id,
+        attempt_id,
+        phase,
+        &contributions,
+        next_cursor,
+    );
+    let report_signature = Some(sign_control_message(
+        state,
+        ceremony_id,
+        attempt_id,
+        "public_phase_response",
+        page_digest,
+    )?);
+    Ok(DkgControlMessage::PublicPhaseResponse {
+        ceremony_id,
+        attempt_id,
+        phase,
+        contributions,
+        next_cursor,
+        page_digest,
+        report_signature,
+    })
 }
 
 fn validate_public_repair_page_progress(
@@ -1089,6 +1698,285 @@ fn peer_matches_route(peer: &PeerId, route: &str) -> bool {
     hex::encode(peer.as_bytes()) == extract_node_part(route).to_lowercase()
 }
 
+fn participant_for_peer_route(
+    committees: &CeremonyConfig,
+    scope: CommitteeScope,
+    peer: &str,
+) -> Option<ParticipantRef> {
+    let peer = extract_node_part(peer).to_lowercase();
+    let committee = committees.committee(scope)?;
+    committee
+        .peer_routes
+        .iter()
+        .position(|route| extract_node_part(route).to_lowercase() == peer)
+        .and_then(|index| committee.node_keys.get(index))
+        .and_then(|node_key| committee.participant(scope, node_key))
+}
+
+fn participant_for_transport_peer(
+    committees: &CeremonyConfig,
+    peer: &str,
+) -> Option<ParticipantRef> {
+    participant_for_peer_route(committees, CommitteeScope::Next, peer)
+        .or_else(|| participant_for_peer_route(committees, CommitteeScope::Current, peer))
+}
+
+struct OfflineRelayRejectionGuard {
+    stage: PssOfflineStage,
+    accepted: bool,
+}
+
+impl OfflineRelayRejectionGuard {
+    fn new(stage: PssOfflineStage) -> Self {
+        Self {
+            stage,
+            accepted: false,
+        }
+    }
+
+    fn accept(&mut self) {
+        self.accepted = true;
+    }
+}
+
+impl Drop for OfflineRelayRejectionGuard {
+    fn drop(&mut self) {
+        if !self.accepted {
+            crate::metrics::record_pss_offline_observation(
+                self.stage.as_metric_label(),
+                "relay_rejected",
+            );
+        }
+    }
+}
+
+fn validate_offline_relay_claim(
+    committees: &CeremonyConfig,
+    leader_node_key: &str,
+    recipient_node_key: &str,
+    sender: &PeerId,
+    stage: PssOfflineStage,
+    accused: &[ParticipantRef],
+) -> Result<String> {
+    if !committees
+        .current
+        .node_keys
+        .iter()
+        .any(|key| key == recipient_node_key)
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay recipient is not a current signer".into(),
+        ));
+    }
+    let next = committees
+        .next
+        .as_ref()
+        .ok_or_else(|| DkgError::InvalidState("reshare relay has no next committee".into()))?;
+    let sender_node_key = next
+        .node_keys
+        .iter()
+        .zip(&next.peer_routes)
+        .find_map(|(node_key, route)| peer_matches_route(sender, route).then_some(node_key.clone()))
+        .ok_or_else(|| {
+            DkgError::Unauthorized("offline-candidate observer is not in the next committee".into())
+        })?;
+    if committees
+        .current
+        .node_keys
+        .iter()
+        .any(|key| key == &sender_node_key)
+    {
+        return Err(DkgError::Unauthorized(
+            "current committee members must report offline candidates directly".into(),
+        ));
+    }
+    if stage.requires_canonical_leader() && leader_node_key != sender_node_key {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate observer is not entitled to the leader-only stage".into(),
+        ));
+    }
+    if matches!(
+        stage,
+        PssOfflineStage::StartForward
+            | PssOfflineStage::RefreshResultStage
+            | PssOfflineStage::RefreshResultCommit
+    ) {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate stage is inconsistent with a pure-new reshare observer".into(),
+        ));
+    }
+    if accused.is_empty() || accused.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay size is outside the committee bound".into(),
+        ));
+    }
+    let mut canonical_accused = accused.to_vec();
+    canonical_accused.sort_unstable();
+    canonical_accused.dedup();
+    if canonical_accused != accused
+        || canonical_accused
+            .iter()
+            .any(|participant| committees.route(*participant).is_none())
+        || canonical_accused
+            .iter()
+            .any(|participant| committees.node_key(*participant) == Some(&sender_node_key))
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate participants are noncanonical or outside the ceremony".into(),
+        ));
+    }
+    let leader = next
+        .participant(CommitteeScope::Next, leader_node_key)
+        .ok_or_else(|| DkgError::InvalidState("reshare leader assignment is missing".into()))?;
+    match stage {
+        PssOfflineStage::TopologyAck
+        | PssOfflineStage::PublicContribution
+        | PssOfflineStage::PublicRepairLeader
+            if canonical_accused.as_slice() != [leader] =>
+        {
+            return Err(DkgError::Unauthorized(
+                "offline-candidate stage may accuse only the canonical leader".into(),
+            ));
+        }
+        PssOfflineStage::ReshareShareAck
+            if canonical_accused.as_slice() != [ParticipantRef::next(1)] =>
+        {
+            return Err(DkgError::Unauthorized(
+                "reshare share-ACK observation may accuse only the selector".into(),
+            ));
+        }
+        _ => {}
+    }
+    Ok(sender_node_key)
+}
+
+async fn validate_offline_relay_transition<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ceremony_id: CeremonyId,
+    kind: &SessionKind,
+    ring_id: &str,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let SessionKind::Reshare {
+        ring_pk_hex,
+        new_peer_node_keys,
+        new_threshold,
+        bulletin_post_id,
+    } = kind
+    else {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay is only valid for reshare".into(),
+        ));
+    };
+    if bulletin_post_id != ring_id {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay ring binding is inconsistent".into(),
+        ));
+    }
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (pending_keys, pending_threshold) = pending_reshare_parameters(&ring, ring_pk_hex)?;
+    if pending_keys != *new_peer_node_keys || pending_threshold != *new_threshold {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay targets a superseded reshare transition".into(),
+        ));
+    }
+    let expected_ceremony = CeremonyId(derive_reshare_session_id(
+        ring_pk_hex,
+        ring_id,
+        &ring.peer_node_keys,
+        &pending_keys,
+        pending_threshold,
+    )?);
+    if expected_ceremony != ceremony_id {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay ceremony binding is stale".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn private_failure_is_unreachable(io_failed: bool, busy_retry_after: Option<Duration>) -> bool {
+    io_failed && busy_retry_after.is_none()
+}
+
+fn terminal_offline_candidate(
+    last_failure_was_unreachable: bool,
+    peer_proved_reachable: bool,
+) -> bool {
+    last_failure_was_unreachable && !peer_proved_reachable
+}
+
+pub(crate) async fn spawn_pss_offline_for_attempt<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    stage: PssOfflineStage,
+    accused: impl IntoIterator<Item = ParticipantRef>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let accused: Vec<_> = accused.into_iter().collect();
+    if accused.is_empty() {
+        return;
+    }
+    let snapshot = state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            (
+                session.kind.clone(),
+                session.routing.ring_id.clone(),
+                session.protocol_version,
+                session.transport.committees.clone(),
+            )
+        })
+        .await;
+    let Ok((kind, ring_id, protocol_version, Some(committees))) = snapshot else {
+        crate::metrics::record_pss_offline_observation(stage.as_metric_label(), "seed_missing");
+        return;
+    };
+    spawn_pss_offline_observations(
+        state.clone(),
+        routes,
+        PssOfflineObservationSeed::new(
+            attempt.ceremony_id,
+            Some(attempt.attempt_id),
+            kind,
+            ring_id,
+            protocol_version,
+            stage,
+            committees,
+            accused,
+        ),
+    );
+}
+
+#[derive(Debug)]
+pub(crate) struct PeerDeliveryFailure {
+    error: DkgError,
+    unreachable: bool,
+    reachable: bool,
+}
+
+impl PeerDeliveryFailure {
+    pub(crate) fn is_unreachable(&self) -> bool {
+        self.unreachable
+    }
+
+    pub(crate) fn error(&self) -> &DkgError {
+        &self.error
+    }
+
+    pub(crate) fn proves_reachable(&self) -> bool {
+        self.reachable
+    }
+}
+
 fn leader_bootstrap(
     local_node_key: &str,
     leader_node_key: &str,
@@ -1148,8 +2036,10 @@ fn validate_reshare_next_transport_committee(
     if let Err(detail) =
         validate_node_route_bindings(&next.node_keys, &next.peer_routes, resolved_routes)
     {
-        // TODO(reporting): retain evidence that the authenticated reshare
-        // leader supplied transport routes contradicting SourceHub NodeInfo.
+        // Reported: this function's only caller, `validate_reshare_transport_
+        // routes`, has its own error wrapped by `prepare_participant` in a
+        // `report_leader_prepare_fault_best_effort` call — no separate
+        // reporting needed here.
         return Err(DkgError::Unauthorized(format!(
             "Reshare next transport routes do not match resolved SourceHub NodeInfo routes: {detail}"
         )));
@@ -1221,8 +2111,9 @@ async fn lock_ceremony_start<D>(
 where
     D: CoordinatorDkg,
 {
+    let locks = state.dkg_session_state.ceremony_start_locks();
     let lock = {
-        let mut locks = state.dkg_ceremony_start_locks.lock().await;
+        let mut locks = locks.lock().await;
         locks
             .entry(ceremony_id.0)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -1233,7 +2124,7 @@ where
     CeremonyStartGuard {
         ceremony_id: ceremony_id.0,
         lock: weak_lock,
-        locks: state.dkg_ceremony_start_locks.clone(),
+        locks,
         guard: Some(guard),
     }
 }
@@ -1248,8 +2139,59 @@ async fn control_request_with_timeout<D>(
 where
     D: CoordinatorDkg,
 {
+    control_request_with_timeout_classified(state, routes, peer, request, response_timeout)
+        .await
+        .map_err(PeerRequestFailure::into_error)
+}
+
+/// A direct request can fail before a peer is reached, after the peer has
+/// demonstrably replied, or because of local work. Keeping those cases typed
+/// prevents terminal PSS paths from treating protocol errors or local pressure
+/// as evidence that a peer is offline.
+#[derive(Debug)]
+enum PeerRequestFailure {
+    Unreachable(DkgError),
+    Reachable(DkgError),
+    Local(DkgError),
+}
+
+impl PeerRequestFailure {
+    fn is_unreachable(&self) -> bool {
+        matches!(self, Self::Unreachable(_))
+    }
+
+    fn error(&self) -> &DkgError {
+        match self {
+            Self::Unreachable(error) | Self::Reachable(error) | Self::Local(error) => error,
+        }
+    }
+
+    fn proves_reachable(&self) -> bool {
+        matches!(self, Self::Reachable(_))
+    }
+
+    fn into_error(self) -> DkgError {
+        match self {
+            Self::Unreachable(error) | Self::Reachable(error) | Self::Local(error) => error,
+        }
+    }
+}
+
+async fn control_request_with_timeout_classified<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    peer: &str,
+    request: DkgControlMessage,
+    response_timeout: Duration,
+) -> std::result::Result<DkgControlMessage, PeerRequestFailure>
+where
+    D: CoordinatorDkg,
+{
     crate::metrics::record_dkg_transport_message("control", request.metric_label(), "sent");
     let timeout_error = control_timeout_message(peer, &request, response_timeout);
+    let encoded = transport::encode(&request)
+        .map_err(DkgError::Serialization)
+        .map_err(PeerRequestFailure::Local)?;
     let mut attempt_connection = None;
     let exchange = timeout(response_timeout, async {
         let (stream, parent_connection) = state
@@ -1258,7 +2200,6 @@ where
             .await
             .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
         attempt_connection = Some(parent_connection);
-        let encoded = transport::encode(&request).map_err(DkgError::Serialization)?;
         stream
             .send(Message::new(encoded, routes.dkg_control_alpn.to_vec()))
             .await
@@ -1280,7 +2221,7 @@ where
                 &error,
             )
             .await;
-            return Err(error);
+            return Err(PeerRequestFailure::Unreachable(error));
         }
         Err(_) => {
             let error = DkgError::NetworkConnection(timeout_error);
@@ -1292,13 +2233,16 @@ where
                 &error,
             )
             .await;
-            return Err(error);
+            return Err(PeerRequestFailure::Unreachable(error));
         }
     };
     let response = transport::decode(&response.data, MAX_CONTROL_MESSAGE_BYTES)
-        .map_err(DkgError::Deserialization)?;
+        .map_err(DkgError::Deserialization)
+        .map_err(PeerRequestFailure::Reachable)?;
     match response {
-        DkgControlMessage::Error { message, .. } => Err(DkgError::ProtocolError(message)),
+        DkgControlMessage::Error { message, .. } => Err(PeerRequestFailure::Reachable(
+            DkgError::ProtocolError(message),
+        )),
         response => Ok(response),
     }
 }
@@ -1339,13 +2283,13 @@ fn retryable_control_error(error: &DkgError) -> bool {
     )
 }
 
-async fn retry_preparation_control<D>(
+async fn retry_preparation_control_classified<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     peer: &str,
     request: DkgControlMessage,
     deadline: Instant,
-) -> Result<DkgControlMessage>
+) -> std::result::Result<DkgControlMessage, PeerRequestFailure>
 where
     D: CoordinatorDkg,
 {
@@ -1354,15 +2298,17 @@ where
     loop {
         let now = Instant::now();
         if now >= deadline {
-            return Err(DkgError::NetworkCommunication(format!(
+            return Err(PeerRequestFailure::Unreachable(
+                DkgError::NetworkCommunication(format!(
                 "{operation} exceeded the preparation deadline for peer {} ceremony={} attempt={}",
                 extract_node_part(peer),
                 ceremony_id.map_or_else(|| "-".into(), |id| id.0.to_string()),
                 attempt_id.map_or_else(|| "-".into(), |id| hex::encode(&id.0[..6])),
-            )));
+                )),
+            ));
         }
         let remaining = deadline.saturating_duration_since(now);
-        match control_request_with_timeout(
+        match control_request_with_timeout_classified(
             state,
             routes,
             peer,
@@ -1372,10 +2318,10 @@ where
         .await
         {
             Ok(response) => return Ok(response),
-            Err(error) if retryable_control_error(&error) => {
+            Err(error @ PeerRequestFailure::Unreachable(_)) => {
                 crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
-                    %error,
+                    error = %error.error(),
                     operation,
                     peer = %extract_node_part(peer),
                     "preparation control request failed; retrying"
@@ -1564,6 +2510,7 @@ where
             attempt_id,
             activation_digest,
             active_dealers,
+            report_signature: _,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
             let (_, configured_attempt, config_digest) = state
@@ -1591,10 +2538,18 @@ where
                 .await;
             match activation {
                 TransportActivationOutcome::AlreadyActivated => {
+                    let report_signature = Some(sign_control_message(
+                        &state,
+                        ceremony_id,
+                        attempt_id,
+                        "activated",
+                        activation_digest,
+                    )?);
                     return Ok(DkgControlMessage::Activated {
                         ceremony_id,
                         attempt_id,
                         activation_digest,
+                        report_signature,
                     });
                 }
                 TransportActivationOutcome::Activated => {}
@@ -1603,16 +2558,25 @@ where
                     return Err(DkgError::ProtocolError("activate for stale attempt".into()));
                 }
             }
+            let report_signature = Some(sign_control_message(
+                &state,
+                ceremony_id,
+                attempt_id,
+                "activated",
+                activation_digest,
+            )?);
             Ok(DkgControlMessage::Activated {
                 ceremony_id,
                 attempt_id,
                 activation_digest,
+                report_signature,
             })
         }
         DkgControlMessage::Begin {
             ceremony_id,
             attempt_id,
             activation_digest,
+            report_signature: _,
         } => {
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
             match state
@@ -1622,7 +2586,7 @@ where
             {
                 TransportBeginOutcome::Begun => {
                     spawn_cryptographic_attempt(
-                        state,
+                        state.clone(),
                         routes,
                         AttemptKey::new(ceremony_id, attempt_id),
                     );
@@ -1637,10 +2601,18 @@ where
                     return Err(DkgError::ProtocolError("begin for stale attempt".into()));
                 }
             }
+            let report_signature = Some(sign_control_message(
+                &state,
+                ceremony_id,
+                attempt_id,
+                "begun",
+                activation_digest,
+            )?);
             Ok(DkgControlMessage::Begun {
                 ceremony_id,
                 attempt_id,
                 activation_digest,
+                report_signature,
             })
         }
         DkgControlMessage::PublicContribution(signed) => {
@@ -1683,8 +2655,17 @@ where
                         "public",
                         "protocol_violation_abort",
                     );
-                    // TODO(reporting): retain the authenticated origin envelope
-                    // and submit invalid-public-contribution evidence.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        attempt,
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: signed.clone(),
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
@@ -1771,8 +2752,17 @@ where
                         %error,
                         "aborting DKG attempt after staged leader result failed preflight"
                     );
-                    // TODO(reporting): retain the authenticated leader envelope
-                    // and report the invalid staged refresh result.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        attempt,
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: signed.clone(),
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
@@ -1780,7 +2770,7 @@ where
                 }
                 return Err(error);
             }
-            record_public_contribution(&state, signed, &contribution).await?;
+            record_public_contribution(&state, routes, signed, &contribution).await?;
             crate::metrics::record_dkg_transport_event("public", "result_staged");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: contribution.ceremony_id,
@@ -1794,24 +2784,21 @@ where
             message_id,
         } => {
             let receipt_key = (ceremony_id, attempt_id, message_id);
+            if let Some(leader_peer) = state
+                .dkg_session_state
+                .public_commit_receipt(receipt_key)
+                .await
             {
-                let now = Instant::now();
-                let mut receipts = state.dkg_public_commit_receipts.lock().await;
-                receipts.retain(|_, (_, recorded_at)| {
-                    now.duration_since(*recorded_at) <= DKG_ATTEMPT_TIMEOUT
-                });
-                if let Some((leader_peer, _)) = receipts.get(&receipt_key) {
-                    if leader_peer.as_slice() != sender.as_bytes() {
-                        return Err(DkgError::Unauthorized(
-                            "refresh-result retry did not come from its original leader".into(),
-                        ));
-                    }
-                    return Ok(DkgControlMessage::PublicContributionAck {
-                        ceremony_id,
-                        attempt_id,
-                        message_id,
-                    });
+                if leader_peer.as_slice() != sender.as_bytes() {
+                    return Err(DkgError::Unauthorized(
+                        "refresh-result retry did not come from its original leader".into(),
+                    ));
                 }
+                return Ok(DkgControlMessage::PublicContributionAck {
+                    ceremony_id,
+                    attempt_id,
+                    message_id,
+                });
             }
 
             validate_leader_sender(&state, ceremony_id.0, sender).await?;
@@ -1847,6 +2834,7 @@ where
             // Commit is the authorization to apply it, so bypass the generic
             // record-and-deduplicate helper: treating the retained record as a
             // completed application would leave followers staged forever.
+            let retained_signed = signed.clone();
             if let Err(error) =
                 dispatch_public_contribution(state.clone(), routes, signed, contribution.clone())
                     .await
@@ -1863,8 +2851,17 @@ where
                         "public",
                         "protocol_violation_abort",
                     );
-                    // TODO(reporting): retain the authenticated leader result
-                    // and report the invalid committed refresh result.
+                    report_public_origin_fault_best_effort(
+                        &state,
+                        routes,
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        Some(&PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: retained_signed,
+                            contribution_b: None,
+                        }),
+                    )
+                    .await;
                     state
                         .dkg_session_state
                         .abort_transport_attempt(
@@ -1876,18 +2873,10 @@ where
                 return Err(error);
             }
 
-            let now = Instant::now();
-            let mut receipts = state.dkg_public_commit_receipts.lock().await;
-            if receipts.len() >= MAX_PUBLIC_COMMIT_RECEIPTS {
-                if let Some(oldest) = receipts
-                    .iter()
-                    .min_by_key(|(_, (_, recorded_at))| *recorded_at)
-                    .map(|(key, _)| *key)
-                {
-                    receipts.remove(&oldest);
-                }
-            }
-            receipts.insert(receipt_key, (sender.as_bytes().to_vec(), now));
+            state
+                .dkg_session_state
+                .record_public_commit_receipt(receipt_key, sender.as_bytes().to_vec())
+                .await;
             crate::metrics::record_dkg_transport_event("public", "result_committed");
             Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id,
@@ -2122,6 +3111,501 @@ where
                 idempotency_key,
             })
         }
+        DkgControlMessage::RelayPublicOriginFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            fault_kind,
+            contribution_a,
+            contribution_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "public-origin evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (fault_kind, contribution_a.clone(), contribution_b.clone());
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "public-origin-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "public-origin evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_public_origin_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                fault_kind,
+                contribution_a,
+                contribution_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderEquivocationEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader-equivocation evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (
+                delivery_id_a,
+                delivery_a.clone(),
+                delivery_id_b,
+                delivery_b.clone(),
+            );
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-equivocation-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader-equivocation evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_equivocation_evidence_relay(
+                &coordinator,
+                attempt,
+                delivery_id_a,
+                delivery_a,
+                delivery_id_b,
+                delivery_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderBatchMismatchEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader batch-mismatch evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (
+                delivery_id_a,
+                delivery_a.clone(),
+                delivery_id_b,
+                delivery_b.clone(),
+            );
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-batch-mismatch-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader batch-mismatch evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_batch_mismatch_evidence_relay(
+                &coordinator,
+                attempt,
+                delivery_id_a,
+                delivery_a,
+                delivery_id_b,
+                delivery_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayLeaderPublicFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            fault_kind,
+            delivery_id,
+            delivery,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "leader public-fault evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (fault_kind, delivery_id, delivery.clone());
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "leader-public-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "leader public-fault evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_leader_public_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                fault_kind,
+                delivery_id,
+                delivery,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayControlMessageFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            accused_node_key,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
+        } => {
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let (origin, recipient) = state
+                .dkg_session_state
+                .with_state(&ceremony_id.0, |session| {
+                    let origin = session
+                        .routing
+                        .reshare_new_node_id_to_peer_id
+                        .iter()
+                        .find_map(|(node_id, peer)| {
+                            peer_matches_route(sender, peer)
+                                .then_some(ParticipantRef::next(*node_id))
+                        });
+                    (origin, ParticipantRef::current(session.node.node_id()))
+                })
+                .await
+                .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
+            let origin = origin.ok_or_else(|| {
+                DkgError::Unauthorized(
+                    "control-message fault evidence sender is not in next committee".into(),
+                )
+            })?;
+            let payload = (
+                accused_node_key.clone(),
+                message_kind.clone(),
+                fault_kind,
+                artifact_a.clone(),
+                artifact_b.clone(),
+            );
+            let expected_key = transport::derive_control_message_id(
+                ceremony_id,
+                attempt_id,
+                "control-message-fault-evidence",
+                origin,
+                recipient,
+                &payload,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key
+                || state
+                    .dkg_session_state
+                    .transport_attempt(&ceremony_id.0)
+                    .await
+                    != Some(attempt_id)
+            {
+                return Err(DkgError::Unauthorized(
+                    "control-message fault evidence idempotency key or attempt mismatch".into(),
+                ));
+            }
+            if !claim_control_message(&state, attempt, idempotency_key).await? {
+                return Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+            let result = handle_control_message_fault_evidence_relay(
+                &coordinator,
+                attempt,
+                accused_node_key,
+                message_kind,
+                fault_kind,
+                artifact_a,
+                artifact_b,
+            )
+            .await;
+            state
+                .dkg_session_state
+                .finish_transport_message(attempt, idempotency_key, result.is_ok())
+                .await;
+            result?;
+            Ok(DkgControlMessage::EvidenceAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
+        DkgControlMessage::RelayOfflineCandidates {
+            ceremony_id,
+            attempt_id,
+            idempotency_key,
+            stage,
+            accused,
+        } => {
+            let mut relay_rejection = OfflineRelayRejectionGuard::new(stage);
+            let attempt = AttemptKey::new(ceremony_id, attempt_id);
+            let receipt = state
+                .dkg_session_state
+                .offline_relay_receipt(attempt)
+                .await
+                .ok_or_else(|| {
+                    DkgError::Unauthorized(
+                        "offline-candidate relay targets an unknown or expired attempt".into(),
+                    )
+                })?;
+            let kind = receipt.kind;
+            let ring_id = receipt.ring_id;
+            let protocol_version = receipt.protocol_version;
+            let committees = receipt.committees;
+            let leader_node_key = receipt.leader_node_key;
+            validate_offline_relay_transition(&state, routes, ceremony_id, &kind, &ring_id).await?;
+            validate_offline_relay_claim(
+                &committees,
+                &leader_node_key,
+                &state.node_key,
+                sender,
+                stage,
+                &accused,
+            )?;
+            let canonical_accused = accused;
+            let expected_key = transport::derive_offline_candidates_id(
+                ceremony_id,
+                attempt_id,
+                sender.as_bytes(),
+                stage,
+                &canonical_accused,
+            )
+            .map_err(DkgError::Serialization)?;
+            if expected_key != idempotency_key {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate idempotency key mismatch".into(),
+                ));
+            }
+            let claimed = state
+                .dkg_session_state
+                .claim_offline_relay_idempotency(attempt, idempotency_key)
+                .await
+                .ok_or_else(|| {
+                    DkgError::Unauthorized("offline-candidate relay receipt expired".into())
+                })?;
+            if !claimed {
+                relay_rejection.accept();
+                return Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                    ceremony_id,
+                    attempt_id,
+                    idempotency_key,
+                });
+            }
+            spawn_pss_offline_observations(
+                state.clone(),
+                routes,
+                PssOfflineObservationSeed::new(
+                    ceremony_id,
+                    Some(attempt_id),
+                    kind,
+                    ring_id,
+                    protocol_version,
+                    stage,
+                    committees,
+                    canonical_accused,
+                ),
+            );
+            crate::metrics::record_pss_offline_observation(
+                stage.as_metric_label(),
+                "relay_accepted",
+            );
+            relay_rejection.accept();
+            Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                ceremony_id,
+                attempt_id,
+                idempotency_key,
+            })
+        }
         DkgControlMessage::GetPublicContribution {
             ceremony_id,
             attempt_id,
@@ -2182,6 +3666,7 @@ where
                 .ok_or_else(|| DkgError::SessionNotFound(ceremony_id.0.to_string()))?;
             let response =
                 public_phase_response_page(ceremony_id, attempt_id, phase, &retained, after)?;
+            let response = sign_public_phase_response(&state, response)?;
             let encoded_len = transport::encode(&response)
                 .map_err(DkgError::Serialization)?
                 .len();
@@ -2233,6 +3718,20 @@ where
             "unexpected control request: {other:?}"
         ))),
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn handle_control_for_test<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    request: DkgControlMessage,
+    sender: &PeerId,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    handle_control(state, routes, request, sender).await
 }
 
 /// Begin cryptographic work only after the leader has observed an activation
@@ -2572,7 +4071,7 @@ where
         .map_err(DkgError::Unauthorized)?;
     let leader_peer = next_routes
         .iter()
-        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.as_str()))
+        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.clone()))
         .ok_or_else(|| DkgError::InvalidState("next-committee leader route is missing".into()))?;
     crate::metrics::record_dkg_transport_event("control", "reshare_start_forwarded");
     tracing::info!(
@@ -2580,20 +4079,53 @@ where
         leader = %leader,
         "forwarding pending reshare to canonical next-committee leader"
     );
+    let next_assignments =
+        canonical_node_id_assignments_from_node_keys(&next_keys).map_err(DkgError::InvalidInput)?;
+    let leader_participant = next_assignments
+        .get(&leader)
+        .copied()
+        .map(ParticipantRef::next)
+        .ok_or_else(|| DkgError::InvalidState("next leader assignment is missing".into()))?;
+    let kind = SessionKind::Reshare {
+        ring_pk_hex: ring_pk.clone(),
+        new_peer_node_keys: next_keys,
+        new_threshold: next_threshold,
+        bulletin_post_id: ring_id.clone(),
+    };
     let forwarding_deadline =
         Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
-    match retry_preparation_control(
+    let response = retry_preparation_control_classified(
         &state,
         routes,
-        leader_peer,
+        &leader_peer,
         DkgControlMessage::StartReshare {
-            ring_id,
+            ring_id: ring_id.clone(),
             expected_ring_pk: ring_pk,
         },
         forwarding_deadline,
     )
-    .await?
-    {
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        kind,
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, leader, leader_peer)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
         DkgControlMessage::ReshareStartAccepted {
             ceremony_id,
             attempt_id,
@@ -2732,8 +4264,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id,
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
     let (ceremony, attempt) = coordinate_prepared(state, routes, prepare).await?;
     crate::metrics::record_dkg_transport_event("control", "reshare_start_accepted");
     Ok(ReshareStartOutcome::Started(ceremony, attempt))
@@ -2819,6 +4359,29 @@ where
             "only the canonical current-committee leader may coordinate PSS refresh".into(),
         ));
     }
+    coordinate_refresh_as_claimed_leader(state, routes, ring_id, ring_pk, ring).await
+}
+
+/// Build, sign, and broadcast a refresh `Prepare` as this node, claiming the
+/// leader role — everything `coordinate_refresh` does *after* verifying the
+/// caller is the canonical leader and loading+validating `ring`. Split out so
+/// `submit_organic_noncanonical_prepare` (`unsafe_testing`) can drive the exact
+/// same real signing/broadcast path from a non-canonical node, organically
+/// exercising the *other* nodes' unmodified `leader_prepare_fault` detection
+/// instead of injecting evidence directly. Callers are responsible for their
+/// own ring-load + `ring_payload_matches_ring_key` check before calling in, so
+/// this never re-reads the chain.
+pub(crate) async fn coordinate_refresh_as_claimed_leader<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring_pk: String,
+    ring: RingPayload,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
     if let Some(session_id) = state
         .dkg_session_state
         .active_ring_pss_session(&ring_pk)
@@ -2895,8 +4458,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id,
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
     coordinate_prepared(state, routes, prepare)
         .await
         .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
@@ -2931,36 +4502,72 @@ where
         return coordinate_refresh(state, routes, ring_id, ring_pk).await;
     }
 
-    let leader_routes =
-        resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
-            .await
-            .map_err(DkgError::Unauthorized)?;
-    let leader_route = leader_routes
-        .first()
-        .map(|route| route.peer_id.as_str())
+    let resolved = resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_route = resolved
+        .iter()
+        .find_map(|route| (route.node_key == canonical_leader).then_some(route.peer_id.clone()))
         .ok_or_else(|| {
             DkgError::InvalidState("canonical refresh leader route is missing".into())
         })?;
+    let bundle = RingShareBundle::load_by_ring_key(&state.local_storage, &ring_pk)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let ceremony = CeremonyId(derive_refresh_session_id(
+        &ring_pk,
+        &ring.peer_node_keys,
+        ring.threshold,
+        &bundle.public_polynomial,
+    )?);
+    let assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let leader_participant = assignments
+        .get(&canonical_leader)
+        .copied()
+        .map(ParticipantRef::current)
+        .ok_or_else(|| DkgError::InvalidState("refresh leader assignment is missing".into()))?;
     crate::metrics::record_dkg_transport_event("control", "refresh_start_forwarded");
     let forwarding_deadline =
         Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
-    match retry_preparation_control(
+    let response = retry_preparation_control_classified(
         &state,
         routes,
-        leader_route,
+        &leader_route,
         DkgControlMessage::StartRefresh {
-            ring_id,
-            expected_ring_pk: ring_pk,
+            ring_id: ring_id.clone(),
+            expected_ring_pk: ring_pk.clone(),
             requester_node_key: state.node_key.clone(),
         },
         forwarding_deadline,
     )
-    .await?
-    {
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        SessionKind::Refresh {
+                            ring_pk_hex: ring_pk,
+                        },
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, canonical_leader, leader_route)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
         DkgControlMessage::RefreshStartAccepted {
             ceremony_id,
             attempt_id,
-        } => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        } if ceremony_id == ceremony => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
         DkgControlMessage::RefreshNotDue => Ok(RefreshStartOutcome::NotDue),
         other => Err(DkgError::ProtocolError(format!(
             "canonical refresh leader returned unexpected start response: {other:?}"
@@ -3031,8 +4638,16 @@ where
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id.clone(),
         ring_id,
+        report_signature: None,
     };
     prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
 
     coordinate_prepared(state, routes, prepare).await
 }
@@ -3083,6 +4698,36 @@ fn reshare_preparation_error_action(
     }
 }
 
+fn reshare_preparation_candidates(
+    prepare: &PrepareSession,
+    route_ids: impl IntoIterator<Item = String>,
+) -> Vec<ParticipantRef> {
+    let mut candidates = Vec::new();
+    for route_id in route_ids {
+        for scope in [CommitteeScope::Current, CommitteeScope::Next] {
+            if let Some(committee) = prepare.committees.committee(scope) {
+                if let Some((index, _)) = committee
+                    .peer_routes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, route)| extract_node_part(route).to_lowercase() == route_id)
+                {
+                    if let Some(participant) = committee
+                        .node_keys
+                        .get(index)
+                        .and_then(|node_key| committee.participant(scope, node_key))
+                    {
+                        candidates.push(participant);
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    candidates
+}
+
 async fn prepare_transport_participants<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -3091,6 +4736,7 @@ async fn prepare_transport_participants<D>(
 ) -> Result<(Vec<String>, Vec<ParticipantRef>)>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let all_routes = prepare.participant_routes();
     if prepare.committees.next.is_none() {
@@ -3103,21 +4749,58 @@ where
             let peer = peer.clone();
             let prepare = prepare.clone();
             tasks.spawn(async move {
-                let response = retry_preparation_control(
+                let response = retry_preparation_control_classified(
                     &state,
                     routes,
                     &peer,
                     DkgControlMessage::Prepare(Box::new(prepare)),
                     deadline,
                 )
-                .await?;
-                Ok::<_, DkgError>((peer, response))
+                .await;
+                (peer, response)
             });
         }
+        let mut first_error = None;
+        let mut offline = Vec::new();
         while let Some(result) = tasks.join_next().await {
             let (peer, response) =
-                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
-            validate_prepared_response(prepare, &peer, response)?;
+                result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+            match response {
+                Ok(response) => {
+                    if let Err(error) =
+                        validate_prepared_response(state, routes, prepare, &peer, response).await
+                    {
+                        first_error.get_or_insert(error);
+                    }
+                }
+                Err(error) => {
+                    if error.is_unreachable() {
+                        if let Some(participant) = participant_for_peer_route(
+                            &prepare.committees,
+                            CommitteeScope::Current,
+                            &peer,
+                        ) {
+                            offline.push(participant);
+                        }
+                    }
+                    first_error.get_or_insert_with(|| error.into_error());
+                }
+            }
+        }
+        if !offline.is_empty() {
+            spawn_pss_offline_observations(
+                state.clone(),
+                routes,
+                PssOfflineObservationSeed::from_prepare(
+                    prepare,
+                    routes.version,
+                    PssOfflineStage::Prepare,
+                    offline,
+                ),
+            );
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         let mut dealers: Vec<_> = prepare
             .committees
@@ -3165,6 +4848,7 @@ where
         .map(|route| normalize(route))
         .collect();
     let mut excluded_old = BTreeSet::new();
+    let mut unreachable = BTreeSet::new();
     let mut grace_started = None;
 
     loop {
@@ -3185,6 +4869,25 @@ where
         }
         if now >= deadline {
             let shortfall = (current.threshold as usize).saturating_sub(ready_old);
+            let candidates = reshare_preparation_candidates(
+                prepare,
+                unreachable
+                    .difference(&prepared)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            if !candidates.is_empty() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::from_prepare(
+                        prepare,
+                        routes.version,
+                        PssOfflineStage::Prepare,
+                        candidates,
+                    ),
+                );
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "reshare preparation expired: missing_new=[{}], old_dealer_shortfall={shortfall}",
                 missing_new
@@ -3209,16 +4912,34 @@ where
                 (
                     route_id,
                     peer.clone(),
-                    control_request_with_timeout(&state, routes, &peer, request, request_timeout)
-                        .await,
+                    control_request_with_timeout_classified(
+                        &state,
+                        routes,
+                        &peer,
+                        request,
+                        request_timeout,
+                    )
+                    .await,
                 )
             });
         }
         while let Some(result) = round.join_next().await {
             let (route_id, peer, response) =
                 result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response =
-                response.and_then(|response| validate_prepared_response(prepare, &peer, response));
+            let response = match response {
+                Ok(response) => {
+                    unreachable.remove(&route_id);
+                    validate_prepared_response(state, routes, prepare, &peer, response).await
+                }
+                Err(error) => {
+                    if error.is_unreachable() {
+                        unreachable.insert(route_id.clone());
+                    } else {
+                        unreachable.remove(&route_id);
+                    }
+                    Err(error.into_error())
+                }
+            };
             match response {
                 Ok(()) => {
                     prepared.insert(route_id);
@@ -3249,6 +4970,26 @@ where
             .await;
     }
 
+    let tolerated_offline = reshare_preparation_candidates(
+        prepare,
+        unreachable
+            .difference(&prepared)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    if !tolerated_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                prepare,
+                routes.version,
+                PssOfflineStage::Prepare,
+                tolerated_offline,
+            ),
+        );
+    }
+
     let mut active_dealers: Vec<_> = current_routes
         .iter()
         .filter_map(|(route, node_id)| {
@@ -3275,20 +5016,41 @@ where
     Ok((active_routes, active_dealers))
 }
 
-fn validate_prepared_response(
+async fn validate_prepared_response<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     peer: &str,
     response: DkgControlMessage,
-) -> Result<()> {
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
     match response {
         DkgControlMessage::Prepared {
             ceremony_id,
             attempt_id,
             config_digest,
-        } if ceremony_id == prepare.ceremony_id
-            && attempt_id == prepare.attempt_id
-            && config_digest == prepare.config_digest =>
-        {
+            report_signature,
+        } if ceremony_id == prepare.ceremony_id && attempt_id == prepare.attempt_id => {
+            record_control_ack_best_effort(
+                state,
+                routes,
+                prepare,
+                ceremony_id,
+                attempt_id,
+                "prepared",
+                config_digest,
+                peer,
+                report_signature,
+            )
+            .await;
+            if config_digest != prepare.config_digest {
+                return Err(DkgError::ProtocolError(format!(
+                    "peer {peer} returned invalid Prepared response"
+                )));
+            }
             Ok(())
         }
         _ => Err(DkgError::ProtocolError(format!(
@@ -3435,23 +5197,34 @@ where
         }
     };
     if !missing.is_empty() {
+        let responded = state
+            .dkg_session_state
+            .topology_probe_responses(&session_id, attempt_id)
+            .await
+            .ok_or_else(|| DkgError::InvalidState("topology probe attempt disappeared".into()))?;
         let missing_routes: Vec<String> = peer_ids
             .iter()
             .filter(|peer| missing.contains(&extract_node_part(peer).to_lowercase()))
             .cloned()
             .collect();
-        // TODO: this only logs today. `missing_routes` already has everything
-        // `coordinator::reporting::resolve_pss_offline_report_context` plus
-        // `queue_pss_offline_report_for_peer` need (peer route, prepare.kind,
-        // prepare.ring_id, session_id) — resolving the context once and then
-        // spawning a report per missing peer here, same pattern as
-        // `report_abandoned_pss_session`, should be a small addition, not a
-        // new detection mechanism. Needed because refresh/reshare require
-        // every current member (refresh) or every next-committee receiver
-        // (reshare) to ack before activation, and today only the later
-        // Phase1Commitments/Phase2Shares stall path (G1) produces a
-        // `node_offline` report — a member unreachable from the very start
-        // never gets past this barrier, so it's never reported at all.
+        let offline_participants = missing_routes.iter().filter_map(|peer| {
+            if responded.contains(&extract_node_part(peer).to_lowercase()) {
+                return None;
+            }
+            participant_for_peer_route(&prepare.committees, CommitteeScope::Next, peer).or_else(
+                || participant_for_peer_route(&prepare.committees, CommitteeScope::Current, peer),
+            )
+        });
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::TopologyProbe,
+                offline_participants,
+            ),
+        );
         tracing::error!(
             session_id,
             attempt_id = %hex::encode(attempt_id.0),
@@ -3487,6 +5260,13 @@ where
             ));
         }
     }
+    let activate_signature = Some(sign_control_message(
+        &state,
+        ceremony_id,
+        attempt_id,
+        "activate",
+        activation_digest,
+    )?);
 
     let mut activations = JoinSet::new();
     for peer in peer_ids
@@ -3496,8 +5276,9 @@ where
         let state = state.clone();
         let peer = peer.clone();
         let active_dealers = active_dealers.clone();
+        let activate_signature = activate_signature.clone();
         activations.spawn(async move {
-            retry_preparation_control(
+            let result = retry_preparation_control_classified(
                 &state,
                 routes,
                 &peer,
@@ -3506,27 +5287,73 @@ where
                     attempt_id,
                     activation_digest,
                     active_dealers,
+                    report_signature: activate_signature,
                 },
                 deadline,
             )
-            .await
+            .await;
+            (peer, result)
         });
     }
+    let mut activation_error = None;
+    let mut activation_offline = Vec::new();
     while let Some(result) = activations.join_next().await {
-        match result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?? {
-            DkgControlMessage::Activated {
+        let (peer, response) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        match response {
+            Ok(DkgControlMessage::Activated {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
-            } if got_ceremony == ceremony_id
+                report_signature,
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
-                && got_activation == activation_digest => {}
-            response => {
-                return Err(DkgError::ProtocolError(format!(
-                    "invalid activation response: {response:?}"
-                )))
+                && got_activation == activation_digest =>
+            {
+                record_control_ack_best_effort(
+                    &state,
+                    routes,
+                    &prepare,
+                    got_ceremony,
+                    got_attempt,
+                    "activated",
+                    got_activation,
+                    &peer,
+                    report_signature,
+                )
+                .await;
+            }
+            Ok(response) => {
+                activation_error.get_or_insert_with(|| {
+                    DkgError::ProtocolError(format!("invalid activation response: {response:?}"))
+                });
+            }
+            Err(error) => {
+                if error.is_unreachable() {
+                    if let Some(participant) =
+                        participant_for_transport_peer(&prepare.committees, &peer)
+                    {
+                        activation_offline.push(participant);
+                    }
+                }
+                activation_error.get_or_insert_with(|| error.into_error());
             }
         }
+    }
+    if !activation_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::Activate,
+                activation_offline,
+            ),
+        );
+    }
+    if let Some(error) = activation_error {
+        return Err(error);
     }
 
     match state
@@ -3550,6 +5377,13 @@ where
             ));
         }
     }
+    let begin_signature = Some(sign_control_message(
+        &state,
+        ceremony_id,
+        attempt_id,
+        "begin",
+        activation_digest,
+    )?);
 
     let mut beginnings = JoinSet::new();
     for peer in peer_ids
@@ -3558,8 +5392,9 @@ where
     {
         let state = state.clone();
         let peer = peer.clone();
+        let begin_signature = begin_signature.clone();
         beginnings.spawn(async move {
-            retry_preparation_control(
+            let result = retry_preparation_control_classified(
                 &state,
                 routes,
                 &peer,
@@ -3567,27 +5402,73 @@ where
                     ceremony_id,
                     attempt_id,
                     activation_digest,
+                    report_signature: begin_signature,
                 },
                 deadline,
             )
-            .await
+            .await;
+            (peer, result)
         });
     }
+    let mut begin_error = None;
+    let mut begin_offline = Vec::new();
     while let Some(result) = beginnings.join_next().await {
-        match result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?? {
-            DkgControlMessage::Begun {
+        let (peer, response) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        match response {
+            Ok(DkgControlMessage::Begun {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 activation_digest: got_activation,
-            } if got_ceremony == ceremony_id
+                report_signature,
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
-                && got_activation == activation_digest => {}
-            response => {
-                return Err(DkgError::ProtocolError(format!(
-                    "invalid begin response: {response:?}"
-                )))
+                && got_activation == activation_digest =>
+            {
+                record_control_ack_best_effort(
+                    &state,
+                    routes,
+                    &prepare,
+                    got_ceremony,
+                    got_attempt,
+                    "begun",
+                    got_activation,
+                    &peer,
+                    report_signature,
+                )
+                .await;
+            }
+            Ok(response) => {
+                begin_error.get_or_insert_with(|| {
+                    DkgError::ProtocolError(format!("invalid begin response: {response:?}"))
+                });
+            }
+            Err(error) => {
+                if error.is_unreachable() {
+                    if let Some(participant) =
+                        participant_for_transport_peer(&prepare.committees, &peer)
+                    {
+                        begin_offline.push(participant);
+                    }
+                }
+                begin_error.get_or_insert_with(|| error.into_error());
             }
         }
+    }
+    if !begin_offline.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                &prepare,
+                routes.version,
+                PssOfflineStage::Begin,
+                begin_offline,
+            ),
+        );
+    }
+    if let Some(error) = begin_error {
+        return Err(error);
     }
     crate::metrics::record_dkg_control_readiness(
         ceremony_kind,
@@ -3668,9 +5549,8 @@ where
     let leader_authorized =
         prepare.canonical_leader_node_key() == Some(prepare.leader_node_key.as_str());
     if !leader_authorized {
-        if matches!(&prepare.kind, SessionKind::Refresh { .. }) {
-            // TODO(reporting): retain the authenticated noncanonical refresh
-            // Prepare as evidence of attributable leader impersonation.
+        if !matches!(prepare.kind, SessionKind::Fresh) {
+            report_leader_prepare_fault_best_effort(&state, routes, &prepare).await;
             crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
         }
         return Err(DkgError::Unauthorized(
@@ -3687,6 +5567,11 @@ where
     }
     let expected = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
     if expected != prepare.config_digest {
+        // Not reported: a signature only covers config_digest, so a
+        // self-inconsistent Prepare (digest doesn't match its own fields)
+        // could equally be a relay tampering with fields post-signature as
+        // the real signer's own mistake — report_leader_prepare_fault_best_effort
+        // itself refuses to attribute this ambiguous case.
         return Err(DkgError::Unauthorized(
             "Prepare configuration digest mismatch".into(),
         ));
@@ -3708,10 +5593,18 @@ where
             && attempt_id == prepare.attempt_id
             && config_digest == prepare.config_digest
         {
+            let report_signature = Some(sign_control_message(
+                &state,
+                prepare.ceremony_id,
+                prepare.attempt_id,
+                "prepared",
+                prepare.config_digest,
+            )?);
             return Ok(DkgControlMessage::Prepared {
                 ceremony_id: prepare.ceremony_id,
                 attempt_id: prepare.attempt_id,
                 config_digest: prepare.config_digest,
+                report_signature,
             });
         }
         return Err(DkgError::ProtocolError(
@@ -3719,7 +5612,15 @@ where
         ));
     }
 
-    validate_reshare_transport_routes(&state, &prepare).await?;
+    if let Err(error) = validate_reshare_transport_routes(&state, &prepare).await {
+        // Reached only after leader_authorized, sender-route, and
+        // config_digest all already matched, so `prepare` is confirmed
+        // self-consistent and genuinely signed by the real canonical
+        // leader — unlike the digest-mismatch branch above, there is no
+        // tampering ambiguity here.
+        report_leader_prepare_fault_best_effort(&state, routes, &prepare).await;
+        return Err(error);
+    }
     let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
     handle_session_init(
         &coordinator,
@@ -3735,6 +5636,7 @@ where
         prepare.policy_id.clone(),
         prepare.ring_id.clone(),
         sender,
+        Some(&prepare),
     )
     .await?;
 
@@ -3752,10 +5654,18 @@ where
             && attempt_id == prepare.attempt_id
             && config_digest == prepare.config_digest
         {
+            let report_signature = Some(sign_control_message(
+                &state,
+                prepare.ceremony_id,
+                prepare.attempt_id,
+                "prepared",
+                prepare.config_digest,
+            )?);
             return Ok(DkgControlMessage::Prepared {
                 ceremony_id: prepare.ceremony_id,
                 attempt_id: prepare.attempt_id,
                 config_digest: prepare.config_digest,
+                report_signature,
             });
         }
         return Err(DkgError::ProtocolError(
@@ -3800,6 +5710,23 @@ where
         )));
     }
     if matches!(outcome, TransportConfigureOutcome::Configured) {
+        if !matches!(prepare.kind, SessionKind::Fresh) {
+            state
+                .dkg_session_state
+                .record_offline_relay_receipt(
+                    AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+                    DkgOfflineRelayReceipt {
+                        kind: prepare.kind.clone(),
+                        ring_id: prepare.ring_id.clone(),
+                        protocol_version: routes.version,
+                        committees: prepare.committees.clone(),
+                        leader_node_key: prepare.leader_node_key.clone(),
+                        recorded_at: tokio::time::Instant::now(),
+                        processed: Default::default(),
+                    },
+                )
+                .await;
+        }
         let task = tokio::spawn(topic_listener(
             state.clone(),
             routes,
@@ -3811,10 +5738,18 @@ where
             .set_transport_topic_task(&prepare.ceremony_id.0, task.abort_handle())
             .await;
     }
+    let report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepared",
+        prepare.config_digest,
+    )?);
     Ok(DkgControlMessage::Prepared {
         ceremony_id: prepare.ceremony_id,
         attempt_id: prepare.attempt_id,
         config_digest: prepare.config_digest,
+        report_signature,
     })
 }
 
@@ -3827,6 +5762,7 @@ async fn send_topology_probe_ack<D>(
 ) -> Result<[u8; 32]>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let deadline = state
         .dkg_session_state
@@ -3840,6 +5776,7 @@ where
         nonce,
     };
     let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
+    let mut last_failure_was_unreachable = false;
     loop {
         if state
             .dkg_session_state
@@ -3853,12 +5790,28 @@ where
         }
         let now = Instant::now();
         if now >= deadline {
+            if last_failure_was_unreachable {
+                if let Some(leader) =
+                    participant_for_transport_peer(&prepare.committees, &leader_route)
+                {
+                    spawn_pss_offline_observations(
+                        state.clone(),
+                        routes,
+                        PssOfflineObservationSeed::from_prepare(
+                            &prepare,
+                            routes.version,
+                            PssOfflineStage::TopologyAck,
+                            [leader],
+                        ),
+                    );
+                }
+            }
             return Err(DkgError::NetworkCommunication(
                 "topology acknowledgement exceeded the preparation deadline".into(),
             ));
         }
         let remaining = deadline.saturating_duration_since(now);
-        match control_request_with_timeout(
+        match control_request_with_timeout_classified(
             &state,
             routes,
             &leader_route,
@@ -3882,15 +5835,16 @@ where
                     "leader returned invalid topology acknowledgement response: {response:?}"
                 )));
             }
-            Err(error) if retryable_control_error(&error) => {
+            Err(error @ PeerRequestFailure::Unreachable(_)) => {
+                last_failure_was_unreachable = true;
                 crate::metrics::record_dkg_transport_event("control", "preparation_retry");
                 tracing::warn!(
-                    %error,
+                    error = %error.error(),
                     session_id = prepare.ceremony_id.0,
                     "topology acknowledgement failed; retrying identical bytes"
                 );
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into_error()),
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -3903,6 +5857,7 @@ where
 
 async fn abort_public_protocol_violation_from_listener<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     violation: &PublicProtocolViolation,
 ) where
@@ -3910,6 +5865,7 @@ async fn abort_public_protocol_violation_from_listener<D>(
 {
     abort_public_protocol_violation(
         state,
+        routes,
         prepare,
         violation,
         TopicTaskDisposition::DetachCurrent,
@@ -3919,13 +5875,14 @@ async fn abort_public_protocol_violation_from_listener<D>(
 
 async fn abort_public_protocol_violation<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     prepare: &PrepareSession,
     violation: &PublicProtocolViolation,
     topic_task: TopicTaskDisposition,
 ) where
     D: CoordinatorDkg,
 {
-    let root = violation.root.map(hex::encode);
+    let root = violation.root.as_deref().map(hex::encode);
     let message_ids: Vec<_> = violation
         .message_ids
         .iter()
@@ -3943,10 +5900,49 @@ async fn abort_public_protocol_violation<D>(
         "aborting DKG attempt after authenticated public protocol violation"
     );
     crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-    // TODO(reporting): preserve the authenticated leader/origin delivery or
-    // both origin-signed envelopes and submit the appropriate DKG fault or
-    // equivocation report. Reporting evidence/schema work is intentionally
-    // deferred.
+    report_public_commitment_equivocation_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.commitment_equivocation.as_deref(),
+    )
+    .await;
+    report_public_origin_fault_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.public_origin_fault.as_deref(),
+    )
+    .await;
+    report_leader_equivocation_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_equivocation.as_deref(),
+    )
+    .await;
+    report_leader_public_fault_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_public_fault.as_deref(),
+    )
+    .await;
+    report_leader_batch_mismatch_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        violation.leader_batch_mismatch.as_deref(),
+    )
+    .await;
+    report_oversized_repair_page_best_effort(
+        state,
+        routes,
+        AttemptKey::new(prepare.ceremony_id, prepare.attempt_id),
+        &prepare.leader_node_key,
+        violation.control_message_fault.as_deref(),
+    )
+    .await;
     state
         .dkg_session_state
         .abort_transport_attempt(
@@ -4005,7 +6001,12 @@ where
                     verified.contribution.origin
                 ),
             )
-            .with_message_id(verified.contribution.message_id));
+            .with_message_id(verified.contribution.message_id)
+            .with_public_origin_fault(Some(PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                contribution_a: verified.signed.clone(),
+                contribution_b: None,
+            })));
         }
     }
     let retained: BTreeMap<_, _> = contributions
@@ -4021,13 +6022,31 @@ where
         PublicBatchRecordOutcome::DuplicateSame => {
             crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
         }
-        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+        PublicBatchRecordOutcome::ConflictingDuplicate {
+            origin,
+            retained,
+            conflicting,
+        } => {
             return Err(PublicProtocolViolation::origin(
                 phase,
                 Some(root),
                 origin,
                 "manifest-validated batch conflicts with a retained signed contribution",
-            ));
+            )
+            .with_commitment_equivocation((phase == PublicPhase::Commitments).then_some(
+                PublicCommitmentEquivocation {
+                    origin,
+                    retained: retained.clone(),
+                    conflicting: conflicting.clone(),
+                },
+            ))
+            .with_public_origin_fault((phase != PublicPhase::Commitments).then_some(
+                PublicOriginFaultEvidence {
+                    fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                    contribution_a: retained,
+                    contribution_b: Some(conflicting),
+                },
+            )));
         }
         PublicBatchRecordOutcome::StaleAttempt | PublicBatchRecordOutcome::MissingSession => {
             return Ok(false);
@@ -4239,8 +6258,10 @@ async fn topic_listener<D>(
                             None,
                             error,
                         );
-                        abort_public_protocol_violation_from_listener(&state, &prepare, &violation)
-                            .await;
+                        abort_public_protocol_violation_from_listener(
+                            &state, routes, &prepare, &violation,
+                        )
+                        .await;
                         break 'listener;
                     }
                 };
@@ -4283,6 +6304,7 @@ async fn topic_listener<D>(
                         phase_root,
                         index,
                         contributions,
+                        signed_at: _,
                     } if ceremony_id == prepare.ceremony_id && attempt_id == prepare.attempt_id => {
                         let Some(mode) = public_batch_mode(&prepare.kind, phase) else {
                             let violation = PublicProtocolViolation::leader(
@@ -4292,7 +6314,7 @@ async fn topic_listener<D>(
                                 "public chunk is not allowed for this ceremony kind",
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -4307,9 +6329,13 @@ async fn topic_listener<D>(
                                     message.data.len(),
                                     transport::MAX_PUBLIC_CHUNK_BYTES
                                 ),
+                            )
+                            .with_leader_public_fault(
+                                DkgLeaderPublicFaultKind::OversizedChunk,
+                                public_leader_delivery_from_message(&message),
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -4339,7 +6365,7 @@ async fn topic_listener<D>(
                                         ),
                                     );
                                     abort_public_protocol_violation_from_listener(
-                                        &state, &prepare, &violation,
+                                        &state, routes, &prepare, &violation,
                                     )
                                     .await;
                                     break 'listener;
@@ -4360,7 +6386,7 @@ async fn topic_listener<D>(
                                         error.to_string(),
                                     );
                                     abort_public_protocol_violation_from_listener(
-                                        &state, &prepare, &violation,
+                                        &state, routes, &prepare, &violation,
                                     )
                                     .await;
                                     break 'listener;
@@ -4378,6 +6404,7 @@ async fn topic_listener<D>(
                             verified,
                             event_digest,
                             expected_origins.len(),
+                            public_leader_delivery_from_message(&message),
                         );
                         match assembly {
                             Ok(PublicBatchAssembly::Pending { .. }) => {
@@ -4414,7 +6441,7 @@ async fn topic_listener<D>(
                                     Ok(false) => break 'listener,
                                     Err(violation) => {
                                         abort_public_protocol_violation_from_listener(
-                                            &state, &prepare, &violation,
+                                            &state, routes, &prepare, &violation,
                                         )
                                         .await;
                                         break 'listener;
@@ -4423,7 +6450,7 @@ async fn topic_listener<D>(
                             }
                             Err(violation) => {
                                 abort_public_protocol_violation_from_listener(
-                                    &state, &prepare, &violation,
+                                    &state, routes, &prepare, &violation,
                                 )
                                 .await;
                                 break 'listener;
@@ -4445,7 +6472,7 @@ async fn topic_listener<D>(
                                 "public manifest is not allowed for this ceremony kind",
                             );
                             abort_public_protocol_violation_from_listener(
-                                &state, &prepare, &violation,
+                                &state, routes, &prepare, &violation,
                             )
                             .await;
                             break 'listener;
@@ -4455,6 +6482,7 @@ async fn topic_listener<D>(
                             manifest,
                             event_digest,
                             &expected_origins,
+                            public_leader_delivery_from_message(&message),
                         ) {
                             Ok(PublicBatchAssembly::Pending {
                                 manifest_added: true,
@@ -4501,7 +6529,7 @@ async fn topic_listener<D>(
                                     Ok(false) => break 'listener,
                                     Err(violation) => {
                                         abort_public_protocol_violation_from_listener(
-                                            &state, &prepare, &violation,
+                                            &state, routes, &prepare, &violation,
                                         )
                                         .await;
                                         break 'listener;
@@ -4510,7 +6538,7 @@ async fn topic_listener<D>(
                             }
                             Err(violation) => {
                                 abort_public_protocol_violation_from_listener(
-                                    &state, &prepare, &violation,
+                                    &state, routes, &prepare, &violation,
                                 )
                                 .await;
                                 break 'listener;
@@ -4720,8 +6748,14 @@ type PublicRepairResult<T> = std::result::Result<T, PublicRepairFailure>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LeaderPublicRepairOutcome {
     Complete,
-    Incomplete { retained: usize },
-    Unavailable { retained: usize, detail: String },
+    Incomplete {
+        retained: usize,
+    },
+    Unavailable {
+        retained: usize,
+        detail: String,
+        offline: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -4733,6 +6767,7 @@ enum OriginPublicRepairOutcome {
     Unavailable {
         origin: ParticipantRef,
         detail: String,
+        offline: bool,
     },
     Violation(PublicProtocolViolation),
     Error(DkgError),
@@ -4746,7 +6781,12 @@ enum RepairContributionSource {
 
 #[async_trait]
 trait PublicRepairRequester: Send + Sync {
-    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage>;
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> PublicRepairRequestOutcome;
+}
+
+struct PublicRepairRequestOutcome {
+    result: Result<DkgControlMessage>,
+    offline: bool,
 }
 
 struct NetworkPublicRepairRequester<D>
@@ -4762,8 +6802,8 @@ impl<D> PublicRepairRequester for NetworkPublicRepairRequester<D>
 where
     D: CoordinatorDkg,
 {
-    async fn request(&self, peer: &str, request: DkgControlMessage) -> Result<DkgControlMessage> {
-        control_request_with_timeout(
+    async fn request(&self, peer: &str, request: DkgControlMessage) -> PublicRepairRequestOutcome {
+        match control_request_with_timeout_classified(
             &self.state,
             self.routes,
             peer,
@@ -4771,6 +6811,16 @@ where
             PEER_RESPONSE_TIMEOUT,
         )
         .await
+        {
+            Ok(response) => PublicRepairRequestOutcome {
+                result: Ok(response),
+                offline: false,
+            },
+            Err(error) => PublicRepairRequestOutcome {
+                offline: error.is_unreachable(),
+                result: Err(error.into_error()),
+            },
+        }
     }
 }
 
@@ -4861,7 +6911,14 @@ where
                         verified.contribution.origin,
                         format!("direct-repair contribution failed payload preflight: {error}"),
                     )
-                    .with_message_id(verified.contribution.message_id),
+                    .with_message_id(verified.contribution.message_id)
+                    .with_public_origin_fault(Some(
+                        PublicOriginFaultEvidence {
+                            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+                            contribution_a: verified.signed.clone(),
+                            contribution_b: None,
+                        },
+                    )),
                 ));
             }
             return Err(PublicRepairFailure::Error(error));
@@ -4880,13 +6937,31 @@ where
         PublicBatchRecordOutcome::DuplicateSame => {
             crate::metrics::record_dkg_transport_event("public", "batch_duplicate");
         }
-        PublicBatchRecordOutcome::ConflictingDuplicate { origin } => {
+        PublicBatchRecordOutcome::ConflictingDuplicate {
+            origin,
+            retained,
+            conflicting,
+        } => {
             return Err(PublicRepairFailure::Violation(
                 PublicProtocolViolation::origin(
                     phase,
                     None,
                     origin,
                     "direct repair conflicts with a retained signed contribution",
+                )
+                .with_commitment_equivocation((phase == PublicPhase::Commitments).then_some(
+                    PublicCommitmentEquivocation {
+                        origin,
+                        retained: retained.clone(),
+                        conflicting: conflicting.clone(),
+                    },
+                ))
+                .with_public_origin_fault(
+                    (phase != PublicPhase::Commitments).then_some(PublicOriginFaultEvidence {
+                        fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                        contribution_a: retained,
+                        contribution_b: Some(conflicting),
+                    }),
                 ),
             ));
         }
@@ -5018,7 +7093,7 @@ where
                 ),
             ));
         }
-        let response = match requester
+        let request_outcome = requester
             .request(
                 leader_peer,
                 DkgControlMessage::GetPublicPhase {
@@ -5028,13 +7103,15 @@ where
                     after,
                 },
             )
-            .await
-        {
+            .await;
+        let offline = request_outcome.offline;
+        let response = match request_outcome.result {
             Ok(response) => response,
             Err(error) if retryable_public_repair_control_error(&error) => {
                 return Ok(LeaderPublicRepairOutcome::Unavailable {
                     retained: public_repair_retained_count(state, prepare, phase).await,
                     detail: error.to_string(),
+                    offline,
                 });
             }
             Err(DkgError::Deserialization(error)) => {
@@ -5049,19 +7126,40 @@ where
             }
             Err(error) => return Err(PublicRepairFailure::Error(error)),
         };
-        let encoded_len = transport::encode(&response)
-            .map_err(DkgError::Serialization)?
-            .len();
-        if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+        let encoded = transport::encode(&response).map_err(DkgError::Serialization)?;
+        let encoded_len = encoded.len();
+        if encoded_len > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES {
+            // Only attributable if the leader actually signed this response
+            // (`None` for Fresh DKG, which has no ring to bind evidence to —
+            // see `PublicPhaseResponse::report_signature`). Re-encodes the
+            // whole decoded response (not just the oversized field) as the
+            // artifact data, matching `leader_prepare_fault`'s pattern, so
+            // independent re-verification can recompute `page_digest` from
+            // it directly.
+            let control_message_fault = if let DkgControlMessage::PublicPhaseResponse {
+                report_signature: Some(signature),
+                ..
+            } = &response
+            {
+                Some(ControlMessageArtifact {
+                    signature: signature.signature.clone(),
+                    data: encoded,
+                    signed_at: signature.signed_at,
+                })
+            } else {
+                None
+            };
             return Err(PublicRepairFailure::Violation(
                 PublicProtocolViolation::leader(
                     PublicProtocolViolationKind::BufferLimit,
                     Some(phase),
                     None,
                     format!(
-                        "encoded public repair page is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                        "encoded public repair page is {encoded_len} bytes, exceeding the {}-byte limit",
+                        transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                     ),
-                ),
+                )
+                .with_control_message_fault(control_message_fault),
             ));
         }
         let DkgControlMessage::PublicPhaseResponse {
@@ -5070,6 +7168,8 @@ where
             phase: response_phase,
             contributions,
             next_cursor,
+            page_digest: _,
+            report_signature: _,
         } = response
         else {
             return Err(PublicRepairFailure::Violation(
@@ -5194,7 +7294,7 @@ where
     D: CoordinatorDkg,
     R: PublicRepairRequester + ?Sized,
 {
-    let response = match requester
+    let request_outcome = requester
         .request(
             &origin_peer,
             DkgControlMessage::GetPublicContribution {
@@ -5204,13 +7304,15 @@ where
                 origin,
             },
         )
-        .await
-    {
+        .await;
+    let offline = request_outcome.offline;
+    let response = match request_outcome.result {
         Ok(response) => response,
         Err(error) if retryable_public_repair_control_error(&error) => {
             return OriginPublicRepairOutcome::Unavailable {
                 origin,
                 detail: error.to_string(),
+                offline,
             };
         }
         Err(DkgError::Deserialization(error)) => {
@@ -5232,7 +7334,7 @@ where
             return OriginPublicRepairOutcome::Error(DkgError::Serialization(error));
         }
     };
-    if encoded_len > MAX_PUBLIC_REPAIR_PAGE_BYTES {
+    if encoded_len > transport::MAX_PUBLIC_REPAIR_PAGE_BYTES {
         return OriginPublicRepairOutcome::Violation(
             PublicProtocolViolation::origin_with_kind(
                 PublicProtocolViolationKind::BufferLimit,
@@ -5240,7 +7342,8 @@ where
                 None,
                 origin,
                 format!(
-                    "encoded origin repair response is {encoded_len} bytes, exceeding the {MAX_PUBLIC_REPAIR_PAGE_BYTES}-byte limit"
+                    "encoded origin repair response is {encoded_len} bytes, exceeding the {}-byte limit",
+                    transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
                 ),
             ),
         );
@@ -5355,6 +7458,7 @@ where
     }
 
     let mut verified = BTreeMap::new();
+    let mut unavailable_origins = Vec::new();
     while let Some(outcome) = requests.next().await {
         match outcome {
             OriginPublicRepairOutcome::Verified(contribution) => {
@@ -5370,7 +7474,14 @@ where
                     "origin has not retained the requested public contribution"
                 );
             }
-            OriginPublicRepairOutcome::Unavailable { origin, detail } => {
+            OriginPublicRepairOutcome::Unavailable {
+                origin,
+                detail,
+                offline,
+            } => {
+                if offline {
+                    unavailable_origins.push(origin);
+                }
                 crate::metrics::record_dkg_transport_event("public", "origin_repair_unavailable");
                 tracing::warn!(
                     session_id = prepare.ceremony_id.0,
@@ -5388,6 +7499,19 @@ where
                 return Err(PublicRepairFailure::Error(error));
             }
         }
+    }
+
+    if !unavailable_origins.is_empty() {
+        spawn_pss_offline_observations(
+            state.clone(),
+            routes,
+            PssOfflineObservationSeed::from_prepare(
+                prepare,
+                routes.version,
+                PssOfflineStage::PublicRepairOrigin,
+                unavailable_origins,
+            ),
+        );
     }
 
     let verified: Vec<_> = verified.into_values().collect();
@@ -5467,7 +7591,28 @@ where
                 "leader repair completed without every expected origin; using direct origins"
             );
         }
-        LeaderPublicRepairOutcome::Unavailable { retained, detail } => {
+        LeaderPublicRepairOutcome::Unavailable {
+            retained,
+            detail,
+            offline,
+        } => {
+            if *offline {
+                if let Some(leader) = participant_for_transport_peer(
+                    &prepare.committees,
+                    prepare.leader_route().unwrap_or_default(),
+                ) {
+                    spawn_pss_offline_observations(
+                        state.clone(),
+                        routes,
+                        PssOfflineObservationSeed::from_prepare(
+                            prepare,
+                            routes.version,
+                            PssOfflineStage::PublicRepairLeader,
+                            [leader],
+                        ),
+                    );
+                }
+            }
             crate::metrics::record_dkg_transport_event("public", "leader_repair_fallback");
             tracing::warn!(
                 session_id = prepare.ceremony_id.0,
@@ -5541,8 +7686,14 @@ where
         return match dispatch_retained_public_repair(&state, routes, &prepare, phase).await {
             Ok(_) => Ok(()),
             Err(PublicRepairFailure::Violation(violation)) => {
-                abort_public_protocol_violation(&state, &prepare, &violation, violation_topic_task)
-                    .await;
+                abort_public_protocol_violation(
+                    &state,
+                    routes,
+                    &prepare,
+                    &violation,
+                    violation_topic_task,
+                )
+                .await;
                 Err(DkgError::ProtocolError(format!(
                     "authenticated public repair violation {:?}: {}",
                     violation.kind, violation.detail
@@ -5595,7 +7746,8 @@ where
     };
     let result = repair_public_phase_claimed(&state, routes, &requester, &prepare, phase).await;
     if let Err(PublicRepairFailure::Violation(violation)) = &result {
-        abort_public_protocol_violation(&state, &prepare, violation, violation_topic_task).await;
+        abort_public_protocol_violation(&state, routes, &prepare, violation, violation_topic_task)
+            .await;
         return Err(DkgError::ProtocolError(format!(
             "authenticated public repair violation {:?}: {}",
             violation.kind, violation.detail
@@ -5716,6 +7868,504 @@ where
     Ok(contribution)
 }
 
+/// Re-authenticate a transport-level Commitment conflict and, when the two
+/// nested dealer statements prove PSS equivocation, hand it to the existing
+/// direct-or-relay reporting pipeline. `Ok(false)` is an intentionally
+/// non-reportable conflict (Fresh DKG, missing evidence, or a pair that does
+/// not satisfy the equivocation refutation).
+async fn queue_public_commitment_equivocation<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: &PublicCommitmentEquivocation,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let retained = verify_signed_contribution(state, &evidence.retained).await?;
+    let conflicting = verify_signed_contribution(state, &evidence.conflicting).await?;
+    if retained.ceremony_id != attempt.ceremony_id
+        || retained.attempt_id != attempt.attempt_id
+        || conflicting.ceremony_id != attempt.ceremony_id
+        || conflicting.attempt_id != attempt.attempt_id
+        || retained.origin != evidence.origin
+        || conflicting.origin != evidence.origin
+    {
+        return Err(DkgError::Unauthorized(
+            "public commitment equivocation evidence does not match the active attempt or origin"
+                .into(),
+        ));
+    }
+    let (
+        DkgPublicPayload::Commitment {
+            commitment: retained_bytes,
+            report_evidence: Some(retained_evidence),
+        },
+        DkgPublicPayload::Commitment {
+            commitment: conflicting_bytes,
+            report_evidence: Some(conflicting_evidence),
+        },
+    ) = (retained.payload, conflicting.payload)
+    else {
+        return Ok(false);
+    };
+
+    let coord = DkgCoordinator::<D>::with_routes(state.clone(), routes);
+    let Some(retained_evidence) = verify_commitment_evidence(
+        &coord,
+        attempt,
+        evidence.origin.node_id,
+        &retained_bytes,
+        Some(*retained_evidence),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    let Some(conflicting_evidence) = verify_commitment_evidence(
+        &coord,
+        attempt,
+        evidence.origin.node_id,
+        &conflicting_bytes,
+        Some(*conflicting_evidence),
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    if !commitments_prove_equivocation(&retained_evidence, &conflicting_evidence) {
+        return Ok(false);
+    }
+
+    crate::metrics::record_dkg_transport_event("public", "equivocation_candidate");
+    queue_or_relay_equivocation(&coord, attempt, retained_evidence, conflicting_evidence).await?;
+    crate::metrics::record_dkg_transport_event("public", "equivocation_report_queued");
+    Ok(true)
+}
+
+#[cfg(test)]
+pub(crate) async fn queue_public_commitment_equivocation_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    origin: ParticipantRef,
+    retained: SignedPayload,
+    conflicting: SignedPayload,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    queue_public_commitment_equivocation(
+        state,
+        routes,
+        attempt,
+        &PublicCommitmentEquivocation {
+            origin,
+            retained,
+            conflicting,
+        },
+    )
+    .await
+}
+
+async fn report_public_commitment_equivocation_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&PublicCommitmentEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    if let Err(error) = queue_public_commitment_equivocation(state, routes, attempt, evidence).await
+    {
+        crate::metrics::record_dkg_transport_event("public", "equivocation_report_failed");
+        tracing::warn!(
+            session_id = attempt.session_id(),
+            attempt_id = %hex::encode(attempt.attempt_id.0),
+            origin = ?evidence.origin,
+            error = %error,
+            "failed to queue or relay authenticated public commitment equivocation"
+        );
+    }
+}
+
+async fn report_public_origin_fault_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&PublicOriginFaultEvidence>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "origin_fault_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    match queue_or_relay_public_origin_fault(
+        &coordinator,
+        attempt,
+        evidence.fault_kind,
+        evidence.contribution_a.clone(),
+        evidence.contribution_b.clone(),
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::metrics::record_dkg_transport_event("public", "origin_fault_report_queued")
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("public", "origin_fault_report_failed");
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue or relay authenticated public-origin fault"
+            );
+        }
+    }
+}
+
+async fn report_leader_equivocation_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&LeaderDeliveryEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_equivocation_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let retained = SignedPayload {
+        origin: evidence.retained.origin.clone(),
+        signature: evidence.retained.signature.clone(),
+        data: evidence.retained.data.clone(),
+    };
+    let conflicting = SignedPayload {
+        origin: evidence.conflicting.origin.clone(),
+        signature: evidence.conflicting.signature.clone(),
+        data: evidence.conflicting.data.clone(),
+    };
+    match queue_or_relay_leader_equivocation(
+        &coordinator,
+        attempt,
+        evidence.retained.delivery_id,
+        retained,
+        evidence.conflicting.delivery_id,
+        conflicting,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_equivocation_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_equivocation_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue or relay authenticated leader-equivocation evidence"
+            );
+        }
+    }
+}
+
+async fn report_leader_public_fault_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&LeaderPublicFaultEvidence>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_public_fault_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let delivery = SignedPayload {
+        origin: evidence.delivery.origin.clone(),
+        signature: evidence.delivery.signature.clone(),
+        data: evidence.delivery.data.clone(),
+    };
+    match queue_or_relay_leader_public_fault(
+        &coordinator,
+        attempt,
+        evidence.fault_kind,
+        evidence.delivery.delivery_id,
+        delivery,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_public_fault_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_public_fault_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated leader public-fault evidence"
+            );
+        }
+    }
+}
+
+async fn report_leader_batch_mismatch_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    evidence: Option<&LeaderDeliveryEquivocation>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "leader_batch_mismatch_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let retained = SignedPayload {
+        origin: evidence.retained.origin.clone(),
+        signature: evidence.retained.signature.clone(),
+        data: evidence.retained.data.clone(),
+    };
+    let conflicting = SignedPayload {
+        origin: evidence.conflicting.origin.clone(),
+        signature: evidence.conflicting.signature.clone(),
+        data: evidence.conflicting.data.clone(),
+    };
+    match queue_or_relay_leader_batch_mismatch(
+        &coordinator,
+        attempt,
+        evidence.retained.delivery_id,
+        retained,
+        evidence.conflicting.delivery_id,
+        conflicting,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "leader_batch_mismatch_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "leader_batch_mismatch_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated leader batch-mismatch evidence"
+            );
+        }
+    }
+}
+
+/// A leader-signed `PublicPhaseResponse` that's independently provable as
+/// invalid on its own (currently just `oversized_repair_page` — see
+/// `DkgControlMessageFaultKind`). Unlike the Gossip-delivery leader-fault
+/// kinds, the accused here is always exactly `prepare.leader_node_key` (the
+/// canonical leader that served the direct-QUIC repair connection), so the
+/// caller supplies it directly rather than this function re-deriving it.
+async fn report_oversized_repair_page_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    attempt: AttemptKey,
+    accused_node_key: &str,
+    evidence: Option<&ControlMessageArtifact>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(evidence) = evidence else {
+        return;
+    };
+    crate::metrics::record_dkg_transport_event("public", "oversized_repair_page_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    match queue_or_relay_control_message_fault(
+        &coordinator,
+        attempt,
+        accused_node_key.to_string(),
+        "public_phase_response".to_string(),
+        DkgControlMessageFaultKind::OversizedRepairPage,
+        evidence.clone(),
+        None,
+    )
+    .await
+    {
+        Ok(()) => crate::metrics::record_dkg_transport_event(
+            "public",
+            "oversized_repair_page_report_queued",
+        ),
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event(
+                "public",
+                "oversized_repair_page_report_failed",
+            );
+            tracing::warn!(
+                session_id = attempt.session_id(),
+                attempt_id = %hex::encode(attempt.attempt_id.0),
+                error = %error,
+                "failed to queue authenticated oversized repair-page evidence"
+            );
+        }
+    }
+}
+
+/// Records a follower's signed control-plane acknowledgement
+/// (`Prepared`/`Activated`/`Begun`) and reports `AckEquivocation` if the
+/// same follower already signed a *different* digest for the identical
+/// (ceremony, attempt, message_kind) request. Best-effort throughout: a
+/// missing/invalid signature, or a failure to record/report, never blocks
+/// the caller's own accept/reject handling of the response — this function
+/// only ever adds attribution on top of behavior that already happens.
+#[allow(clippy::too_many_arguments)]
+async fn record_control_ack_best_effort<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    message_kind: &'static str,
+    digest: [u8; 32],
+    peer: &str,
+    report_signature: Option<ControlSignature>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let Some(signature) = report_signature else {
+        return;
+    };
+    let Some(participant) = participant_for_transport_peer(&prepare.committees, peer) else {
+        return;
+    };
+    let Some(follower_node_key) = prepare.committees.node_key(participant) else {
+        return;
+    };
+    let follower_node_key = follower_node_key.to_string();
+    if verify_control_signature(
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        &follower_node_key,
+        &signature,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let attempt = AttemptKey::new(ceremony_id, attempt_id);
+    let Some((existing_digest, existing_signature)) = state
+        .dkg_session_state
+        .record_control_ack(
+            attempt,
+            follower_node_key.clone(),
+            message_kind,
+            digest,
+            &signature,
+        )
+        .await
+    else {
+        return;
+    };
+
+    crate::metrics::record_dkg_transport_event("control", "ack_equivocation_candidate");
+    let coordinator = DkgCoordinator::with_routes(state.clone(), routes);
+    let artifact_a = ControlMessageArtifact {
+        signed_at: existing_signature.signed_at,
+        signature: existing_signature.signature,
+        data: existing_digest.to_vec(),
+    };
+    let artifact_b = ControlMessageArtifact {
+        signed_at: signature.signed_at,
+        signature: signature.signature,
+        data: digest.to_vec(),
+    };
+    match queue_or_relay_control_message_fault(
+        &coordinator,
+        attempt,
+        follower_node_key,
+        message_kind.to_string(),
+        DkgControlMessageFaultKind::AckEquivocation,
+        artifact_a,
+        Some(artifact_b),
+    )
+    .await
+    {
+        Ok(()) => {
+            crate::metrics::record_dkg_transport_event("control", "ack_equivocation_report_queued")
+        }
+        Err(error) => {
+            crate::metrics::record_dkg_transport_event("control", "ack_equivocation_report_failed");
+            tracing::warn!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                message_kind,
+                %error,
+                "failed to queue or relay authenticated control-ack equivocation"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn record_control_ack_best_effort_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    prepare: &PrepareSession,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    message_kind: &'static str,
+    digest: [u8; 32],
+    peer: &str,
+    report_signature: Option<ControlSignature>,
+) where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    record_control_ack_best_effort(
+        state,
+        routes,
+        prepare,
+        ceremony_id,
+        attempt_id,
+        message_kind,
+        digest,
+        peer,
+        report_signature,
+    )
+    .await
+}
+
 async fn record_public_contribution_at_leader<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -5741,7 +8391,10 @@ where
             Ok(true)
         }
         PublicContributionRecordOutcome::DuplicateSame => Ok(false),
-        PublicContributionRecordOutcome::ConflictingDuplicate => {
+        PublicContributionRecordOutcome::ConflictingDuplicate {
+            retained,
+            conflicting,
+        } => {
             let reason = format!(
                 "origin {:?} equivocated in public phase {:?}",
                 contribution.origin,
@@ -5756,8 +8409,31 @@ where
                 "leader aborting DKG attempt after signed origin equivocation"
             );
             crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-            // TODO(reporting): submit both origin-signed contribution envelopes
-            // as DKG equivocation evidence before removing the attempt.
+            let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+            let evidence = PublicCommitmentEquivocation {
+                origin: contribution.origin,
+                retained: retained.clone(),
+                conflicting: conflicting.clone(),
+            };
+            report_public_commitment_equivocation_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
+            let origin_fault = PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained,
+                contribution_b: Some(conflicting),
+            };
+            report_public_origin_fault_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() != PublicPhase::Commitments).then_some(&origin_fault),
+            )
+            .await;
             let participant_routes = state
                 .dkg_session_state
                 .transport_participant_routes(&contribution.ceremony_id.0)
@@ -5765,10 +8441,7 @@ where
                 .unwrap_or_default();
             state
                 .dkg_session_state
-                .abort_transport_attempt(
-                    AttemptKey::new(contribution.ceremony_id, contribution.attempt_id),
-                    TopicTaskDisposition::Abort,
-                )
+                .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
                 .await;
             broadcast_attempt_abort(
                 state,
@@ -5790,8 +8463,23 @@ where
     }
 }
 
+#[cfg(test)]
+pub(crate) async fn record_public_contribution_at_leader_for_test<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    signed: SignedPayload,
+    contribution: &DkgPublicContribution,
+) -> Result<bool>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    record_public_contribution_at_leader(state, routes, signed, contribution).await
+}
+
 async fn record_public_contribution<D>(
     state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
     signed: SignedPayload,
     contribution: &DkgPublicContribution,
 ) -> Result<bool>
@@ -5816,7 +8504,10 @@ where
                 "public contribution targets a stale attempt".into(),
             ))
         }
-        PublicContributionRecordOutcome::ConflictingDuplicate => {
+        PublicContributionRecordOutcome::ConflictingDuplicate {
+            retained,
+            conflicting,
+        } => {
             tracing::error!(
                 session_id = contribution.ceremony_id.0,
                 attempt_id = %hex::encode(contribution.attempt_id.0),
@@ -5826,14 +8517,34 @@ where
                 "aborting DKG attempt after signed origin equivocation"
             );
             crate::metrics::record_dkg_transport_event("public", "protocol_violation_abort");
-            // TODO(reporting): submit both origin-signed contribution envelopes
-            // as DKG equivocation evidence before removing the attempt.
+            let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
+            let evidence = PublicCommitmentEquivocation {
+                origin: contribution.origin,
+                retained: retained.clone(),
+                conflicting: conflicting.clone(),
+            };
+            report_public_commitment_equivocation_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() == PublicPhase::Commitments).then_some(&evidence),
+            )
+            .await;
+            let origin_fault = PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained,
+                contribution_b: Some(conflicting),
+            };
+            report_public_origin_fault_best_effort(
+                state,
+                routes,
+                attempt,
+                (contribution.payload.phase() != PublicPhase::Commitments).then_some(&origin_fault),
+            )
+            .await;
             state
                 .dkg_session_state
-                .abort_transport_attempt(
-                    AttemptKey::new(contribution.ceremony_id, contribution.attempt_id),
-                    TopicTaskDisposition::Abort,
-                )
+                .abort_transport_attempt(attempt, TopicTaskDisposition::Abort)
                 .await;
             return Err(DkgError::ProtocolError(
                 "conflicting duplicate public contribution".into(),
@@ -5850,7 +8561,8 @@ where
 }
 
 /// Validate the contribution's protocol payload without retaining it, mutating
-/// cryptographic state, advancing a phase, or performing network/bulletin writes.
+/// cryptographic state, or advancing a phase. Proven invalid Refresh commitments
+/// may enqueue best-effort reporting evidence before the caller aborts the attempt.
 async fn preflight_public_contribution<D>(
     state: &Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -5889,16 +8601,16 @@ where
         DkgPublicPayload::Commitment {
             commitment,
             report_evidence,
-        } => {
-            preflight_commitment_message(
-                &coordinator,
-                attempt,
-                contribution.origin.node_id,
-                commitment,
-                report_evidence.as_ref(),
-            )
-            .await
-        }
+        } => prepare_commitment_message(
+            &coordinator,
+            attempt,
+            contribution.origin.node_id,
+            commitment,
+            report_evidence.as_deref(),
+            None,
+        )
+        .await
+        .map(|_| ()),
         DkgPublicPayload::CommitmentAudit { .. } => {
             preflight_commitment_audit_message(&coordinator, attempt).await
         }
@@ -5985,6 +8697,10 @@ where
         phase_root: root,
         index: 0,
         contributions: vec![signed.clone()],
+        // Sizing probe only — this instance is never broadcast, just measured
+        // below to enforce `MAX_PUBLIC_CHUNK_BYTES` before accepting the
+        // contribution.
+        signed_at: now_unix_secs()?,
     };
     let encoded_len = transport::encode(&single)
         .map_err(DkgError::Serialization)?
@@ -6094,7 +8810,7 @@ where
                 attempt,
                 contribution.origin.node_id,
                 commitment,
-                report_evidence,
+                report_evidence.map(|boxed| *boxed),
             ))
             .await?
         }
@@ -6141,7 +8857,7 @@ where
     Ok(())
 }
 
-fn contribution_ids(
+pub(crate) fn contribution_ids(
     items: &BTreeMap<ParticipantRef, SignedPayload>,
 ) -> BTreeMap<ParticipantRef, transport::MessageId> {
     items
@@ -6301,12 +9017,16 @@ where
             let candidate_ids = contribution_ids(&candidate);
             let candidate_root =
                 transport::phase_root(ceremony_id, attempt_id, phase, &candidate_ids);
+            // Sizing probe only — `chunks` here is just measured (`.len()`) to
+            // decide batch boundaries; the real broadcast batch (and its real
+            // `signed_at`) is built by `prepare_public_batch` below.
             let chunks = transport::chunk_public_contributions(
                 ceremony_id,
                 attempt_id,
                 phase,
                 candidate_root,
                 candidate.clone(),
+                now_unix_secs()?,
             )
             .map_err(DkgError::Serialization)?;
             if chunks.len() > 1 && !current.is_empty() {
@@ -6375,9 +9095,16 @@ fn prepare_public_batch(
     let contribution_count = contributions.len();
     let ids = contribution_ids(&contributions);
     let root = transport::phase_root(ceremony_id, attempt_id, phase, &ids);
-    let chunks =
-        transport::chunk_public_contributions(ceremony_id, attempt_id, phase, root, contributions)
-            .map_err(DkgError::Serialization)?;
+    let signed_at = now_unix_secs()?;
+    let chunks = transport::chunk_public_contributions(
+        ceremony_id,
+        attempt_id,
+        phase,
+        root,
+        contributions,
+        signed_at,
+    )
+    .map_err(DkgError::Serialization)?;
     let manifest = DkgPublicMessage::Manifest(PhaseManifest {
         ceremony_id,
         attempt_id,
@@ -6386,6 +9113,7 @@ fn prepare_public_batch(
         contribution_ids: ids,
         chunk_count: chunks.len() as u32,
         complete,
+        signed_at,
     });
     let mut messages = Vec::with_capacity(chunks.len() + 1);
     messages.push(Bytes::from(
@@ -6637,7 +9365,24 @@ async fn send_refresh_result_barrier<D>(
 ) -> Result<()>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
+    let attempt_key = AttemptKey::new(ceremony_id, attempt_id);
+    let stage = match step {
+        "stage" => PssOfflineStage::RefreshResultStage,
+        "commit" => PssOfflineStage::RefreshResultCommit,
+        _ => {
+            return Err(DkgError::InvalidInput(
+                "unknown refresh-result barrier step".into(),
+            ))
+        }
+    };
+    let committees = state
+        .dkg_session_state
+        .with_attempt_state(attempt_key, |session| session.transport.committees.clone())
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt_key, error))?
+        .ok_or_else(|| DkgError::InvalidState("refresh barrier committees are missing".into()))?;
     let mut requests = JoinSet::new();
     for peer in peers {
         let state = state.clone();
@@ -6645,55 +9390,64 @@ where
         requests.spawn(async move {
             let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
             let mut attempt = 0u32;
+            let mut last_failure_was_unreachable = false;
+            let mut peer_proved_reachable = false;
             loop {
                 attempt = attempt.saturating_add(1);
                 let now = Instant::now();
                 if now >= hard_deadline {
-                    return Err(DkgError::NetworkCommunication(format!(
-                        "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
-                    )));
+                    return (
+                        peer.clone(),
+                        Err(DkgError::NetworkCommunication(format!(
+                            "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
+                        ))),
+                        terminal_offline_candidate(
+                            last_failure_was_unreachable,
+                            peer_proved_reachable,
+                        ),
+                    );
                 }
                 let remaining = hard_deadline.saturating_duration_since(now);
-                let response = timeout(
-                    remaining,
-                    control_request_with_timeout(
-                        &state,
-                        routes,
-                        &peer,
-                        request.clone(),
-                        PEER_RESPONSE_TIMEOUT,
-                    ),
+                let response = control_request_with_timeout_classified(
+                    &state,
+                    routes,
+                    &peer,
+                    request.clone(),
+                    PEER_RESPONSE_TIMEOUT.min(remaining),
                 )
                 .await;
                 match response {
-                    Ok(Ok(DkgControlMessage::PublicContributionAck {
+                    Ok(DkgControlMessage::PublicContributionAck {
                         ceremony_id: got_ceremony,
                         attempt_id: got_attempt,
                         message_id: got_message,
-                    })) if got_ceremony == ceremony_id
+                    }) if got_ceremony == ceremony_id
                         && got_attempt == attempt_id
                         && got_message == message_id =>
                     {
-                        return Ok(())
+                        return (peer, Ok(()), false)
                     }
-                    Ok(Ok(other)) => tracing::warn!(
-                        peer = %peer,
-                        step,
-                        attempt,
-                        response = ?other,
-                        "refresh-result barrier received an invalid acknowledgement"
-                    ),
-                    Ok(Err(error)) => tracing::warn!(
-                        peer = %peer,
-                        step,
-                        attempt,
-                        %error,
-                        "refresh-result barrier control request failed; retrying"
-                    ),
-                    Err(_) => {
-                        return Err(DkgError::NetworkCommunication(format!(
-                            "refresh-result {step} barrier reached the hard attempt deadline for peer {peer}"
-                        )))
+                    Ok(other) => {
+                        last_failure_was_unreachable = false;
+                        peer_proved_reachable = true;
+                        tracing::warn!(
+                            peer = %peer,
+                            step,
+                            attempt,
+                            response = ?other,
+                            "refresh-result barrier received an invalid acknowledgement"
+                        );
+                    }
+                    Err(error) => {
+                        last_failure_was_unreachable = error.is_unreachable();
+                        peer_proved_reachable |= error.proves_reachable();
+                        tracing::warn!(
+                            peer = %peer,
+                            step,
+                            attempt,
+                            error = %error.error(),
+                            "refresh-result barrier control request failed; retrying"
+                        );
                     }
                 }
                 crate::metrics::record_dkg_transport_event("control", "retry");
@@ -6706,8 +9460,25 @@ where
             }
         });
     }
+    let mut first_error = None;
+    let mut offline = Vec::new();
     while let Some(result) = requests.join_next().await {
-        result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))??;
+        let (peer, result, unreachable) =
+            result.map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+        if unreachable {
+            if let Some(participant) = participant_for_transport_peer(&committees, &peer) {
+                offline.push(participant);
+            }
+        }
+        if let Err(error) = result {
+            first_error.get_or_insert(error);
+        }
+    }
+    if !offline.is_empty() {
+        spawn_pss_offline_for_attempt(&state, routes, attempt_key, stage, offline).await;
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(())
 }
@@ -6802,6 +9573,7 @@ where
         is_reshare,
         next_node_id,
         ring_id,
+        leader_participant,
     ) = coord
         .app_state
         .dkg_session_state
@@ -6819,6 +9591,17 @@ where
                     .as_ref()
                     .and_then(|params| params.new_node_id),
                 session.routing.ring_id.clone(),
+                session
+                    .transport
+                    .committees
+                    .as_ref()
+                    .and_then(|committees| {
+                        session
+                            .transport
+                            .leader_peer_route
+                            .as_deref()
+                            .and_then(|peer| participant_for_transport_peer(committees, peer))
+                    }),
             )
         })
         .await
@@ -6875,7 +9658,13 @@ where
     // Retain the exact signed bytes in the same phase index used for direct
     // repair. This lets an origin serve its own contribution even if the
     // leader omits a chunk or the local subscriber never receives the relay.
-    record_public_contribution(&coord.app_state, signed.clone(), &contribution).await?;
+    record_public_contribution(
+        &coord.app_state,
+        coord.routes,
+        signed.clone(),
+        &contribution,
+    )
+    .await?;
     if leader == coord.app_state.node_key {
         if contribution.payload.phase() == PublicPhase::RefreshHealthCheck {
             return distribute_refresh_result(
@@ -6919,53 +9708,67 @@ where
     // ever sees it.
     let mut backoff = INITIAL_CONTROL_RETRY_BACKOFF;
     let mut retry_attempt = 0u32;
+    let mut last_failure_was_unreachable = false;
+    let mut leader_proved_reachable = false;
     loop {
         retry_attempt = retry_attempt.saturating_add(1);
         let now = Instant::now();
         if now >= hard_deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, leader_proved_reachable) {
+                if let Some(leader_participant) = leader_participant {
+                    spawn_pss_offline_for_attempt(
+                        &coord.app_state,
+                        coord.routes,
+                        attempt,
+                        PssOfflineStage::PublicContribution,
+                        [leader_participant],
+                    )
+                    .await;
+                }
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
             )));
         }
         let remaining = hard_deadline.saturating_duration_since(now);
-        let response = timeout(
-            remaining,
-            control_request_with_timeout(
-                &coord.app_state,
-                coord.routes,
-                &leader_peer,
-                request.clone(),
-                PEER_RESPONSE_TIMEOUT,
-            ),
+        let response = control_request_with_timeout_classified(
+            &coord.app_state,
+            coord.routes,
+            &leader_peer,
+            request.clone(),
+            PEER_RESPONSE_TIMEOUT.min(remaining),
         )
         .await;
         match response {
-            Ok(Ok(DkgControlMessage::PublicContributionAck {
+            Ok(DkgControlMessage::PublicContributionAck {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 message_id,
-            })) if got_ceremony == ceremony_id
+            }) if got_ceremony == ceremony_id
                 && got_attempt == attempt_id
                 && message_id == contribution.message_id =>
             {
                 return Ok(());
             }
-            Ok(Ok(other)) => tracing::warn!(
-                peer = %leader_peer,
-                attempt = retry_attempt,
-                response = ?other,
-                "public contribution submission received an invalid acknowledgement"
-            ),
-            Ok(Err(error)) => tracing::warn!(
-                peer = %leader_peer,
-                attempt = retry_attempt,
-                %error,
-                "public contribution submission control request failed; retrying"
-            ),
-            Err(_) => {
-                return Err(DkgError::NetworkCommunication(format!(
-                    "public contribution submission reached the hard attempt deadline for peer {leader_peer}"
-                )));
+            Ok(other) => {
+                last_failure_was_unreachable = false;
+                leader_proved_reachable = true;
+                tracing::warn!(
+                    peer = %leader_peer,
+                    attempt = retry_attempt,
+                    response = ?other,
+                    "public contribution submission received an invalid acknowledgement"
+                );
+            }
+            Err(error) => {
+                last_failure_was_unreachable = error.is_unreachable();
+                leader_proved_reachable |= error.proves_reachable();
+                tracing::warn!(
+                    peer = %leader_peer,
+                    attempt = retry_attempt,
+                    error = %error.error(),
+                    "public contribution submission control request failed; retrying"
+                );
             }
         }
         crate::metrics::record_dkg_transport_event("control", "retry");
@@ -6984,7 +9787,7 @@ pub(crate) async fn send_reshare_share_ack<D>(
     receiver_node_id: u32,
     dealer_id: u32,
     selector_peer: &str,
-) -> Result<()>
+) -> std::result::Result<(), PeerDeliveryFailure>
 where
     D: CoordinatorDkg,
 {
@@ -6993,7 +9796,11 @@ where
         .dkg_session_state
         .with_attempt_state(attempt, |_| ())
         .await
-        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
+        .map_err(|error| PeerDeliveryFailure {
+            error: crate::dkg::v0::coordinator::attempt_state_error(attempt, error),
+            unreachable: false,
+            reachable: false,
+        })?;
     let ceremony_id = attempt.ceremony_id;
     let attempt_id = attempt.attempt_id;
     let receiver = ParticipantRef::next(receiver_node_id);
@@ -7006,8 +9813,13 @@ where
         ParticipantRef::next(1),
         &dealer,
     )
-    .map_err(DkgError::Serialization)?;
-    match control_request_with_timeout(
+    .map_err(DkgError::Serialization)
+    .map_err(|error| PeerDeliveryFailure {
+        error,
+        unreachable: false,
+        reachable: false,
+    })?;
+    let response = control_request_with_timeout_classified(
         &coord.app_state,
         coord.routes,
         selector_peer,
@@ -7020,8 +9832,17 @@ where
         },
         PEER_RESPONSE_TIMEOUT,
     )
-    .await?
-    {
+    .await
+    .map_err(|failure| {
+        let unreachable = failure.is_unreachable();
+        let reachable = failure.proves_reachable();
+        PeerDeliveryFailure {
+            unreachable,
+            reachable,
+            error: failure.into_error(),
+        }
+    })?;
+    match response {
         DkgControlMessage::ReshareShareAcked {
             ceremony_id: got_ceremony,
             attempt_id: got_attempt,
@@ -7032,9 +9853,13 @@ where
         {
             Ok(())
         }
-        response => Err(DkgError::ProtocolError(format!(
-            "selector returned invalid reshare acknowledgement response: {response:?}"
-        ))),
+        response => Err(PeerDeliveryFailure {
+            error: DkgError::ProtocolError(format!(
+                "selector returned invalid reshare acknowledgement response: {response:?}"
+            )),
+            unreachable: false,
+            reachable: true,
+        }),
     }
 }
 
@@ -7104,6 +9929,265 @@ where
     .await
 }
 
+pub(crate) async fn relay_public_origin_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgPublicOriginFaultKind,
+    contribution_a: SignedPayload,
+    contribution_b: Option<SignedPayload>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "public-origin evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (fault_kind, contribution_a.clone(), contribution_b.clone());
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayPublicOriginFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            fault_kind,
+            contribution_a: contribution_a.clone(),
+            contribution_b: contribution_b.clone(),
+        },
+        "public-origin-fault-evidence",
+        &payload,
+    )
+    .await
+}
+
+pub(crate) async fn relay_leader_equivocation_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    delivery_id_a: [u8; 16],
+    delivery_a: SignedPayload,
+    delivery_id_b: [u8; 16],
+    delivery_b: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader-equivocation evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (
+        delivery_id_a,
+        delivery_a.clone(),
+        delivery_id_b,
+        delivery_b.clone(),
+    );
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderEquivocationEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            delivery_id_a,
+            delivery_a: delivery_a.clone(),
+            delivery_id_b,
+            delivery_b: delivery_b.clone(),
+        },
+        "leader-equivocation-evidence",
+        &payload,
+    )
+    .await
+}
+
+/// Same shape as `relay_leader_equivocation_evidence` — see
+/// `DkgControlMessage::RelayLeaderBatchMismatchEvidence`.
+pub(crate) async fn relay_leader_batch_mismatch_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    delivery_id_a: [u8; 16],
+    delivery_a: SignedPayload,
+    delivery_id_b: [u8; 16],
+    delivery_b: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader batch-mismatch evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (
+        delivery_id_a,
+        delivery_a.clone(),
+        delivery_id_b,
+        delivery_b.clone(),
+    );
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderBatchMismatchEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            delivery_id_a,
+            delivery_a: delivery_a.clone(),
+            delivery_id_b,
+            delivery_b: delivery_b.clone(),
+        },
+        "leader-batch-mismatch-evidence",
+        &payload,
+    )
+    .await
+}
+
+/// Same shape as `relay_control_message_fault_evidence`, minus the second
+/// artifact — see `DkgControlMessage::RelayLeaderPublicFaultEvidence`.
+pub(crate) async fn relay_leader_public_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    fault_kind: DkgLeaderPublicFaultKind,
+    delivery_id: [u8; 16],
+    delivery: SignedPayload,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "leader public-fault evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (fault_kind, delivery_id, delivery.clone());
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayLeaderPublicFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            fault_kind,
+            delivery_id,
+            delivery: delivery.clone(),
+        },
+        "leader-public-fault-evidence",
+        &payload,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn relay_control_message_fault_evidence<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    accused_node_key: String,
+    message_kind: String,
+    fault_kind: DkgControlMessageFaultKind,
+    artifact_a: ControlMessageArtifact,
+    artifact_b: Option<ControlMessageArtifact>,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let next_node_id = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |session| {
+            session
+                .reshare
+                .params
+                .as_ref()
+                .and_then(|params| params.new_node_id)
+        })
+        .await
+        .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::Unauthorized(
+                "control-message fault evidence relay requires next-committee role".into(),
+            )
+        })?;
+    let payload = (
+        accused_node_key.clone(),
+        message_kind.clone(),
+        fault_kind,
+        artifact_a.clone(),
+        artifact_b.clone(),
+    );
+    relay_private_evidence(
+        coord,
+        attempt,
+        ParticipantRef::next(next_node_id),
+        |ceremony_id, attempt_id, key| DkgControlMessage::RelayControlMessageFaultEvidence {
+            ceremony_id,
+            attempt_id,
+            idempotency_key: key,
+            accused_node_key: accused_node_key.clone(),
+            message_kind: message_kind.to_string(),
+            fault_kind,
+            artifact_a: artifact_a.clone(),
+            artifact_b: artifact_b.clone(),
+        },
+        "control-message-fault-evidence",
+        &payload,
+    )
+    .await
+}
+
 async fn relay_private_evidence<D, T, F>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -7127,7 +10211,7 @@ where
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
     let ceremony_id = attempt.ceremony_id;
-    let mut accepted = 0usize;
+    let mut requests = FuturesUnordered::new();
     for (node_id, peer) in current_routes {
         let recipient = ParticipantRef::current(node_id);
         let key = transport::derive_control_message_id(
@@ -7139,30 +10223,137 @@ where
             payload,
         )
         .map_err(DkgError::Serialization)?;
-        if let Ok(DkgControlMessage::EvidenceAccepted {
-            ceremony_id: got_ceremony,
-            attempt_id: got_attempt,
-            idempotency_key,
-        }) = control_request_with_timeout(
-            &coord.app_state,
-            coord.routes,
-            &peer,
-            make_request(ceremony_id, attempt_id, key),
-            PEER_RESPONSE_TIMEOUT,
-        )
-        .await
-        {
-            if got_ceremony == ceremony_id && got_attempt == attempt_id && idempotency_key == key {
-                accepted += 1;
-            }
+        let request = make_request(ceremony_id, attempt_id, key);
+        requests.push(async move {
+            matches!(
+                control_request_with_timeout(
+                    &coord.app_state,
+                    coord.routes,
+                    &peer,
+                    request,
+                    PEER_RESPONSE_TIMEOUT,
+                )
+                .await,
+                Ok(DkgControlMessage::EvidenceAccepted {
+                    ceremony_id: got_ceremony,
+                    attempt_id: got_attempt,
+                    idempotency_key,
+                }) if got_ceremony == ceremony_id
+                    && got_attempt == attempt_id
+                    && idempotency_key == key
+            )
+        });
+    }
+    while let Some(accepted) = requests.next().await {
+        if accepted {
+            return Ok(());
         }
     }
-    if accepted == 0 {
-        return Err(DkgError::NetworkCommunication(
-            "private evidence was not accepted by any current-committee member".into(),
+    Err(DkgError::NetworkCommunication(
+        "private evidence was not accepted by any current-committee member".into(),
+    ))
+}
+
+/// Relay terminal transport-liveness candidates from a pure pending-new
+/// reshare participant to current-committee report signers. One authenticated
+/// acceptance is sufficient because the receiving signer drives the existing
+/// threshold-report workflow.
+pub(crate) async fn relay_pss_offline_candidates<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ceremony_id: CeremonyId,
+    attempt_id: AttemptId,
+    stage: PssOfflineStage,
+    mut accused: Vec<ParticipantRef>,
+    committees: &CeremonyConfig,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    accused.sort_unstable();
+    accused.dedup();
+    if accused.is_empty() || accused.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay size is outside the committee bound".into(),
         ));
     }
-    Ok(())
+    if committees.current.node_keys.contains(&state.node_key)
+        || !committees
+            .next
+            .as_ref()
+            .is_some_and(|next| next.node_keys.contains(&state.node_key))
+    {
+        return Err(DkgError::Unauthorized(
+            "offline-candidate relay requires a pure pending-new reshare member".into(),
+        ));
+    }
+    if accused
+        .iter()
+        .any(|participant| committees.route(*participant).is_none())
+    {
+        return Err(DkgError::InvalidInput(
+            "offline-candidate relay names a participant outside the ceremony".into(),
+        ));
+    }
+
+    let sender = state.network.local_peer_id();
+    let idempotency_key = transport::derive_offline_candidates_id(
+        ceremony_id,
+        attempt_id,
+        sender.as_bytes(),
+        stage,
+        &accused,
+    )
+    .map_err(DkgError::Serialization)?;
+    let accused_routes: BTreeSet<_> = accused
+        .iter()
+        .filter_map(|participant| committees.route(*participant))
+        .map(|route| extract_node_part(route).to_lowercase())
+        .collect();
+    let mut requests = FuturesUnordered::new();
+    for peer in &committees.current.peer_routes {
+        if is_self_peer_id(&state.network, peer)
+            || accused_routes.contains(&extract_node_part(peer).to_lowercase())
+        {
+            continue;
+        }
+        let state = state.clone();
+        let peer = peer.clone();
+        let accused = accused.clone();
+        requests.push(async move {
+            matches!(
+                control_request_with_timeout(
+                    &state,
+                    routes,
+                    &peer,
+                    DkgControlMessage::RelayOfflineCandidates {
+                        ceremony_id,
+                        attempt_id,
+                        idempotency_key,
+                        stage,
+                        accused,
+                    },
+                    PEER_RESPONSE_TIMEOUT,
+                )
+                .await,
+                Ok(DkgControlMessage::OfflineCandidatesAccepted {
+                    ceremony_id: got_ceremony,
+                    attempt_id: got_attempt,
+                    idempotency_key: got_key,
+                }) if got_ceremony == ceremony_id
+                    && got_attempt == attempt_id
+                    && got_key == idempotency_key
+            )
+        });
+    }
+    while let Some(accepted) = requests.next().await {
+        if accepted {
+            return Ok(());
+        }
+    }
+    Err(DkgError::NetworkCommunication(
+        "offline candidates were not accepted by any current-committee member".into(),
+    ))
 }
 
 /// Inbound handler for one deterministic bidirectional private pair exchange.
@@ -7226,6 +10417,26 @@ where
             ));
         };
         let session_id = ceremony_id.0;
+        if let Some(committees) = self
+            .state
+            .dkg_session_state
+            .transport_committees(&session_id)
+            .await
+        {
+            let authenticated_route = hex::encode(peer.as_bytes());
+            if let Some(participant) =
+                participant_for_transport_peer(&committees, &authenticated_route)
+            {
+                let _ = self
+                    .state
+                    .dkg_session_state
+                    .record_private_peer_response(
+                        AttemptKey::new(ceremony_id, attempt_id),
+                        participant,
+                    )
+                    .await;
+            }
+        }
         let is_reshare_delivery =
             from.scope == CommitteeScope::Current && to.scope == CommitteeScope::Next;
         if !is_reshare_delivery
@@ -7255,7 +10466,7 @@ where
                 .await
                 .map_err(|error| network::error::NetworkError::Protocol(error.to_string()))?;
         }
-        let semaphore = self.state.dkg_private_exchange_permits.clone();
+        let semaphore = self.state.dkg_session_state.private_exchange_permits();
         let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
             Ok(Ok(permit)) => permit,
             Ok(Err(_)) => {
@@ -7521,6 +10732,13 @@ where
                 "ceremony committee configuration is missing".into(),
             )
         })?;
+    let authenticated_route = hex::encode(peer.as_bytes());
+    if let Some(participant) = participant_for_transport_peer(&committees, &authenticated_route) {
+        let _ = state
+            .dkg_session_state
+            .record_private_peer_response(AttemptKey::new(ceremony_id, attempt_id), participant)
+            .await;
+    }
     if committees.node_key(responder) != Some(state.node_key.as_str())
         || committees
             .route(opener)
@@ -7543,7 +10761,7 @@ where
             "PairHello targets an inactive dealer".into(),
         ));
     }
-    let semaphore = state.dkg_private_exchange_permits.clone();
+    let semaphore = state.dkg_session_state.private_exchange_permits();
     let permit = match timeout(PRIVATE_INBOUND_QUEUE_WAIT, semaphore.acquire_owned()).await {
         Ok(Ok(permit)) => permit,
         Ok(Err(_)) => {
@@ -7905,8 +11123,20 @@ where
         .into();
     let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
     let mut retry_attempt = 0_u32;
+    let mut last_failure_was_unreachable = false;
+    let mut peer_proved_reachable = false;
     loop {
         if Instant::now() >= deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, peer_proved_reachable) {
+                spawn_pss_offline_for_attempt(
+                    &state,
+                    routes,
+                    AttemptKey::new(ceremony_id, attempt_id),
+                    PssOfflineStage::PrivatePair,
+                    [responder],
+                )
+                .await;
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "responder-only private pair exchange with {peer} exceeded hard attempt deadline"
             )));
@@ -7914,20 +11144,28 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         let permit = timeout(
             remaining,
-            state.dkg_private_exchange_permits.clone().acquire_owned(),
+            state
+                .dkg_session_state
+                .private_exchange_permits()
+                .acquire_owned(),
         )
         .await
-        .map_err(|_| DkgError::NetworkCommunication("private pair permit timed out".into()))?
+        .map_err(|_| DkgError::InvalidState("private pair permit timed out".into()))?
         .map_err(|_| DkgError::InvalidState("private exchange semaphore closed".into()))?;
         let attempt_timeout = PEER_RESPONSE_TIMEOUT.min(remaining);
         let mut busy_retry_after = None;
         let mut attempt_connection = None;
+        let mut io_failed = false;
+        let mut received_response = false;
         let exchange = timeout(attempt_timeout, async {
             let (stream, parent) = state
                 .peer_connection_pool
                 .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
                 .await
-                .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkConnection(error.to_string())
+                })?;
             attempt_connection = Some(parent);
             stream
                 .send(Message::new(
@@ -7935,10 +11173,15 @@ where
                     routes.dkg_private_alpn.to_vec(),
                 ))
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let response = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
+            received_response = true;
             if let DkgPrivateMessage::Busy {
                 ceremony_id: busy_ceremony,
                 attempt_id: busy_attempt,
@@ -7969,15 +11212,22 @@ where
             let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
             send_private(&*stream, routes.dkg_private_alpn, &ack)
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
             Ok(completion)
         })
-        .await
-        .unwrap_or_else(|_| {
-            Err(DkgError::NetworkCommunication(format!(
-                "responder-only private pair exchange with {peer} timed out"
-            )))
-        });
+        .await;
+        let exchange = match exchange {
+            Ok(result) => result,
+            Err(_) => {
+                io_failed = true;
+                Err(DkgError::NetworkCommunication(format!(
+                    "responder-only private pair exchange with {peer} timed out"
+                )))
+            }
+        };
         drop(permit);
         match exchange {
             Ok(completion) => {
@@ -7986,6 +11236,9 @@ where
                 return Ok(());
             }
             Err(error) => {
+                last_failure_was_unreachable =
+                    private_failure_is_unreachable(io_failed, busy_retry_after);
+                peer_proved_reachable |= received_response;
                 if busy_retry_after.is_none() {
                     if let Some(connection) = attempt_connection.as_ref() {
                         state
@@ -8090,6 +11343,7 @@ where
         ceremony_id,
         attempt_id,
         message_id,
+        to: remote_participant,
         ..
     } = outgoing.clone()
     else {
@@ -8105,21 +11359,29 @@ where
         .into();
     let mut backoff = INITIAL_PRIVATE_RETRY_BACKOFF;
     let mut retry_attempt = 0_u32;
+    let mut last_failure_was_unreachable = false;
+    let mut peer_proved_reachable = false;
     loop {
         if Instant::now() >= deadline {
+            if terminal_offline_candidate(last_failure_was_unreachable, peer_proved_reachable) {
+                spawn_pss_offline_for_attempt(
+                    &state,
+                    routes,
+                    AttemptKey::new(ceremony_id, attempt_id),
+                    PssOfflineStage::PrivatePair,
+                    [remote_participant],
+                )
+                .await;
+            }
             return Err(DkgError::NetworkCommunication(format!(
                 "private pair exchange with {peer} exceeded hard attempt deadline"
             )));
         }
-        let semaphore = state.dkg_private_exchange_permits.clone();
+        let semaphore = state.dkg_session_state.private_exchange_permits();
         let remaining = deadline.saturating_duration_since(Instant::now());
         let permit = timeout(remaining, semaphore.acquire_owned())
             .await
-            .map_err(|_| {
-                DkgError::NetworkCommunication(format!(
-                    "private pair exchange with {peer} exceeded hard attempt deadline"
-                ))
-            })?
+            .map_err(|_| DkgError::InvalidState("private pair permit timed out".into()))?
             .map_err(|_| DkgError::InvalidState("private exchange semaphore closed".into()))?;
         let pair_metrics = PrivatePairMetricsGuard::new();
         tracing::info!(
@@ -8135,12 +11397,17 @@ where
             PEER_RESPONSE_TIMEOUT.min(deadline.saturating_duration_since(Instant::now()));
         let mut busy_retry_after = None;
         let mut attempt_connection = None;
+        let mut io_failed = false;
+        let mut received_response = false;
         let exchange = timeout(attempt_timeout, async {
             let (stream, parent_connection) = state
                 .peer_connection_pool
                 .open_stream_with_connection(&state.network, &peer, routes.dkg_private_alpn)
                 .await
-                .map_err(|error| DkgError::NetworkConnection(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkConnection(error.to_string())
+                })?;
             attempt_connection = Some(parent_connection);
             let remote = stream.peer_id().clone();
             stream
@@ -8149,10 +11416,15 @@ where
                     routes.dkg_private_alpn.to_vec(),
                 ))
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let response = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let response = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
+            received_response = true;
             if let DkgPrivateMessage::Busy {
                 ceremony_id: busy_ceremony_id,
                 attempt_id: busy_attempt_id,
@@ -8181,10 +11453,14 @@ where
             let ack = share_ack_for(&response).map_err(DkgError::ProtocolError)?;
             send_private(&*stream, routes.dkg_private_alpn, &ack)
                 .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
-            let final_ack = recv_private(&*stream)
-                .await
-                .map_err(|error| DkgError::NetworkCommunication(error.to_string()))?;
+                .map_err(|error| {
+                    io_failed = true;
+                    DkgError::NetworkCommunication(error.to_string())
+                })?;
+            let final_ack = recv_private(&*stream).await.map_err(|error| {
+                io_failed = true;
+                DkgError::NetworkCommunication(error.to_string())
+            })?;
             validate_share_ack(&outgoing, &final_ack).map_err(DkgError::ProtocolError)?;
             state
                 .dkg_session_state
@@ -8192,13 +11468,17 @@ where
                 .await;
             Ok(Some(completion))
         })
-        .await
-        .unwrap_or_else(|_| {
-            Err(DkgError::NetworkCommunication(format!(
-                "private pair exchange with {peer} timed out after {}ms",
-                attempt_timeout.as_millis()
-            )))
-        });
+        .await;
+        let exchange = match exchange {
+            Ok(result) => result,
+            Err(_) => {
+                io_failed = true;
+                Err(DkgError::NetworkCommunication(format!(
+                    "private pair exchange with {peer} timed out after {}ms",
+                    attempt_timeout.as_millis()
+                )))
+            }
+        };
         drop(permit);
         match exchange {
             Ok(completion) => {
@@ -8215,6 +11495,9 @@ where
                 return Ok(());
             }
             Err(error) => {
+                last_failure_was_unreachable =
+                    private_failure_is_unreachable(io_failed, busy_retry_after);
+                peer_proved_reachable |= received_response;
                 drop(pair_metrics);
                 // `open_stream` may succeed on a cached QUIC connection whose
                 // subsequent request/response path is no longer making progress.
@@ -8293,10 +11576,13 @@ where
     let deadline = deadline
         .ok_or_else(|| DkgError::InvalidState("transport hard deadline is missing".into()))?;
     let mut openers = FuturesUnordered::new();
-    let all_message_ids: Vec<_> = outgoing.iter().map(|(_, _, id, _)| *id).collect();
+    let mut message_obligations = Vec::with_capacity(outgoing.len());
     for (to_node_id, peer, _, bytes) in outgoing {
         let decoded = transport::decode::<DkgPrivateMessage>(&bytes, MAX_CONTROL_MESSAGE_BYTES)
             .map_err(DkgError::Deserialization)?;
+        if let DkgPrivateMessage::ShareDelivery { message_id, to, .. } = &decoded {
+            message_obligations.push((*message_id, *to));
+        }
         let should_open = match decoded {
             DkgPrivateMessage::ShareDelivery { from, to, .. }
                 if to.scope == CommitteeScope::Next =>
@@ -8318,8 +11604,8 @@ where
         result?;
     }
     loop {
-        let mut missing = 0usize;
-        for message_id in &all_message_ids {
+        let mut missing_participants = Vec::new();
+        for (message_id, remote) in &message_obligations {
             if !coord
                 .app_state
                 .dkg_session_state
@@ -8327,13 +11613,31 @@ where
                 .await
                 .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
             {
-                missing += 1;
+                missing_participants.push(*remote);
             }
         }
-        if missing == 0 {
+        if missing_participants.is_empty() {
             return Ok(());
         }
         if Instant::now() >= deadline.into() {
+            let missing = missing_participants.len();
+            let reachable = coord
+                .app_state
+                .dkg_session_state
+                .private_peer_responses_for_attempt(attempt)
+                .await
+                .map_err(|error| {
+                    crate::dkg::v0::coordinator::attempt_state_error(attempt, error)
+                })?;
+            missing_participants.retain(|participant| !reachable.contains(participant));
+            spawn_pss_offline_for_attempt(
+                &coord.app_state,
+                coord.routes,
+                attempt,
+                PssOfflineStage::PrivateInbound,
+                missing_participants,
+            )
+            .await;
             return Err(DkgError::NetworkCommunication(format!(
                 "{missing} private pair exchanges were not acknowledged before hard deadline"
             )));
@@ -8483,6 +11787,169 @@ mod stability_tests {
             ]),
             threshold: 2,
         }
+    }
+
+    fn offline_relay_committees() -> CeremonyConfig {
+        let route = |byte: u8, port: u16| format!("{}@127.0.0.1:{port}", hex::encode([byte; 32]));
+        CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: vec!["current-a".into(), "current-b".into()],
+                peer_routes: vec![route(1, 9101), route(2, 9102)],
+                node_id_assignments: HashMap::from([
+                    ("current-a".into(), 1),
+                    ("current-b".into(), 2),
+                ]),
+                threshold: 2,
+            },
+            next: Some(CommitteeConfig {
+                node_keys: vec!["next-a".into(), "next-b".into()],
+                peer_routes: vec![route(3, 9201), route(4, 9202)],
+                node_id_assignments: HashMap::from([("next-a".into(), 1), ("next-b".into(), 2)]),
+                threshold: 2,
+            }),
+        }
+    }
+
+    #[test]
+    fn peer_request_failure_preserves_reachability() {
+        let unreachable =
+            PeerRequestFailure::Unreachable(DkgError::NetworkConnection("down".into()));
+        assert!(unreachable.is_unreachable());
+        assert!(!unreachable.proves_reachable());
+        let reachable = PeerRequestFailure::Reachable(DkgError::ProtocolError("bad ack".into()));
+        assert!(!reachable.is_unreachable());
+        assert!(reachable.proves_reachable());
+        assert!(
+            !PeerRequestFailure::Local(DkgError::Serialization("local".into())).is_unreachable()
+        );
+    }
+
+    #[test]
+    fn busy_and_local_private_failures_are_not_offline() {
+        assert!(private_failure_is_unreachable(true, None));
+        assert!(!private_failure_is_unreachable(
+            true,
+            Some(Duration::from_millis(10))
+        ));
+        assert!(!private_failure_is_unreachable(false, None));
+        assert!(terminal_offline_candidate(true, false));
+        assert!(
+            !terminal_offline_candidate(true, true),
+            "a prior Busy, error response, malformed response, or invalid ACK proves reachability"
+        );
+    }
+
+    #[test]
+    fn offline_relay_claim_enforces_observer_role_and_canonical_candidates() {
+        let committees = offline_relay_committees();
+        let leader = PeerId::from_bytes(&[3; 32]);
+        let follower = PeerId::from_bytes(&[4; 32]);
+        let accused = [ParticipantRef::current(2)];
+
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &accused,
+        )
+        .expect("pure-new canonical leader may relay a preparation observation");
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::Prepare,
+            &accused,
+        )
+        .is_err());
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::PrivatePair,
+            &accused,
+        )
+        .expect("a pure-new participant may relay its own private-pair observation");
+        validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::TopologyAck,
+            &[ParticipantRef::next(1)],
+        )
+        .expect("a follower may report the unreachable canonical leader while returning an ACK");
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &follower,
+            PssOfflineStage::TopologyAck,
+            &accused,
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::StartForward,
+            &accused,
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(2), ParticipantRef::current(2)],
+        )
+        .is_err());
+        assert!(validate_offline_relay_claim(
+            &committees,
+            "next-a",
+            "current-a",
+            &leader,
+            PssOfflineStage::Prepare,
+            &[ParticipantRef::current(99)],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn reshare_preparation_candidates_preserve_committee_scope() {
+        let committees = offline_relay_committees();
+        let prepare = PrepareSession {
+            ceremony_id: CeremonyId(33),
+            attempt_id: AttemptId([5; 32]),
+            config_digest: [0; 32],
+            topic_id: [0; 32],
+            leader_node_key: "next-a".into(),
+            committees: committees.clone(),
+            token_string: String::new(),
+            kind: SessionKind::Reshare {
+                ring_pk_hex: "ring-pk".into(),
+                new_peer_node_keys: committees.next.as_ref().unwrap().node_keys.clone(),
+                new_threshold: 2,
+                bulletin_post_id: "ring-id".into(),
+            },
+            pss_interval: 60,
+            policy_id: None,
+            ring_id: "ring-id".into(),
+            report_signature: None,
+        };
+        let current_route = extract_node_part(&committees.current.peer_routes[1]).to_lowercase();
+        let next_route =
+            extract_node_part(&committees.next.as_ref().unwrap().peer_routes[1]).to_lowercase();
+
+        assert_eq!(
+            reshare_preparation_candidates(&prepare, [current_route, next_route]),
+            [ParticipantRef::current(2), ParticipantRef::next(2)]
+        );
     }
 
     #[test]
@@ -8806,7 +12273,8 @@ mod stability_tests {
         let ceremony = CeremonyId(91);
         let first = lock_ceremony_start(&state, ceremony).await;
         assert!(state
-            .dkg_ceremony_start_locks
+            .dkg_session_state
+            .ceremony_start_locks()
             .lock()
             .await
             .contains_key(&ceremony.0));
@@ -8817,7 +12285,8 @@ mod stability_tests {
         timeout(Duration::from_secs(1), async {
             loop {
                 let references = {
-                    let locks = state.dkg_ceremony_start_locks.lock().await;
+                    let locks = state.dkg_session_state.ceremony_start_locks();
+                    let locks = locks.lock().await;
                     Arc::strong_count(locks.get(&ceremony.0).expect("lock entry must exist"))
                 };
                 if references >= 3 {
@@ -8832,7 +12301,8 @@ mod stability_tests {
         drop(first);
         let second = waiter.await.expect("waiter task should complete");
         assert!(state
-            .dkg_ceremony_start_locks
+            .dkg_session_state
+            .ceremony_start_locks()
             .lock()
             .await
             .contains_key(&ceremony.0));
@@ -8841,7 +12311,8 @@ mod stability_tests {
         timeout(Duration::from_secs(1), async {
             loop {
                 if !state
-                    .dkg_ceremony_start_locks
+                    .dkg_session_state
+                    .ceremony_start_locks()
                     .lock()
                     .await
                     .contains_key(&ceremony.0)
@@ -9112,6 +12583,7 @@ mod stability_tests {
             pss_interval: 0,
             policy_id: None,
             ring_id: "test-ring-post".to_string(),
+            report_signature: None,
         }
     }
 
@@ -9127,6 +12599,16 @@ mod stability_tests {
                 total_participants: 2,
             },
             signature: None,
+        }
+    }
+
+    fn reshare_participant_set_payload(dealers: &[u32]) -> DkgPublicPayload {
+        DkgPublicPayload::ReshareParticipantSet {
+            selected_dealers: dealers
+                .iter()
+                .copied()
+                .map(ParticipantRef::current)
+                .collect(),
         }
     }
 
@@ -9272,12 +12754,13 @@ mod stability_tests {
             &self,
             peer: &str,
             request: DkgControlMessage,
-        ) -> Result<DkgControlMessage> {
+        ) -> PublicRepairRequestOutcome {
             self.requests
                 .lock()
                 .await
                 .push((peer.to_string(), request.metric_label()));
-            self.responses
+            let result = self
+                .responses
                 .lock()
                 .await
                 .get_mut(peer)
@@ -9286,7 +12769,12 @@ mod stability_tests {
                     Err(DkgError::NetworkConnection(format!(
                         "script has no response for {peer}"
                     )))
-                })
+                });
+            let offline = matches!(
+                &result,
+                Err(DkgError::NetworkConnection(_)) | Err(DkgError::NetworkCommunication(_))
+            );
+            PublicRepairRequestOutcome { result, offline }
         }
     }
 
@@ -9361,6 +12849,11 @@ mod stability_tests {
             .expect("active repair attempt");
         assert_eq!(retained.keys().copied().collect::<Vec<_>>(), vec![origin]);
         assert_eq!(
+            state.dkg_session_state.offline_candidate_claim_count(),
+            1,
+            "leader fallback must retain its terminal liveness observation"
+        );
+        assert_eq!(
             requester.requests.lock().await.as_slice(),
             [
                 ("repair-route-1".to_string(), "get_public_phase"),
@@ -9403,6 +12896,10 @@ mod stability_tests {
         assert_eq!(
             requester.requests.lock().await.as_slice(),
             [("repair-route-1".to_string(), "get_public_phase")]
+        );
+        assert!(
+            state.dkg_session_state.offline_candidate_claim_count() == 0,
+            "a reachable protocol rejection must not create an offline candidate"
         );
     }
 
@@ -9452,6 +12949,8 @@ mod stability_tests {
                         phase: PublicPhase::CommitmentHashes,
                         contributions: vec![first_signed],
                         next_cursor: Some(first),
+                        page_digest: [0; 32],
+                        report_signature: None,
                     }),
                     Err(DkgError::NetworkCommunication(
                         "leader failed on the second page".into(),
@@ -9603,6 +13102,7 @@ mod stability_tests {
                     ceremony_id,
                     attempt_id,
                     activation_digest: [8; 32],
+                    report_signature: None,
                 })]),
             ),
             (
@@ -9785,6 +13285,178 @@ mod stability_tests {
     }
 
     #[tokio::test]
+    async fn direct_repair_conflict_preserves_both_commitment_envelopes() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
+            "direct_repair_conflict_preserves_envelopes",
+            4257,
+            SessionKind::Fresh,
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 3);
+        let retained = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: fresh_commitment_bytes(origin.node_id, ceremony_id.0),
+                report_evidence: None,
+            },
+        );
+        let mut different = fresh_commitment_bytes(origin.node_id, ceremony_id.0);
+        different[crypto::GROUP_POINT_SIZE] ^= 1;
+        let conflicting = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            DkgPublicPayload::Commitment {
+                commitment: different,
+                report_evidence: None,
+            },
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .record_public_contribution(
+                    &ceremony_id.0,
+                    attempt_id,
+                    PublicPhase::Commitments,
+                    origin,
+                    retained.signed.clone(),
+                )
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        let error = apply_repair_contributions(
+            &state,
+            &network::V0,
+            &prepare,
+            PublicPhase::Commitments,
+            vec![conflicting.clone()],
+            RepairContributionSource::Origin,
+        )
+        .await
+        .expect_err("conflicting direct repair contribution must abort");
+        let PublicRepairFailure::Violation(violation) = error else {
+            panic!("expected attributable repair violation");
+        };
+        assert_eq!(
+            violation.kind,
+            PublicProtocolViolationKind::OriginEquivocation
+        );
+        assert_eq!(
+            violation.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin,
+                retained: retained.signed.clone(),
+                conflicting: conflicting.signed,
+            })
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::Commitments,)
+                .await
+                .expect("active attempt")
+                .get(&origin),
+            Some(&retained.signed),
+            "the first authenticated envelope must remain authoritative"
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_repair_non_commitment_conflict_preserves_public_origin_evidence() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
+            "direct_repair_non_commitment_conflict_preserves_envelopes",
+            4258,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 3);
+        let first_payload = refresh_health_payload(ceremony_id.0);
+        let mut second_payload = first_payload.clone();
+        let DkgPublicPayload::RefreshHealthCheckResult { statement, .. } = &mut second_payload
+        else {
+            unreachable!("refresh-health test helper returned a different phase");
+        };
+        statement.public_polynomial_sha256 = "22".repeat(32);
+        let retained = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            first_payload,
+        );
+        let conflicting = verified_test_contribution(
+            ceremony_id,
+            attempt_id,
+            committee_digest,
+            origin,
+            second_payload,
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .record_public_contribution(
+                    &ceremony_id.0,
+                    attempt_id,
+                    PublicPhase::RefreshHealthCheck,
+                    origin,
+                    retained.signed.clone(),
+                )
+                .await,
+            PublicContributionRecordOutcome::Recorded
+        );
+
+        let error = apply_repair_contributions(
+            &state,
+            &network::V0,
+            &prepare,
+            PublicPhase::RefreshHealthCheck,
+            vec![conflicting.clone()],
+            RepairContributionSource::Origin,
+        )
+        .await
+        .expect_err("conflicting direct repair contribution must abort");
+        let PublicRepairFailure::Violation(violation) = error else {
+            panic!("expected attributable repair violation");
+        };
+        assert_eq!(
+            violation.kind,
+            PublicProtocolViolationKind::OriginEquivocation
+        );
+        assert!(violation.commitment_equivocation.is_none());
+        assert_eq!(
+            violation.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained.signed.clone(),
+                contribution_b: Some(conflicting.signed),
+            })
+        );
+        assert_eq!(
+            state
+                .dkg_session_state
+                .public_contributions(&ceremony_id.0, attempt_id, PublicPhase::RefreshHealthCheck)
+                .await
+                .expect("active attempt")
+                .get(&origin),
+            Some(&retained.signed),
+            "the first authenticated envelope must remain authoritative"
+        );
+    }
+
+    #[tokio::test]
     async fn direct_origin_payload_is_preflighted_before_leader_relay() {
         let origin = ParticipantRef::current(2);
         let (state, ceremony_id, attempt_id, committee_digest, _guard) = contribution_test_state(
@@ -9903,6 +13575,7 @@ mod stability_tests {
                 ceremony_id,
                 attempt_id,
                 activation_digest: [7; 32],
+                report_signature: None,
             })]),
         )]));
 
@@ -9935,8 +13608,14 @@ mod stability_tests {
                 .transport
                 .attempt_id = Some(newer_attempt);
         }
-        abort_public_protocol_violation(&state, &prepare, &violation, TopicTaskDisposition::Abort)
-            .await;
+        abort_public_protocol_violation(
+            &state,
+            &network::V0,
+            &prepare,
+            &violation,
+            TopicTaskDisposition::Abort,
+        )
+        .await;
         assert_eq!(
             state
                 .dkg_session_state
@@ -9944,6 +13623,72 @@ mod stability_tests {
                 .await,
             Some(newer_attempt),
             "a stale attributable response must not remove a newer attempt"
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_signed_repair_page_is_attributable_with_control_message_fault_evidence() {
+        let origin = ParticipantRef::current(1);
+        let (state, ceremony_id, attempt_id, _, _guard) = contribution_test_state(
+            "oversized_signed_repair_page_is_attributable",
+            4255,
+            SessionKind::Refresh {
+                ring_pk_hex: "test-ring".to_string(),
+            },
+            Vec::new(),
+            origin,
+        )
+        .await;
+        let prepare = repair_test_prepare(ceremony_id, attempt_id, 1);
+        let oversized_contribution = SignedPayload {
+            origin: vec![1; 32],
+            signature: vec![2; 64],
+            data: vec![9; 700_000],
+        };
+        let report_signature_bytes = vec![3u8; 64];
+        let oversized_response = DkgControlMessage::PublicPhaseResponse {
+            ceremony_id,
+            attempt_id,
+            phase: PublicPhase::Commitments,
+            contributions: vec![oversized_contribution],
+            next_cursor: None,
+            page_digest: [4; 32],
+            report_signature: Some(ControlSignature {
+                signer_node_key: "repair-node-1".to_string(),
+                signed_at: 1_700_000_000,
+                signature: report_signature_bytes.clone(),
+            }),
+        };
+        let expected_data = transport::encode(&oversized_response).unwrap();
+        let requester = ScriptedPublicRepairRequester::new(HashMap::from([(
+            "repair-route-1".to_string(),
+            std::collections::VecDeque::from([Ok(oversized_response)]),
+        )]));
+
+        let violation = match collect_public_phase_from_leader(
+            &state,
+            &network::V0,
+            &requester,
+            &prepare,
+            PublicPhase::Commitments,
+            &BTreeSet::from([origin]),
+        )
+        .await
+        .expect_err("an oversized signed repair page must be attributable")
+        {
+            PublicRepairFailure::Violation(violation) => violation,
+            other => panic!("expected typed protocol violation, got {other:?}"),
+        };
+        assert_eq!(violation.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(violation.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            violation.control_message_fault.as_deref(),
+            Some(&ControlMessageArtifact {
+                signature: report_signature_bytes,
+                data: expected_data,
+                signed_at: 1_700_000_000,
+            }),
+            "an oversized leader-signed repair page must retain the signed artifact as evidence"
         );
     }
 
@@ -9977,7 +13722,7 @@ mod stability_tests {
             data: vec![3; 16],
         };
 
-        let error = record_public_contribution(&state, signed, &contribution)
+        let error = record_public_contribution(&state, &network::V0, signed, &contribution)
             .await
             .expect_err("stale contribution must be rejected");
 
@@ -10144,6 +13889,7 @@ mod stability_tests {
             ring_id: "batch-test-ring".into(),
             committee_digest: [8; 32],
             origin,
+            signed_at: 1_700_000_000,
             message_id,
             payload: DkgPublicPayload::Commitment {
                 commitment: vec![message_byte],
@@ -10187,6 +13933,16 @@ mod stability_tests {
             contribution_ids: ids,
             chunk_count,
             complete,
+            signed_at: 1_700_000_000,
+        }
+    }
+
+    fn sample_leader_delivery(tag: u8) -> PublicLeaderDelivery {
+        PublicLeaderDelivery {
+            origin: vec![tag; 32],
+            delivery_id: [tag; 16],
+            signature: vec![tag; 64],
+            data: vec![tag; 8],
         }
     }
 
@@ -10208,6 +13964,7 @@ mod stability_tests {
                     vec![second],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending { .. }
@@ -10219,6 +13976,7 @@ mod stability_tests {
                     manifest.clone(),
                     [3; 32],
                     &expected,
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending {
@@ -10234,6 +13992,7 @@ mod stability_tests {
                 vec![first],
                 [1; 32],
                 expected.len(),
+                None,
             )
             .unwrap();
         let PublicBatchAssembly::Complete { contributions, .. } = complete else {
@@ -10298,6 +14057,8 @@ mod stability_tests {
         let manifest = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
         let expected = BTreeSet::from([ParticipantRef::current(1)]);
         let mut assembler = PublicBatchAssembler::default();
+        let manifest_delivery_a = sample_leader_delivery(1);
+        let manifest_delivery_b = sample_leader_delivery(2);
         assert!(matches!(
             assembler
                 .insert_manifest(
@@ -10305,6 +14066,7 @@ mod stability_tests {
                     manifest.clone(),
                     [1; 32],
                     &expected,
+                    Some(manifest_delivery_a.clone()),
                 )
                 .unwrap(),
             PublicBatchAssembly::Pending { .. }
@@ -10316,6 +14078,7 @@ mod stability_tests {
                     manifest.clone(),
                     [1; 32],
                     &expected,
+                    Some(manifest_delivery_a.clone()),
                 )
                 .unwrap(),
             PublicBatchAssembly::Duplicate
@@ -10326,9 +14089,18 @@ mod stability_tests {
                 manifest.clone(),
                 [9; 32],
                 &expected,
+                Some(manifest_delivery_b.clone()),
             )
             .expect_err("a semantically equal manifest with different bytes must conflict");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: manifest_delivery_a,
+                conflicting: manifest_delivery_b,
+            }),
+            "conflicting manifest must retain both signed leader deliveries"
+        );
         assert!(matches!(
             assembler
                 .insert_chunk(
@@ -10339,6 +14111,7 @@ mod stability_tests {
                     vec![contribution.clone()],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Complete { .. }
@@ -10353,10 +14126,12 @@ mod stability_tests {
                     vec![contribution],
                     [2; 32],
                     expected.len(),
+                    None,
                 )
                 .unwrap(),
             PublicBatchAssembly::Duplicate
         ));
+        let chunk_delivery = sample_leader_delivery(3);
         let error = assembler
             .insert_chunk(
                 PublicBatchMode::Complete,
@@ -10366,9 +14141,14 @@ mod stability_tests {
                 vec![assembled_contribution(ParticipantRef::current(1), 1)],
                 [8; 32],
                 expected.len(),
+                Some(chunk_delivery),
             )
             .expect_err("a semantically equal chunk with different bytes must conflict");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+        assert!(
+            error.leader_equivocation.is_none(),
+            "the completed chunk's own delivery was never retained, so evidence stays best-effort"
+        );
     }
 
     #[test]
@@ -10379,12 +14159,15 @@ mod stability_tests {
         let expected = BTreeSet::from([ParticipantRef::current(1)]);
         let mut assembler = PublicBatchAssembler::default();
         let error = assembler
-            .insert_manifest(PublicBatchMode::Complete, invalid, [1; 32], &expected)
+            .insert_manifest(PublicBatchMode::Complete, invalid, [1; 32], &expected, None)
             .expect_err("an internally invalid root must fail");
         assert_eq!(error.kind, PublicProtocolViolationKind::InvalidManifest);
 
         let first_root = [1; 32];
         let second_root = [2; 32];
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 2);
+        let first_chunk_delivery = sample_leader_delivery(1);
+        let second_chunk_delivery = sample_leader_delivery(2);
         assembler
             .insert_chunk(
                 PublicBatchMode::Complete,
@@ -10394,6 +14177,7 @@ mod stability_tests {
                 vec![contribution.clone()],
                 [2; 32],
                 expected.len(),
+                Some(first_chunk_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -10402,12 +14186,159 @@ mod stability_tests {
                 PublicPhase::Commitments,
                 second_root,
                 0,
-                vec![assembled_contribution(ParticipantRef::current(1), 2)],
+                vec![conflicting.clone()],
                 [3; 32],
                 expected.len(),
+                Some(second_chunk_delivery.clone()),
             )
             .expect_err("a complete phase cannot advertise two roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingManifest);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: contribution.signed,
+                conflicting: conflicting.signed,
+            }),
+            "leader-first attribution must still preserve provable dealer equivocation"
+        );
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: first_chunk_delivery,
+                conflicting: second_chunk_delivery,
+            }),
+            "a leader claiming two different complete-phase roots must be provably attributable"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_manifest_naming_the_wrong_origin_set_with_leader_public_fault_evidence()
+    {
+        // A Complete-mode manifest must name every expected origin. This one
+        // names only origin 1, but the phase's committee has two members —
+        // a genuine `PhaseManifest::validate` failure, not an equivocation
+        // (no earlier manifest exists to conflict with).
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let manifest = assembled_manifest(std::slice::from_ref(&contribution), 1, true);
+        let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
+        let mut assembler = PublicBatchAssembler::default();
+        let delivery = sample_leader_delivery(1);
+        let error = assembler
+            .insert_manifest(
+                PublicBatchMode::Complete,
+                manifest,
+                [1; 32],
+                &expected,
+                Some(delivery.clone()),
+            )
+            .expect_err("a manifest naming an incomplete origin set must be rejected");
+        assert_eq!(error.kind, PublicProtocolViolationKind::InvalidManifest);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::InvalidManifest,
+                delivery,
+            }),
+            "an invalid manifest must retain the leader's signed delivery as evidence, \
+             independently provable without any conflicting counterpart"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_chunk_index_out_of_range_with_leader_public_fault_evidence() {
+        // The phase's committee has one member, so any chunk index other
+        // than 0 is out of range — a genuine, single-artifact-provable
+        // `BufferLimit` fault, distinct from `InvalidManifest`.
+        let contribution = assembled_contribution(ParticipantRef::current(1), 1);
+        let mut assembler = PublicBatchAssembler::default();
+        let delivery = sample_leader_delivery(1);
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [1; 32],
+                1,
+                vec![contribution],
+                [2; 32],
+                1,
+                Some(delivery.clone()),
+            )
+            .expect_err("a chunk index at or beyond the expected origin count must be rejected");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+                delivery,
+            }),
+            "an out-of-range chunk index must retain the leader's signed delivery as evidence"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_oversized_chunk_bytes_with_leader_public_fault_evidence() {
+        let mut oversized = sample_leader_delivery(1);
+        oversized.data = vec![0u8; transport::MAX_PUBLIC_CHUNK_BYTES + 1];
+        let violation = PublicProtocolViolation::leader(
+            PublicProtocolViolationKind::BufferLimit,
+            Some(PublicPhase::Commitments),
+            Some([1; 32]),
+            "encoded chunk exceeds the byte limit",
+        )
+        .with_leader_public_fault(
+            DkgLeaderPublicFaultKind::OversizedChunk,
+            Some(oversized.clone()),
+        );
+        assert_eq!(violation.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(
+            violation.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::OversizedChunk,
+                delivery: oversized,
+            }),
+            "an oversized chunk must retain the leader's signed delivery as evidence"
+        );
+    }
+
+    #[test]
+    fn public_batch_rejects_duplicate_chunk_origin_with_leader_public_fault_evidence() {
+        // Same origin twice in one chunk, matching content both times — no
+        // equivocation to attribute to the origin, so without dedicated
+        // detection this would fall through to the aggregate `BufferLimit`
+        // check with zero evidence.
+        let first = assembled_contribution(ParticipantRef::current(1), 1);
+        let duplicate = assembled_contribution(ParticipantRef::current(1), 1);
+        let delivery = sample_leader_delivery(1);
+        let error = PublicBatchAssembler::default()
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [1; 32],
+                0,
+                vec![first, duplicate],
+                [1; 32],
+                1,
+                Some(delivery.clone()),
+            )
+            .expect_err("a chunk cannot name the same origin twice");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_public_fault.as_deref(),
+            Some(&LeaderPublicFaultEvidence {
+                fault_kind: DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+                delivery,
+            }),
+            "a duplicate origin within one chunk must retain the leader's signed delivery as evidence"
+        );
+        assert_eq!(
+            error.commitment_equivocation, None,
+            "matching content both times is not origin equivocation"
+        );
     }
 
     #[test]
@@ -10423,6 +14354,7 @@ mod stability_tests {
                 manifest.clone(),
                 [1; 32],
                 &expected,
+                None,
             )
             .unwrap();
         let error = assembler
@@ -10434,6 +14366,7 @@ mod stability_tests {
                 vec![second, first],
                 [2; 32],
                 expected.len(),
+                None,
             )
             .expect_err("manifest contents must retain canonical origin order");
         assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
@@ -10449,6 +14382,7 @@ mod stability_tests {
                 vec![contribution.clone()],
                 [3; 32],
                 2,
+                None,
             )
             .unwrap();
         let error = assembler
@@ -10460,9 +14394,83 @@ mod stability_tests {
                 vec![assembled_contribution(ParticipantRef::current(2), 4)],
                 [4; 32],
                 2,
+                None,
             )
             .expect_err("the same chunk index cannot change contents");
         assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+
+        let retained = assembled_contribution(ParticipantRef::current(1), 5);
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 6);
+        let retained_delivery = sample_leader_delivery(5);
+        let conflicting_delivery = sample_leader_delivery(6);
+        let mut assembler = PublicBatchAssembler::default();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [5; 32],
+                0,
+                vec![retained.clone()],
+                [5; 32],
+                1,
+                Some(retained_delivery.clone()),
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [5; 32],
+                0,
+                vec![conflicting.clone()],
+                [6; 32],
+                1,
+                Some(conflicting_delivery.clone()),
+            )
+            .expect_err("complete chunk conflict must remain attributable to the leader");
+        assert_eq!(error.kind, PublicProtocolViolationKind::ConflictingChunk);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.leader_equivocation.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: retained_delivery,
+                conflicting: conflicting_delivery,
+            }),
+            "conflicting chunk must retain both signed leader deliveries"
+        );
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: retained.signed,
+                conflicting: conflicting.signed,
+            })
+        );
+
+        let retained = assembled_contribution(ParticipantRef::current(1), 7);
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 8);
+        let error = PublicBatchAssembler::default()
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::Commitments,
+                [7; 32],
+                0,
+                vec![retained.clone(), conflicting.clone()],
+                [7; 32],
+                1,
+                None,
+            )
+            .expect_err("one chunk cannot contain two messages from the same origin");
+        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.accused, PublicViolationAccused::Leader);
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: retained.signed,
+                conflicting: conflicting.signed,
+            })
+        );
     }
 
     #[test]
@@ -10481,6 +14489,7 @@ mod stability_tests {
                     manifest.clone(),
                     [contribution.contribution.origin.node_id as u8; 32],
                     &expected,
+                    None,
                 )
                 .unwrap();
             assert!(matches!(
@@ -10493,27 +14502,149 @@ mod stability_tests {
                         vec![contribution],
                         [manifest.contribution_ids.len() as u8; 32],
                         expected.len(),
+                        None,
                     )
                     .unwrap(),
                 PublicBatchAssembly::Complete { .. }
             ));
         }
 
+        let conflicting = assembled_contribution(ParticipantRef::current(1), 9);
         let error = assembler
             .insert_chunk(
                 PublicBatchMode::Incremental,
                 PublicPhase::Commitments,
                 [7; 32],
                 0,
-                vec![assembled_contribution(ParticipantRef::current(1), 9)],
+                vec![conflicting.clone()],
                 [9; 32],
                 expected.len(),
+                None,
             )
             .expect_err("one origin cannot sign two messages for a public phase");
         assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
         assert_eq!(
             error.accused,
             PublicViolationAccused::Origin(ParticipantRef::current(1))
+        );
+        assert_eq!(
+            error.commitment_equivocation.as_deref(),
+            Some(&PublicCommitmentEquivocation {
+                origin: ParticipantRef::current(1),
+                retained: first.signed,
+                conflicting: conflicting.signed,
+            })
+        );
+    }
+
+    #[test]
+    fn non_commitment_origin_conflicts_do_not_carry_dkg_equivocation_evidence() {
+        let origin = ParticipantRef::current(1);
+        let mut first = assembled_contribution(origin, 1);
+        first.contribution.payload = refresh_health_payload(900);
+        first.signed.data = transport::encode(&first.contribution).unwrap();
+        let mut conflicting = assembled_contribution(origin, 2);
+        conflicting.contribution.payload = refresh_health_payload(900);
+        let DkgPublicPayload::RefreshHealthCheckResult { statement, .. } =
+            &mut conflicting.contribution.payload
+        else {
+            unreachable!("refresh-health test helper returned a different phase");
+        };
+        statement.public_polynomial_sha256 = "22".repeat(32);
+        conflicting.signed.data = transport::encode(&conflicting.contribution).unwrap();
+        let expected = BTreeSet::from([origin]);
+        let mut assembler = PublicBatchAssembler::default();
+        let retained_envelope = first.signed.clone();
+        let conflicting_envelope = conflicting.signed.clone();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::RefreshHealthCheck,
+                [1; 32],
+                0,
+                vec![first],
+                [1; 32],
+                expected.len(),
+                None,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Incremental,
+                PublicPhase::RefreshHealthCheck,
+                [2; 32],
+                0,
+                vec![conflicting],
+                [2; 32],
+                expected.len(),
+                None,
+            )
+            .expect_err("non-Commitment origin conflict must still abort");
+        assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
+        assert!(error.commitment_equivocation.is_none());
+        assert_eq!(
+            error.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained_envelope,
+                contribution_b: Some(conflicting_envelope),
+            }),
+            "non-Commitment conflicts must preserve both exact endpoint envelopes"
+        );
+    }
+
+    #[test]
+    fn reshare_participant_set_origin_conflicts_do_not_carry_dkg_equivocation_evidence() {
+        // ReshareParticipantSet is Complete-mode with a single legitimate
+        // origin (next-committee node 1), so a genuinely different root the
+        // second time is a leader-attributed ConflictingManifest, not origin
+        // equivocation. Origin equivocation instead shows up as the same
+        // origin appearing again at a different index under the one
+        // canonical root the phase already committed to.
+        let origin = ParticipantRef::next(1);
+        let mut first = assembled_contribution(origin, 1);
+        first.contribution.payload = reshare_participant_set_payload(&[1, 2]);
+        first.signed.data = transport::encode(&first.contribution).unwrap();
+        let mut conflicting = assembled_contribution(origin, 2);
+        conflicting.contribution.payload = reshare_participant_set_payload(&[1, 3]);
+        conflicting.signed.data = transport::encode(&conflicting.contribution).unwrap();
+        let mut assembler = PublicBatchAssembler::default();
+        let retained_envelope = first.signed.clone();
+        let conflicting_envelope = conflicting.signed.clone();
+        assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::ReshareParticipantSet,
+                [1; 32],
+                0,
+                vec![first],
+                [1; 32],
+                2,
+                None,
+            )
+            .unwrap();
+        let error = assembler
+            .insert_chunk(
+                PublicBatchMode::Complete,
+                PublicPhase::ReshareParticipantSet,
+                [1; 32],
+                1,
+                vec![conflicting],
+                [2; 32],
+                2,
+                None,
+            )
+            .expect_err("reshare participant-set origin conflict must still abort");
+        assert_eq!(error.kind, PublicProtocolViolationKind::OriginEquivocation);
+        assert!(error.commitment_equivocation.is_none());
+        assert_eq!(
+            error.public_origin_fault.as_deref(),
+            Some(&PublicOriginFaultEvidence {
+                fault_kind: DkgPublicOriginFaultKind::OriginEquivocation,
+                contribution_a: retained_envelope,
+                contribution_b: Some(conflicting_envelope),
+            }),
+            "reshare participant-set conflicts must preserve both exact endpoint envelopes"
         );
     }
 
@@ -10523,6 +14654,8 @@ mod stability_tests {
         let second = assembled_contribution(ParticipantRef::current(2), 2);
         let expected = BTreeSet::from([ParticipantRef::current(1), ParticipantRef::current(2)]);
         let mut assembler = PublicBatchAssembler::default();
+        let first_chunk_delivery = sample_leader_delivery(1);
+        let second_chunk_delivery = sample_leader_delivery(2);
 
         assembler
             .insert_chunk(
@@ -10533,6 +14666,7 @@ mod stability_tests {
                 vec![first.clone()],
                 [1; 32],
                 expected.len(),
+                Some(first_chunk_delivery.clone()),
             )
             .unwrap();
         let error = assembler
@@ -10544,16 +14678,41 @@ mod stability_tests {
                 vec![first],
                 [2; 32],
                 expected.len(),
+                Some(second_chunk_delivery.clone()),
             )
             .expect_err("a leader cannot retain one contribution under multiple roots");
         assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+        assert_eq!(
+            error.leader_batch_mismatch.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: first_chunk_delivery,
+                conflicting: second_chunk_delivery,
+            }),
+            "a leader repackaging one origin under two different roots must be provably \
+             attributable via claim_origins, not just the weaker message-id-only evidence \
+             ensure_no_origin_equivocation's own fallback branch would have attached"
+        );
 
+        // The same cross-root duplication, but detected at the *manifest*
+        // level (no chunks involved at all) — this is what `insert_manifest`
+        // had no equivalent check for before `claim_origins`, so this
+        // scenario used to only be caught by the much weaker aggregate
+        // `BufferLimit` bound (see the pigeonhole argument on
+        // `claim_origins`'s doc comment).
         let mut assembler = PublicBatchAssembler::default();
         let first = assembled_contribution(ParticipantRef::current(1), 1);
         let one_origin = assembled_manifest(std::slice::from_ref(&first), 1, false);
         let overlapping = assembled_manifest(&[first, second], 1, false);
+        let one_origin_delivery = sample_leader_delivery(3);
+        let overlapping_delivery = sample_leader_delivery(4);
         assembler
-            .insert_manifest(PublicBatchMode::Incremental, one_origin, [3; 32], &expected)
+            .insert_manifest(
+                PublicBatchMode::Incremental,
+                one_origin,
+                [3; 32],
+                &expected,
+                Some(one_origin_delivery.clone()),
+            )
             .unwrap();
         let error = assembler
             .insert_manifest(
@@ -10561,9 +14720,19 @@ mod stability_tests {
                 overlapping,
                 [4; 32],
                 &expected,
+                Some(overlapping_delivery.clone()),
             )
             .expect_err("pending manifest entries must remain committee-bounded");
-        assert_eq!(error.kind, PublicProtocolViolationKind::BufferLimit);
+        assert_eq!(error.kind, PublicProtocolViolationKind::BatchMismatch);
+        assert_eq!(
+            error.leader_batch_mismatch.as_deref(),
+            Some(&LeaderDeliveryEquivocation {
+                retained: one_origin_delivery,
+                conflicting: overlapping_delivery,
+            }),
+            "a leader repackaging one origin across two different manifests must be provably \
+             attributable, not just caught by the aggregate BufferLimit backstop"
+        );
     }
 
     fn retained_repair_contribution(node_id: u8, data_len: usize) -> SignedPayload {
@@ -10600,7 +14769,10 @@ mod stability_tests {
                 after,
             )
             .unwrap();
-            assert!(transport::encode(&response).unwrap().len() <= MAX_PUBLIC_REPAIR_PAGE_BYTES);
+            assert!(
+                transport::encode(&response).unwrap().len()
+                    <= transport::MAX_PUBLIC_REPAIR_PAGE_BYTES
+            );
             let DkgControlMessage::PublicPhaseResponse {
                 contributions,
                 next_cursor,
@@ -10647,7 +14819,7 @@ mod stability_tests {
     fn public_phase_repair_rejects_one_oversized_contribution() {
         let retained = BTreeMap::from([(
             ParticipantRef::current(1),
-            retained_repair_contribution(1, MAX_PUBLIC_REPAIR_PAGE_BYTES / 2),
+            retained_repair_contribution(1, transport::MAX_PUBLIC_REPAIR_PAGE_BYTES / 2),
         )]);
         let error = public_phase_response_page(
             CeremonyId(778),
@@ -10760,6 +14932,7 @@ mod stability_tests {
             pss_interval: 60,
             policy_id: Some("test-policy".to_string()),
             ring_id: ring_id.to_string(),
+            report_signature: None,
         };
         prepare.config_digest =
             transport::config_digest(&prepare).expect("compute config digest for test Prepare");
@@ -10833,6 +15006,7 @@ mod stability_tests {
                 ceremony_id: got_ceremony,
                 attempt_id: got_attempt,
                 config_digest: got_digest,
+                ..
             } => {
                 assert_eq!(got_ceremony, prepare.ceremony_id);
                 assert_eq!(got_attempt, prepare.attempt_id);

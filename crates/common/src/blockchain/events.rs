@@ -223,8 +223,19 @@ pub struct ReportAcceptedEvent {
 ///
 /// Create this BEFORE the operation that will produce the event, then call
 /// [`wait_for_report_accepted`] to block until the chain emits the event.
+///
+/// The connection is pumped by a background task from the moment [`connect`]
+/// returns, not just while a `wait_for_*` call is polling it. Without this, a
+/// caller that does other slow work (e.g. an operation that blocks for
+/// minutes) between `connect()` and the first `wait_for_*` call leaves the
+/// socket completely unread — no incoming server pings ever get answered —
+/// and CometBFT's WebSocket server (or an intermediate proxy) can reset the
+/// idle connection well before the caller ever starts waiting on it.
+///
+/// [`connect`]: Self::connect
 pub struct ReportEventSubscription {
-    stream: EventStream,
+    rx: tokio::sync::mpsc::UnboundedReceiver<std::result::Result<Message, String>>,
+    pump: tokio::task::JoinHandle<()>,
 }
 
 impl ReportEventSubscription {
@@ -249,7 +260,18 @@ impl ReportEventSubscription {
 
         await_subscribe_ack(&mut stream, "orbis-report-events").await?;
 
-        Ok(Self { stream })
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let pump = tokio::spawn(async move {
+            while let Some(message_result) = stream.next().await {
+                let forwarded = message_result.map_err(|e| e.to_string());
+                if tx.send(forwarded).is_err() {
+                    break;
+                }
+            }
+            let _ = stream.close(None).await;
+        });
+
+        Ok(Self { rx, pump })
     }
 
     pub async fn wait_for_report_accepted(
@@ -293,7 +315,7 @@ impl ReportEventSubscription {
             }
         })
         .await;
-        let _ = self.stream.close(None).await;
+        self.pump.abort();
 
         result.map_err(|_| {
             let qualifier = if require_matching { " matching" } else { "" };
@@ -305,7 +327,7 @@ impl ReportEventSubscription {
     }
 
     async fn wait_for_report_inner(&mut self, ring_id: &str) -> Result<ReportAcceptedEvent> {
-        while let Some(message_result) = self.stream.next().await {
+        while let Some(message_result) = self.rx.recv().await {
             let message = message_result
                 .map_err(|e| BlockchainError::Rpc(format!("Event stream error: {}", e)))?;
 

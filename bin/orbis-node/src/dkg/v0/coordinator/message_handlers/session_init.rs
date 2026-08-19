@@ -1,8 +1,10 @@
 use super::*;
+use crate::dkg::v0::coordinator::evidence::report_leader_prepare_fault_best_effort;
 use crate::dkg::v0::helpers::bidirectional_node_peer_maps;
-use crate::dkg::v0::transport::canonical_leader;
+use crate::dkg::v0::transport::{canonical_leader, PrepareSession};
 use crate::helpers::protocol_version::read_ring_for_protocol;
 use bulletin::r#trait::RingPayload;
+use crypto::SignImpl;
 /// Peer routing resolved and validated for one SessionInit, ready to seed session state.
 ///
 /// Produced by the per-kind validation functions (`validate_fresh_init`,
@@ -59,6 +61,7 @@ fn validate_committee_matches_ring(
 }
 
 /// Validate a Refresh SessionInit against the authoritative ring and resolve its routes.
+#[allow(clippy::too_many_arguments)]
 async fn validate_refresh_init<D>(
     coord: &DkgCoordinator<D>,
     session_id: u128,
@@ -68,9 +71,11 @@ async fn validate_refresh_init<D>(
     peer_node_keys: &[String],
     ring_pk_hex: &str,
     sender_hex: &str,
+    prepare: Option<&PrepareSession>,
 ) -> Result<ResolvedSessionRoutes>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     tracing::info!(
         session_id = session_id,
@@ -98,13 +103,17 @@ where
     let routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
-    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
-        // TODO(reporting): retain the authenticated Prepare when its current-
-        // committee route bindings contradict SourceHub NodeInfo.
-        DkgError::Unauthorized(format!(
+    if let Err(detail) = validate_node_route_bindings(peer_node_keys, peer_ids, &routes) {
+        // Reached only after the committee itself matched the ring, so this
+        // is a genuine content dispute about the signed Prepare's route
+        // claims, not tampering ambiguity — safe to attribute to the leader.
+        if let Some(prepare) = prepare {
+            report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
+        }
+        return Err(DkgError::Unauthorized(format!(
             "Refresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
-        ))
-    })?;
+        )));
+    }
     let route_peer_ids = peer_ids_from_routes(&routes);
     let local_node_peer_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
     if node_key_for_peer(&routes, &local_node_peer_hex) != Some(coord.app_state.node_key.as_str()) {
@@ -166,9 +175,11 @@ async fn validate_reshare_init<D>(
     reshare_new_threshold: u32,
     reshare_bulletin_post_id: &str,
     sender_hex: &str,
+    prepare: Option<&PrepareSession>,
 ) -> Result<ResolvedSessionRoutes>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     tracing::info!(
         session_id = session_id,
@@ -234,13 +245,22 @@ where
     let old_routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
         .await
         .map_err(DkgError::Unauthorized)?;
-    validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes).map_err(|detail| {
-        // TODO(reporting): retain the authenticated Prepare when its current-
-        // committee route bindings contradict SourceHub NodeInfo.
-        DkgError::Unauthorized(format!(
+    if let Err(detail) = validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes) {
+        // Reached only after the old committee itself matched the ring, so
+        // this is a genuine content dispute about the signed Prepare's route
+        // claims, not tampering ambiguity — safe to attribute to the leader.
+        // The leader is always drawn from the *new* committee for Reshare
+        // (`report_leader_prepare_fault_best_effort` scopes the accused as
+        // `PendingNew` accordingly), even though the disputed claim here is
+        // about the *old* committee's routes — the registry's re-verification
+        // independently re-checks both, see its own comment.
+        if let Some(prepare) = prepare {
+            report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
+        }
+        return Err(DkgError::Unauthorized(format!(
             "Reshare old current-committee transport routes do not match SourceHub NodeInfo: {detail}"
-        ))
-    })?;
+        )));
+    }
     let old_route_peer_ids = peer_ids_from_routes(&old_routes);
     let old_route_assignments =
         canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
@@ -366,8 +386,11 @@ where
         .await
         .map_err(DkgError::Unauthorized)?;
     validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
-        // TODO(reporting): retain the authenticated Prepare when its current-
-        // committee route bindings contradict SourceHub NodeInfo.
+        // Not reportable: Fresh DKG has no ring yet to bind evidence to —
+        // same reason `evidence_binding`/`evidence_binding_from_prepare`
+        // reject every other Fresh evidence kind ("Fresh DKG control-message
+        // faults are not reportable"). Unlike Refresh/Reshare, this failure
+        // can only ever be a local rejection, never attributed on-chain.
         DkgError::Unauthorized(format!(
             "Fresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
         ))
@@ -408,9 +431,11 @@ pub async fn handle_session_init<D>(
     policy_id: Option<String>,
     ring_id: String,
     sender_peer_id: &PeerId,
+    prepare: Option<&PrepareSession>,
 ) -> Result<()>
 where
     D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
 {
     let session_id = attempt.session_id();
     let sender_hex = hex::encode(sender_peer_id.as_bytes());
@@ -426,6 +451,7 @@ where
                 peer_node_keys,
                 ring_pk_hex,
                 &sender_hex,
+                prepare,
             )
             .await?
         }
@@ -447,6 +473,7 @@ where
                 *new_threshold,
                 bulletin_post_id,
                 &sender_hex,
+                prepare,
             )
             .await?
         }

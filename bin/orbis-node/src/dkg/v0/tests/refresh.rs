@@ -22,6 +22,8 @@ use crate::helpers::test_helpers::{
     create_test_app_state_with_bulletin, get_test_ring_post, setup_three_node_network,
     test_db_path, write_ring_to_bulletin, TestKeyPair,
 };
+#[cfg(feature = "fault-injection")]
+use crate::reporting::v0::types::{NodeOffline, NODE_OFFLINE_REPORT_TYPE};
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
@@ -42,6 +44,21 @@ use crypto::DkgImpl;
 // PSS Refresh Integration Test
 // ============================================================================
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshTransportFaults {
+    None,
+    #[cfg(feature = "fault-injection")]
+    TransientRepair,
+    #[cfg(feature = "fault-injection")]
+    MissingTopologyAck,
+}
+
+impl RefreshTransportFaults {
+    const fn enabled(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// Test: Full DKG followed by a PSS refresh ceremony.
 ///
 /// This test verifies the complete share-rotation lifecycle:
@@ -57,7 +74,11 @@ use crypto::DkgImpl;
 #[tokio::test]
 #[serial_test::serial]
 async fn test_dkg_followed_by_pss_refresh() {
-    run_dkg_followed_by_pss_refresh("test_dkg_followed_by_pss_refresh", false).await;
+    run_dkg_followed_by_pss_refresh(
+        "test_dkg_followed_by_pss_refresh",
+        RefreshTransportFaults::None,
+    )
+    .await;
 }
 
 /// The complete refresh ceremony converges when its public batches are lost
@@ -67,10 +88,29 @@ async fn test_dkg_followed_by_pss_refresh() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pss_refresh_repairs_gossip_loss_and_private_disconnects() {
-    run_dkg_followed_by_pss_refresh("test_pss_refresh_transport_repair", true).await;
+    run_dkg_followed_by_pss_refresh(
+        "test_pss_refresh_transport_repair",
+        RefreshTransportFaults::TransientRepair,
+    )
+    .await;
 }
 
-async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults: bool) {
+/// A member can finish direct preparation and still fail the topology barrier
+/// if it never receives the public probe. The barrier must retain that exact
+/// participant as an offline candidate and feed it through the normal report
+/// queue; it must not rely on the later cryptographic stall detector.
+#[cfg(feature = "fault-injection")]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pss_refresh_topology_barrier_queues_offline_report() {
+    run_dkg_followed_by_pss_refresh(
+        "test_pss_refresh_topology_offline_report",
+        RefreshTransportFaults::MissingTopologyAck,
+    )
+    .await;
+}
+
+async fn run_dkg_followed_by_pss_refresh(db_name: &str, faults: RefreshTransportFaults) {
     let db_paths = [
         test_db_path(&format!("{}_1", db_name)),
         test_db_path(&format!("{}_2", db_name)),
@@ -82,10 +122,10 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
         .with_test_writer()
         .try_init();
 
-    let mut network = setup_three_node_network(!inject_transport_faults, db_name).await;
+    let mut network = setup_three_node_network(!faults.enabled(), db_name).await;
 
     #[cfg(feature = "fault-injection")]
-    let fault_controllers = if inject_transport_faults {
+    let fault_controllers = if faults.enabled() {
         let mut controllers = Vec::with_capacity(3);
         for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
             let (fault_network, controller) =
@@ -110,7 +150,7 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
 
     #[cfg(not(feature = "fault-injection"))]
     assert!(
-        !inject_transport_faults,
+        !faults.enabled(),
         "transport fault injection requires the fault-injection feature"
     );
 
@@ -215,16 +255,36 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
     assert_eq!(follower_states.len(), 2);
 
     #[cfg(feature = "fault-injection")]
-    for controller in &fault_controllers {
-        controller.drop_gossip_broadcasts_after(0, 1).await;
-        controller.drop_gossip_deliveries_after(1, 4).await;
-        controller.inject_gossip_neighbor_flaps(2).await;
-        controller
-            .fail_protocol_responses_after(network::V0.dkg_control_alpn, 0, 1)
-            .await;
-        controller
-            .fail_protocol_streams_after(network::V0.dkg_private_alpn, 0, 1)
-            .await;
+    if faults == RefreshTransportFaults::MissingTopologyAck {
+        run_topology_barrier_offline_report_case(
+            &network,
+            &fault_controllers,
+            &peer_node_keys,
+            &canonical_node_key,
+            &key_string,
+        )
+        .await;
+
+        network.shutdown_routers().await.expect("shutdown routers");
+        for path in &db_paths {
+            cleanup_db(path);
+        }
+        return;
+    }
+
+    #[cfg(feature = "fault-injection")]
+    if faults == RefreshTransportFaults::TransientRepair {
+        for controller in &fault_controllers {
+            controller.drop_gossip_broadcasts_after(0, 1).await;
+            controller.drop_gossip_deliveries_after(1, 4).await;
+            controller.inject_gossip_neighbor_flaps(2).await;
+            controller
+                .fail_protocol_responses_after(network::V0.dkg_control_alpn, 0, 1)
+                .await;
+            controller
+                .fail_protocol_streams_after(network::V0.dkg_private_alpn, 0, 1)
+                .await;
+        }
     }
 
     let first_start = start_refresh(
@@ -363,6 +423,158 @@ async fn run_dkg_followed_by_pss_refresh(db_name: &str, inject_transport_faults:
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+#[cfg(feature = "fault-injection")]
+async fn run_topology_barrier_offline_report_case(
+    network: &crate::helpers::test_helpers::ThreeNodeNetwork,
+    fault_controllers: &[network::FaultNetworkController],
+    peer_node_keys: &[String],
+    canonical_node_key: &str,
+    ring_key: &str,
+) {
+    use crate::constants::DKG_PREPARATION_TIMEOUT;
+
+    let nodes = [&network.alice, &network.bob, &network.charlie];
+    assert_eq!(nodes.len(), fault_controllers.len());
+    let leader_index = nodes
+        .iter()
+        .position(|node| node.app_state.node_key == canonical_node_key)
+        .expect("canonical Refresh leader must be in the test network");
+    let victim_index = nodes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != leader_index)
+        .max_by_key(|(_, node)| node.app_state.node_key.as_str())
+        .map(|(index, _)| index)
+        .expect("Refresh topology test requires a non-leader victim");
+    let leader_state = Arc::new(nodes[leader_index].app_state.clone());
+    let victim_node_key = nodes[victim_index].app_state.node_key.clone();
+    let victim_peer_hex = hex::encode(nodes[victim_index].peer_id.as_bytes());
+
+    // Preparation is direct control traffic, so it remains healthy. Dropping
+    // every public delivery only on the victim makes the first missing action
+    // its topology ACK, rather than its Prepared response.
+    fault_controllers[victim_index]
+        .drop_gossip_deliveries_after(0, usize::MAX)
+        .await;
+
+    let candidate_before = crate::metrics::PSS_OFFLINE_OBSERVATIONS_TOTAL
+        .with_label_values(&["topology_probe", "candidate"])
+        .get();
+    let direct_candidate_before = crate::metrics::PSS_OFFLINE_OBSERVATIONS_TOTAL
+        .with_label_values(&["topology_probe", "direct_candidate"])
+        .get();
+    let queued_before = crate::metrics::REPORT_ATTEMPTS_TOTAL
+        .with_label_values(&[NODE_OFFLINE_REPORT_TYPE, "queued"])
+        .get();
+
+    let refresh = tokio::spawn(start_refresh(
+        leader_state.clone(),
+        &::network::V0,
+        TEST_FRESH_DKG_RING_ID.to_string(),
+        ring_key.to_string(),
+    ));
+
+    // Seeing the leader's nonce proves every direct Prepare completed and the
+    // test reached the topology barrier before the victim is partitioned from
+    // later independent liveness probes.
+    let ceremony_id = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(session_id) = leader_state
+                .dkg_session_state
+                .active_ring_pss_session(ring_key)
+                .await
+            {
+                let probing = leader_state
+                    .dkg_session_state
+                    .with_state(&session_id, |state| {
+                        state.transport.topology_probe_nonce.is_some()
+                    })
+                    .await
+                    .unwrap_or(false);
+                if probing {
+                    break session_id;
+                }
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Refresh must reach its topology barrier after healthy preparation");
+
+    // Both possible reporters must independently fail to reach the victim or
+    // the existing anti-framing health probe will correctly suppress the report.
+    for (index, controller) in fault_controllers.iter().enumerate() {
+        if index != victim_index {
+            controller.block_peer(&victim_peer_hex).await;
+        }
+    }
+
+    let error = tokio::time::timeout(DKG_PREPARATION_TIMEOUT + Duration::from_secs(15), refresh)
+        .await
+        .expect("Refresh must stop at the production topology deadline")
+        .expect("Refresh task must not panic")
+        .expect_err("a missing required topology ACK must fail Refresh preparation");
+    assert!(
+        matches!(
+            &error,
+            DkgError::NetworkCommunication(message)
+                if message.contains("topology probe acknowledgement missing")
+        ),
+        "Refresh must expose the topology-barrier failure, got: {error}"
+    );
+
+    {
+        let ceremony_subjects = leader_state
+            .dkg_session_state
+            .offline_candidate_subjects_for_ceremony(ceremony_id);
+        assert_eq!(
+            ceremony_subjects,
+            std::slice::from_ref(&victim_node_key),
+            "the topology barrier must retain exactly its silent participant"
+        );
+    }
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let candidate_after = crate::metrics::PSS_OFFLINE_OBSERVATIONS_TOTAL
+                .with_label_values(&["topology_probe", "candidate"])
+                .get();
+            let direct_candidate_after = crate::metrics::PSS_OFFLINE_OBSERVATIONS_TOTAL
+                .with_label_values(&["topology_probe", "direct_candidate"])
+                .get();
+            let queued_after = crate::metrics::REPORT_ATTEMPTS_TOTAL
+                .with_label_values(&[NODE_OFFLINE_REPORT_TYPE, "queued"])
+                .get();
+            if candidate_after > candidate_before
+                && direct_candidate_after > direct_candidate_before
+                && queued_after > queued_before
+            {
+                break;
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("topology candidate must enter the node_offline report queue");
+
+    leader_state.reporting_state.shutdown().await;
+    let submissions = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("Refresh topology test requires DummyBulletin")
+        .take_submitted_reports();
+    assert_eq!(submissions.len(), 1, "one offline report must be signed");
+    let submission = &submissions[0];
+    assert_eq!(submission.report_type, NODE_OFFLINE_REPORT_TYPE);
+    assert_eq!(submission.accused_node_key, victim_node_key);
+    assert_eq!(submission.session_id, ceremony_id.to_string());
+    let payload = NodeOffline::from_canonical_bytes(&submission.payload)
+        .expect("decode sanitized node_offline payload");
+    assert_eq!(payload.origin_protocol, "pss_refresh");
+    assert_eq!(payload.origin_protocol_version, network::V0.version);
+    assert_eq!(peer_node_keys.len(), 3, "test fixture must remain 3-party");
 }
 
 /// A noncanonical member keeps retrying the one canonical refresh leader and

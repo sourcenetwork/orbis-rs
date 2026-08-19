@@ -1,5 +1,6 @@
+use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
-use crate::dkg::v0::transport::{AttemptId, CeremonyId, MessageId};
+use crate::dkg::v0::transport::{CeremonyConfig, MessageId};
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -10,12 +11,13 @@ use local_storage::LocalStorageImpl;
 use network::{Connection, Network};
 use network::{PeerConnection, PeerId};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-use crate::constants::{DKG_PRIVATE_EXCHANGE_CONCURRENCY, MAX_CACHED_PEER_CONNECTIONS};
+use crate::constants::MAX_CACHED_PEER_CONNECTIONS;
 
 /// Global per-peer, per-protocol connection pool.
 ///
@@ -33,6 +35,20 @@ pub struct PeerConnectionPool {
 struct PoolEntry {
     connection: Arc<dyn PeerConnection>,
     last_used: u64,
+}
+
+/// Short-lived authenticated snapshot retained across DKG attempt teardown so
+/// an offline-candidate relay already in flight can still be validated and
+/// converted into a report. It contains only public ceremony metadata.
+#[derive(Clone)]
+pub(crate) struct DkgOfflineRelayReceipt {
+    pub kind: SessionKind,
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub committees: CeremonyConfig,
+    pub leader_node_key: String,
+    pub recorded_at: Instant,
+    pub processed: HashSet<MessageId>,
 }
 
 impl Default for PeerConnectionPool {
@@ -299,18 +315,6 @@ where
     pub ring_index_lock: Arc<Mutex<()>>,
     /// Global per-peer, per-protocol connection pool shared across DKG, PRE, and Sign.
     pub peer_connection_pool: Arc<PeerConnectionPool>,
-    /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
-    /// including ceremonies for different rings.
-    pub dkg_private_exchange_permits: Arc<tokio::sync::Semaphore>,
-    /// Ceremony-keyed leader singleflight locks. A node manages at most the
-    /// bounded local-ring limit, so retaining one small lock per seen ceremony
-    /// avoids duplicate-attempt races without serializing unrelated rings.
-    pub dkg_ceremony_start_locks: Arc<Mutex<HashMap<u128, Arc<Mutex<()>>>>>,
-    /// Recently completed public-result commits. Refresh result application
-    /// removes the ceremony state, so this bounded, short-lived receipt cache
-    /// lets an authenticated leader safely retry after an ACK is lost.
-    pub dkg_public_commit_receipts:
-        Arc<Mutex<HashMap<(CeremonyId, AttemptId, MessageId), (Vec<u8>, Instant)>>>,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
 }
@@ -337,11 +341,6 @@ where
             bulletin,
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
-            dkg_private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
-                DKG_PRIVATE_EXCHANGE_CONCURRENCY,
-            )),
-            dkg_ceremony_start_locks: Arc::new(Mutex::new(HashMap::new())),
-            dkg_public_commit_receipts: Arc::new(Mutex::new(HashMap::new())),
             reporting_state: Arc::new(ReportingState::new()),
         }
     }

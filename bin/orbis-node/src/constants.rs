@@ -108,7 +108,25 @@ pub const SESSION_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Hard deadline for one DKG attempt. Missing-message repair continues until
 /// this deadline, unless the attempt explicitly completes or aborts first.
+///
+/// Shortened under `cfg(test)` so stall-detection tests can reach this
+/// deadline without a real 15-minute wait, while staying comfortably above
+/// `DKG_PREPARATION_TIMEOUT` so the existing attempt/preparation deadline
+/// ordering still holds. `DKG_FINALIZE_WAIT_TIMEOUT` below is a separate,
+/// still-generous bound for tests polling a *successful* ceremony to finish —
+/// it does not shrink under test, since that wait has nothing to do with the
+/// stall path this constant governs.
+#[cfg(not(test))]
 pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+#[cfg(test)]
+pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
+
+/// Generous bound for integration tests polling for a successful DKG/refresh/
+/// reshare finalization. Deliberately decoupled from `DKG_ATTEMPT_TIMEOUT` so
+/// shortening the stall-detection deadline under test doesn't tighten this
+/// unrelated wait.
+#[cfg(all(test, feature = "integration-test"))]
+pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
 pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);

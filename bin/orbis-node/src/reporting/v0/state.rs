@@ -57,6 +57,9 @@ impl ReportingState {
                 return Ok(false);
             }
             if in_flight.len() >= MAX_IN_FLIGHT_REPORTS {
+                crate::metrics::REPORT_ATTEMPTS_TOTAL
+                    .with_label_values(&[key.report_type, "capacity_reached"])
+                    .inc();
                 return Err(ReportingError::CapacityReached);
             }
             in_flight.insert(key.clone());

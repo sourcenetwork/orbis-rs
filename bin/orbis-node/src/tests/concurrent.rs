@@ -589,6 +589,7 @@ fn signed_bad_refresh_dkg_share_observation(
         from_node_id,
         commitment,
         session_nonce: [0u8; 16],
+        attempt_id: [9; 32],
         crypto_backend: DkgImpl::name(),
     };
     let signing_key = accused_app_state

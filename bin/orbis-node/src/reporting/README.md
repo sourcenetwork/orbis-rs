@@ -5,11 +5,50 @@ as PRE, DKG, PSS, and signing should only submit normalized observations here;
 report construction, validation, threshold signing, and delivery should stay in
 this module.
 
-Supported report types are `node_offline` and `invalid_crypto_response`. They
-are intentionally small: protocols can keep serving the user while reporting
-tries, in the background, to produce a threshold-signed artifact proving that a
-committee member appears offline or returned an attributable bad cryptographic
-response.
+Supported report types are `node_offline`, `invalid_crypto_response`, and
+`unauthorized_request`. They are intentionally small: protocols can keep
+serving the user while reporting tries, in the background, to produce a
+threshold-signed artifact proving that a committee member appears offline,
+returned an attributable bad cryptographic response, or relayed a request that
+fails a re-check against Authz.
+
+## Methodology
+
+The question this framework asks at every failure point in every protocol is the
+same: can this be attributed to a specific node and a specific reason, and is
+there proof? "Proof" splits into two different evidentiary models depending on
+the report type. Most `invalid_crypto_response` kinds use *cryptographic*
+proof — the accused's own signature over the exact disputed content (a
+digest, a commitment, a signed control message) — so anyone can independently
+verify the claim without trusting whoever reported it. `node_offline` can't
+work that way (a node can't sign "I am offline"), so it instead requires each
+co-signer to run its own reachability probe against the accused before adding
+a signature — the "proof" there is a threshold of independent witnesses
+corroborating the same observation, not a single verifiable artifact. If
+neither kind of proof is available, the failure is logged but never attached
+to a report — an unattributable failure is a known, accepted gap, not
+something forced into a shape it doesn't fit.
+
+Threshold signing is the anti-framing step, and it's doing more than
+collecting signatures: each co-signer independently re-derives and
+re-verifies the evidence from scratch (recomputes the digest, re-reads
+committee membership from its own chain state, re-runs the same validation
+the reporter ran) before contributing a signature share — a relay only ever
+forwards raw evidence for someone else to independently check, never a
+pre-verified conclusion. That's what stops a single malicious or buggy node
+from getting another node demerited on its word alone. SourceHub's role at
+the end is correspondingly narrow: it doesn't re-determine truth (that
+already happened at the committee-signing step) — it checks the threshold
+signature, checks shape/policy/scope rules, applies demerits, dedupes, and
+kicks + promotes a backup once demerits cross a threshold. This whole
+pipeline exists because the DKG side of this codebase is deliberately
+abort-only, not self-healing — a ceremony fails fast on any ambiguity rather
+than trying to route around a bad actor mid-ceremony, and report → demerit →
+kick/backup → retry is the actual recovery loop, not an audit trail bolted on
+the side. Which is also why reporting is built to never become a liveness
+dependency for the protocol itself: every `queue_report` call is best-effort
+and non-blocking, so a failure to construct or submit a report must never
+change what the protocol does.
 
 ## High-level flow
 
@@ -85,11 +124,8 @@ ciphertexts, raw error text, or transport sub-stage details.
 ## `invalid_crypto_response` flow
 
 `invalid_crypto_response` is the unified report type for attributable bad
-cryptographic responses. Its payload is:
-
-```text
-evidence_kind, statement, response_signature
-```
+cryptographic or authenticated protocol responses. Its canonical payload starts
+with an evidence-kind tag followed by that kind's exact signed evidence.
 
 The current evidence kinds are:
 
@@ -104,14 +140,338 @@ The current evidence kinds are:
   `DkgCommitmentStatement` with domain `orbis-dkg-commitment-v1`.
   `origin_protocol` must be `pss_refresh` or `pss_reshare`. Fresh/full DKG
   does not report bad raw shares.
+- `dkg_invalid_refresh_commitment`: a signed Refresh commitment whose decoded
+  constant term is non-identity. It is queued during public preflight before
+  the original rejection aborts the attempt.
+- `dkg_equivocation`: two signed PSS commitment statements from the same
+  dealer and session nonce with different commitment bytes.
+- `dkg_public_origin_fault`: one endpoint-signed invalid public contribution,
+  or two conflicting endpoint-signed non-Commitment contributions from the
+  same origin and attempt. The statement uses domain
+  `orbis-dkg-public-origin-fault-v1`, retains the exact endpoint envelopes, and
+  is limited to Refresh/Reshare. Commitment equivocation remains on the
+  stronger `dkg_equivocation` path. This same `InvalidPayload` path also
+  covers a Refresh result that fails preflight or dispatch over the
+  `StageRefreshResult`/`CommitRefreshResult` direct-QUIC delivery barrier — a
+  second, control-plane delivery route for the same `RefreshHealthCheckResult`
+  contribution alongside its normal Gossip-batch path, kept reliable
+  independently of Gossip.
+- `dkg_leader_equivocation`: two conflicting endpoint-signed Gossip
+  broadcasts (a manifest, or a chunk at the same index) from the same
+  canonical public-plane leader for the same phase and coordinate. Unlike
+  `dkg_public_origin_fault`, the fault is the leader's own batch-packaging
+  claim, not any origin's contribution content — a leader who sends two
+  different canonical manifests/chunks for one phase_root (or two different
+  chunks at one index) breaks the single-canonical-batch guarantee the
+  broadcast transport depends on. The statement uses domain
+  `orbis-dkg-leader-equivocation-v1`, is limited to Refresh/Reshare (the
+  accused committee scope follows `PrepareSession::leader_committee`: current
+  for Refresh, pending-new for Reshare), and retains both raw signed
+  deliveries plus each one's per-broadcast `delivery_id` (the randomized ID
+  mixed into the Gossip topic-frame signing domain — see
+  `crates/network/src/iroh/pubsub.rs`). Independent verification recomputes
+  the topic ID from chain/ring/committee/ceremony/attempt binding and
+  re-checks each endpoint signature via `PubSub::verify_topic_delivery`
+  rather than trusting the reporter. A totally undecodable leader broadcast
+  (fails to parse as any `DkgPublicMessage` at all) is not covered by this
+  evidence kind — the endpoint signature that authenticated it at the
+  transport layer is verified and then discarded before the DKG layer ever
+  sees it, so there is currently nothing portable to retain for that case.
+- `dkg_leader_public_fault`: a single endpoint-signed Gossip delivery (a
+  manifest or chunk) that is independently provable as invalid on its own,
+  with no conflicting counterpart needed — unlike `dkg_leader_equivocation`.
+  The statement uses domain `orbis-dkg-leader-public-fault-v1` and retains
+  the single raw signed delivery plus its `delivery_id`. Independent
+  verification always re-checks the endpoint signature the same way as
+  `dkg_leader_equivocation`; what else it checks depends on `fault_kind`:
+  - `invalid_manifest`: the leader published a manifest naming the wrong
+    origin set for its phase (fails `PhaseManifest::validate`), or whose
+    `complete` flag contradicts the phase's Complete/Incremental publication
+    mode. Re-derives the phase's expected origin set from chain-visible
+    committee membership (`registry.rs`'s `expected_leader_manifest_shape`,
+    using the same canonical node-ID assignment real ceremony setup uses)
+    and re-runs `PhaseManifest::validate` against it.
+  - `chunk_index_out_of_range`: a chunk whose `index` is `>=` the phase's
+    expected origin count. Reuses the same chain-derivable bound as
+    `invalid_manifest` (`expected_leader_manifest_shape(...).origins.len()`).
+  - `oversized_chunk`: a chunk whose encoded size exceeds
+    `MAX_PUBLIC_CHUNK_BYTES`. A pure byte-length check against a fixed
+    protocol constant — no committee/ring lookup needed at all, so (unlike
+    the other two kinds) this one is provable even for the Reshare
+    `Commitments` phase.
+  - `duplicate_chunk_origin`: a chunk that names the same origin more than
+    once among its own contributions. Manifests can't have this problem —
+    `contribution_ids` is a `BTreeMap`, which can't contain the same key
+    twice — but a chunk's `contributions` is a plain `Vec`, built from a
+    `BTreeMap` at construction time (so an honest leader can never produce
+    one), which means a duplicate can only be the leader's own packaging
+    fault. Like `oversized_chunk`, a pure structural check on the delivery's
+    own content — no committee/ring lookup needed, provable even for the
+    Reshare `Commitments` phase. This is additive alongside, not a
+    replacement for, origin-side equivocation evidence
+    (`commitment_equivocation`/`public_origin_fault`): if the duplicated
+    entries also conflict in content, the origin's own double-signing is
+    still separately, correctly attributed via those — this fault kind
+    proves the leader's packaging is wrong either way, matching or
+    conflicting content alike. Without it, a same-content duplicate (nothing
+    conflicts, so no equivocation evidence applies) silently fell through to
+    the aggregate `BufferLimit` checks below with no evidence at all.
 
-Each response statement is signed by the accused node's secp256k1 chain key
-(`NodeSigningKey`; the ring-registered `node_key` is exactly that key's
-compressed public key hex). The signed statement carries chain/ring binding,
-the ring-state digest, protocol version, request/session id, `signed_at`, the
-responder node key, origin protocol, protocol-specific crypto material, and the
-crypto backend name. Missing or invalid evidence signatures reject the response
-or report outright; only signature-valid evidence is attributable.
+  A report is only signable if the delivery is genuinely, independently
+  provably wrong. **`invalid_manifest`/`chunk_index_out_of_range` are
+  deliberately unsupported for the Reshare `Commitments` phase.** Its real
+  expected-origins set is the ceremony's *active dealers*, a live,
+  leader-determined value only cryptographically committed to via the
+  leader's signed `activation_digest` (`ControlSignature`) — not derivable
+  from `ring.peer_node_keys`/`new_peer_node_keys` alone. A report naming
+  this phase (for those two kinds) is rejected outright rather than
+  validated against a wrong/looser membership set.
+
+  Relays via the same mechanism as `dkg_leader_equivocation`/
+  `dkg_control_message_fault` (`relay_private_evidence`, non-blocking
+  spawn — RPT-13) for a pure pending-new reshare receiver that alone
+  detects a fault (no current-committee member also witnessed it). This
+  only matters for the two reshare phases where pending-new nodes are the
+  ones watching (`CommitmentAudit`, `ReshareParticipantSet`); Refresh
+  phases are unaffected since there is only ever one (current) committee.
+
+  The leader's aggregate `BufferLimit` violations (too many pending
+  manifest entries, too many buffered chunk contributions, too many
+  distinct incremental batch roots) used to be uncovered here too — see
+  `dkg_leader_batch_mismatch` below for why the cross-delivery cases are now
+  structurally unreachable, and `duplicate_chunk_origin` above for the one
+  within-delivery case (`claim_origins` only compares against *other*
+  deliveries, not duplicates inside the one currently being validated) that
+  needed its own dedicated fault kind. Between the two, every `BufferLimit`
+  site under this evidence family's scope is now covered. The leader's
+  oversized direct-QUIC repair-page response (also `BufferLimit`-shaped) is
+  covered too, but under `dkg_control_message_fault`'s
+  `oversized_repair_page` fault kind below — not here — since it's
+  `ControlSignature`-authenticated like `Prepare`, not
+  Gossip-envelope-authenticated like a chunk. The one remaining uncovered
+  case anywhere is the *origin*-side repair-response oversize check
+  (`GetPublicContribution`'s reply) — same shape, but `accused = Origin`, so
+  it would belong under `dkg_public_origin_fault`'s family if ever built,
+  not here or under `dkg_control_message_fault`.
+- `dkg_leader_batch_mismatch`: two leader-signed Gossip deliveries (any
+  combination of manifest and chunk) that each reference the same origin
+  (same `ParticipantRef`, same `MessageId`) under two *different* phase
+  roots. Reuses `DkgLeaderEquivocationStatement`'s wire shape verbatim (same
+  "two signed deliveries, one phase" format) under its own domain
+  (`orbis-dkg-leader-batch-mismatch-v1`) and evidence-kind tag — the fault
+  predicate differs from `dkg_leader_equivocation` (shared origin across
+  different coordinates, rather than identical coordinate with different
+  content). Detected locally by `network.rs`'s `claim_origins`, called from
+  both `insert_manifest` and `insert_chunk` (`PublicBatchAssembler`) — a
+  origin-tracking check `insert_manifest` had no equivalent of before this
+  kind existed. Independent verification re-checks both endpoint signatures
+  the same way as `dkg_leader_equivocation`, decodes each delivery
+  (a chunk's nested per-origin `SignedPayload`s are individually decoded
+  too), and confirms the phase roots differ while at least one
+  `(origin, message_id)` pair appears in both.
+
+  **Why this closes the aggregate `BufferLimit` checks, not just
+  `BatchMismatch`**: pairwise-disjoint non-empty origin subsets of an
+  N-member committee can never sum past N. So once every origin-claiming
+  delivery is checked against every other one it could conflict with (which
+  `claim_origins` now does for both manifests and chunks — previously only
+  chunks were checked, and only against other chunks), exceeding any of the
+  aggregate buffer/root-count bounds becomes impossible without an earlier
+  origin conflict already having fired, with strictly better (two real
+  deliveries, not just a message id) evidence. The aggregate checks stay in
+  the code as defensive backstops, not because they're expected to fire.
+  The one case `claim_origins` itself doesn't cover — the same origin
+  appearing twice *within a single delivery's own contributions*, since it
+  only compares against already-recorded claims from *earlier* deliveries —
+  is separately covered by `dkg_leader_public_fault`'s
+  `duplicate_chunk_origin` fault kind above.
+
+  Relays via the same mechanism as `dkg_leader_equivocation` (same wire
+  shape, `relay_private_evidence`) for a pure pending-new reshare receiver
+  that alone detects a fault.
+
+**Evidence anchoring for these three kinds**: `PhaseManifest`/`DkgPublicMessage::
+Chunk` each carry a `signed_at: u64` field — when the leader constructed that
+delivery, authenticated for free by the same Gossip delivery signature every
+other field here already relies on (no new signing scheme). Each statement's
+top-level `signed_at` is derived from this rather than report-construction
+time: the single decoded delivery's own `signed_at` for `dkg_leader_public_
+fault`, or the later of the two decoded deliveries' for `dkg_leader_
+equivocation`/`dkg_leader_batch_mismatch` (mirroring `dkg_public_origin_
+fault`'s `OriginEquivocation` case and `dkg_equivocation`'s own fix — see
+"DKG-specific expiry" below). Independent verification re-derives the same
+value from the decoded delivery/deliveries and rejects a report whose claimed
+`signed_at` doesn't match — otherwise a reporter could anchor to an arbitrary
+value regardless of what the deliveries themselves say, defeating the point.
+Before this, all three anchored to `now()` at report-construction time
+instead, since `PhaseManifest`/`Chunk` had no timestamp field at all — meaning
+these reports never really expired relative to when the leader fault actually
+happened (an issue for any kind with a relay path, since each relay hop
+would reset the clock again — at the time this was fixed only
+`dkg_leader_equivocation` had one; all three do now, see their own bullets).
+**`dkg_control_message_fault` anchoring**: `ControlSignature.signed_at` is
+now bound into `control_ack_signing_bytes` itself (the actual signed bytes,
+alongside `ceremony_id`/`attempt_id`/`message_kind`/`digest`), so it's no
+longer a self-reported, unauthenticated claim a signer could forge without
+invalidating their own signature. `ControlMessageArtifact` gained a
+`signed_at: u64` field alongside `signature`/`data` — needed because
+`ack_equivocation`'s `data` is just a bare 32-byte digest with no embedded
+timestamp to recover by decoding, unlike `leader_prepare_fault`/
+`oversized_repair_page` where `data` is a full re-decodable message. Each
+statement's top-level `signed_at` is now derived from the artifact(s)' own
+authenticated value rather than report-construction time: `leader_prepare_
+fault`/`oversized_repair_page` use their single artifact's `signed_at`
+directly, `ack_equivocation` uses the later of its two artifacts' (mirroring
+the Gossip kinds' two-delivery `max()` above). Unlike the Gossip kinds,
+independent verification doesn't need to separately "recompute" `signed_at`
+from anything — verifying the `ControlSignature` itself over bytes that
+include `signed_at` is what proves it's authentic — so registry validation
+only adds a self-consistency check (`statement.signed_at` matches the
+artifact(s)' `signed_at`, and for `oversized_repair_page`, that the decoded
+`PublicPhaseResponse`'s embedded `report_signature.signed_at` also agrees).
+SourceHub's decoder reads the new wire field to stay positionally aligned
+but still never verifies the signature itself, matching every other
+control-message field.
+- `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
+  fault. Unlike the Gossip broadcasts covered above, direct-QUIC control
+  messages (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`) carry
+  no reclaimable transport-layer signature — QUIC/TLS authentication proves
+  identity to the two live endpoints, not a portable per-message artifact —
+  so `PrepareSession` and each ack now carry an explicit
+  `ControlSignature` over `(ceremony_id, attempt_id, message_kind, digest)`
+  under the sender's own chain node key.
+
+  **`ControlSignature` is purely an accountability layer, not a protocol
+  requirement — deliberate, accepted tradeoff, not a gap.**
+  `verify_control_signature` is only ever called from the fault-*reporting*
+  path (`report_leader_prepare_fault_best_effort`,
+  `record_control_ack_best_effort`), never from message *acceptance*
+  (`prepare_participant`, the repair-page responder, etc.). Every real
+  construction site signs unconditionally regardless of `SessionKind`
+  (Fresh DKG included), so `Option<ControlSignature>`/`report_signature:
+  None` never happens honestly — but nothing at the wire/protocol level
+  stops a Byzantine sender from omitting the signature (or sending garbage
+  bytes) on the one message it knows is faulty. That message is still
+  accepted and the ceremony proceeds exactly as if it had been validly
+  signed; only attribution for *that specific fault* is lost. Considered
+  making the signature mandatory and verified at message-acceptance time
+  (reject unsigned/invalid Prepare/ack/repair-response outright) — two of
+  the three fault kinds would degrade cleanly under that: a leader/follower
+  that won't produce a valid signature can no longer complete the handshake
+  at all, which looks identical to that peer simply being offline, and is
+  already caught by the existing `node_offline`/PSS-stall barrier reporting
+  (`leader_prepare_fault` via `PssOfflineStage::StartForward`,
+  `ack_equivocation` via the Activate/Begin barriers' unreachable-peer
+  detection). `oversized_repair_page` doesn't degrade the same way for
+  free — it's a request/response repair path with its own error
+  classification (`retryable_public_repair_control_error`), so an
+  invalid/missing signature there would need to be deliberately routed into
+  that same offline-classification, not left to fall into the neighboring
+  `MalformedLeaderMessage` bucket, which doesn't feed `node_offline`. Net
+  call: leave `ControlSignature` optional-and-unenforced. The residual gap
+  is narrow (evading attribution for one fault, not evading the ceremony's
+  abort-only fail-fast safety story, which fires either way) and turning it
+  into a hard acceptance requirement makes six control-message kinds a
+  liveness dependency on correct signing — a materially bigger blast radius
+  than the accountability gap it closes.
+
+  Two fault kinds share the statement
+  (domain `orbis-dkg-control-message-fault-v1`):
+  - `leader_prepare_fault`: one signed `Prepare`, independently provable as
+    invalid because it names a noncanonical leader, or because self-consistent
+    committee routes it claims contradict current SourceHub `NodeInfo`/ring
+    state. Reported at whichever point the specific, unambiguous failure is
+    first detected — `prepare_participant` itself catches the noncanonical-
+    leader case and (Reshare only) the new/next-committee route mismatch
+    before any session exists; `handle_session_init`'s per-kind validators
+    (`validate_refresh_init`/`validate_reshare_init`) catch the current/old-
+    committee route mismatch for Refresh and Reshare respectively (Fresh DKG
+    has the same check but isn't reportable — no ring exists yet to bind
+    evidence to). Every one of these is reached only after the leader identity
+    and `config_digest` self-consistency already passed, so there is no
+    tampering ambiguity by the time any of them fires. A signature only covers
+    `config_digest`, so before attributing fault the reporter recomputes
+    `config_digest` from the full retained `Prepare` and only reports if it's
+    self-consistent — otherwise a relay could tamper with `leader_node_key`/
+    `committees` post-signature while leaving an innocent signer's original
+    digest intact. Independent re-verification re-derives `noncanonical_leader`
+    the same way, and re-checks route contradictions for *both* committees a
+    Reshare Prepare names (old/current against the ring's still-current
+    membership, new/next against the accused's claimed scope) regardless of
+    which one the reporting node actually caught — since Reshare always
+    attributes the accused via the new/next committee (the leader is always
+    drawn from there), independently re-deriving only that one committee would
+    silently reject an otherwise-valid old-committee report. Any
+    current-committee recipient can queue this report directly; a pure
+    pending-new reshare receiver that detects it cannot relay it yet (relaying
+    needs the current-committee routing that normally comes from live session
+    state, which by construction doesn't exist for a rejected `Prepare`).
+  - `ack_equivocation`: two differently-signed acks
+    (`Prepared`/`Activated`/`Begun`) from the same follower for the identical
+    (ceremony, attempt, message_kind) request. A single wrong or stale-looking
+    ack is not enough — that can happen honestly on a retry race — so this
+    only fires when the same signer produces two genuinely different signed
+    digests for the provably identical request. Detected leader-side as each
+    response arrives, and reported/relayed the same way as the other DKG
+    evidence kinds. Only the leader-observed direction is covered — a
+    follower-side detector for the leader itself sending conflicting
+    `Activate`/`Begin` messages is not built in this pass.
+
+    Unlike `leader_prepare_fault` (whose accused is always the canonical
+    leader, always drawn from the new/pending committee for Reshare),
+    `ack_equivocation`'s accused can be *any* follower the leader sent a
+    Prepare to — for Reshare that includes pure old-committee dealers who are
+    never members of the new committee at all. `accused_committee_scope` is
+    derived from where the accused actually sits (preferring `PendingNew`
+    when they're in both, so dealer-receivers keep their existing
+    classification), not hardcoded to `PendingNew` for every Reshare report
+    the way `leader_prepare_fault` correctly is. Independent verification
+    accepts either scope for this one fault kind — the real enforcement is
+    the accused-membership containment check that already runs regardless of
+    which scope is claimed, not an equality check against a fixed expectation.
+  - `oversized_repair_page`: one signed `PublicPhaseResponse` (a direct-QUIC
+    repair-page reply, requested via `GetPublicPhase`) whose encoded size
+    exceeds `MAX_PUBLIC_REPAIR_PAGE_BYTES`. A pure byte-length check against
+    a fixed protocol constant, the same shape as `dkg_leader_public_fault`'s
+    `oversized_chunk` — just for the direct-QUIC repair path instead of
+    Gossip. `PublicPhaseResponse` didn't carry a signature at all until this
+    fault kind was added: it gained `page_digest: [u8; 32]` (a hash over
+    every other field, computed the same way `config_digest` is for
+    `Prepare`) and `report_signature: Option<ControlSignature>`
+    (`None` only for Fresh DKG, which has no ring to bind evidence to — same
+    reasoning as `Prepare.report_signature`), signed once at the single real
+    construction site (`GetPublicPhase`'s responder) via the same
+    `sign_control_message`/`control_ack_signing_bytes` primitives every other
+    `ControlSignature` already uses — no new signing scheme. Like
+    `leader_prepare_fault`, the accused is always the canonical leader (the
+    one who served the repair connection), so a Reshare report always
+    requires `PendingNew` accused scope, unlike `ack_equivocation`.
+    Independent verification recomputes `page_digest` from the decoded
+    artifact's own fields (self-consistency, mirroring `leader_prepare_
+    fault`'s `config_digest` recheck) and independently re-derives the
+    size claim from the artifact's own raw byte length rather than trusting
+    the reporter's characterization. `MAX_PUBLIC_REPAIR_PAGE_BYTES` moved
+    from `network.rs` to `transport.rs` (now `pub`) so both the sender and
+    the registry can share one definition. The page-building sizing loop
+    reserves a small fixed margin (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_
+    BYTES`) below the true limit, since it sizes candidates *before* the real
+    signature is attached (signing needs the local signing key, which that
+    pure/sync loop doesn't have) — without the margin, an honest leader's
+    page landing within a few hundred bytes of the limit could tip over once
+    signed and get flagged as a fault it didn't commit.
+
+PRE, Sign, and nested DKG statements are signed by the accused node's
+secp256k1 chain key (`NodeSigningKey`; the ring-registered `node_key` is exactly
+that key's compressed public key hex). Public-origin and leader-equivocation
+evidence instead retain the exact transport envelope(s) signed by the accused
+node's registered endpoint identity. Control-message-fault evidence is signed
+directly with that same chain node key (not the endpoint identity), since
+direct-QUIC control messages have no transport-layer signature to reclaim. The
+normalized statement carries chain/ring binding, the ring-state digest,
+protocol version, request/session id, evidence timestamp, responder node key,
+origin protocol, and protocol-specific material. Missing or invalid evidence
+signatures reject the response or report outright; only signature-valid
+evidence is attributable.
 
 When a signature-valid response fails the protocol-specific verifier, the
 protocol queues `ReportObservation::InvalidCryptoResponse`. The protocol should
@@ -127,7 +487,8 @@ Signer-side validation (no health probe for this report type):
   - PRE: origin `pre`, current/current committee scopes;
   - Sign: origin `sign`, `pss_refresh`, `pss_reshare`, or `report`, using the
     statement's accused/signing committee scopes;
-  - DKG share: origin `pss_refresh` or `pss_reshare`, current/current scopes;
+  - DKG evidence: origin `pss_refresh` or `pss_reshare`, with current signers
+    and a current or pending-new accused as permitted by the evidence kind;
 - evidence signature: secp256k1 verify under `accused_node_key`; DKG share
   reports also verify the nested DKG commitment signature;
 - **evidence anchor**: `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`
@@ -136,9 +497,9 @@ Signer-side validation (no health probe for this report type):
   stale or future evidence and the chain's plain TTL dedupe records provably
   outlive any resubmission of the same evidence — one accepted report per
   (request, accused, origin), ever, with no extra retention rules;
-- anti-framing re-verification: signers rerun the relevant cryptographic check
-  and refuse to sign if the PRE proof, Sign share, or DKG share actually
-  verifies.
+- anti-framing re-verification: signers rerun the relevant cryptographic or
+  authenticated-protocol check and refuse to sign unless the embedded evidence
+  independently proves the claimed fault.
 
 For PRE evidence, signers fetch the document by object_id from the bulletin
 (authoritative enc_cmt), load the local `RingPolyState` polynomial, and run
@@ -161,6 +522,56 @@ demerited"). Demerit weight is the ring's
 ring-state digest). The signed evidence wire fields are mandatory — all ring
 nodes must upgrade together. Like `node_offline`, this report attributes fault,
 not intent.
+
+## `unauthorized_request` flow
+
+`unauthorized_request` attributes a node that relayed a Sign/PRE request on
+behalf of another node, where the acceptor's own ACP re-check on that request
+failed. It exists because a relayer sits between the original caller and the
+acceptor: the acceptor only sees the relayer's forwarded copy, so a relayer
+that forwards something it should have rejected needs to be independently
+attributable, the same way an invalid cryptographic response is.
+
+1. A relaying node signs a `RelayRequestStatement` describing the request it's
+   forwarding (chain/ring binding, `request_id`, `origin_protocol`, actor/object
+   ids, the caller's own signed timestamp, and an optional `ValidWindow`) and
+   attaches its own `checked_at_anchor` — an opaque, backend-agnostic Authz
+   point-in-history token (not necessarily a block height) captured when it
+   itself checked authorization before relaying.
+2. The acceptor re-runs its own ACP check on the forwarded request. If that
+   check fails, it calls `queue_unauthorized_request_report`, which reads the
+   relayer's current `NodeInfo` from the bulletin and queues an
+   `UnauthorizedRequestObservation` through the same `queue_report` path every
+   other report type uses.
+3. `origin_protocol` is always `pre` or `sign` (never `pss_refresh`/
+   `pss_reshare`/`report` — this report type is about the original relay hop,
+   not any PSS/report-signing context those values distinguish for
+   `invalid_crypto_response`'s `sign` evidence kind).
+4. Only the current committee signs (the relayer is always a current-committee
+   member; there's no pending-new-relay path here since this is about a caller
+   → relayer → acceptor hop, not committee-boundary evidence).
+
+Signer-side validation (co-signers, independent of the accepting node):
+
+- statement↔envelope binding: chain_id, ring_id, ring_pk, ring_state digest,
+  the request's protocol version at `observed_at`, and `from_node_id` matches
+  the relayer's own canonical node id in its accused-committee scope;
+- the relayer's signature over its own statement verifies under
+  `accused_node_key`;
+- **anti-framing re-verification, the refutation this report type is built
+  around**: re-run the ACP check for the relayed request as of the relayer's
+  own captured `checked_at_anchor`. If the actor **is** authorized at that
+  anchor, the relayer forwarded a legitimate request and the report is
+  rejected — only an unauthorized verdict at that anchor confirms the fault.
+  `anchor_time(checked_at_anchor) ≈ signed_at` (within `RELAY_CHECK_MAX_DRIFT_SECS`)
+  binds the anchor to the relay moment, protecting an honest relayer from a
+  policy revocation that lands right after it forwards — the anchor reflects
+  what the relayer actually saw, not what's true now.
+
+Demerit weight is the ring's `unauthorized_request_demerits` (DemeritConfig).
+Dedupe follows the same two-key shape as every other report type (see
+[Two distinct dedupe keys](#two-distinct-dedupe-keys) below); `attempt_id`
+does not apply here since this isn't DKG evidence.
 
 ## Common validation gates
 
@@ -268,9 +679,13 @@ change:
    already accepted;
 5. decode and validate the report payload: `node_offline` checks
    `origin_protocol` is one of `pre`/`sign`/`pss_refresh`/`pss_reshare`, while
-   `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`, or
-   `dkg_share`), checks the expected statement domain/shape, validates
-   origin-protocol policy, and binds the signed statement to the envelope;
+   `invalid_crypto_response` decodes its evidence kind (`pre`, `sign`,
+   `dkg_share`, `dkg_invalid_refresh_commitment`, `dkg_equivocation`,
+   `dkg_public_origin_fault`, `dkg_leader_equivocation`,
+   `dkg_leader_public_fault`, `dkg_leader_batch_mismatch`, or
+   `dkg_control_message_fault`), checks the expected statement domain/shape,
+   validates origin-protocol policy, and binds the signed evidence to the
+   envelope;
 6. look up the ring, require it finalized, and require `report.ring_pk` /
    `report.ring_state_sha256` to match current on-chain ring state exactly
    (stale ring state is rejected, same as the orbis-rs gate);
@@ -298,16 +713,68 @@ Only after all of that does the keeper call `IncrementNodeDemerits` and emit
   payload, `session_id`, ...). This prevents the literal same signed artifact
   from being submitted twice.
 - **`sessionDedupeID`** = `SHA256(domain, chain_id, ring_id, report_type,
-  origin_protocol, accused_node_key, session_id)`. This is a coarser key that
-  prevents two *different* reports both claiming to cover the same session
-  from landing (e.g. two honest-but-redundant submissions of the same
-  underlying incident).
+  origin_protocol, accused_node_key, session_id, attempt_id)`. This is a
+  coarser key that prevents two *different* reports both claiming to cover
+  the same session from landing (e.g. two honest-but-redundant submissions of
+  the same underlying incident). `attempt_id` is folded in for DKG evidence
+  kinds only (empty for `node_offline`/`unauthorized_request`, which stay
+  session-only): `session_id` is `CeremonyID`, and `CeremonyID` is
+  intentionally reusable across an attempt's retries. Without `attempt_id`,
+  an accused still in the committee for a later independent attempt of the
+  same ceremony could repeat the same fault indefinitely after its first
+  demerit — the second report would collide with the first attempt's dedupe
+  record and be silently rejected, capping the whole ceremony's worth of
+  misbehavior at one demerit. `attempt_id` is carried directly on
+  `DkgCommitmentStatement` (covered by the responder's own signature, so it's
+  tamper-proof the same way every other field is; `dkg_share` inherits it via
+  its embedded commitment statement) or already present on
+  `DkgPublicOriginFaultStatement`/`DkgLeaderEquivocationStatement`/`DkgControlMessageFaultStatement`.
 
 Both records are pruned by `EndBlock` once the report's own 120s TTL has
 elapsed. That's safe to do unconditionally: the envelope's own
 `observed_at`/`expires_at` window already makes the report unsubmittable past
 that point regardless of whether the dedupe record still exists, so there's
 no replay gap opened by forgetting it.
+
+These two are chain-side. There's a third, purely local one: `in_flight_key`
+(`registry.rs`, keyed `(report_type, ring_id, subject_key)`) collapses
+concurrent duplicate `queue_report` calls on *this* node before a report is
+even built — see the high-level flow above. `InvalidCryptoResponseHandler`'s
+`subject_key` folds in `attempt_id` too, for exactly the same DKG evidence
+kinds and the same reason as `sessionDedupeID` above (via `InvalidCryptoResponse::
+attempt_id()`): without it, a second attempt's fault against the same accused
+would collide with the first attempt's still-in-flight report and get
+silently dropped locally as a "duplicate" — before it ever reached the chain
+for the `sessionDedupeID` fix above to even apply. PRE/Sign have no
+`attempt_id` and keep the original `accused_node_key:request_id` shape.
+
+### DKG-specific expiry
+
+DKG evidence and reports live under three independent timescales that are
+easy to conflate but govern different things:
+
+- **The report's own TTL — 120s (`ReportTTLSeconds`), the same for every
+  report type.** This is the window described above:
+  `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS` pins the envelope's
+  `expires_at` to when the evidence was actually signed, not to whenever the
+  report happens to be submitted. This is what the chain-side dedupe records
+  are pruned against.
+- **The ceremony's own attempt deadline — `DKG_ATTEMPT_TIMEOUT`
+  (`constants.rs`), 15 minutes in production.** This is a transport-layer
+  concept, unrelated to reporting: it's when `expiration_worker` gives up on a
+  stalled DKG/PSS attempt and tears down its session state (see
+- **Post-completion session retention — `DKG_COMPLETED_SESSION_TTL`
+  (`constants.rs`), 5 minutes.** A *successfully completed* ceremony's session
+  state isn't torn down immediately — it's kept queryable for this long
+  afterward, which is what lets evidence about the tail end of a ceremony
+  (e.g. a leader's final `RefreshHealthCheckResult`) still be gathered and
+  reported shortly after the ceremony itself finished, not just while it was
+  still in progress.
+
+None of these three windows overlaps with or extends another: the 120s report
+TTL always governs whether a *report* can still be submitted once evidence has
+been signed, regardless of which of the other two windows produced that
+evidence.
 
 ## Demerits
 
@@ -340,6 +807,91 @@ To add another invalid-crypto evidence kind under the existing report type,
 extend `InvalidCryptoResponse`, add statement shape/signature/anti-framing
 validation in the handler, update SourceHub's decoder, and add matching golden
 vectors on both sides.
+
+## Metrics
+
+`report_attempts_total{report_type, status}` is the main funnel metric — every
+`queue_report` call moves through some subset of these `status` values, in
+roughly this order:
+
+- `queued` — a new in-flight slot was claimed; `duplicate` if it collided with
+  work already in flight for the same handler-owned key instead.
+- `capacity_reached` — the in-flight slot claim itself failed because
+  `MAX_IN_FLIGHT_REPORTS` (128) was already full; distinct from `duplicate`
+  (this is "too much unrelated work in flight", not "this exact report is
+  already queued").
+- `signed` — the background task completed and produced a threshold-signed
+  report.
+- `expired` — same background task, but it failed specifically because the
+  evidence's `observed_at`/`expires_at` window had already lapsed
+  (`ReportingError::Expired`) by the time enough co-signers validated it.
+- `failed` — the background task failed for any other reason (chain read
+  error, co-signer rejection, below-threshold, etc.) — the catch-all for
+  failures that aren't capacity or expiry.
+
+This covers "observation queued", "duplicate", "report signed", and "report
+expired" from this report type's own funnel. The other three named states live
+elsewhere, closer to where they actually happen:
+
+- **fault detected** — for DKG control/public-plane evidence kinds, a
+  `dkg_transport_events_total{plane, event}` `*_candidate` event
+  (`origin_fault_candidate`, `equivocation_candidate`, `leader_equivocation_
+  candidate`, `leader_public_fault_candidate`, `leader_batch_mismatch_
+  candidate`, `ack_equivocation_candidate`, `leader_prepare_fault_candidate`,
+  `oversized_repair_page_candidate`) fires at the moment a fault is first
+  recognized, before any report is even built. Every DKG evidence kind now
+  has a relay path, each with its own `_relay_accepted`/`_relay_exhausted`
+  pair keyed by evidence kind — except `oversized_repair_page`, which shares
+  `dkg_control_message_fault`'s generic relay path (its own
+  `_relay_accepted`/`_relay_exhausted` events show up under that shared
+  label, not a `oversized_repair_page`-specific one). PRE/Sign/`dkg_share`/
+  `dkg_invalid_refresh_commitment` evidence kinds don't have a separate
+  "detected" moment distinct from "queued" — a
+  signature-valid-but-failing response goes straight to
+  `ReportObservation::InvalidCryptoResponse`, so `status="queued"` above is
+  the first and only signal for those.
+- **relay accepted** — pending-new evidence relay (`spawn_evidence_relay` in
+  `dkg/v0/coordinator/evidence.rs`, the non-blocking fan-out described under
+  `dkg_control_message_fault` above) records
+  `dkg_transport_events_total{plane="private", event="<evidence_kind>_relay_
+  accepted"}` on success, or `<evidence_kind>_relay_exhausted` if no
+  current-committee peer accepted it.
+- **observation dropped** — deliberately *not* one metric. Two genuinely
+  different subsystems can drop an observation before it ever becomes a
+  report, and unifying them into one counter would blur which one needs
+  attention:
+  - `report_attempts_total{status="capacity_reached"}` above — the reporting
+    pipeline itself is backed up;
+  - `dkg_transport_events_total{plane="pss_stall_report", event="dropped"}` —
+    a completely separate channel, in `session_state.rs`'s stall-detection
+    sweep, filling up (bounded at 256, drop-newest-and-count by design — see
+    the doc comment on that field). This is about DKG stall-detection volume,
+    not reporting-pipeline volume.
+
+`report_in_flight` (gauge) tracks the current size of the in-flight set
+directly. `report_health_checks_total{status}` covers `node_offline`'s
+independent health-probe outcomes, separate from the funnel above.
+
+`pss_offline_observations_total{stage, outcome}` (`dkg/v0/coordinator/
+reporting.rs`, `dkg/v0/network.rs`) sits upstream of the funnel above — it
+covers the terminal PSS peer-liveness detection pipeline that eventually
+calls `queue_report`, one counter per bounded transport stage. `stage` is
+`PssOfflineStage::as_metric_label()` (`start_forward`, `prepare`,
+`topology_probe`, `topology_ack`, `activate`, `begin`,
+`public_contribution`, `refresh_result_stage`, `refresh_result_commit`,
+`public_repair_leader`, `public_repair_origin`, `reshare_share_ack`,
+`private_pair`, `private_inbound`). `outcome` walks the same observation
+through detection, relay (pending-new reshare receivers only), and direct
+reporting: `version_mismatch`/`seed_missing` (rejected before an accused
+peer is even resolved), `candidate` (a genuine terminal observation was
+found), then either `relay_candidate` → `relayed`/`relay_failed` (relay
+path) or `direct_candidate` → `direct`/`report_failed` (direct-queue path),
+plus `not_reportable` (no ring to report against, e.g. Fresh DKG) and the
+receiving side's `relay_accepted`/`relay_rejected` (a current-committee peer
+accepting or declining a relayed candidate set). Distinct from `dkg_
+transport_events_total{plane="pss_stall_report", ...}` above — that's the
+*stall-detection* channel filling up; this is the *offline-observation*
+pipeline once a stall (or another terminal failure) has already produced one.
 
 ## Test expectations
 

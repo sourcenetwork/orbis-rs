@@ -25,7 +25,7 @@ use crypto::r#trait::{
 };
 use crypto::{
     CryptoDeserialize, PolynomialCommitmentImpl as PolynomialCommitment,
-    GROUP_POINT_SIZE as G1_COMPRESSED_SIZE, SCALAR_SIZE as FR_COMPRESSED_SIZE,
+    GROUP_POINT_SIZE as G1_COMPRESSED_SIZE,
 };
 use network::PeerId;
 use std::collections::HashMap;
@@ -49,7 +49,7 @@ pub use crate::dkg::v0::coordinator::reshare::selection::{
     handle_reshare_participant_set, handle_reshare_share_ack,
 };
 pub use commitment::handle_commitment_message;
-pub(crate) use commitment::preflight_commitment_message;
+pub(crate) use commitment::prepare_commitment_message;
 pub use commitment_audit::handle_commitment_audit_message;
 pub(crate) use commitment_audit::preflight_commitment_audit_message;
 pub use commitment_hash::handle_commitment_hash_message;

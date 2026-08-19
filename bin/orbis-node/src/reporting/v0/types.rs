@@ -12,6 +12,11 @@ pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
 pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
+pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";
+pub const DKG_LEADER_EQUIVOCATION_DOMAIN: &str = "orbis-dkg-leader-equivocation-v1";
+pub const DKG_LEADER_PUBLIC_FAULT_DOMAIN: &str = "orbis-dkg-leader-public-fault-v1";
+pub const DKG_LEADER_BATCH_MISMATCH_DOMAIN: &str = "orbis-dkg-leader-batch-mismatch-v1";
+pub const DKG_CONTROL_MESSAGE_FAULT_DOMAIN: &str = "orbis-dkg-control-message-fault-v1";
 pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
 pub const REPORT_TTL_SECS: u64 = 120;
 /// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
@@ -442,9 +447,23 @@ pub struct DkgCommitmentStatement {
     pub commitment: Vec<u8>,
     /// Per-session-instance nonce the dealer generates once and signs into every
     /// commitment it broadcasts for this attempt. Equivocation = same dealer signing
-    /// two commitments with the SAME nonce but different bytes; an honest retry uses a
-    /// fresh nonce, so it cannot be framed as equivocation. Opaque to receivers.
+    /// two commitments for the SAME attempt with the SAME nonce but different bytes;
+    /// an honest retry has a different attempt ID and uses a fresh nonce, so it cannot
+    /// be framed as equivocation. Opaque to receivers.
+    ///
+    /// NOT used for dedupe scoping: it's self-chosen by the dealer (part of what
+    /// they sign, but not assigned by the protocol), so a dealer could reuse the
+    /// same nonce across attempts to blunt its own demerit exposure. `attempt_id`
+    /// below is the network-assigned identity used for that instead.
     pub session_nonce: [u8; 16],
+    /// The live attempt this commitment was signed for. Chain-side dedupe folds
+    /// this into `sessionDedupeID` so independent faults across retries of the
+    /// same `CeremonyId` (which is intentionally reusable) each get independent
+    /// demerits, rather than colliding on one dedupe record for the whole
+    /// ceremony. Tamper-proof the same way every other field here is: it's
+    /// covered by the responder's own signature, not asserted by whoever
+    /// assembles the report.
+    pub attempt_id: [u8; 32],
     pub crypto_backend: String,
 }
 
@@ -468,8 +487,19 @@ impl DkgCommitmentStatement {
         write_u32(&mut out, self.from_node_id);
         write_bytes(&mut out, &self.commitment);
         write_bytes(&mut out, &self.session_nonce);
+        write_bytes(&mut out, &self.attempt_id);
         write_string(&mut out, &self.crypto_backend);
         out
+    }
+
+    /// Returns true when two statements contain the conflicting commitment
+    /// pair required to prove dealer equivocation. Callers remain responsible
+    /// for validating the statements' signatures and surrounding bindings.
+    pub(crate) fn proves_equivocation_with(&self, other: &Self) -> bool {
+        self.attempt_id == other.attempt_id
+            && self.session_nonce == other.session_nonce
+            && self.from_node_id == other.from_node_id
+            && self.commitment != other.commitment
     }
 
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
@@ -497,6 +527,13 @@ impl DkgCommitmentStatement {
                 bytes.len()
             ))
         })?;
+        let attempt_id_bytes = decoder.read_bytes("attempt_id")?;
+        let attempt_id = attempt_id_bytes.try_into().map_err(|bytes: Vec<u8>| {
+            ReportingError::InvalidReport(format!(
+                "DKG commitment attempt_id must be 32 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
         decoder.finish()?;
         Ok(Self {
@@ -515,6 +552,7 @@ impl DkgCommitmentStatement {
             from_node_id,
             commitment,
             session_nonce,
+            attempt_id,
             crypto_backend,
         })
     }
@@ -542,6 +580,670 @@ pub struct DkgShareStatement {
     pub share_value: Vec<u8>,
     pub nonce: [u8; 16],
     pub crypto_backend: String,
+}
+
+/// Exact endpoint-authenticated public-contribution envelope carried as fault
+/// evidence. These bytes are deliberately not decoded by the canonical codec:
+/// independent Orbis signers verify the endpoint signature and decode the
+/// transport contribution under the active wire implementation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointSignedContribution {
+    pub origin: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub data: Vec<u8>,
+}
+
+impl EndpointSignedContribution {
+    fn write_canonical(&self, out: &mut Vec<u8>) {
+        write_bytes(out, &self.origin);
+        write_bytes(out, &self.signature);
+        write_bytes(out, &self.data);
+    }
+
+    fn read_canonical(decoder: &mut Decoder<'_>, prefix: &str) -> Result<Self> {
+        Ok(Self {
+            origin: decoder.read_bytes(&format!("{prefix}_origin"))?,
+            signature: decoder.read_bytes(&format!("{prefix}_signature"))?,
+            data: decoder.read_bytes(&format!("{prefix}_data"))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DkgPublicOriginFaultKind {
+    InvalidPayload,
+    OriginEquivocation,
+}
+
+impl DkgPublicOriginFaultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidPayload => "invalid_payload",
+            Self::OriginEquivocation => "origin_equivocation",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "invalid_payload" => Ok(Self::InvalidPayload),
+            "origin_equivocation" => Ok(Self::OriginEquivocation),
+            _ => Err(ReportingError::InvalidReport(format!(
+                "unknown DKG public-origin fault kind {value}"
+            ))),
+        }
+    }
+}
+
+/// Normalized bindings plus the exact endpoint-signed public contribution(s).
+/// The normalized fields are threshold-attested report metadata; each Orbis
+/// co-signer must prove they match the embedded transport contribution before
+/// signing the report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgPublicOriginFaultStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub phase: String,
+    pub fault_kind: DkgPublicOriginFaultKind,
+    pub contribution_a: EndpointSignedContribution,
+    pub contribution_b: Option<EndpointSignedContribution>,
+}
+
+impl DkgPublicOriginFaultStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.phase);
+        write_string(&mut out, self.fault_kind.as_str());
+        self.contribution_a.write_canonical(&mut out);
+        match &self.contribution_b {
+            Some(contribution) => {
+                out.push(1);
+                contribution.write_canonical(&mut out);
+            }
+            None => out.push(0),
+        }
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG public-origin attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let phase = decoder.read_string("phase")?;
+        let fault_kind = DkgPublicOriginFaultKind::from_str(&decoder.read_string("fault_kind")?)?;
+        let contribution_a =
+            EndpointSignedContribution::read_canonical(&mut decoder, "contribution_a")?;
+        let contribution_b = match decoder.read_u8("contribution_b_present")? {
+            0 => None,
+            1 => Some(EndpointSignedContribution::read_canonical(
+                &mut decoder,
+                "contribution_b",
+            )?),
+            value => {
+                return Err(ReportingError::InvalidReport(format!(
+                    "invalid optional contribution_b tag {value}"
+                )))
+            }
+        };
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            phase,
+            fault_kind,
+            contribution_a,
+            contribution_b,
+        })
+    }
+}
+
+/// Normalized bindings plus two conflicting Gossip-authenticated deliveries
+/// from the same canonical leader for the same phase/coordinate (a manifest,
+/// or a chunk at the same index). `delivery_a`/`delivery_b` carry the exact
+/// endpoint-signed broadcast bytes; each co-signer independently
+/// re-verifies both signatures under the accused leader's registered
+/// endpoint identity rather than trusting the reporter's characterization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgLeaderEquivocationStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub phase: String,
+    pub delivery_id_a: [u8; 16],
+    pub delivery_a: EndpointSignedContribution,
+    pub delivery_id_b: [u8; 16],
+    pub delivery_b: EndpointSignedContribution,
+}
+
+impl DkgLeaderEquivocationStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.phase);
+        write_bytes(&mut out, &self.delivery_id_a);
+        self.delivery_a.write_canonical(&mut out);
+        write_bytes(&mut out, &self.delivery_id_b);
+        self.delivery_b.write_canonical(&mut out);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let phase = decoder.read_string("phase")?;
+        let delivery_id_a =
+            decoder
+                .read_bytes("delivery_id_a")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation delivery_id_a must be 16 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let delivery_a = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_a")?;
+        let delivery_id_b =
+            decoder
+                .read_bytes("delivery_id_b")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader-equivocation delivery_id_b must be 16 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let delivery_b = EndpointSignedContribution::read_canonical(&mut decoder, "delivery_b")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            phase,
+            delivery_id_a,
+            delivery_a,
+            delivery_id_b,
+            delivery_b,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DkgLeaderPublicFaultKind {
+    /// A single leader-signed Manifest that fails `PhaseManifest::validate`
+    /// (origins don't match the phase's expected committee, or the
+    /// self-consistency/root-recomputation check fails), or whose
+    /// `complete` flag contradicts the phase's Complete/Incremental mode.
+    /// Independently provable from the one signed delivery plus the
+    /// phase's committee-derived expected-origins set — no conflicting
+    /// counterpart needed, unlike `DkgLeaderEquivocationStatement`.
+    InvalidManifest,
+    /// A single leader-signed Chunk whose `index` is outside the phase's
+    /// valid range (`index >= expected_origin_count`). Independently
+    /// provable from the one signed delivery plus the same committee-derived
+    /// bound `InvalidManifest` uses.
+    ChunkIndexOutOfRange,
+    /// A single leader-signed Chunk whose encoded size exceeds
+    /// `MAX_PUBLIC_CHUNK_BYTES`. Independently provable from the one signed
+    /// delivery's own byte length against a fixed protocol constant — no
+    /// committee/ring lookup needed at all.
+    OversizedChunk,
+    /// A single leader-signed Chunk that names the same origin more than
+    /// once among its own contributions. Independently provable from the
+    /// one signed delivery alone — a chunk is built from a
+    /// `BTreeMap<ParticipantRef, SignedPayload>`, which cannot contain the
+    /// same key twice, so any duplicate can only come from the leader's own
+    /// packaging, honest or not. No committee/ring lookup needed, so (like
+    /// `oversized_chunk`) this is provable even for the Reshare
+    /// `Commitments` phase. Additive alongside origin-side equivocation
+    /// evidence — a duplicate with conflicting content still separately
+    /// proves the origin double-signed (`commitment_equivocation`/
+    /// `public_origin_fault`), but the leader's packaging fault is
+    /// provable either way, matching or conflicting content alike.
+    DuplicateChunkOrigin,
+}
+
+impl DkgLeaderPublicFaultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidManifest => "invalid_manifest",
+            Self::ChunkIndexOutOfRange => "chunk_index_out_of_range",
+            Self::OversizedChunk => "oversized_chunk",
+            Self::DuplicateChunkOrigin => "duplicate_chunk_origin",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "invalid_manifest" => Ok(Self::InvalidManifest),
+            "chunk_index_out_of_range" => Ok(Self::ChunkIndexOutOfRange),
+            "oversized_chunk" => Ok(Self::OversizedChunk),
+            "duplicate_chunk_origin" => Ok(Self::DuplicateChunkOrigin),
+            _ => Err(ReportingError::InvalidReport(format!(
+                "unknown DKG leader public-fault kind {value}"
+            ))),
+        }
+    }
+}
+
+/// A single leader-signed Gossip broadcast (manifest or chunk) that is
+/// independently provable as invalid on its own, without a conflicting
+/// counterpart — e.g. a manifest naming the wrong origin set for its phase,
+/// or whose `complete` flag contradicts the phase's publication mode.
+/// Reuses the same endpoint-authenticated delivery shape as
+/// `DkgLeaderEquivocationStatement`, just with one delivery instead of two.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgLeaderPublicFaultStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub phase: String,
+    pub fault_kind: DkgLeaderPublicFaultKind,
+    pub delivery_id: [u8; 16],
+    pub delivery: EndpointSignedContribution,
+}
+
+impl DkgLeaderPublicFaultStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.phase);
+        write_string(&mut out, self.fault_kind.as_str());
+        write_bytes(&mut out, &self.delivery_id);
+        self.delivery.write_canonical(&mut out);
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader public-fault attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let phase = decoder.read_string("phase")?;
+        let fault_kind = DkgLeaderPublicFaultKind::from_str(&decoder.read_string("fault_kind")?)?;
+        let delivery_id =
+            decoder
+                .read_bytes("delivery_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG leader public-fault delivery_id must be 16 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let delivery = EndpointSignedContribution::read_canonical(&mut decoder, "delivery")?;
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            phase,
+            fault_kind,
+            delivery_id,
+            delivery,
+        })
+    }
+}
+
+/// One node-key-signed control-handshake artifact
+/// (`Prepare`/`Prepared`/`Activate`/`Activated`/`Begin`/`Begun`). `data` is
+/// whatever content that message kind's signature actually covers: the
+/// canonically-encoded `PrepareSession` for `prepare` (so a verifier can
+/// recompute `config_digest` and inspect `leader_node_key`/`committees`
+/// directly), or the raw 32-byte `config_digest`/`activation_digest` for the
+/// ack kinds (already bound to ceremony/attempt/message_kind by the
+/// signature itself, so nothing else needs duplicating). `signed_at` is the
+/// signer's own claimed timestamp, bound into the signature by
+/// `control_ack_signing_bytes` — carried here explicitly (rather than only
+/// recovered by decoding `data`) because the ack kinds' `data` is just a
+/// bare digest with no embedded timestamp to recover.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlMessageArtifact {
+    pub signature: Vec<u8>,
+    pub data: Vec<u8>,
+    pub signed_at: u64,
+}
+
+impl ControlMessageArtifact {
+    fn write_canonical(&self, out: &mut Vec<u8>) {
+        write_bytes(out, &self.signature);
+        write_bytes(out, &self.data);
+        write_u64(out, self.signed_at);
+    }
+
+    fn read_canonical(decoder: &mut Decoder<'_>, prefix: &str) -> Result<Self> {
+        Ok(Self {
+            signature: decoder.read_bytes(&format!("{prefix}_signature"))?,
+            data: decoder.read_bytes(&format!("{prefix}_data"))?,
+            signed_at: decoder.read_u64(&format!("{prefix}_signed_at"))?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DkgControlMessageFaultKind {
+    /// One signed `Prepare`, independently provable as invalid: sent by a
+    /// noncanonical leader, or naming committee routes/digests that
+    /// contradict current SourceHub `NodeInfo`/ring state.
+    LeaderPrepareFault,
+    /// Two conflicting signed acks (`Prepared`/`Activated`/`Begun`) from the
+    /// same follower for the identical (ceremony, attempt, message_kind)
+    /// request — a single wrong/stale-looking ack is not enough on its own,
+    /// since that can happen honestly on a retry race.
+    AckEquivocation,
+    /// One signed `PublicPhaseResponse` (a direct-QUIC repair-page reply)
+    /// whose encoded size exceeds `MAX_PUBLIC_REPAIR_PAGE_BYTES` — a pure
+    /// byte-length check against a fixed protocol constant, independently
+    /// provable the same way `dkg_leader_public_fault`'s `oversized_chunk`
+    /// is, just for the direct-QUIC repair path instead of Gossip.
+    OversizedRepairPage,
+}
+
+impl DkgControlMessageFaultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LeaderPrepareFault => "leader_prepare_fault",
+            Self::AckEquivocation => "ack_equivocation",
+            Self::OversizedRepairPage => "oversized_repair_page",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "leader_prepare_fault" => Ok(Self::LeaderPrepareFault),
+            "ack_equivocation" => Ok(Self::AckEquivocation),
+            "oversized_repair_page" => Ok(Self::OversizedRepairPage),
+            _ => Err(ReportingError::InvalidReport(format!(
+                "unknown DKG control-message fault kind {value}"
+            ))),
+        }
+    }
+}
+
+/// Normalized bindings plus the exact node-key-signed control-handshake
+/// artifact(s). Unlike `DkgPublicOriginFaultStatement`/
+/// `DkgLeaderEquivocationStatement` (endpoint-signed), these are signed with
+/// the accused's chain node key directly, since direct-QUIC control
+/// messages carry no reclaimable transport-layer signature the way Gossip
+/// broadcasts do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DkgControlMessageFaultStatement {
+    pub domain: String,
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
+    pub request_id: String,
+    pub signed_at: u64,
+    pub responder_node_key: String,
+    pub origin_protocol: String,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+    pub attempt_id: [u8; 32],
+    pub message_kind: String,
+    pub fault_kind: DkgControlMessageFaultKind,
+    pub artifact_a: ControlMessageArtifact,
+    pub artifact_b: Option<ControlMessageArtifact>,
+}
+
+impl DkgControlMessageFaultStatement {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
+        write_string(&mut out, &self.request_id);
+        write_u64(&mut out, self.signed_at);
+        write_string(&mut out, &self.responder_node_key);
+        write_string(&mut out, &self.origin_protocol);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        write_bytes(&mut out, &self.attempt_id);
+        write_string(&mut out, &self.message_kind);
+        write_string(&mut out, self.fault_kind.as_str());
+        self.artifact_a.write_canonical(&mut out);
+        match &self.artifact_b {
+            Some(artifact) => {
+                out.push(1);
+                artifact.write_canonical(&mut out);
+            }
+            None => out.push(0),
+        }
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
+        let request_id = decoder.read_string("request_id")?;
+        let signed_at = decoder.read_u64("signed_at")?;
+        let responder_node_key = decoder.read_string("responder_node_key")?;
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        let attempt_id =
+            decoder
+                .read_bytes("attempt_id")?
+                .try_into()
+                .map_err(|bytes: Vec<u8>| {
+                    ReportingError::InvalidReport(format!(
+                        "DKG control-message fault attempt_id must be 32 bytes, got {}",
+                        bytes.len()
+                    ))
+                })?;
+        let message_kind = decoder.read_string("message_kind")?;
+        let fault_kind = DkgControlMessageFaultKind::from_str(&decoder.read_string("fault_kind")?)?;
+        let artifact_a = ControlMessageArtifact::read_canonical(&mut decoder, "artifact_a")?;
+        let artifact_b = match decoder.read_u8("artifact_b_present")? {
+            0 => None,
+            1 => Some(ControlMessageArtifact::read_canonical(
+                &mut decoder,
+                "artifact_b",
+            )?),
+            value => {
+                return Err(ReportingError::InvalidReport(format!(
+                    "invalid optional artifact_b tag {value}"
+                )))
+            }
+        };
+        decoder.finish()?;
+        Ok(Self {
+            domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
+            request_id,
+            signed_at,
+            responder_node_key,
+            origin_protocol,
+            accused_committee_scope,
+            signing_committee_scope,
+            attempt_id,
+            message_kind,
+            fault_kind,
+            artifact_a,
+            artifact_b,
+        })
+    }
 }
 
 impl DkgShareStatement {
@@ -652,11 +1354,49 @@ pub enum InvalidCryptoResponse {
         response_signature: Vec<u8>,
     },
     /// DKG commitment equivocation: two conflicting commitments, each validly signed by
-    /// the same dealer (same ring/session/nonce, different bytes). Unlike the other kinds,
-    /// the fault is the *conflict between two signed statements*, not one statement failing.
+    /// the same dealer (same ring/session/attempt/nonce, different bytes). Unlike the other
+    /// kinds, the fault is the *conflict between two signed statements*, not one statement
+    /// failing.
     DkgEquivocation {
         commitment_a: Box<SignedDkgCommitment>,
         commitment_b: Box<SignedDkgCommitment>,
+    },
+    /// An endpoint-authenticated Refresh/Reshare public contribution whose
+    /// payload is independently provable as invalid, or a pair of conflicting
+    /// non-Commitment contributions from the same origin.
+    DkgPublicOriginFault {
+        statement: Box<DkgPublicOriginFaultStatement>,
+    },
+    /// The canonical leader of a public-plane batch signed two conflicting
+    /// Gossip broadcasts (a manifest, or a chunk) for the same phase and
+    /// coordinate. Unlike `DkgPublicOriginFault`, the fault is the leader's
+    /// own packaging act, not any origin's contribution content.
+    DkgLeaderEquivocation {
+        statement: Box<DkgLeaderEquivocationStatement>,
+    },
+    /// A single leader-signed Gossip broadcast that is independently
+    /// provable as invalid on its own — e.g. a manifest naming the wrong
+    /// origin set for its phase. Unlike `DkgLeaderEquivocation`, there is no
+    /// conflicting counterpart; the one delivery self-condemns.
+    DkgLeaderPublicFault {
+        statement: Box<DkgLeaderPublicFaultStatement>,
+    },
+    /// Two leader-signed Gossip broadcasts (any combination of manifest and
+    /// chunk) that each reference the same origin (same `ParticipantRef`,
+    /// same `MessageId`) under two *different* phase roots. Reuses
+    /// `DkgLeaderEquivocationStatement`'s shape (it's the same "two signed
+    /// deliveries, same phase" wire format) under a distinct domain/kind —
+    /// the fault predicate differs from `DkgLeaderEquivocation` (different
+    /// coordinate, shared origin, rather than same coordinate, different
+    /// content).
+    DkgLeaderBatchMismatch {
+        statement: Box<DkgLeaderEquivocationStatement>,
+    },
+    /// A direct-QUIC control-handshake fault: a noncanonical leader's
+    /// `Prepare`, a `Prepare` whose routes/digests contradict SourceHub, or
+    /// a follower equivocating on a `Prepared`/`Activated`/`Begun` ack.
+    DkgControlMessageFault {
+        statement: Box<DkgControlMessageFaultStatement>,
     },
 }
 
@@ -705,6 +1445,26 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, &commitment_a.signature);
                 write_bytes(&mut out, &commitment_b.statement.canonical_bytes());
                 write_bytes(&mut out, &commitment_b.signature);
+            }
+            Self::DkgPublicOriginFault { statement } => {
+                write_string(&mut out, "dkg_public_origin_fault");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgLeaderEquivocation { statement } => {
+                write_string(&mut out, "dkg_leader_equivocation");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgLeaderPublicFault { statement } => {
+                write_string(&mut out, "dkg_leader_public_fault");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgLeaderBatchMismatch { statement } => {
+                write_string(&mut out, "dkg_leader_batch_mismatch");
+                write_bytes(&mut out, &statement.canonical_bytes());
+            }
+            Self::DkgControlMessageFault { statement } => {
+                write_string(&mut out, "dkg_control_message_fault");
+                write_bytes(&mut out, &statement.canonical_bytes());
             }
         }
         out
@@ -768,6 +1528,46 @@ impl InvalidCryptoResponse {
                     }),
                 }
             }
+            "dkg_public_origin_fault" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgPublicOriginFault {
+                    statement: Box::new(DkgPublicOriginFaultStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
+            "dkg_leader_equivocation" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgLeaderEquivocation {
+                    statement: Box::new(DkgLeaderEquivocationStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
+            "dkg_leader_public_fault" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgLeaderPublicFault {
+                    statement: Box::new(DkgLeaderPublicFaultStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
+            "dkg_leader_batch_mismatch" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgLeaderBatchMismatch {
+                    statement: Box::new(DkgLeaderEquivocationStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
+            "dkg_control_message_fault" => {
+                let statement = decoder.read_bytes("statement")?;
+                Self::DkgControlMessageFault {
+                    statement: Box::new(DkgControlMessageFaultStatement::from_canonical_bytes(
+                        &statement,
+                    )?),
+                }
+            }
             value => {
                 return Err(ReportingError::InvalidReport(format!(
                     "unsupported invalid crypto evidence kind {value}"
@@ -785,6 +1585,31 @@ impl InvalidCryptoResponse {
             Self::DkgShare { statement, .. } => &statement.request_id,
             Self::DkgInvalidRefreshCommitment { statement, .. } => &statement.request_id,
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
+            Self::DkgPublicOriginFault { statement } => &statement.request_id,
+            Self::DkgLeaderEquivocation { statement } => &statement.request_id,
+            Self::DkgLeaderPublicFault { statement } => &statement.request_id,
+            Self::DkgLeaderBatchMismatch { statement } => &statement.request_id,
+            Self::DkgControlMessageFault { statement } => &statement.request_id,
+        }
+    }
+
+    /// The DKG attempt this evidence targets, or `None` for `Pre`/`Sign` —
+    /// those aren't DKG-ceremony-scoped and have no `attempt_id` field at
+    /// all (matches RPT-16's chain-side dedupe key, which folds this in for
+    /// exactly the same set of DKG evidence kinds and leaves PRE/Sign
+    /// ceremony-scoped by `request_id` alone).
+    pub fn attempt_id(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Pre { .. } => None,
+            Self::Sign { .. } => None,
+            Self::DkgShare { statement, .. } => Some(statement.commitment_statement.attempt_id),
+            Self::DkgInvalidRefreshCommitment { statement, .. } => Some(statement.attempt_id),
+            Self::DkgEquivocation { commitment_a, .. } => Some(commitment_a.statement.attempt_id),
+            Self::DkgPublicOriginFault { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderEquivocation { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderPublicFault { statement } => Some(statement.attempt_id),
+            Self::DkgLeaderBatchMismatch { statement } => Some(statement.attempt_id),
+            Self::DkgControlMessageFault { statement } => Some(statement.attempt_id),
         }
     }
 
@@ -797,6 +1622,11 @@ impl InvalidCryptoResponse {
                 statement.signing_committee_scope
             }
             Self::DkgEquivocation { .. } => CommitteeScope::Current,
+            Self::DkgPublicOriginFault { statement } => statement.signing_committee_scope,
+            Self::DkgLeaderEquivocation { statement } => statement.signing_committee_scope,
+            Self::DkgLeaderPublicFault { statement } => statement.signing_committee_scope,
+            Self::DkgLeaderBatchMismatch { statement } => statement.signing_committee_scope,
+            Self::DkgControlMessageFault { statement } => statement.signing_committee_scope,
         }
     }
 }
@@ -1262,6 +2092,7 @@ mod tests {
             from_node_id: 2,
             commitment: vec![1, 2, 3],
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: "dkg/test".to_string(),
         }
     }
@@ -1382,6 +2213,20 @@ mod tests {
             dkg_commitment_statement().canonical_bytes(),
             changed.canonical_bytes()
         );
+
+        // attempt_id must be bound into the signed bytes too, not just
+        // carried alongside them — that's what makes it tamper-proof enough to
+        // fold into the chain-side sessionDedupeID (see reporting/README.md's
+        // "Two distinct dedupe keys" section). Unlike session_nonce (self-chosen
+        // by the dealer, only usable for equivocation-nonce matching), attempt_id
+        // is network-assigned, so this binding is what lets it double as a safe
+        // dedupe-scoping key.
+        let mut changed_attempt = dkg_commitment_statement();
+        changed_attempt.attempt_id = [7u8; 32];
+        assert_ne!(
+            dkg_commitment_statement().canonical_bytes(),
+            changed_attempt.canonical_bytes()
+        );
     }
 
     #[test]
@@ -1438,6 +2283,316 @@ mod tests {
         );
         assert_eq!(payload.request_id(), statement_a.request_id);
         assert_eq!(payload.signing_committee_scope(), CommitteeScope::Current);
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_public_origin_fault_payload_round_trips() {
+        let statement = DkgPublicOriginFaultStatement {
+            domain: DKG_PUBLIC_ORIGIN_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitments".to_string(),
+            fault_kind: DkgPublicOriginFaultKind::InvalidPayload,
+            contribution_a: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            contribution_b: None,
+        };
+        let payload = InvalidCryptoResponse::DkgPublicOriginFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(&encoded)),
+            "2b1a98fd49fa0f9fc0f43ae80108b180eab351d8643654f9b5f22a939552b248"
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_leader_equivocation_payload_round_trips() {
+        let statement = DkgLeaderEquivocationStatement {
+            domain: DKG_LEADER_EQUIVOCATION_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitment_audit".to_string(),
+            delivery_id_a: [0xaa; 16],
+            delivery_a: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            delivery_id_b: [0xbb; 16],
+            delivery_b: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![2; 64],
+                data: vec![4, 5, 6],
+            },
+        };
+        let payload = InvalidCryptoResponse::DkgLeaderEquivocation {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_leader_batch_mismatch_payload_round_trips() {
+        // Same wire shape as `dkg_leader_equivocation` (this evidence kind
+        // reuses `DkgLeaderEquivocationStatement` directly), but a distinct
+        // domain and evidence_kind tag, so round-tripping through the outer
+        // `InvalidCryptoResponse` wrapper must still land on the right
+        // variant rather than being confused with real leader-equivocation
+        // evidence.
+        let statement = DkgLeaderEquivocationStatement {
+            domain: DKG_LEADER_BATCH_MISMATCH_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitment_audit".to_string(),
+            delivery_id_a: [0xaa; 16],
+            delivery_a: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+            delivery_id_b: [0xbb; 16],
+            delivery_b: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![2; 64],
+                data: vec![4, 5, 6],
+            },
+        };
+        let payload = InvalidCryptoResponse::DkgLeaderBatchMismatch {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_leader_public_fault_payload_round_trips() {
+        let statement = DkgLeaderPublicFaultStatement {
+            domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            phase: "commitment_audit".to_string(),
+            fault_kind: DkgLeaderPublicFaultKind::InvalidManifest,
+            delivery_id: [0xaa; 16],
+            delivery: EndpointSignedContribution {
+                origin: vec![0x22; 32],
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+            },
+        };
+        let payload = InvalidCryptoResponse::DkgLeaderPublicFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn dkg_leader_public_fault_statement_round_trips_for_every_fault_kind() {
+        for fault_kind in [
+            DkgLeaderPublicFaultKind::InvalidManifest,
+            DkgLeaderPublicFaultKind::ChunkIndexOutOfRange,
+            DkgLeaderPublicFaultKind::OversizedChunk,
+            DkgLeaderPublicFaultKind::DuplicateChunkOrigin,
+        ] {
+            let statement = DkgLeaderPublicFaultStatement {
+                domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
+                chain_id: "sourcehub-test".to_string(),
+                ring_id: "ring-1".to_string(),
+                ring_pk: "aabb".to_string(),
+                ring_state_sha256: "11".repeat(32),
+                protocol_version: 7,
+                request_id: "900".to_string(),
+                signed_at: 1_700_000_010,
+                responder_node_key: "accused".to_string(),
+                origin_protocol: "pss_refresh".to_string(),
+                accused_committee_scope: CommitteeScope::Current,
+                signing_committee_scope: CommitteeScope::Current,
+                attempt_id: [9; 32],
+                phase: "commitment_audit".to_string(),
+                fault_kind,
+                delivery_id: [0xaa; 16],
+                delivery: EndpointSignedContribution {
+                    origin: vec![0x22; 32],
+                    signature: vec![1; 64],
+                    data: vec![1, 2, 3],
+                },
+            };
+            let encoded = statement.canonical_bytes();
+            assert_eq!(
+                DkgLeaderPublicFaultStatement::from_canonical_bytes(&encoded).unwrap(),
+                statement,
+                "fault_kind {fault_kind:?} did not round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_leader_prepare_payload_round_trips() {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "prepare".to_string(),
+            fault_kind: DkgControlMessageFaultKind::LeaderPrepareFault,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![1; 64],
+                data: vec![1, 2, 3],
+                signed_at: 1_700_000_010,
+            },
+            artifact_b: None,
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_ack_equivocation_payload_round_trips() {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_reshare".to_string(),
+            accused_committee_scope: CommitteeScope::PendingNew,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "activated".to_string(),
+            fault_kind: DkgControlMessageFaultKind::AckEquivocation,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![2; 64],
+                data: vec![0xaa; 32],
+                signed_at: 1_700_000_000,
+            },
+            artifact_b: Some(ControlMessageArtifact {
+                signature: vec![3; 64],
+                data: vec![0xbb; 32],
+                signed_at: 1_700_000_010,
+            }),
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn invalid_crypto_response_dkg_control_message_fault_oversized_repair_page_payload_round_trips()
+    {
+        let statement = DkgControlMessageFaultStatement {
+            domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
+            chain_id: "sourcehub-test".to_string(),
+            ring_id: "ring-1".to_string(),
+            ring_pk: "aabb".to_string(),
+            ring_state_sha256: "11".repeat(32),
+            protocol_version: 7,
+            request_id: "900".to_string(),
+            signed_at: 1_700_000_010,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pss_refresh".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            attempt_id: [9; 32],
+            message_kind: "public_phase_response".to_string(),
+            fault_kind: DkgControlMessageFaultKind::OversizedRepairPage,
+            artifact_a: ControlMessageArtifact {
+                signature: vec![4; 64],
+                data: vec![0xcc; 128],
+                signed_at: 1_700_000_010,
+            },
+            artifact_b: None,
+        };
+        let payload = InvalidCryptoResponse::DkgControlMessageFault {
+            statement: Box::new(statement),
+        };
+        let encoded = payload.canonical_bytes();
+        assert_eq!(
+            InvalidCryptoResponse::from_canonical_bytes(&encoded).unwrap(),
+            payload
+        );
     }
 
     #[test]

@@ -43,13 +43,13 @@ where
         )));
     }
     if let Some(pending) = pending {
-        super::commitment::preflight_commitment_message_with_hash(
+        super::commitment::prepare_commitment_message(
             coord,
             attempt,
             from_node_id,
             &pending.commitment,
             pending.report_evidence.as_ref(),
-            commitment_hash,
+            Some(commitment_hash),
         )
         .await?;
     }

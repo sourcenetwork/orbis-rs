@@ -313,6 +313,7 @@ fn bogus_signed_commitment(dealer_id: u32, commitment: Vec<u8>) -> SignedDkgComm
             from_node_id: dealer_id,
             commitment,
             session_nonce: [0u8; 16],
+            attempt_id: [9; 32],
             crypto_backend: DkgImpl::name(),
         },
         signature: vec![0; 64],

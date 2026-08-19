@@ -57,6 +57,13 @@ ignore = [
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
+    # h2 0.3.27, pulled in transitively by the same pinned reqwest 0.11 /
+    # hyper 0.14 stack above (via tendermint-rpc's http-client feature) — no
+    # patched 0.3.x release exists (fix landed only in 0.4.16, already picked
+    # up by the newer h2 0.4.x line reqwest 0.12 resolves to elsewhere). Low
+    # severity (unbounded empty DATA frames from a malicious peer). Revisit
+    # alongside the other tendermint-rpc entries above.
+    "RUSTSEC-2026-0258",
 ]
 
 # ---------------------------------------------------------------------------
