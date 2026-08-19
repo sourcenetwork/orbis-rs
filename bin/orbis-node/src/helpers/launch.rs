@@ -16,6 +16,9 @@ use network::Network;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::{env, fs};
+use tonic::codegen::http::HeaderValue;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use url::{Position, Url};
 use zeroize::Zeroizing;
 
 /// Parses `--chain-gas-multiplier`, rejecting anything that couldn't be a
@@ -35,6 +38,131 @@ fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+/// Parse and normalize a serialized browser origin for `--cors-allow-origin`.
+///
+/// An origin contains only a scheme, host, and optional port. Paths, queries,
+/// fragments, credentials, comma-separated lists, and the wildcard are kept
+/// out of this option so that every value maps to one exact `Origin` header.
+fn parse_cors_origin(value: &str) -> Result<String, String> {
+    if value == "*" {
+        return Err(
+            "wildcard origin `*` is not allowed here; use --cors-permissive instead".to_string(),
+        );
+    }
+    if value.contains(',') {
+        return Err(
+            "expected one origin; repeat --cors-allow-origin instead of using a comma-separated list"
+                .to_string(),
+        );
+    }
+    if value.trim() != value {
+        return Err("origin must not contain leading or trailing whitespace".to_string());
+    }
+
+    let parsed = Url::parse(value).map_err(|error| format!("invalid origin {value:?}: {error}"))?;
+    if parsed.host().is_none() {
+        return Err(format!(
+            "invalid origin {value:?}: expected a scheme and host"
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!(
+            "invalid origin {value:?}: embedded credentials are not allowed"
+        ));
+    }
+    if !matches!(parsed.path(), "" | "/") {
+        return Err(format!("invalid origin {value:?}: paths are not allowed"));
+    }
+    if parsed.query().is_some() {
+        return Err(format!(
+            "invalid origin {value:?}: query strings are not allowed"
+        ));
+    }
+    if parsed.fragment().is_some() {
+        return Err(format!(
+            "invalid origin {value:?}: fragments are not allowed"
+        ));
+    }
+
+    // `Url` canonicalizes the scheme, host, IPv6 brackets, and default port.
+    // Rebuild only the serialized origin, dropping an optional trailing slash.
+    let authority = &parsed[Position::BeforeHost..Position::AfterPort];
+    let normalized = format!("{}://{}", parsed.scheme(), authority);
+    normalized
+        .parse::<HeaderValue>()
+        .map_err(|error| format!("invalid origin header {normalized:?}: {error}"))?;
+    Ok(normalized)
+}
+
+/// Browser CORS policy selected locally by this node operator.
+#[derive(Debug, Clone)]
+pub(crate) enum CorsPolicy {
+    /// Do not emit an `Access-Control-Allow-Origin` response header.
+    Disabled,
+    /// Allow only the listed, normalized origins.
+    AllowOrigins(Vec<HeaderValue>),
+    /// Preserve the historical fully permissive CORS behavior.
+    Permissive,
+}
+
+impl CorsPolicy {
+    /// Resolve and validate the raw CLI fields once before either gRPC server starts.
+    pub(crate) fn from_args(args: &Args) -> Result<Self, String> {
+        if args.cors_permissive && !args.cors_allow_origins.is_empty() {
+            return Err("--cors-permissive cannot be used with --cors-allow-origin".to_string());
+        }
+        if args.cors_permissive {
+            return Ok(Self::Permissive);
+        }
+        if args.cors_allow_origins.is_empty() {
+            return Ok(Self::Disabled);
+        }
+
+        let mut origins = Vec::with_capacity(args.cors_allow_origins.len());
+        for configured in &args.cors_allow_origins {
+            let normalized = parse_cors_origin(configured)?;
+            let origin = normalized
+                .parse::<HeaderValue>()
+                .map_err(|error| format!("invalid origin header {normalized:?}: {error}"))?;
+            if !origins.contains(&origin) {
+                origins.push(origin);
+            }
+        }
+        Ok(Self::AllowOrigins(origins))
+    }
+
+    /// Construct the middleware shared by bootstrap and full gRPC servers.
+    pub(crate) fn layer(&self) -> CorsLayer {
+        match self {
+            Self::Disabled => CorsLayer::new(),
+            Self::AllowOrigins(origins) => CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins.clone()))
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .expose_headers(Any),
+            Self::Permissive => CorsLayer::permissive(),
+        }
+    }
+
+    pub(crate) fn log_selection(&self) {
+        match self {
+            Self::Disabled => tracing::info!(
+                "Browser CORS is disabled; use --cors-allow-origin or --cors-permissive to enable cross-origin gRPC-Web access"
+            ),
+            Self::AllowOrigins(origins) => {
+                let origins = origins
+                    .iter()
+                    .filter_map(|origin| origin.to_str().ok())
+                    .collect::<Vec<_>>();
+                tracing::info!(?origins, "Browser CORS origin allowlist enabled");
+            }
+            Self::Permissive => tracing::warn!(
+                "Permissive browser CORS enabled; every origin, method, and header is allowed"
+            ),
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
@@ -42,6 +170,19 @@ pub struct Args {
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
+    /// Browser origin allowed to make cross-origin gRPC-Web requests.
+    /// Repeat this flag for each trusted origin. This setting is not persisted.
+    #[arg(
+        long = "cors-allow-origin",
+        value_name = "ORIGIN",
+        value_parser = parse_cors_origin,
+        conflicts_with = "cors_permissive"
+    )]
+    pub cors_allow_origins: Vec<String>,
+    /// Allow cross-origin gRPC-Web requests from every browser origin.
+    /// This restores the historical permissive behavior and is not persisted.
+    #[arg(long, conflicts_with = "cors_allow_origins")]
+    pub cors_permissive: bool,
     /// Log level for tracing
     #[arg(short, long, default_value = "info")]
     pub log_level: LogLevel,
@@ -620,7 +761,114 @@ pub fn get_node_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{error::ErrorKind, Parser};
+
+    fn minimal_args() -> Args {
+        Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])
+            .expect("parse minimal arguments")
+    }
+
+    #[test]
+    fn cors_defaults_to_disabled() {
+        let args = minimal_args();
+
+        assert!(args.cors_allow_origins.is_empty());
+        assert!(!args.cors_permissive);
+        assert!(matches!(
+            CorsPolicy::from_args(&args).expect("resolve CORS policy"),
+            CorsPolicy::Disabled
+        ));
+    }
+
+    #[test]
+    fn parses_and_normalizes_repeated_cors_origins() {
+        let args = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--cors-allow-origin",
+            "HTTPS://Example.COM:443/",
+            "--cors-allow-origin",
+            "http://localhost:5173",
+        ])
+        .expect("parse CORS origins");
+
+        assert_eq!(
+            args.cors_allow_origins,
+            vec![
+                "https://example.com".to_string(),
+                "http://localhost:5173".to_string()
+            ]
+        );
+        let CorsPolicy::AllowOrigins(origins) =
+            CorsPolicy::from_args(&args).expect("resolve CORS allowlist")
+        else {
+            panic!("expected allowlisted CORS policy");
+        };
+        assert_eq!(
+            origins
+                .iter()
+                .map(|origin| origin.to_str().expect("ASCII origin"))
+                .collect::<Vec<_>>(),
+            vec!["https://example.com", "http://localhost:5173"]
+        );
+    }
+
+    #[test]
+    fn parses_permissive_cors() {
+        let args = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--cors-permissive",
+        ])
+        .expect("parse permissive CORS");
+
+        assert!(args.cors_permissive);
+        assert!(matches!(
+            CorsPolicy::from_args(&args).expect("resolve permissive CORS"),
+            CorsPolicy::Permissive
+        ));
+    }
+
+    #[test]
+    fn cors_allowlist_and_permissive_flags_conflict() {
+        let error = Args::try_parse_from([
+            "orbis-node",
+            "--node-controller-key",
+            "controller-key",
+            "--cors-allow-origin",
+            "https://app.example.com",
+            "--cors-permissive",
+        ])
+        .expect_err("CORS modes should conflict");
+
+        assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn rejects_invalid_cors_origins() {
+        for origin in [
+            "*",
+            "https://app.example.com/path",
+            "https://app.example.com?query=true",
+            "https://app.example.com#fragment",
+            "https://user@app.example.com",
+            "https://app.example.com,https://other.example.com",
+            "not-an-origin",
+        ] {
+            let error = Args::try_parse_from([
+                "orbis-node",
+                "--node-controller-key",
+                "controller-key",
+                "--cors-allow-origin",
+                origin,
+            ])
+            .expect_err("invalid origin should be rejected");
+
+            assert_eq!(error.kind(), ErrorKind::ValueValidation, "origin: {origin}");
+        }
+    }
 
     #[test]
     fn parses_runtime_base_path_argument() {

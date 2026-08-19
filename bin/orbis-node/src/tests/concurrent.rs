@@ -16,7 +16,7 @@ use crate::{
     dkg::v0::helpers::serialize_commitment_coefficients,
     dkg::v0::service::DkgServiceImpl,
     helpers::{
-        launch::{create_and_store_node_key, LogLevel},
+        launch::{create_and_store_node_key, CorsPolicy, LogLevel},
         test_helpers::{
             cleanup_db, create_authenticated_request, create_orbis_ring_policy,
             create_ring_on_chain, create_ring_on_chain_with_trusted_relays, test_db_path,
@@ -259,6 +259,8 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let config = NodeConfig {
             args: Args {
                 addr: grpc_bind.clone(),
+                cors_allow_origins: vec![],
+                cors_permissive: false,
                 log_level: LogLevel::Info,
                 authz_grpc: None,
                 bulletin_grpc: None,
@@ -280,6 +282,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
+            cors_policy: CorsPolicy::Disabled,
             node_key,
             network,
             local_storage,
@@ -394,6 +397,8 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         let config = NodeConfig {
             args: Args {
                 addr: grpc_bind.clone(),
+                cors_allow_origins: vec![],
+                cors_permissive: false,
                 log_level: LogLevel::Info,
                 authz_grpc: None,
                 bulletin_grpc: None,
@@ -415,6 +420,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
+            cors_policy: CorsPolicy::Disabled,
             node_key,
             network,
             local_storage,

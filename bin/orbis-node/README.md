@@ -135,6 +135,35 @@ cargo run -p orbis-node --release -- --runtime-base-path /var/lib/orbis
 
 When the option is omitted, the node keeps the existing fallback order: Cargo project root, `/data` when available, then the current directory.
 
+### Browser CORS
+
+Cross-origin browser access to the gRPC-Web endpoint is disabled by default.
+Native gRPC clients are not affected. Allow each trusted web application by
+passing its exact origin (scheme, host, and optional port) every time the node
+starts:
+
+```bash
+cargo run -p orbis-node --release -- \
+  --cors-allow-origin https://app.example.com \
+  --cors-allow-origin http://localhost:5173
+```
+
+Origin values cannot contain paths, queries, fragments, credentials, wildcards,
+or comma-separated lists. Repeat the flag for multiple origins. To explicitly
+restore the historical policy that allows every browser origin, method, and
+header:
+
+```bash
+cargo run -p orbis-node --release -- --cors-permissive
+```
+
+These options are local, per-node launch settings. They are not persisted or
+recorded in SourceHub, so every committee operator chooses and supplies their
+own policy on each launch. CORS is enforced by browsers only; it is not
+authentication and does not prevent native clients from calling the node's
+network-accessible RPCs. Keep endpoint authentication and network controls in
+place even when using a restrictive origin allowlist.
+
 Use matching **`crypto`** features with the rest of the workspace when you switch curves (`--no-default-features --features decaf377,...`).
 
 ## Tests

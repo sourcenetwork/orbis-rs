@@ -23,7 +23,7 @@ use crate::{
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
-        launch::{create_and_store_node_key, LogLevel},
+        launch::{create_and_store_node_key, CorsPolicy, LogLevel},
         test_helpers::{
             cleanup_db, create_orbis_ring_policy, create_ring_on_chain, test_db_path,
             wait_for_nodes_ready, wait_for_ring_finalized,
@@ -215,6 +215,8 @@ async fn setup_fault_three_node_network(
         let config = NodeConfig {
             args: Args {
                 addr: grpc_bind.clone(),
+                cors_allow_origins: vec![],
+                cors_permissive: false,
                 log_level: LogLevel::Info,
                 authz_grpc: None,
                 bulletin_grpc: None,
@@ -236,6 +238,7 @@ async fn setup_fault_three_node_network(
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
             },
+            cors_policy: CorsPolicy::Disabled,
             node_key,
             network,
             local_storage,

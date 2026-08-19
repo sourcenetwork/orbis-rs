@@ -4,7 +4,7 @@ use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, resolve_runtime_base_path, Args,
+    get_network_key_secret, get_password, resolve_runtime_base_path, Args, CorsPolicy,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::store_secret::StoreSecretServiceImpl;
@@ -26,7 +26,6 @@ use std::{
 };
 use tokio::{sync::oneshot, task::JoinHandle};
 use tonic_web::GrpcWebLayer;
-use tower_http::cors::CorsLayer;
 // Concrete crypto implementations
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
@@ -42,6 +41,7 @@ use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServ
 /// Configuration for running the node, allowing dependency injection for testing
 pub(crate) struct NodeConfig {
     pub(crate) args: Args,
+    pub(crate) cors_policy: CorsPolicy,
     pub(crate) node_key: String,
     pub(crate) network: Arc<dyn Network>,
     pub(crate) local_storage: LocalStorageImpl,
@@ -60,6 +60,7 @@ pub(crate) struct InitializedNode {
     pub(crate) reshare_interval: std::time::Duration,
     pub(crate) grpc_concurrency_limit_per_connection: usize,
     pub(crate) grpc_max_concurrent_streams: u32,
+    pub(crate) cors_policy: CorsPolicy,
 }
 
 /// Running info-only gRPC server used while the node waits for chain funding.
@@ -90,6 +91,9 @@ impl BootstrapInfoServer {
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
+    let cors_policy = CorsPolicy::from_args(&args)
+        .map_err(|error| format!("Invalid CORS configuration: {error}"))?;
+    cors_policy.log_selection();
     let runtime_base_path = resolve_runtime_base_path(args.runtime_base_path.as_deref());
     tracing::info!(
         path = %runtime_base_path.display(),
@@ -198,8 +202,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let node_key = signer.public_key_hex();
 
         let grpc_addr: SocketAddr = args.addr.parse()?;
-        let bootstrap_info_server =
-            start_bootstrap_info_server(grpc_addr, network.clone(), local_storage.clone())?;
+        let bootstrap_info_server = start_bootstrap_info_server(
+            grpc_addr,
+            network.clone(),
+            local_storage.clone(),
+            cors_policy.clone(),
+        )?;
         tracing::info!(
             grpc_addr = %bootstrap_info_server.local_addr(),
             "Bootstrap info service started while waiting for funding"
@@ -240,6 +248,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
             let config = NodeConfig {
                 args,
+                cors_policy,
                 node_key,
                 network,
                 local_storage,
@@ -264,6 +273,7 @@ pub(crate) fn start_bootstrap_info_server(
     grpc_addr: SocketAddr,
     network: Arc<dyn Network>,
     local_storage: LocalStorageImpl,
+    cors_policy: CorsPolicy,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
@@ -274,7 +284,7 @@ pub(crate) fn start_bootstrap_info_server(
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .accept_http1(true)
-            .layer(CorsLayer::permissive())
+            .layer(cors_policy.layer())
             .layer(GrpcWebLayer::new())
             .add_service(
                 InfoServiceServer::new(info_service)
@@ -384,6 +394,7 @@ pub(crate) async fn init_node(
         reshare_interval: std::time::Duration::from_secs(config.args.reshare_interval_secs),
         grpc_concurrency_limit_per_connection: config.args.grpc_concurrency_limit_per_connection,
         grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
+        cors_policy: config.cors_policy,
     })
 }
 
@@ -436,7 +447,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .accept_http1(true)
         .concurrency_limit_per_connection(node.grpc_concurrency_limit_per_connection)
         .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
-        .layer(CorsLayer::permissive())
+        .layer(node.cors_policy.layer())
         .layer(GrpcWebLayer::new())
         .add_service(
             InfoServiceServer::new(info_service)
