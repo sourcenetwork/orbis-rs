@@ -500,6 +500,10 @@ async fn test_full_grpc_server_allows_only_configured_browser_origins() {
         "allowlisted policy did not preserve gRPC-Web method/header flexibility:\n{allowed_preflight}"
     );
     assert!(
+        allowed_headers.contains("vary: origin"),
+        "allowlisted preflight response did not vary by origin:\n{allowed_preflight}"
+    );
+    assert!(
         !allowed_headers.contains("access-control-allow-credentials"),
         "allowlisted CORS unexpectedly enabled browser credentials:\n{allowed_preflight}"
     );

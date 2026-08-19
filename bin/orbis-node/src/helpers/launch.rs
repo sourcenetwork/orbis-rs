@@ -847,6 +847,36 @@ mod tests {
     }
 
     #[test]
+    fn cors_policy_deduplicates_programmatic_equivalent_origins() {
+        let mut args = minimal_args();
+        args.cors_allow_origins = vec![
+            "HTTPS://Example.COM:443/".to_string(),
+            "https://example.com".to_string(),
+        ];
+
+        let CorsPolicy::AllowOrigins(origins) =
+            CorsPolicy::from_args(&args).expect("resolve CORS allowlist")
+        else {
+            panic!("expected allowlisted CORS policy");
+        };
+        assert_eq!(origins.len(), 1);
+        assert_eq!(origins[0], "https://example.com");
+    }
+
+    #[test]
+    fn cors_policy_rejects_programmatic_conflicting_modes() {
+        let mut args = minimal_args();
+        args.cors_permissive = true;
+        args.cors_allow_origins = vec!["https://app.example.com".to_string()];
+
+        let error = CorsPolicy::from_args(&args).expect_err("CORS modes should conflict");
+        assert_eq!(
+            error,
+            "--cors-permissive cannot be used with --cors-allow-origin"
+        );
+    }
+
+    #[test]
     fn rejects_invalid_cors_origins() {
         for origin in [
             "*",

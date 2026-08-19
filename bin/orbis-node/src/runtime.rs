@@ -68,9 +68,26 @@ pub(crate) struct InitializedNode {
 }
 
 /// Running info-only gRPC server used while the node waits for chain funding.
+#[derive(Clone)]
+struct BootstrapStatus(Arc<AtomicI32>);
+
+impl BootstrapStatus {
+    fn new(status: NodeStatus) -> Self {
+        Self(Arc::new(AtomicI32::new(status as i32)))
+    }
+
+    fn set_status(&self, status: NodeStatus) {
+        self.0.store(status as i32, Ordering::SeqCst);
+    }
+
+    fn shared(&self) -> Arc<AtomicI32> {
+        self.0.clone()
+    }
+}
+
 pub(crate) struct BootstrapInfoServer {
     local_addr: SocketAddr,
-    status: Arc<AtomicI32>,
+    status: BootstrapStatus,
     shutdown_tx: oneshot::Sender<()>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
 }
@@ -115,7 +132,14 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tokio::signal::ctrl_c().await?;
         tracing::info!("Received shutdown signal");
         let _ = shutdown_tx.send(true);
-        Ok::<(), std::io::Error>(())
+
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::warn!("Received second shutdown signal; forcing exit");
+                std::process::exit(130);
+            }
+            Err(error) => Err(error),
+        }
     };
 
     let lifecycle = async move {
@@ -134,8 +158,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .filter(|file| !file.is_empty())
             .map(PathBuf::from);
-        let password =
-            get_password(password_file).map_err(|e| format!("Failed to get password: {}", e))?;
+        let password = tokio::task::spawn_blocking(move || get_password(password_file))
+            .await
+            .map_err(|e| format!("Password retrieval task failed: {e}"))?
+            .map_err(|e| format!("Failed to get password: {e}"))?;
         let local_storage = LocalStorageImpl::new(password, db_path(&runtime_base_path, "orbis"))
             .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
@@ -223,13 +249,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         let bootstrap_status = bootstrap_info_server.status.clone();
         let init_result = async move {
-            bootstrap_status.store(NodeStatus::ConnectingToChain as i32, Ordering::SeqCst);
+            bootstrap_status.set_status(NodeStatus::ConnectingToChain);
 
             // For integration tests, this funds the account, this is handled differently live
             // Only fund if both the feature is enabled AND we're in the integration test network
             #[cfg(feature = "integration-test")]
             {
-                bootstrap_status.store(NodeStatus::WaitingForFunding as i32, Ordering::SeqCst);
+                bootstrap_status.set_status(NodeStatus::WaitingForFunding);
                 // Build chain config with the provided RPC/REST URLs
                 let fund_config = ChainConfigBuilder::default()
                     .chain_id(args.chain_id.clone())
@@ -241,10 +267,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 cli_tool::fund(signer.address(), fund_config)
                     .await
                     .map_err(|e| format!("Failed to fund node account: {}", e))?;
+                bootstrap_status.set_status(NodeStatus::Funded);
             }
 
             // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-            bootstrap_status.store(NodeStatus::WaitingForFunding as i32, Ordering::SeqCst);
+            #[cfg(not(feature = "integration-test"))]
+            bootstrap_status.set_status(NodeStatus::WaitingForFunding);
             let bulletin: Arc<BulletinImpl> = Arc::new(
                 BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
                     .await
@@ -253,7 +281,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
                 .await
                 .map_err(|e| format!("Failed to ensure node info: {}", e))?;
-            bootstrap_status.store(NodeStatus::Funded as i32, Ordering::SeqCst);
+            #[cfg(not(feature = "integration-test"))]
+            bootstrap_status.set_status(NodeStatus::Funded);
 
             let config = NodeConfig {
                 args,
@@ -290,7 +319,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         biased;
         signal_result = &mut shutdown_signal => {
             signal_result.map_err(|error| format!("Failed to listen for shutdown signal: {error}"))?;
-            lifecycle.await
+            Ok(())
         },
         result = &mut lifecycle => result,
     }
@@ -306,8 +335,8 @@ pub(crate) fn start_bootstrap_info_server(
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let status = Arc::new(AtomicI32::new(NodeStatus::Bootstrapping as i32));
-    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.clone());
+    let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
+    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -590,17 +619,10 @@ async fn run_server(
         }
     }
 
-    let grpc_server = grpc_server.serve(node.grpc_addr);
-
     // Run gRPC server (router runs in background automatically)
-    let result = tokio::select! {
-        result = grpc_server => {
-            result
-        }
-        _ = wait_for_shutdown(shutdown_rx) => {
-            Ok(())
-        }
-    };
+    let result = grpc_server
+        .serve_with_shutdown(node.grpc_addr, wait_for_shutdown(shutdown_rx))
+        .await;
 
     if let Some(scheduler) = pss_scheduler {
         scheduler.shutdown().await;
