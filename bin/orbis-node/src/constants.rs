@@ -146,7 +146,14 @@ pub const DKG_PREPARATION_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
 pub const DKG_FORWARDED_START_RESPONSE_GRACE: Duration = Duration::from_secs(30);
 
 /// Lack of progress that triggers explicit public/private repair.
+///
+/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT` above: a live
+/// fault-injection test that blocks a peer mid-ceremony needs repair to actually retry
+/// against it within the test's real-time budget, not once per real 10 seconds.
+#[cfg(not(test))]
 pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum backoff between repair attempts.
 pub const DKG_MAX_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
@@ -164,7 +171,14 @@ pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
 
 /// Cadence of the Fresh-DKG soft-stall scan. Matches `DKG_REPAIR_STALL_INTERVAL`
 /// so soft-stall detection is checked at least as often as repair itself runs.
+///
+/// Shortened under `cfg(test)` alongside `DKG_REPAIR_STALL_INTERVAL` and
+/// `DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD` so a live fault-injection soft-stall test
+/// completes in real seconds rather than real minutes.
+#[cfg(not(test))]
 pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// How long a peer must have been failing repair/private-exchange retries
 /// before the leader treats a Fresh DKG crypto phase as genuinely stalled and
@@ -173,7 +187,16 @@ pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 /// so this comfortably spans at least two failed repair cycles (10s initial +
 /// 30s + margin) before concluding the peer, not transient Gossip loss, is
 /// the problem.
+///
+/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT`/
+/// `DKG_REPAIR_STALL_INTERVAL` above; still comfortably spans several shortened
+/// repair cycles (`DKG_REPAIR_STALL_INTERVAL` under test) before firing, so the
+/// "real stall vs. transient loss" distinction the production value protects
+/// still holds at test scale.
+#[cfg(not(test))]
 pub const DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD: Duration = Duration::from_secs(60);
+#[cfg(test)]
+pub const DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD: Duration = Duration::from_secs(3);
 
 /// Minimum consecutive failed repair/retry attempts against one peer before
 /// it counts toward soft-stall, in addition to the elapsed-time gate above.

@@ -18,11 +18,10 @@ use tokio::time::{sleep, timeout, Duration, Instant};
 
 use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
-    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE,
-    DKG_MAX_REPAIR_BACKOFF, DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT,
-    DKG_REPAIR_STALL_INTERVAL, DKG_TOPOLOGY_PROBE_INTERVAL, JWT_CLOCK_SKEW_LEEWAY_SECS,
-    MAX_DKG_COMMITTEE_SIZE, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT,
-    PSS_GRACE_PERIOD_SECS,
+    DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE, DKG_MAX_REPAIR_BACKOFF,
+    DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT, DKG_REPAIR_STALL_INTERVAL,
+    DKG_TOPOLOGY_PROBE_INTERVAL, JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_DKG_COMMITTEE_SIZE, MAX_JWT_BYTES,
+    MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
@@ -5524,10 +5523,8 @@ where
                 .await;
             }
             Ok(response) => {
-                activation_failures.push((
-                    peer,
-                    format!("invalid activation response: {response:?}"),
-                ));
+                activation_failures
+                    .push((peer, format!("invalid activation response: {response:?}")));
             }
             Err(error) => {
                 if error.is_unreachable() {
