@@ -75,8 +75,7 @@ use crate::helpers::node_routes::{
 use crate::helpers::protocol_version::read_ring_for_route;
 #[cfg(test)]
 use crate::helpers::test_helpers::{
-    create_test_app_state_default, create_test_app_state_with_bulletin, TestKeyPair,
-    TEST_FRESH_DKG_RING_ID,
+    create_test_app_state_default, create_test_app_state_with_bulletin, TEST_FRESH_DKG_RING_ID,
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::reporting::v0::types::{
@@ -2403,12 +2402,8 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     match request {
-        DkgControlMessage::StartFresh {
-            ring_id,
-            token_string,
-        } => {
-            let (ceremony_id, attempt_id) =
-                coordinate_fresh(state, routes, ring_id, token_string).await?;
+        DkgControlMessage::StartFresh { ring_id } => {
+            let (ceremony_id, attempt_id) = coordinate_fresh(state, routes, ring_id).await?;
             Ok(DkgControlMessage::StartAccepted {
                 ceremony_id,
                 attempt_id,
@@ -3939,7 +3934,6 @@ pub async fn start_fresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<(CeremonyId, AttemptId)>
 where
     D: CoordinatorDkg,
@@ -3953,7 +3947,7 @@ where
         .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader == state.node_key {
-        return coordinate_fresh(state, routes, ring_id, token_string).await;
+        return coordinate_fresh(state, routes, ring_id).await;
     }
     let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
@@ -3966,10 +3960,7 @@ where
         &state,
         routes,
         leader_peer,
-        DkgControlMessage::StartFresh {
-            ring_id,
-            token_string,
-        },
+        DkgControlMessage::StartFresh { ring_id },
         DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE,
     )
     .await?
@@ -4254,7 +4245,6 @@ where
                 threshold: next_threshold,
             }),
         },
-        token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk,
             new_peer_node_keys: next_keys,
@@ -4451,7 +4441,6 @@ where
             },
             next: None,
         },
-        token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk,
         },
@@ -4579,7 +4568,6 @@ async fn coordinate_fresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<(CeremonyId, AttemptId)>
 where
     D: CoordinatorDkg,
@@ -4633,7 +4621,6 @@ where
             },
             next: None,
         },
-        token_string,
         kind: SessionKind::Fresh,
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id.clone(),
@@ -5630,7 +5617,6 @@ where
         &prepare.committees.current.peer_routes,
         &prepare.committees.current.node_keys,
         &prepare.committees.current.node_id_assignments,
-        &prepare.token_string,
         &prepare.kind,
         prepare.pss_interval,
         prepare.policy_id.clone(),
@@ -11930,7 +11916,6 @@ mod stability_tests {
             topic_id: [0; 32],
             leader_node_key: "next-a".into(),
             committees: committees.clone(),
-            token_string: String::new(),
             kind: SessionKind::Reshare {
                 ring_pk_hex: "ring-pk".into(),
                 new_peer_node_keys: committees.next.as_ref().unwrap().node_keys.clone(),
@@ -12576,7 +12561,6 @@ mod stability_tests {
                 },
                 next: None,
             },
-            token_string: String::new(),
             kind: SessionKind::Refresh {
                 ring_pk_hex: "test-ring".to_string(),
             },
@@ -14887,7 +14871,6 @@ mod stability_tests {
         state: &Arc<AppState<crypto::DkgImpl>>,
         ring_id: &str,
         node_key: &str,
-        token: String,
         ceremony_id: CeremonyId,
     ) -> PrepareSession {
         let leader = transport::canonical_leader(std::slice::from_ref(&node_key.to_string()))
@@ -14927,7 +14910,6 @@ mod stability_tests {
                 },
                 next: None,
             },
-            token_string: token,
             kind: SessionKind::Fresh,
             pss_interval: 60,
             policy_id: Some("test-policy".to_string()),
@@ -14975,11 +14957,8 @@ mod stability_tests {
             .expect("seed fresh ring");
 
         let state = Arc::new(app_state);
-        let token = TestKeyPair::new()
-            .create_dkg_jwt(&ring_id)
-            .expect("create JWT");
         let ceremony_id = CeremonyId(0xC0FFEE);
-        let prepare = fresh_self_prepare(&state, &ring_id, &node_key, token, ceremony_id).await;
+        let prepare = fresh_self_prepare(&state, &ring_id, &node_key, ceremony_id).await;
         let self_peer = state.network.local_peer_id();
 
         match prepare_participant(state.clone(), &network::V0, prepare.clone(), &self_peer)
@@ -15033,18 +15012,8 @@ mod stability_tests {
             .expect("seed fresh ring");
 
         let state = Arc::new(app_state);
-        let token = TestKeyPair::new()
-            .create_dkg_jwt(&ring_id)
-            .expect("create JWT");
         let first_ceremony_id = CeremonyId(0xC0FFEE);
-        let first = fresh_self_prepare(
-            &state,
-            &ring_id,
-            &node_key,
-            token.clone(),
-            first_ceremony_id,
-        )
-        .await;
+        let first = fresh_self_prepare(&state, &ring_id, &node_key, first_ceremony_id).await;
         let self_peer = state.network.local_peer_id();
 
         prepare_participant(state.clone(), &network::V0, first.clone(), &self_peer)

@@ -3114,7 +3114,6 @@ async fn control_ack_equivocation_queues_report() {
             current: committee,
             next: None,
         },
-        token_string: String::new(),
         kind: refresh_kind,
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id.clone(),
@@ -3300,7 +3299,6 @@ async fn leader_prepare_fault_queues_report_for_noncanonical_leader() {
             current: committee,
             next: None,
         },
-        token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring.ring_pk.clone(),
         },

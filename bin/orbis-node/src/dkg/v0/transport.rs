@@ -660,7 +660,6 @@ pub struct PrepareSession {
     pub topic_id: [u8; 32],
     pub leader_node_key: String,
     pub committees: CeremonyConfig,
-    pub token_string: String,
     pub kind: SessionKind,
     pub pss_interval: u64,
     pub policy_id: Option<String>,
@@ -728,7 +727,6 @@ impl PrepareSession {
 pub enum DkgControlMessage {
     StartFresh {
         ring_id: String,
-        token_string: String,
     },
     StartAccepted {
         ceremony_id: CeremonyId,
@@ -1534,7 +1532,6 @@ mod tests {
                 },
                 next: None,
             },
-            token_string: "credential".into(),
             kind: SessionKind::Fresh,
             pss_interval: 60,
             policy_id: Some("policy".into()),
@@ -1668,7 +1665,6 @@ mod tests {
                     2,
                 )),
             },
-            token_string: String::new(),
             kind: SessionKind::Reshare {
                 ring_pk_hex: "ring-pk".into(),
                 new_peer_node_keys: vec!["new-a".into(), "new-b".into()],

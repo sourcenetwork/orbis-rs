@@ -16,7 +16,6 @@ use crate::helpers::test_helpers::{
     test_db_path, TestKeyPair,
 };
 use crate::ring_state::RingIndexEntry;
-use authn::DkgClaims;
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
@@ -353,6 +352,36 @@ async fn test_start_dkg_ring_not_found() {
     cleanup_db(&db_path);
 }
 
+/// Test: start_dkg rejects an empty ring_id before touching the bulletin.
+///
+/// Without this fast, local check an empty ring_id would fall through to
+/// `read_ring_for_route`, which retries a failed chain read up to 3 times
+/// with a 500ms delay between attempts — treating "not found" the same as a
+/// transient network blip. This asserts the trivially-detectable empty case
+/// is rejected immediately instead of paying for that retry loop.
+#[tokio::test]
+async fn test_start_dkg_rejects_empty_ring_id() {
+    let db_name = "test_start_dkg_rejects_empty_ring_id";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
+
+    let request = StartDkgRequest {
+        ring_id: String::new(),
+    };
+
+    let result = service.start_dkg(Request::new(request)).await;
+
+    let status = result.expect_err("start_dkg should fail with an empty ring_id");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    assert!(
+        status.message().contains("ring_id must not be empty"),
+        "error message should indicate empty ring_id: {}",
+        status.message()
+    );
+    cleanup_db(&db_path);
+}
+
 /// Test: start_dkg returns Unavailable when it cannot reach a ring participant.
 ///
 /// Seeds a ring whose sole participant has a peer_id that passes format validation
@@ -625,224 +654,6 @@ async fn test_start_dkg_succeeds_on_all_connections() {
     );
 }
 
-#[tokio::test]
-async fn test_start_dkg_fails_missing_auth_header() {
-    let db_name = "test_start_dkg_fails_missing_auth_header";
-    let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
-
-    let request = StartDkgRequest {
-        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-    };
-
-    // Create request WITHOUT authentication header
-    let tonic_request = Request::new(request);
-
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(
-        result.is_err(),
-        "start_dkg should fail when Authorization header is missing"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::Unauthenticated,
-        "Error code should be Unauthenticated for missing auth header"
-    );
-
-    assert!(
-        status.message().contains("Unauthorized"),
-        "Error message should indicate missing authorization: {}",
-        status.message()
-    );
-    cleanup_db(&db_path);
-}
-
-#[tokio::test]
-async fn test_start_dkg_fails_malformed_jwt() {
-    let db_name = "test_start_dkg_fails_malformed_jwt";
-    let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
-
-    let request = StartDkgRequest {
-        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-    };
-
-    // Create request with malformed JWT (not a valid JWT structure)
-    let tonic_request = create_authenticated_request(request, "not-a-valid-jwt-token").unwrap();
-
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(
-        result.is_err(),
-        "start_dkg should fail with malformed JWT token"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::Unauthenticated,
-        "Error code should be Unauthenticated for malformed JWT"
-    );
-    cleanup_db(&db_path);
-}
-
-#[tokio::test]
-async fn test_start_dkg_fails_wrong_signature() {
-    let db_name = "test_start_dkg_fails_wrong_signature";
-    let db_path = test_db_path(db_name);
-    let app_state = create_test_app_state_default(db_name).await;
-    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
-
-    // Create a valid JWT with key_pair_1
-    let key_pair_1 = TestKeyPair::new();
-    let valid_token = key_pair_1
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-        .expect("Failed to create JWT");
-
-    // Tamper with the signature by changing a character
-    // JWT format: header.payload.signature
-    let parts: Vec<&str> = valid_token.split('.').collect();
-    assert_eq!(parts.len(), 3, "JWT should have 3 parts");
-
-    // Modify the signature portion to invalidate it
-    let mut tampered_sig = parts[2].to_string();
-    if let Some(c) = tampered_sig.pop() {
-        // Change the last character to invalidate the signature
-        let new_char = if c == 'A' { 'B' } else { 'A' };
-        tampered_sig.push(new_char);
-    }
-    let tampered_token = format!("{}.{}.{}", parts[0], parts[1], tampered_sig);
-
-    let request = StartDkgRequest {
-        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-    };
-
-    let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
-
-    let result = service.start_dkg(tonic_request).await;
-
-    assert!(
-        result.is_err(),
-        "start_dkg should fail with tampered JWT signature"
-    );
-
-    let status = result.unwrap_err();
-    assert_eq!(
-        status.code(),
-        tonic::Code::Unauthenticated,
-        "Error code should be Unauthenticated for invalid signature"
-    );
-    cleanup_db(&db_path);
-}
-
-#[tokio::test]
-async fn test_start_dkg_rejects_relay_not_trusted_by_ring() {
-    let db_name = "test_start_dkg_rejects_relay_not_trusted_by_ring";
-    let db_paths = [
-        test_db_path(&format!("{}_1", db_name)),
-        test_db_path(&format!("{}_2", db_name)),
-        test_db_path(&format!("{}_3", db_name)),
-    ];
-    let mut network = setup_three_node_network(false, db_name).await;
-    let service =
-        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
-    let relay = TestKeyPair::new();
-    let token = relay
-        .sign_for_actor(
-            "did:opk:user".to_string(),
-            DkgClaims {
-                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-            },
-            Duration::from_secs(60),
-        )
-        .expect("create delegated DKG token");
-    let request = create_authenticated_request(
-        StartDkgRequest {
-            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-        },
-        &token,
-    )
-    .expect("create authenticated request");
-
-    let status = service.start_dkg(request).await.expect_err("reject relay");
-    assert_eq!(status.code(), tonic::Code::Unauthenticated);
-
-    network.shutdown_routers().await.expect("shutdown routers");
-    drop(network);
-    for path in db_paths {
-        cleanup_db(&path);
-    }
-}
-
-/// Test: Verify that SessionInit with invalid JWT token is rejected by peer nodes
-///
-/// This test verifies that when a peer node receives a SessionInit message
-/// with an invalid JWT token, it rejects the session initialization.
-#[tokio::test]
-async fn test_dkg_session_init_fails_with_invalid_jwt() {
-    let db_name = "test_dkg_session_init_fails_with_invalid_jwt";
-    let db_path = test_db_path(db_name);
-
-    // Create a node to receive the SessionInit
-    let app_state = create_test_app_state_default(db_name).await;
-    let app_state = Arc::new(app_state);
-    let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
-
-    // Create a SessionInit message with an invalid JWT token
-    let session_init = TestSessionInit {
-        session_id: 12345,
-        threshold: 2,
-        total_participants: 3,
-        peer_ids: vec![
-            "peer1".to_string(),
-            "peer2".to_string(),
-            "peer3".to_string(),
-        ],
-        peer_node_keys: vec![
-            "peer1".to_string(),
-            "peer2".to_string(),
-            "peer3".to_string(),
-        ],
-        node_id_assignments: std::collections::HashMap::from([
-            ("peer1".to_string(), 1),
-            ("peer2".to_string(), 2),
-            ("peer3".to_string(), 3),
-        ]),
-        token_string: "not-a-valid-jwt-token".to_string(), // Invalid JWT
-        kind: SessionKind::Fresh,
-        pss_interval: 86400,
-        policy_id: None,
-        ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
-    };
-
-    // Try to handle the message - should fail due to invalid JWT
-    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
-    let result = invoke_session_init(&coordinator, session_init, &dummy_peer_id).await;
-
-    assert!(
-        result.is_err(),
-        "SessionInit with invalid JWT should be rejected"
-    );
-
-    let error = result.unwrap_err();
-    println!("SessionInit correctly rejected with error: {}", error);
-    assert!(
-        error.to_string().contains("Unauthorized")
-            || error.to_string().contains("JWT")
-            || error.to_string().contains("validation"),
-        "Error should indicate authentication failure: {}",
-        error
-    );
-
-    println!("SUCCESS! SessionInit with invalid JWT was correctly rejected");
-    cleanup_db(&db_path);
-}
-
 /// Test: Verify that SessionInit with params not matching the bulletin ring is rejected.
 ///
 /// In the new DKG flow the bulletin is the authoritative source. The coordinator
@@ -884,11 +695,6 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
     let app_state = create_test_app_state_with_bulletin(true, bulletin, db_name).await;
     let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
-    let test_keys = TestKeyPair::new();
-    let token = test_keys
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-        .expect("Failed to create JWT");
-
     // SessionInit claims threshold=2, bulletin says 3 → validate_fresh_session_init_params rejects.
     let session_init = TestSessionInit {
         session_id: 12345,
@@ -901,7 +707,6 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
             ("peer2".to_string(), 2),
             ("peer3".to_string(), 3),
         ]),
-        token_string: token,
         kind: SessionKind::Fresh,
         pss_interval: 86400,
         policy_id: None,
@@ -936,13 +741,6 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     let app_state = create_test_app_state_default(db_name).await;
     let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
 
-    // Create a valid JWT with different peer_ids than what's in SessionInit
-    let test_keys = TestKeyPair::new();
-    let mismatched_token = test_keys
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-        .expect("Failed to create JWT");
-
-    // SessionInit has different peer_ids than the JWT
     let session_peer_ids = vec![
         "peer1".to_string(),
         "peer2".to_string(),
@@ -960,7 +758,6 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
             ("peer2".to_string(), 2),
             ("peer3".to_string(), 3),
         ]),
-        token_string: mismatched_token,
         kind: SessionKind::Fresh,
         pss_interval: 86400,
         policy_id: None,
@@ -1032,9 +829,6 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
     let peer_ids = vec![local_peer_id_hex.clone()];
     let peer_node_keys = vec![node_key.clone()];
-    let token = TestKeyPair::new()
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-        .expect("create JWT");
     let session_init = TestSessionInit {
         session_id: 98765,
         threshold: 1,
@@ -1042,7 +836,6 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
         peer_ids,
         peer_node_keys,
         node_id_assignments: std::collections::HashMap::from([(node_key, 1)]),
-        token_string: token,
         kind: SessionKind::Fresh,
         pss_interval: 86400,
         policy_id: None,
@@ -1092,9 +885,6 @@ async fn test_fresh_session_init_publishes_complete_state() {
 
     let app_state = Arc::new(app_state);
     let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
-    let token = TestKeyPair::new()
-        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-        .expect("create JWT");
     let session_init = TestSessionInit {
         session_id,
         threshold: 1,
@@ -1102,7 +892,6 @@ async fn test_fresh_session_init_publishes_complete_state() {
         peer_ids: vec![local_peer_id_hex.clone()],
         peer_node_keys: vec![node_key.clone()],
         node_id_assignments: std::collections::HashMap::from([(node_key.clone(), 1)]),
-        token_string: token,
         kind: SessionKind::Fresh,
         pss_interval,
         policy_id: Some("test-policy".to_string()),
@@ -1204,9 +993,6 @@ async fn test_fresh_session_init_rejects_swapped_sourcehub_route_bindings() {
         peer_node_keys: peer_node_keys.clone(),
         node_id_assignments: canonical_node_id_assignments_from_node_keys(&peer_node_keys)
             .expect("canonical assignments"),
-        token_string: TestKeyPair::new()
-            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
-            .expect("create JWT"),
         kind: SessionKind::Fresh,
         pss_interval: 60,
         policy_id: Some("test-policy".to_string()),

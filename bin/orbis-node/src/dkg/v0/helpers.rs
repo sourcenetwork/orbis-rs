@@ -5,7 +5,6 @@ use crate::dkg::v0::session_state::ReshareParams;
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
-use authn::{BearerToken, DkgClaims};
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PriShare};
 use crypto::{
@@ -388,23 +387,6 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     }
 
     Ok(ring_payload)
-}
-
-/// Validates JWT claims against the DKG request.
-pub fn validate_dkg_claims(token: &BearerToken<DkgClaims>, ring_id: &str) -> Result<()> {
-    if ring_id.is_empty() {
-        return Err(DkgError::Unauthorized(
-            "ring_id must not be empty".to_string(),
-        ));
-    }
-    if token.claims.ring_id != ring_id {
-        return Err(DkgError::Unauthorized(format!(
-            "Token ring_id ({:?}) does not match request ring_id ({:?})",
-            token.claims.ring_id, ring_id
-        )));
-    }
-
-    Ok(())
 }
 
 /// Validates the structural state of a `RingPayload` for a fresh DKG:
@@ -870,19 +852,6 @@ mod tests {
         bundle.save_by_ring_key(storage, ring_pk).unwrap();
     }
 
-    fn dkg_token(_policy_id: Option<&str>) -> BearerToken<DkgClaims> {
-        BearerToken {
-            issuer_id: "issuer".to_string(),
-            subject_id: None,
-            issued_time: 0,
-            expiration_time: 1,
-            not_before: None,
-            claims: DkgClaims {
-                ring_id: "ring-1".to_string(),
-            },
-        }
-    }
-
     async fn seed_node_info(
         bulletin: &DummyBulletin,
         node_key: &str,
@@ -1311,31 +1280,6 @@ mod tests {
             validate_fresh_dkg_ring_payload("ring-1", &payload),
             Err(DkgError::InvalidInput(_))
         ));
-    }
-
-    #[test]
-    fn test_validate_dkg_claims_policy_id_compares_empty_string_directly() {
-        let token = dkg_token(Some(""));
-
-        assert!(validate_dkg_claims(&token, "ring-1").is_ok());
-
-        let result = validate_dkg_claims(&token, "other-ring");
-        assert!(
-            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Token ring_id")),
-            "Expected Unauthorized for mismatched ring_id, got: {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn test_validate_dkg_claims_distinguishes_absent_and_zero_pss_interval() {
-        let token = dkg_token(None);
-        let result = validate_dkg_claims(&token, "");
-        assert!(
-            matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("ring_id must not be empty")),
-            "Expected Unauthorized for empty request ring_id, got: {:?}",
-            result
-        );
     }
 
     #[test]

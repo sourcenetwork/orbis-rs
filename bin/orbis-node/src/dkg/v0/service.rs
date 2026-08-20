@@ -1,11 +1,10 @@
 use crate::app_state::AppState;
 use crate::dkg::v0::error::DkgError;
-use crate::dkg::v0::helpers::{validate_dkg_claims, validate_fresh_dkg_ring_payload};
+use crate::dkg::v0::helpers::validate_fresh_dkg_ring_payload;
 use crate::dkg::v0::network as dkg_network;
-use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_actor};
+use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::metrics;
-use authn::DkgClaims;
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest, StartDkgResponse};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -59,18 +58,22 @@ where
     ) -> Result<Response<StartDkgResponse>, Status> {
         let grpc_metrics = metrics::GrpcRequestGuard::new("dkg", "start_dkg");
 
-        // Get current timestamp (needed for both auth and response)
         let current_time = current_unix_time().map_err(DkgError::SystemTime)?;
-
-        // 1. Authenticate: Extract and validate JWT
-        let (token_str, token) = extract_and_validate_jwt::<DkgClaims, _>(&request, current_time)
-            .map_err(DkgError::Unauthorized)?;
         let req = request.into_inner();
-
-        // 2. Authorize the request itself. Ring parameters are read from the bulletin.
-        validate_dkg_claims(&token, &req.ring_id)?;
-
         let ring_id = req.ring_id.clone();
+        if ring_id.is_empty() {
+            return Err(DkgError::InvalidInput("ring_id must not be empty".to_string()).into());
+        }
+
+        // No caller authentication here by design: ring authorization already
+        // happened on-chain (policy-id ownership at ring creation, node
+        // whitelisting when this node joined the committee), so this endpoint
+        // is just a "someone kick this off" trigger, not an authorization
+        // decision — anyone can already reach it by running their own node.
+        // Every committee member independently re-validates the ring against
+        // SourceHub before joining the ceremony (`validate_fresh_init`), which
+        // is the actual authorization boundary.
+        //
         // Validates that the ring's effective protocol version matches this service (v0).
         // Returns an error with version details if the ring has migrated to a newer version.
         let ring_payload =
@@ -78,21 +81,17 @@ where
                 .await
                 .map_err(DkgError::ProtocolError)?;
         validate_fresh_dkg_ring_payload(&ring_id, &ring_payload)?;
-        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
-            .map_err(DkgError::Unauthorized)?;
 
         tracing::info!(
             threshold = ring_payload.threshold,
             peer_node_keys = ?ring_payload.peer_node_keys,
             policy_id = ?ring_payload.policy_id,
-            issuer = %token.issuer_id,
-            actor = %actor_id,
-            "Authenticated StartDkg request; forwarding to canonical DKG leader"
+            "StartDkg request accepted; forwarding to canonical DKG leader"
         );
 
         let created_at = current_time as i64;
         let (ceremony_id, _attempt_id) =
-            dkg_network::start_fresh(self.state.clone(), self.routes, ring_id.clone(), token_str)
+            dkg_network::start_fresh(self.state.clone(), self.routes, ring_id.clone())
                 .await
                 .inspect_err(|error| {
                     tracing::error!(ring_id = %ring_id, %error, "DKG start failed");
