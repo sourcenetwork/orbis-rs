@@ -5,7 +5,7 @@ use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, resolve_runtime_base_path, Args,
+    get_network_key_secret, get_password, resolve_runtime_base_path, Args, CorsPolicy,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::store_secret::StoreSecretServiceImpl;
@@ -18,6 +18,7 @@ use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
 use std::{
+    future::Future,
     net::SocketAddr,
     path::PathBuf,
     sync::{
@@ -25,9 +26,11 @@ use std::{
         Arc,
     },
 };
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::{oneshot, watch},
+    task::JoinHandle,
+};
 use tonic_web::GrpcWebLayer;
-use tower_http::cors::CorsLayer;
 // Concrete crypto implementations
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
@@ -43,6 +46,7 @@ use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServ
 /// Configuration for running the node, allowing dependency injection for testing
 pub(crate) struct NodeConfig {
     pub(crate) args: Args,
+    pub(crate) cors_policy: CorsPolicy,
     pub(crate) node_key: String,
     pub(crate) network: Arc<dyn Network>,
     pub(crate) local_storage: LocalStorageImpl,
@@ -61,12 +65,30 @@ pub(crate) struct InitializedNode {
     pub(crate) reshare_interval: std::time::Duration,
     pub(crate) grpc_concurrency_limit_per_connection: usize,
     pub(crate) grpc_max_concurrent_streams: u32,
+    pub(crate) cors_policy: CorsPolicy,
 }
 
 /// Running info-only gRPC server used while the node waits for chain funding.
+#[derive(Clone)]
+struct BootstrapStatus(Arc<AtomicI32>);
+
+impl BootstrapStatus {
+    fn new(status: NodeStatus) -> Self {
+        Self(Arc::new(AtomicI32::new(status as i32)))
+    }
+
+    fn set_status(&self, status: NodeStatus) {
+        self.0.store(status as i32, Ordering::SeqCst);
+    }
+
+    fn shared(&self) -> Arc<AtomicI32> {
+        self.0.clone()
+    }
+}
+
 pub(crate) struct BootstrapInfoServer {
     local_addr: SocketAddr,
-    status: Arc<AtomicI32>,
+    status: BootstrapStatus,
     shutdown_tx: oneshot::Sender<()>,
     task: JoinHandle<Result<(), tonic::transport::Error>>,
 }
@@ -74,10 +96,6 @@ pub(crate) struct BootstrapInfoServer {
 impl BootstrapInfoServer {
     pub(crate) fn local_addr(&self) -> SocketAddr {
         self.local_addr
-    }
-
-    pub(crate) fn set_status(&self, status: NodeStatus) {
-        self.status.store(status as i32, Ordering::SeqCst);
     }
 
     pub(crate) async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
@@ -91,6 +109,9 @@ impl BootstrapInfoServer {
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
+    let cors_policy = CorsPolicy::from_args(&args)
+        .map_err(|error| format!("Invalid CORS configuration: {error}"))?;
+    cors_policy.log_selection();
     let runtime_base_path = resolve_runtime_base_path(args.runtime_base_path.as_deref());
     tracing::info!(
         path = %runtime_base_path.display(),
@@ -107,7 +128,22 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         network_impl = NetworkImpl::name(),
     );
 
-    async move {
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutdown_signal = async move {
+        tokio::signal::ctrl_c().await?;
+        tracing::info!("Received shutdown signal");
+        let _ = shutdown_tx.send(true);
+
+        match tokio::signal::ctrl_c().await {
+            Ok(()) => {
+                tracing::warn!("Received second shutdown signal; forcing exit");
+                std::process::exit(130);
+            }
+            Err(error) => Err(error),
+        }
+    };
+
+    let lifecycle = async move {
         // List implementations used for sanity
         tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
         tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
@@ -123,8 +159,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .ok()
             .filter(|file| !file.is_empty())
             .map(PathBuf::from);
-        let password =
-            get_password(password_file).map_err(|e| format!("Failed to get password: {}", e))?;
+        let password = tokio::task::spawn_blocking(move || get_password(password_file))
+            .await
+            .map_err(|e| format!("Password retrieval task failed: {e}"))?
+            .map_err(|e| format!("Failed to get password: {e}"))?;
         let local_storage = LocalStorageImpl::new(password, db_path(&runtime_base_path, "orbis"))
             .map_err(|e| format!("Failed to create local storage: {}", e))?;
         // Get node secret hex for netwokring
@@ -199,21 +237,26 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let node_key = signer.public_key_hex();
 
         let grpc_addr: SocketAddr = args.addr.parse()?;
-        let bootstrap_info_server =
-            start_bootstrap_info_server(grpc_addr, network.clone(), local_storage.clone())?;
+        let bootstrap_info_server = start_bootstrap_info_server(
+            grpc_addr,
+            network.clone(),
+            local_storage.clone(),
+            cors_policy.clone(),
+        )?;
         tracing::info!(
             grpc_addr = %bootstrap_info_server.local_addr(),
             "Bootstrap info service started while waiting for funding"
         );
 
-        let init_result = async {
-            bootstrap_info_server.set_status(NodeStatus::ConnectingToChain);
+        let bootstrap_status = bootstrap_info_server.status.clone();
+        let init_result = async move {
+            bootstrap_status.set_status(NodeStatus::ConnectingToChain);
 
             // For integration tests, this funds the account, this is handled differently live
             // Only fund if both the feature is enabled AND we're in the integration test network
             #[cfg(feature = "integration-test")]
             {
-                bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+                bootstrap_status.set_status(NodeStatus::WaitingForFunding);
                 // Build chain config with the provided RPC/REST URLs
                 let fund_config = ChainConfigBuilder::default()
                     .chain_id(args.chain_id.clone())
@@ -225,10 +268,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 cli_tool::fund(signer.address(), fund_config)
                     .await
                     .map_err(|e| format!("Failed to fund node account: {}", e))?;
+                bootstrap_status.set_status(NodeStatus::Funded);
             }
 
             // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-            bootstrap_info_server.set_status(NodeStatus::WaitingForFunding);
+            #[cfg(not(feature = "integration-test"))]
+            bootstrap_status.set_status(NodeStatus::WaitingForFunding);
             let bulletin: Arc<BulletinImpl> = Arc::new(
                 BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
                     .await
@@ -237,10 +282,12 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
                 .await
                 .map_err(|e| format!("Failed to ensure node info: {}", e))?;
-            bootstrap_info_server.set_status(NodeStatus::Funded);
+            #[cfg(not(feature = "integration-test"))]
+            bootstrap_status.set_status(NodeStatus::Funded);
 
             let config = NodeConfig {
                 args,
+                cors_policy,
                 node_key,
                 network,
                 local_storage,
@@ -251,13 +298,32 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             init_node(config).await
         };
 
-        let init_result = init_result.await;
-        let node = shutdown_bootstrap_after_init(bootstrap_info_server, init_result).await?;
+        let Some(node) = complete_initialization_or_shutdown(
+            bootstrap_info_server,
+            init_result,
+            shutdown_rx.clone(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
 
-        run_server(node).await
+        run_server(node, shutdown_rx).await
     }
-    .instrument(root_span)
-    .await
+    .instrument(root_span);
+
+    tokio::pin!(shutdown_signal);
+    tokio::pin!(lifecycle);
+    tokio::select! {
+        // Polling the signal future first installs the OS handler before the lifecycle reaches
+        // the blocking interactive password prompt.
+        biased;
+        signal_result = &mut shutdown_signal => {
+            signal_result.map_err(|error| format!("Failed to listen for shutdown signal: {error}"))?;
+            Ok(())
+        },
+        result = &mut lifecycle => result,
+    }
 }
 
 /// Start an info-only gRPC server before the full node is ready.
@@ -265,17 +331,18 @@ pub(crate) fn start_bootstrap_info_server(
     grpc_addr: SocketAddr,
     network: Arc<dyn Network>,
     local_storage: LocalStorageImpl,
+    cors_policy: CorsPolicy,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let status = Arc::new(AtomicI32::new(NodeStatus::Bootstrapping as i32));
-    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.clone());
+    let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
+    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .accept_http1(true)
-            .layer(CorsLayer::permissive())
+            .layer(cors_policy.layer())
             .layer(GrpcWebLayer::new())
             .add_service(
                 InfoServiceServer::new(info_service)
@@ -319,6 +386,43 @@ pub(crate) async fn shutdown_bootstrap_after_init(
                 "Bootstrap info service shutdown failed while handling initialization error"
             );
             Err(init_err)
+        }
+    }
+}
+
+/// Wait for node initialization or stop it promptly when process shutdown is requested.
+pub(crate) async fn complete_initialization_or_shutdown<F>(
+    bootstrap_info_server: BootstrapInfoServer,
+    init_result: F,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<Option<InitializedNode>, Box<dyn std::error::Error>>
+where
+    F: Future<Output = Result<InitializedNode, Box<dyn std::error::Error>>>,
+{
+    tokio::pin!(init_result);
+
+    tokio::select! {
+        init_result = &mut init_result => {
+            shutdown_bootstrap_after_init(bootstrap_info_server, init_result)
+                .await
+                .map(Some)
+        }
+        _ = wait_for_shutdown(shutdown_rx) => {
+            tracing::info!("Shutdown requested during node initialization; stopping bootstrap info service");
+            bootstrap_info_server.shutdown().await?;
+            Ok(None)
+        }
+    }
+}
+
+async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
+    if *shutdown_rx.borrow() {
+        return;
+    }
+
+    while shutdown_rx.changed().await.is_ok() {
+        if *shutdown_rx.borrow() {
+            return;
         }
     }
 }
@@ -385,11 +489,15 @@ pub(crate) async fn init_node(
         reshare_interval: std::time::Duration::from_secs(config.args.reshare_interval_secs),
         grpc_concurrency_limit_per_connection: config.args.grpc_concurrency_limit_per_connection,
         grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
+        cors_policy: config.cors_policy,
     })
 }
 
 /// Run the gRPC server with the initialized node
-async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    node: InitializedNode,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
@@ -446,7 +554,7 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         .accept_http1(true)
         .concurrency_limit_per_connection(node.grpc_concurrency_limit_per_connection)
         .max_concurrent_streams(Some(node.grpc_max_concurrent_streams))
-        .layer(CorsLayer::permissive())
+        .layer(node.cors_policy.layer())
         .layer(GrpcWebLayer::new())
         .add_service(
             InfoServiceServer::new(info_service)
@@ -521,18 +629,10 @@ async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error::Err
         }
     }
 
-    let grpc_server = grpc_server.serve(node.grpc_addr);
-
     // Run gRPC server (router runs in background automatically)
-    let result = tokio::select! {
-        result = grpc_server => {
-            result
-        }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received shutdown signal");
-            Ok(())
-        }
-    };
+    let result = grpc_server
+        .serve_with_shutdown(node.grpc_addr, wait_for_shutdown(shutdown_rx))
+        .await;
 
     if let Some(scheduler) = pss_scheduler {
         scheduler.shutdown().await;

@@ -2,6 +2,15 @@
 
 This guide explains how Orbis protocol version upgrades work and gives operators a step-by-step playbook for upgrading a live ring from one protocol version to the next.
 
+## Browser CORS migration
+
+`orbis-node` no longer enables cross-origin browser gRPC-Web access by default.
+When upgrading a node used by a browser frontend, add one
+`--cors-allow-origin <ORIGIN>` argument for every trusted frontend origin. To
+preserve the previous fully permissive behavior, add `--cors-permissive`
+explicitly. These settings are local to each node, are not persisted, and must
+be supplied on every launch. Native gRPC clients require no changes.
+
 ## How It Works
 
 Every ring on-chain carries an `UpgradeInfo` field with three values:

@@ -355,6 +355,11 @@ Docker compose files use fixed test credentials only for local development; see
 [`bin/orbis-node/README.md`](bin/orbis-node/README.md#secure-secret-provisioning)
 for the node hardening checklist.
 
+Cross-origin browser gRPC-Web access is disabled by default. Node operators can
+use repeatable `--cors-allow-origin <ORIGIN>` flags for trusted frontends or
+explicitly opt into the previous open policy with `--cors-permissive`; see
+[`bin/orbis-node/README.md`](bin/orbis-node/README.md#browser-cors).
+
 ### gRPC Services
 
 - **DKG Service** - Initiate and participate in distributed key generation
