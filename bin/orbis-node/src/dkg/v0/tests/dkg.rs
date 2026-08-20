@@ -648,10 +648,17 @@ async fn test_get_dkg_session_status_reflects_live_and_completed_sessions() {
     let session_id =
         derive_fresh_dkg_session_id(TEST_FRESH_DKG_RING_ID).expect("derive session id");
     let node = *crypto::DkgImpl::new(1, 1, 1, session_id, DkgRole::Standard).expect("DkgImpl::new");
-    app_state
+    let create_outcome = app_state
         .dkg_session_state
         .create_session(session_id, node, 1, |_| {})
         .await;
+    assert_eq!(
+        create_outcome,
+        CreateSessionOutcome::Created,
+        "test setup must actually create the session, not silently no-op \
+         (e.g. LimitReached/InvalidParticipantCount), or the status assertions below would \
+         fail as a confusing NOT_FOUND instead"
+    );
 
     let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
     let test_keys = TestKeyPair::new();

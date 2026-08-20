@@ -1289,6 +1289,10 @@ fn missing_topology_peers(
     expected.difference(acknowledged).cloned().collect()
 }
 
+// Its one production caller was replaced by the structured `DkgError::BarrierFailure` per-peer
+// list (see the topology-probe deadline branch), which no longer needs a pre-joined prefix
+// string; kept for the unit test below that still exercises the truncation behavior.
+#[cfg(test)]
 fn missing_topology_peer_prefixes(missing: &[String]) -> String {
     missing
         .iter()
@@ -4808,11 +4812,7 @@ where
     let result = coordinate_prepared_inner(state.clone(), routes, prepare.clone()).await;
     if let Err(error) = &result {
         if matches!(prepare.kind, SessionKind::Fresh) {
-            if let DkgError::BarrierFailure {
-                barrier,
-                failed_peers,
-            } = error
-            {
+            if let DkgError::BarrierFailure { failed_peers, .. } = error {
                 state
                     .dkg_session_state
                     .record_failed_session(FailedDkgSessionRecord {
@@ -4821,7 +4821,9 @@ where
                         attempt_id: Some(prepare.attempt_id),
                         stage: DkgFailureStage::Preparing,
                         missing: resolve_barrier_failure_participants(&prepare, failed_peers),
-                        reason: format!("{barrier} barrier: {error}"),
+                        // `BarrierFailure`'s own Display already includes "{barrier} barrier
+                        // failed for N of the committee: ...", so this isn't reprefixed here.
+                        reason: error.to_string(),
                         failed_at: std::time::SystemTime::now(),
                     })
                     .await;
@@ -4848,19 +4850,25 @@ fn resolve_barrier_failure_participants(
     prepare: &PrepareSession,
     failed_peers: &[(String, String)],
 ) -> Vec<MissingDkgParticipant> {
-    let current = &prepare.committees.current;
     failed_peers
         .iter()
         .filter_map(|(peer_route, _reason)| {
-            let index = current
-                .peer_routes
-                .iter()
-                .position(|route| route == peer_route)?;
-            let node_key = current.node_keys.get(index)?;
-            let node_id = current.node_id_assignments.get(node_key)?;
+            let participant = participant_for_peer_route(
+                &prepare.committees,
+                CommitteeScope::Current,
+                peer_route,
+            );
+            let Some(participant) = participant else {
+                tracing::warn!(
+                    peer = %extract_node_part(peer_route),
+                    "barrier failure could not be resolved to a committee participant"
+                );
+                return None;
+            };
+            let node_key = prepare.committees.node_key(participant)?;
             Some(MissingDkgParticipant {
-                node_id: *node_id,
-                node_key: node_key.clone(),
+                node_id: participant.node_id,
+                node_key: node_key.to_string(),
             })
         })
         .collect()
@@ -5428,11 +5436,18 @@ where
             missing_peers = ?missing_routes,
             "topology preparation barrier expired"
         );
-        let prefixes = missing_topology_peer_prefixes(&missing);
-        return Err(DkgError::NetworkCommunication(format!(
-            "topology probe acknowledgement missing from {} participants before preparation deadline: {prefixes}",
-            missing.len()
-        )));
+        return Err(DkgError::BarrierFailure {
+            barrier: "topology_probe",
+            failed_peers: missing_routes
+                .iter()
+                .map(|route| {
+                    (
+                        route.clone(),
+                        "acknowledgement missing before preparation deadline".to_string(),
+                    )
+                })
+                .collect(),
+        });
     }
 
     // Activation and cryptographic start are separate barriers. Every active
@@ -5523,8 +5538,10 @@ where
                 .await;
             }
             Ok(response) => {
-                activation_failures
-                    .push((peer, format!("invalid activation response: {response:?}")));
+                activation_failures.push((
+                    peer,
+                    format!("invalid activation response: {}", response.metric_label()),
+                ));
             }
             Err(error) => {
                 if error.is_unreachable() {
@@ -5642,7 +5659,10 @@ where
                 .await;
             }
             Ok(response) => {
-                begin_failures.push((peer, format!("invalid begin response: {response:?}")));
+                begin_failures.push((
+                    peer,
+                    format!("invalid begin response: {}", response.metric_label()),
+                ));
             }
             Err(error) => {
                 if error.is_unreachable() {
@@ -11758,14 +11778,19 @@ where
                 // above (local to this one retry loop, used only for the terminal
                 // node_offline-report decision at the hard deadline), this streak persists in
                 // session state across the whole attempt so the leader's soft-stall scan can
-                // detect a genuinely failing peer well before that deadline.
-                state
-                    .dkg_session_state
-                    .record_peer_no_progress(
-                        AttemptKey::new(ceremony_id, attempt_id),
-                        remote_participant.node_id,
-                    )
-                    .await;
+                // detect a genuinely failing peer well before that deadline. A valid Busy
+                // response (see the connection-retention comment above) proves the peer is
+                // live and just temporarily overloaded — that's a reachable deferral, not the
+                // no-progress signal this streak is meant to capture, so it must not count.
+                if busy_retry_after.is_none() {
+                    state
+                        .dkg_session_state
+                        .record_peer_no_progress(
+                            AttemptKey::new(ceremony_id, attempt_id),
+                            remote_participant.node_id,
+                        )
+                        .await;
+                }
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 let retry_delay = private_retry_delay(
                     message_id,

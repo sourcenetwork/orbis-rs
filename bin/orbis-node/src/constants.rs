@@ -129,7 +129,16 @@ pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
+///
+/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT` above: a test driving a
+/// genuinely-unreachable-peer barrier failure (e.g. a refused connection, retried with backoff
+/// until this deadline) would otherwise take up to the full production value in real time.
+/// Existing tests that wait for this deadline already use a generous outer bound rather than
+/// asserting its exact value, so shortening it only makes them complete faster.
+#[cfg(not(test))]
 pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+#[cfg(test)]
+pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Interval between retransmissions of the exact preparation topology probe.
 pub const DKG_TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_millis(500);

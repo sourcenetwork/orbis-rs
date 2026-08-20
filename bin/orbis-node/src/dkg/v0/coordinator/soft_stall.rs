@@ -11,7 +11,8 @@
 use crate::app_state::AppState;
 use crate::dkg::v0::network::broadcast_attempt_abort;
 use crate::dkg::v0::session_state::{
-    AttemptStateError, FailedDkgSessionRecord, SoftStalledDkgAttempt, TopicTaskDisposition,
+    AttemptStateError, DkgPhase, FailedDkgSessionRecord, SoftStalledDkgAttempt,
+    TopicTaskDisposition,
 };
 use crate::dkg::v0::transport::{AttemptKey, CeremonyId};
 use crypto::SignImpl;
@@ -73,14 +74,23 @@ async fn handle_soft_stalled_dkg_attempt<D>(
     // Re-check under lock: the session may have completed or already been torn down (e.g. hit
     // the hard deadline) between the detection tick queuing this event and this worker
     // processing it. Either outcome makes this event a no-op, not an error.
-    let participant_routes = match app_state
+    let (participant_routes, phase) = match app_state
         .dkg_session_state
-        .with_attempt_state(attempt, |state| state.transport.participant_routes.clone())
+        .with_attempt_state(attempt, |state| {
+            (state.transport.participant_routes.clone(), state.phase)
+        })
         .await
     {
-        Ok(routes) => routes,
+        Ok(result) => result,
         Err(AttemptStateError::MissingSession) | Err(AttemptStateError::StaleAttempt) => return,
     };
+    // The stalled peer may have delivered just as this event was being drained — e.g. the
+    // attempt has already moved into (or finished) Phase4's durable completion side effects.
+    // Aborting a legitimately-completing attempt here would be far worse than a missed early
+    // abort; let it finish and don't record a failure for it.
+    if matches!(phase, DkgPhase::Phase4Completing | DkgPhase::Phase4Complete) {
+        return;
+    }
 
     app_state
         .dkg_session_state

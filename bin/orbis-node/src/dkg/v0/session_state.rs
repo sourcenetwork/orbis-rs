@@ -542,6 +542,11 @@ pub(crate) struct DkgSessionTransportState {
     /// peer. Fresh DKG's `CommitteeScope` is always `Current`, so `node_id`
     /// alone is unambiguous here.
     pub(crate) peer_no_progress: HashMap<u32, PeerNoProgressInfo>,
+    /// Set once a `SoftStalledDkgAttempt` has been successfully queued for this attempt, so
+    /// repeated soft-stall scan ticks (this attempt is still alive while the drain worker
+    /// hasn't processed the event yet) don't keep re-publishing duplicates into the bounded
+    /// channel and potentially crowding out other attempts' events.
+    pub(crate) soft_stall_reported: bool,
     public_repairs: HashMap<PublicPhase, PublicRepairState>,
     pub(crate) publishing_public_phases: HashSet<PublicPhase>,
     pub published_public_phases: HashSet<PublicPhase>,
@@ -595,6 +600,7 @@ impl Default for DkgSessionTransportState {
             public_contributions: HashMap::new(),
             public_phase_started_at: HashMap::new(),
             peer_no_progress: HashMap::new(),
+            soft_stall_reported: false,
             public_repairs: HashMap::new(),
             publishing_public_phases: HashSet::new(),
             published_public_phases: HashSet::new(),
@@ -939,8 +945,24 @@ impl<D: Dkg> DkgSessionState<D> {
         let node_key_by_id: HashMap<u32, String> =
             match canonical_node_id_assignments_from_node_keys(&self.routing.peer_node_keys) {
                 Ok(assignments) => assignments.into_iter().map(|(key, id)| (id, key)).collect(),
-                Err(_) => return Vec::new(),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        peer_node_keys_len = self.routing.peer_node_keys.len(),
+                        "missing_fresh_participants: failed to derive canonical node-id \
+                         assignments from routing.peer_node_keys"
+                    );
+                    return Vec::new();
+                }
             };
+        if node_key_by_id.len() < total_nodes as usize {
+            tracing::warn!(
+                peer_node_keys_len = self.routing.peer_node_keys.len(),
+                total_nodes,
+                "missing_fresh_participants: routing.peer_node_keys does not cover the full \
+                 committee; some missing participants may go unattributed"
+            );
+        }
         missing_ids
             .into_iter()
             .filter_map(|id| {
@@ -1435,9 +1457,16 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states: &Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         soft_stall_tx: &mpsc::Sender<SoftStalledDkgAttempt>,
     ) {
-        let states = states.read().await;
-        for (session_id, state) in states.iter() {
+        // Write lock (not read): a successfully-queued attempt gets marked
+        // `soft_stall_reported` below, under the same lock as the scan itself, so a
+        // still-alive attempt awaiting drain-worker processing can't be re-published on
+        // every subsequent tick.
+        let mut states = states.write().await;
+        for (session_id, state) in states.iter_mut() {
             if !matches!(state.kind, SessionKind::Fresh) {
+                continue;
+            }
+            if state.transport.soft_stall_reported {
                 continue;
             }
             if !matches!(
@@ -1479,7 +1508,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 DkgPhase::Phase2Shares => DkgFailureStage::ShareExchange,
                 _ => DkgFailureStage::Unknown,
             };
-            if let Err(error) = soft_stall_tx.try_send(SoftStalledDkgAttempt {
+            match soft_stall_tx.try_send(SoftStalledDkgAttempt {
                 session_id: *session_id,
                 attempt_id,
                 ring_id: state.routing.ring_id.clone(),
@@ -1487,12 +1516,19 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 missing,
                 stage,
             }) {
-                crate::metrics::record_dkg_transport_event("dkg_soft_stall", "dropped");
-                tracing::warn!(
-                    session_id = session_id,
-                    %error,
-                    "SessionStateManager: soft-stall channel full or closed; dropping early-abort event"
-                );
+                // Only mark reported once the event is actually queued — if the channel is
+                // full or closed, leave the flag unset so a later tick can retry once the
+                // drain worker (or a fresh one) catches up, rather than getting permanently
+                // stuck unreported.
+                Ok(()) => state.transport.soft_stall_reported = true,
+                Err(error) => {
+                    crate::metrics::record_dkg_transport_event("dkg_soft_stall", "dropped");
+                    tracing::warn!(
+                        session_id = session_id,
+                        %error,
+                        "SessionStateManager: soft-stall channel full or closed; dropping early-abort event"
+                    );
+                }
             }
         }
     }
@@ -5705,6 +5741,54 @@ mod tests {
                 .await
                 .unwrap(),
             "recording a contribution from the peer should clear its no-progress streak"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_public_batch_clears_peer_no_progress_only_for_newly_recorded_origins() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ceremony_id = CeremonyId(509);
+        let attempt_id = AttemptId([6; 32]);
+        mgr.create_session(509, make_node(1), 3, |s| {
+            s.transport.ceremony_id = Some(ceremony_id);
+            s.transport.attempt_id = Some(attempt_id);
+        })
+        .await;
+        let attempt = AttemptKey::new(ceremony_id, attempt_id);
+
+        // Peer 2's contribution is already retained (e.g. a prior direct submission); peer 3's
+        // is not. Seed both with a no-progress streak.
+        mgr.record_public_contribution(
+            &509,
+            attempt_id,
+            PublicPhase::Commitments,
+            ParticipantRef::current(2),
+            test_signed_public(2),
+        )
+        .await;
+        mgr.record_peer_no_progress(attempt, 2).await;
+        mgr.record_peer_no_progress(attempt, 3).await;
+
+        let mut batch = BTreeMap::new();
+        batch.insert(ParticipantRef::current(2), test_signed_public(2)); // same bytes: already retained
+        batch.insert(ParticipantRef::current(3), test_signed_public(3)); // newly recorded
+        let outcome = mgr
+            .record_public_batch(&509, attempt_id, PublicPhase::Commitments, batch)
+            .await;
+        assert_eq!(outcome, PublicBatchRecordOutcome::Recorded);
+
+        assert!(
+            mgr.with_state(&509, |s| s.transport.peer_no_progress.contains_key(&2))
+                .await
+                .unwrap(),
+            "peer 2's contribution was already retained (duplicate-same in the batch), so the \
+             batch recorded nothing new from it — its no-progress streak must be left alone"
+        );
+        assert!(
+            !mgr.with_state(&509, |s| s.transport.peer_no_progress.contains_key(&3))
+                .await
+                .unwrap(),
+            "peer 3's contribution was newly recorded by the batch, so its streak must clear"
         );
     }
 

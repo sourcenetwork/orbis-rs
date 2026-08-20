@@ -137,6 +137,14 @@ where
         // Deliberately not `validate_fresh_dkg_ring_payload`, which rejects a ring whose
         // `ring_pk` is already set: unlike starting a ceremony, querying its status must
         // still work for a ring whose Fresh DKG has already completed.
+        //
+        // Deliberately not `request_actor` either: that resolves trusted-relay delegation so a
+        // *mutating* endpoint (start_dkg, PRE, Sign) can attribute and gate a consequential
+        // action precisely, even through a relay. This is a read-only query — it doesn't act as
+        // anyone or log an actor — and `validate_dkg_claims` above already requires a validly
+        // signed JWT scoped to this exact ring_id, which is the real gate on "can you ask about
+        // this ring." Matches the existing read-only `GetRingState` (info/service.rs), which
+        // also skips it.
         read_ring_for_route(&*self.state.bulletin, &req.ring_id, self.routes.version)
             .await
             .map_err(DkgError::ProtocolError)?;
@@ -162,7 +170,8 @@ where
         } = response
         else {
             return Err(DkgError::ProtocolError(format!(
-                "leader returned unexpected session-status response: {response:?}"
+                "leader returned unexpected session-status response: {}",
+                response.metric_label()
             ))
             .into());
         };
