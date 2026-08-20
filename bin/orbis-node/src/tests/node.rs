@@ -2,6 +2,7 @@
 
 use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
+    complete_initialization_or_shutdown,
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_MESSAGE_BYTES,
         MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
@@ -10,7 +11,7 @@ use crate::{
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
-            ensure_node_info, LogLevel,
+            ensure_node_info, CorsPolicy, LogLevel,
         },
         test_helpers::{cleanup_db, test_db_path},
     },
@@ -21,7 +22,7 @@ use crate::{
     sign::v0::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
-    Args, NodeConfig,
+    Args, InitializedNode, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
@@ -56,12 +57,20 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::oneshot,
+    sync::{oneshot, watch},
     task::JoinHandle,
 };
 use tonic::Code;
 use tonic_web::GrpcWebLayer;
-use tower_http::cors::CorsLayer;
+
+async fn make_loopback_test_network() -> NetworkImpl {
+    NetworkImpl::builder()
+        .bind_addr_v4("127.0.0.1:0".parse().expect("loopback bind address"))
+        .private_routes_only()
+        .build()
+        .await
+        .expect("create loopback test network")
+}
 
 /// Builds a [`NodeConfig`] for testing, returning it together with the DB path for cleanup.
 ///
@@ -74,8 +83,7 @@ async fn make_test_node_config(
     password: Option<String>,
 ) -> (NodeConfig, String) {
     let db_path = test_db_path(test_name);
-    let network: Arc<dyn Network> =
-        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
+    let network: Arc<dyn Network> = Arc::new(make_loopback_test_network().await);
     let authz: Arc<dyn Authz> = Arc::new(
         AuthzImpl::new(ChainConfigBuilder::default())
             .await
@@ -89,6 +97,8 @@ async fn make_test_node_config(
     let config = NodeConfig {
         args: Args {
             addr: addr.to_string(),
+            cors_allow_origins: vec![],
+            cors_permissive: false,
             log_level: LogLevel::Info,
             authz_grpc: None,
             bulletin_grpc: None,
@@ -110,6 +120,7 @@ async fn make_test_node_config(
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
         },
+        cors_policy: CorsPolicy::Disabled,
         node_key: "test-node-key".to_string(),
         network,
         local_storage: LocalStorageImpl::new(
@@ -138,8 +149,7 @@ async fn make_bootstrap_identity(
         &runtime_base_path,
     )
     .expect("Failed to create and store node key");
-    let network: Arc<dyn Network> =
-        Arc::new(NetworkImpl::new().await.expect("Failed to create network"));
+    let network: Arc<dyn Network> = Arc::new(make_loopback_test_network().await);
 
     (network, local_storage, db_path, signer.address())
 }
@@ -152,6 +162,8 @@ fn node_info_test_args(
 ) -> Args {
     Args {
         addr: "127.0.0.1:0".to_string(),
+        cors_allow_origins: vec![],
+        cors_permissive: false,
         log_level: LogLevel::Info,
         authz_grpc: None,
         bulletin_grpc: None,
@@ -197,7 +209,7 @@ fn spawn_full_test_grpc_server(
     let task = tokio::spawn(async move {
         let _ = tonic::transport::Server::builder()
             .accept_http1(true)
-            .layer(CorsLayer::permissive())
+            .layer(node.cors_policy.layer())
             .layer(GrpcWebLayer::new())
             .add_service(
                 DkgServiceServer::new(dkg_service)
@@ -246,6 +258,36 @@ async fn send_http1_request(addr: SocketAddr, request: Vec<u8>) -> String {
         .expect("read test HTTP/1 response");
 
     String::from_utf8_lossy(&response).into_owned()
+}
+
+async fn send_cors_preflight(addr: SocketAddr, origin: &str) -> String {
+    let request = format!(
+        "OPTIONS /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
+Host: {addr}\r\n\
+Origin: {origin}\r\n\
+Access-Control-Request-Method: POST\r\n\
+Access-Control-Request-Headers: content-type,x-grpc-web,authorization\r\n\
+Content-Length: 0\r\n\
+Connection: close\r\n\
+\r\n"
+    );
+    send_http1_request(addr, request.into_bytes()).await
+}
+
+async fn send_store_secret_grpc_web_post(addr: SocketAddr, origin: &str) -> String {
+    let mut request = format!(
+        "POST /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
+Host: {addr}\r\n\
+Origin: {origin}\r\n\
+Content-Type: application/grpc-web+proto\r\n\
+X-Grpc-Web: 1\r\n\
+Content-Length: 5\r\n\
+Connection: close\r\n\
+\r\n"
+    )
+    .into_bytes();
+    request.extend_from_slice(&[0, 0, 0, 0, 0]);
+    send_http1_request(addr, request).await
 }
 
 fn assert_decode_limit_error(status: tonic::Status) {
@@ -370,27 +412,19 @@ async fn test_ensure_node_info_fails_when_existing_controller_mismatches() {
 }
 
 #[tokio::test]
-async fn test_store_secret_endpoint_accepts_browser_grpc_web_requests() {
-    let (config, db_path) = make_test_node_config(
-        "test_store_secret_endpoint_accepts_browser_grpc_web_requests",
+#[serial_test::serial]
+async fn test_full_grpc_server_permissive_cors_allows_any_origin() {
+    let (mut config, db_path) = make_test_node_config(
+        "test_full_grpc_server_permissive_cors_allows_any_origin",
         "127.0.0.1:0",
         None,
     )
     .await;
+    config.cors_policy = CorsPolicy::Permissive;
     let node = init_node(config).await.expect("initialize test node");
     let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
 
-    let preflight = format!(
-        "OPTIONS /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
-Host: {addr}\r\n\
-Origin: http://localhost:5173\r\n\
-Access-Control-Request-Method: POST\r\n\
-Access-Control-Request-Headers: content-type,x-grpc-web,authorization\r\n\
-Content-Length: 0\r\n\
-Connection: close\r\n\
-\r\n"
-    );
-    let preflight_response = send_http1_request(addr, preflight.into_bytes()).await;
+    let preflight_response = send_cors_preflight(addr, "https://untrusted.example").await;
     let preflight_headers = preflight_response.to_ascii_lowercase();
 
     assert!(
@@ -409,21 +443,12 @@ Connection: close\r\n\
         preflight_headers.contains("access-control-allow-headers: *"),
         "preflight response did not allow browser headers:\n{preflight_response}"
     );
+    assert!(
+        !preflight_headers.contains("access-control-allow-credentials"),
+        "permissive CORS unexpectedly enabled browser credentials:\n{preflight_response}"
+    );
 
-    let mut grpc_web_post = format!(
-        "POST /store_secret_service.StoreSecretService/StoreSecret HTTP/1.1\r\n\
-Host: {addr}\r\n\
-Origin: http://localhost:5173\r\n\
-Content-Type: application/grpc-web+proto\r\n\
-X-Grpc-Web: 1\r\n\
-Content-Length: 5\r\n\
-Connection: close\r\n\
-\r\n"
-    )
-    .into_bytes();
-    grpc_web_post.extend_from_slice(&[0, 0, 0, 0, 0]);
-
-    let post_response = send_http1_request(addr, grpc_web_post).await;
+    let post_response = send_store_secret_grpc_web_post(addr, "https://untrusted.example").await;
     let post_headers = post_response.to_ascii_lowercase();
 
     assert!(
@@ -438,6 +463,110 @@ Connection: close\r\n\
         post_headers.contains("access-control-allow-origin: *"),
         "POST response did not include browser CORS headers:\n{post_response}"
     );
+
+    shutdown_tx.send(()).expect("shutdown full test server");
+    task.await.expect("join full test server task");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_full_grpc_server_allows_only_configured_browser_origins() {
+    let (mut config, db_path) = make_test_node_config(
+        "test_full_grpc_server_allows_only_configured_browser_origins",
+        "127.0.0.1:0",
+        None,
+    )
+    .await;
+    config.cors_policy = CorsPolicy::AllowOrigins(vec!["http://localhost:5173"
+        .parse()
+        .expect("valid test origin")]);
+    let node = init_node(config).await.expect("initialize test node");
+    let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
+
+    let allowed_preflight = send_cors_preflight(addr, "http://localhost:5173").await;
+    let allowed_headers = allowed_preflight.to_ascii_lowercase();
+    assert!(
+        allowed_preflight.starts_with("HTTP/1.1 200 OK"),
+        "unexpected allowlisted preflight response:\n{allowed_preflight}"
+    );
+    assert!(
+        allowed_headers.contains("access-control-allow-origin: http://localhost:5173"),
+        "preflight response did not echo the allowlisted origin:\n{allowed_preflight}"
+    );
+    assert!(
+        allowed_headers.contains("access-control-allow-methods: *")
+            && allowed_headers.contains("access-control-allow-headers: *"),
+        "allowlisted policy did not preserve gRPC-Web method/header flexibility:\n{allowed_preflight}"
+    );
+    assert!(
+        allowed_headers.contains("vary: origin"),
+        "allowlisted preflight response did not vary by origin:\n{allowed_preflight}"
+    );
+    assert!(
+        !allowed_headers.contains("access-control-allow-credentials"),
+        "allowlisted CORS unexpectedly enabled browser credentials:\n{allowed_preflight}"
+    );
+
+    let rejected_preflight = send_cors_preflight(addr, "https://untrusted.example").await;
+    assert!(
+        !rejected_preflight
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
+        "unlisted origin received an allow-origin header:\n{rejected_preflight}"
+    );
+
+    let post_response = send_store_secret_grpc_web_post(addr, "http://localhost:5173").await;
+    let post_headers = post_response.to_ascii_lowercase();
+    assert!(
+        post_response.starts_with("HTTP/1.1 200 OK")
+            && post_headers.contains("content-type: application/grpc-web+proto"),
+        "allowlisted POST was not translated as gRPC-Web:\n{post_response}"
+    );
+    assert!(
+        post_headers.contains("access-control-allow-origin: http://localhost:5173"),
+        "allowlisted POST response omitted its CORS origin:\n{post_response}"
+    );
+
+    shutdown_tx.send(()).expect("shutdown full test server");
+    task.await.expect("join full test server task");
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_grpc() {
+    let (config, db_path) = make_test_node_config(
+        "test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_grpc",
+        "127.0.0.1:0",
+        None,
+    )
+    .await;
+    let node = init_node(config).await.expect("initialize test node");
+    let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
+
+    let preflight_response = send_cors_preflight(addr, "http://localhost:5173").await;
+    assert!(
+        !preflight_response
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
+        "default policy emitted an allow-origin header:\n{preflight_response}"
+    );
+
+    let endpoint = format!("http://{addr}");
+    let mut info_client = InfoServiceClient::connect(endpoint)
+        .await
+        .expect("connect native gRPC client with CORS disabled");
+    let status = info_client
+        .get_node_info(GetNodeInfoRequest {})
+        .await
+        .expect_err("test storage intentionally has no node signing key");
+    assert_eq!(
+        status.code(),
+        Code::Internal,
+        "native gRPC request should reach the service with CORS disabled"
+    );
+    assert!(status.message().contains("No signing key found"));
 
     shutdown_tx.send(()).expect("shutdown full test server");
     task.await.expect("join full test server task");
@@ -570,6 +699,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
         "127.0.0.1:0".parse().expect("bootstrap bind addr"),
         network,
         local_storage,
+        CorsPolicy::Disabled,
     )
     .expect("start bootstrap info server");
     let endpoint = format!("http://{}", bootstrap.local_addr());
@@ -627,14 +757,26 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     let (network, local_storage, db_path, expected_address) =
         make_bootstrap_identity("test_bootstrap_info_server_hands_off_to_full_server_on_same_port")
             .await;
+    let cors_policy = CorsPolicy::AllowOrigins(vec!["http://localhost:5173"
+        .parse()
+        .expect("valid test origin")]);
     let bootstrap = start_bootstrap_info_server(
         "127.0.0.1:0".parse().expect("bootstrap bind addr"),
         network.clone(),
         local_storage.clone(),
+        cors_policy.clone(),
     )
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();
     let endpoint = format!("http://{}", grpc_addr);
+
+    let bootstrap_preflight = send_cors_preflight(grpc_addr, "http://localhost:5173").await;
+    assert!(
+        bootstrap_preflight
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin: http://localhost:5173"),
+        "bootstrap server did not apply configured CORS policy:\n{bootstrap_preflight}"
+    );
 
     let mut bootstrap_dkg_client = DkgServiceClient::connect(endpoint.clone())
         .await
@@ -660,6 +802,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     let config = NodeConfig {
         args: Args {
             addr: grpc_addr.to_string(),
+            cors_allow_origins: vec!["http://localhost:5173".to_string()],
+            cors_permissive: false,
             log_level: LogLevel::Info,
             authz_grpc: None,
             bulletin_grpc: None,
@@ -681,6 +825,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
         },
+        cors_policy,
         node_key: "test-node-key".to_string(),
         network,
         local_storage,
@@ -697,6 +842,14 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     assert_eq!(
         full_addr, grpc_addr,
         "full server should reuse bootstrap port"
+    );
+
+    let full_preflight = send_cors_preflight(full_addr, "http://localhost:5173").await;
+    assert!(
+        full_preflight
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin: http://localhost:5173"),
+        "full server did not preserve bootstrap CORS policy:\n{full_preflight}"
     );
 
     let mut info_client = InfoServiceClient::connect(endpoint.clone())
@@ -763,6 +916,7 @@ async fn test_bootstrap_info_server_shutdown_on_init_error() {
         "127.0.0.1:0".parse().expect("bootstrap bind addr"),
         network,
         local_storage,
+        CorsPolicy::Disabled,
     )
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();
@@ -776,6 +930,51 @@ async fn test_bootstrap_info_server_shutdown_on_init_error() {
 
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)
         .expect("bootstrap port should be released after init failure");
+    drop(incoming);
+
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port() {
+    let (network, local_storage, db_path, _) = make_bootstrap_identity(
+        "test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port",
+    )
+    .await;
+    let bootstrap = start_bootstrap_info_server(
+        "127.0.0.1:0".parse().expect("bootstrap bind addr"),
+        network,
+        local_storage,
+        CorsPolicy::Disabled,
+    )
+    .expect("start bootstrap info server");
+    let grpc_addr = bootstrap.local_addr();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (init_started_tx, init_started_rx) = oneshot::channel();
+    let pending_initialization = async move {
+        let _ = init_started_tx.send(());
+        std::future::pending::<Result<InitializedNode, Box<dyn std::error::Error>>>().await
+    };
+    let shutdown_task = tokio::spawn(async move {
+        init_started_rx
+            .await
+            .expect("pending initialization should start");
+        shutdown_tx.send(true).expect("request node shutdown");
+    });
+
+    let result =
+        complete_initialization_or_shutdown(bootstrap, pending_initialization, shutdown_rx)
+            .await
+            .expect("shutdown pending initialization cleanly");
+    shutdown_task.await.expect("join shutdown request task");
+    assert!(
+        result.is_none(),
+        "shutdown should cancel node initialization"
+    );
+
+    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)
+        .expect("bootstrap port should be released after shutdown");
     drop(incoming);
 
     cleanup_db(&db_path);

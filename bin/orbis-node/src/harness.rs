@@ -15,7 +15,7 @@
 use crate::constants;
 use crate::dkg::v0::service::DkgServiceImpl;
 use crate::helpers::launch::{
-    build_node_info_from_args, create_and_store_node_key, Args, LogLevel,
+    build_node_info_from_args, create_and_store_node_key, Args, CorsPolicy, LogLevel,
 };
 use crate::info::InfoServiceImpl;
 use crate::pre::v0::service::PreServiceImpl;
@@ -177,6 +177,8 @@ pub async fn spawn_harness_node(
 
     let args = Args {
         addr: params.grpc_addr.clone(),
+        cors_allow_origins: vec![],
+        cors_permissive: false,
         log_level: LogLevel::Info,
         authz_grpc: None,
         bulletin_grpc: None,
@@ -211,6 +213,7 @@ pub async fn spawn_harness_node(
 
     let config = NodeConfig {
         args,
+        cors_policy: CorsPolicy::Disabled,
         node_key: node_key.clone(),
         network,
         local_storage,
