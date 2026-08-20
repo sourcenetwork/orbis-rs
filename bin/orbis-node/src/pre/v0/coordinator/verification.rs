@@ -25,6 +25,13 @@ pub(crate) struct PreResponseReportContext {
     pub object_id: String,
     pub rdr_pk: Vec<u8>,
     pub derivation: Option<Vec<u8>>,
+    /// Set when this request's document was supplied inline rather than read from the bulletin.
+    /// `invalid_crypto_response` reports are verified by re-reading the document from the
+    /// bulletin by `object_id` (`require_pre_proof_verification_failure`,
+    /// `reporting/v0/registry.rs`) — a document that was never posted there can't be re-read, so
+    /// such a report could never be confirmed on-chain. `report_invalid_pre_response` skips
+    /// generating one in that case instead of submitting a report that can't verify.
+    pub is_inline_document: bool,
 }
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
@@ -250,6 +257,9 @@ where
         seen_node_ids: &mut HashSet<u32>,
     ) -> PeerResponseVerification<G1Affine> {
         seen_node_ids.insert(from_node_id);
+        if report_context.is_inline_document {
+            return PeerResponseVerification::Rejected;
+        }
         PeerResponseVerification::InvalidProof(Box::new(InvalidCryptoResponseObservation {
             ring_id: report_context.ring_id.clone(),
             accused_node_key: report_context.accused_node_key.clone(),
@@ -413,6 +423,7 @@ mod tests {
             object_id: fixture.object_id.clone(),
             rdr_pk: rdr_pk_bytes.to_vec(),
             derivation: None,
+            is_inline_document: false,
         }
     }
 
@@ -545,6 +556,46 @@ mod tests {
             "observation must anchor the envelope to the evidence timestamp"
         );
         assert!(seen.contains(&fixture.from_node_id));
+    }
+
+    /// An inline-sourced request's document was never posted to the bulletin, so
+    /// `require_pre_proof_verification_failure` (`reporting/v0/registry.rs`) could never re-read
+    /// it to verify an `invalid_crypto_response` report. A bad proof from such a request must
+    /// still be rejected (dropped from the threshold count), just without generating a report
+    /// that could never be confirmed on-chain.
+    #[test]
+    fn invalid_pre_response_is_rejected_without_a_report_when_document_is_inline() {
+        let fixture = verify_fixture();
+        let rdr_pk_bytes = CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap();
+        let mut context = report_context(&fixture, &rdr_pk_bytes);
+        context.is_inline_document = true;
+
+        let mut seen = HashSet::new();
+        let invalid_proof = signed_response(
+            &fixture,
+            fixture.share.clone(),
+            fixture.challenge.clone(),
+            fixture.invalid_proof.clone(),
+            fixture.from_node_id,
+            unix_now(),
+            true,
+        );
+        let result = PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
+            &fixture.dealer,
+            invalid_proof,
+            &fixture.rdr_pk,
+            &fixture.pub_poly,
+            &fixture.enc_cmt,
+            None,
+            fixture.from_node_id,
+            &context,
+            &mut seen,
+        );
+        assert!(matches!(result, PeerResponseVerification::Rejected));
+        assert!(
+            seen.contains(&fixture.from_node_id),
+            "the responder must still be excluded from being counted again"
+        );
     }
 
     #[test]

@@ -756,6 +756,10 @@ pub(crate) struct PreReportBinding {
     ring_id: String,
     ring_pk: String,
     ring_state_sha256: String,
+    /// Set when this request's document was supplied inline rather than read from the bulletin.
+    /// Copied into every `PreResponseReportContext` built from this binding — see its field doc
+    /// for why an inline-sourced request must not generate an `invalid_crypto_response` report.
+    is_inline_document: bool,
 }
 
 impl PreReportBinding {
@@ -764,24 +768,34 @@ impl PreReportBinding {
         ring_id: String,
         ring_pk: String,
         ring_state_sha256: String,
+        is_inline_document: bool,
     ) -> Self {
         Self {
             chain_id,
             ring_id,
             ring_pk,
             ring_state_sha256,
+            is_inline_document,
         }
     }
 
     /// Build the binding from the ring payload the caller already fetched.
     /// `ring_id` is the document's ring id (the value responders bind into
-    /// their signed response statements).
-    pub(crate) fn from_ring(chain_id: String, ring_id: String, ring_payload: &RingPayload) -> Self {
+    /// their signed response statements). `is_inline_document` should be
+    /// `true` when the request's document was supplied inline rather than
+    /// read from the bulletin.
+    pub(crate) fn from_ring(
+        chain_id: String,
+        ring_id: String,
+        ring_payload: &RingPayload,
+        is_inline_document: bool,
+    ) -> Self {
         Self::new(
             chain_id,
             ring_id,
             ring_payload.ring_pk.clone(),
             ring_state_sha256(ring_payload),
+            is_inline_document,
         )
     }
 
@@ -808,6 +822,7 @@ impl PreReportBinding {
             object_id: object_id.to_string(),
             rdr_pk,
             derivation,
+            is_inline_document: self.is_inline_document,
         }
     }
 }

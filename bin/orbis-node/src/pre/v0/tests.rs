@@ -83,9 +83,15 @@ async fn setup_document_in_bulletin(
 fn test_report_binding(
     dummy_bulletin: &DummyBulletin,
     ring_payload: &RingPayload,
+    is_inline: bool,
 ) -> PreReportBinding {
     let ring_post = get_test_ring_post(dummy_bulletin);
-    PreReportBinding::from_ring(dummy_bulletin.chain_id(), ring_post.id, ring_payload)
+    PreReportBinding::from_ring(
+        dummy_bulletin.chain_id(),
+        ring_post.id,
+        ring_payload,
+        is_inline,
+    )
 }
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
@@ -286,8 +292,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await
         .expect("PRE should succeed");
@@ -380,6 +387,184 @@ async fn wait_for_dkg_completion(
         }
 
         sleep(check_interval).await;
+    }
+}
+
+/// End-to-end test: the document is supplied inline in the PRE request instead of being
+/// posted to the bulletin first. Runs the same real 3-node cascade as
+/// `test_delegated_dkg_then_pre_end_to_end` — each committee member independently resolves and
+/// re-verifies the inline document via `validate_inline_document_id` (`handle_reencrypt_request`)
+/// rather than trusting the coordinator's word, then re-encryption and decryption proceed exactly
+/// as with a bulletin-sourced document.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pre_with_inline_document_end_to_end() {
+    let db_name = "test_pre_with_inline_document_end_to_end";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let relay = TestKeyPair::new();
+    let actor_id = "did:opk:alice";
+    let mut network =
+        setup_three_node_network_with_pre_and_trusted_relays(db_name, vec![relay.did_uri.clone()])
+            .await;
+    let peer_ids = network.get_all_peer_ids();
+
+    let node1_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let dkg_token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            DkgClaims {
+                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            },
+            Duration::from_secs(60),
+        )
+        .expect("Failed to create JWT");
+    let tonic_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &dkg_token,
+    )
+    .unwrap();
+    node1_service
+        .start_dkg(tonic_request)
+        .await
+        .expect("start_dkg should succeed");
+
+    let ring_payload = wait_for_dkg_completion(&network).await;
+    let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).expect("decode ring_pk hex");
+    let aggregate_pk =
+        <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
+
+    let secret_message = b"Hello Bob! This one skips the bulletin entirely.";
+    let metadata = generate_test_policy_metadata();
+    let (_enc_cmt, encrypted_secret, proof) =
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+            .expect("Encryption should succeed");
+    let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("Failed to serialize secret");
+
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let bob_pk_bytes =
+        CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
+    let ring_pk_bytes =
+        CryptoSerialize::to_bytes(&aggregate_pk).expect("Failed to serialize ring public key");
+
+    let dummy_bulletin = network
+        .dummy_bulletin
+        .as_ref()
+        .expect("PRE tests require DummyBulletin");
+    let ring_post = get_test_ring_post(dummy_bulletin);
+
+    // Built the same way `setup_document_in_bulletin` would, but never posted anywhere —
+    // object_id is computed locally instead of coming back from a bulletin write.
+    let document = DocumentPayload {
+        ring_id: ring_post.id.clone(),
+        document: String::from_utf8(secret_bytes.clone())
+            .unwrap_or_else(|_| hex::encode(&secret_bytes)),
+        proof: String::try_from(proof).expect("serialize EncryptionProof"),
+        policy_id: "test-policy".to_string(),
+        resource: "test-resource".to_string(),
+        permission: "test-permission".to_string(),
+        tier: None,
+        timestamp: None,
+    };
+    let object_id = common::blockchain::orbis::generate_document_id(
+        &document.ring_id,
+        &document.document,
+        &document.proof,
+        &document.policy_id,
+        &document.resource,
+        &document.permission,
+        document.tier.as_deref(),
+        document.timestamp,
+    );
+
+    // Confirm this test is actually exercising the inline path: nothing was ever posted here.
+    assert!(
+        dummy_bulletin
+            .read(object_id.clone(), bulletin::r#trait::BulletinKind::Document)
+            .await
+            .is_err(),
+        "the inline document must never have been posted to the bulletin"
+    );
+
+    let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
+        Arc::new(network.alice.app_state.clone()),
+        &::network::V0,
+    );
+    let request_id = format!(
+        "pre-inline-request-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    );
+
+    let pre_token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            PreClaims {
+                rdr_pk: bob_pk_bytes.clone(),
+                object_id: object_id.clone(),
+                derivation: None,
+                salt: None,
+            },
+            Duration::from_secs(60),
+        )
+        .expect("Failed to create PRE JWT");
+
+    let pre_response_bytes = pre_coordinator
+        .initiate_reencryption(
+            request_id,
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes,
+                peer_ids: peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+            },
+            secret_bytes,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes,
+                object_id,
+                token_string: pre_token,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+                document: Some(document),
+            },
+            test_report_binding(dummy_bulletin, &ring_payload, true),
+        )
+        .await
+        .expect("PRE should succeed against an inline document");
+
+    let pre_response: PreResponse =
+        serde_json::from_slice(&pre_response_bytes).expect("Failed to deserialize PRE response");
+    let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
+    let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
+        .expect("Failed to deserialize xnc_cmt");
+    let decrypted_message =
+        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
+            .expect("Decryption should succeed");
+    assert_eq!(decrypted_message, secret_message);
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
     }
 }
 
@@ -488,8 +673,9 @@ async fn test_pre_with_large_secret() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await
         .expect("PRE should succeed");
@@ -626,8 +812,9 @@ async fn test_pre_fails_with_wrong_key() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await
         .expect("PRE should succeed");
@@ -760,8 +947,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await;
 
@@ -915,8 +1103,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await;
 
@@ -975,6 +1164,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         derivation: None,
         salt: None,
         valid_window: None,
+        document: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1016,6 +1206,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         derivation: None,
         salt: None,
         valid_window: None,
+        document: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1073,6 +1264,7 @@ async fn test_start_pre_fails_wrong_signature() {
         derivation: None,
         salt: None,
         valid_window: None,
+        document: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1209,8 +1401,9 @@ async fn test_pre_fails_with_wrong_derivation() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1382,8 +1575,9 @@ async fn test_pre_fails_with_bad_proof() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload),
+            test_report_binding(dummy_bulletin, &ring_payload, false),
         )
         .await;
 
@@ -1500,12 +1694,14 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 valid_window: None,
                 relay_statement: None,
                 relay_signature: Vec::new(),
+                document: None,
             },
             PreReportBinding::new(
                 "test-chain".to_string(),
                 "local-verify-failure-ring".to_string(),
                 String::new(),
                 String::new(),
+                false,
             ),
         )
         .await;

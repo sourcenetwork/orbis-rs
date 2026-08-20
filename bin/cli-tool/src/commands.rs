@@ -403,6 +403,7 @@ pub async fn do_pre(
         derivation: derivation.clone(),
         salt: salt.clone(),
         valid_window,
+        document: None,
     };
 
     // JWT work use determinitic key_pair for now

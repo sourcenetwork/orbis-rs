@@ -606,6 +606,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             derivation: Some(vec![0u8; MAX_SMALL_GRPC_REQUEST_BYTES]),
             salt: None,
             valid_window: None,
+            document: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");

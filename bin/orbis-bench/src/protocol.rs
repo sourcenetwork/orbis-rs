@@ -462,6 +462,7 @@ pub async fn pre_call(
             derivation: fixture.derivation.clone(),
             salt: fixture.salt.clone(),
             valid_window: None,
+            document: None,
         },
         &token,
     )?;

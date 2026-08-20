@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod create_routers;
+pub mod encrypted_document;
 pub mod identity;
 pub mod launch;
 pub mod node_routes;

@@ -3,7 +3,7 @@ use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFE
 use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
+    check_policy_access, decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
@@ -120,10 +120,15 @@ where
             &ctx.salt,
         )?;
 
-        let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
+        // When the caller supplied the document inline (ctx.document), it's used directly and
+        // independently re-verified against object_id here — this node does not trust that the
+        // relay/leader already checked it. Otherwise this reads from the bulletin exactly as
+        // before.
+        let (document_payload, ring_payload) = resolve_document_and_ring_payloads(
             &*self.app_state.bulletin,
             &ctx.object_id,
             self.routes.version,
+            ctx.document.clone(),
         )
         .await?;
         let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())

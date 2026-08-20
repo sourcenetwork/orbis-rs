@@ -11,6 +11,30 @@ message TimestampRange {
   uint64 end = 2;
 }
 
+// The document, in full, supplied directly by the caller instead of already being on the
+// bulletin. object_id must equal generate_document_id(ring_id, encrypted_document, proof,
+// policy_id, resource, permission, tier, timestamp) — nodes recompute and check this locally
+// before doing anything else with the request.
+message InlineDocument {
+  string ring_id = 1;
+  // The pre-encrypted document (serialized Secret struct from crypto crate).
+  // Same shape as StoreSecretRequest.encrypted_document.
+  bytes encrypted_document = 2;
+  // The encryption commitment (compressed G1 point from encryption)
+  bytes enc_cmt = 3;
+  string policy_id = 4;
+  string resource = 5;
+  string permission = 6;
+  // Shared point for encryption proof
+  bytes shared_point = 7;
+  // Challenge for encryption proof
+  bytes challenge = 8;
+  // Response for encryption proof
+  bytes response = 9;
+  optional string tier = 10;
+  optional uint64 timestamp = 11;
+}
+
 message StartPreRequest {
   // reader public key
   bytes rdr_pk = 1;
@@ -23,6 +47,8 @@ message StartPreRequest {
   // Optional timestamp range for validity window
   // TODO: Insecure test code meant to be moved to acp eventually (not in authn either)
   optional TimestampRange valid_window = 5;
+  // When set, the document is taken from here instead of read from the bulletin by object_id.
+  optional InlineDocument document = 6;
 }
 
 message StartPreResponse {

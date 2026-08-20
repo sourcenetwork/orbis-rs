@@ -795,6 +795,7 @@ async fn forward_unauthorized_pre(
             valid_window: None,
             relay_statement: Some(statement),
             relay_signature,
+            document: None,
         },
     }));
     let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
