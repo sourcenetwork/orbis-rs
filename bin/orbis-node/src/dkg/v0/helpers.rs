@@ -80,7 +80,7 @@ pub fn deserialize_wire_commitment(
     }
 
     let mut coefficients = Vec::with_capacity(bytes.len() / GROUP_POINT_SIZE);
-    for (index, chunk) in bytes.chunks_exact(GROUP_POINT_SIZE).enumerate() {
+    for (index, chunk) in bytes.as_chunks::<GROUP_POINT_SIZE>().0.iter().enumerate() {
         let coeff =
             G1Affine::from_bytes(chunk).map_err(|error| format!("coefficient {index}: {error}"))?;
         coefficients.push(coeff);
