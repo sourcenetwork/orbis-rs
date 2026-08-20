@@ -130,15 +130,15 @@ pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
 ///
-/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT` above: a test driving a
-/// genuinely-unreachable-peer barrier failure (e.g. a refused connection, retried with backoff
-/// until this deadline) would otherwise take up to the full production value in real time.
-/// Existing tests that wait for this deadline already use a generous outer bound rather than
-/// asserting its exact value, so shortening it only makes them complete faster.
-#[cfg(not(test))]
+/// Deliberately NOT shortened under `cfg(test)`, unlike `DKG_ATTEMPT_TIMEOUT` above: reshare
+/// tests that add a genuinely new committee member need real headroom for that node's Gossip
+/// mesh to converge under actual (occasionally slow) network conditions, not just for a
+/// deliberately-refused connection to fail fast. A prior attempt at a 20s test value broke
+/// `test_reshare_one_old_dealer_offline_completes` — a live new-committee node missed the
+/// topology-probe barrier by about a second under real network jitter. A barrier-failure test
+/// that specifically wants to run fast should use its own bounded fault, not rely on this shared
+/// production constant being shortened.
 pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
-#[cfg(test)]
-pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Interval between retransmissions of the exact preparation topology probe.
 pub const DKG_TOPOLOGY_PROBE_INTERVAL: Duration = Duration::from_millis(500);
