@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package orbis.unsafe_testing;
 
+import "v0/pre_service.proto";
+
 service UnsafeTestingService {
   rpc GetLocalStorage(GetLocalStorageRequest) returns (GetLocalStorageResponse);
   rpc SetLocalStorage(SetLocalStorageRequest) returns (SetLocalStorageResponse);
@@ -126,6 +128,11 @@ message SubmitUnauthorizedRelayEvidenceRequest {
   string target_peer_id = 3;
   string token_string = 4;
   bytes pre_reader_pk = 5;
+  // When set (origin_protocol "pre" only), the target node treats the request's document as
+  // supplied inline instead of resolving object_id via bulletin.read — mirrors
+  // StartPreRequest.document. Must match the document embedded in the relay statement's
+  // inline_document field for the resulting report to bind correctly.
+  optional orbis.v0.pre.InlineDocument inline_document = 6;
 }
 
 message SubmitUnauthorizedRelayEvidenceResponse {}

@@ -29,7 +29,10 @@ use tonic::{Request, Response, Status};
 /// validating the encrypted document's structure along the way. Does not check `object_id` —
 /// that happens in `resolve_document_and_ring_payloads` via `validate_inline_document_id`, which
 /// every node (including cascaded committee members) independently re-runs.
-fn document_payload_from_inline(
+///
+/// `pub(crate)` so `unsafe_testing::service` can reuse it to inject a
+/// `PreRequestContext.document` for integration tests exercising the inline-document path.
+pub(crate) fn document_payload_from_inline(
     inline: proto::v0::pre::InlineDocument,
 ) -> Result<DocumentPayload, PreError> {
     crate::helpers::encrypted_document::validate_encrypted_document(
