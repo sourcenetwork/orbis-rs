@@ -174,3 +174,7 @@ cargo test -p cli-tool
 ```
 
 The command implementations in `src/commands.rs` are also re-exported from `src/lib.rs` so they can be driven directly (bypassing the CLI binary and its arg parsing) from `orbis-node`'s Docker-Compose-based integration tests, which cover real DKG/PRE/Sign/PSS/reporting flows against a live chain and node cluster.
+
+## Scripts
+
+`scripts/remote_smoke_test.sh` drives the compiled binary through create-ring → dkg → store-secret → pre → post-key-derivation → sign against an already-deployed remote network (not one it creates itself) — see `scripts/README.md` for prerequisites and usage.
