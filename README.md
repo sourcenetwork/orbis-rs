@@ -166,7 +166,12 @@ SourceHub blockchain client (**`SourceHubClient`**, **`ChainConfig`**, **`TxSign
 
 ### [`proto`](crates/proto/)
 
-gRPC `.proto` files and tonic-generated Rust types for node APIs. See [`crates/proto/README.md`](crates/proto/README.md).
+gRPC `.proto` files and tonic-generated Rust types for node APIs.
+See [`crates/proto/README.md`](crates/proto/README.md).
+
+Go type generation uses buf and protoc.
+See  [`gen/go`](gen/go). 
+Generation tooling is pinned using go tools in [`go.mod`](go.mod)
 
 ### [`orbis-node`](bin/orbis-node/)
 
