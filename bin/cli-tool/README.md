@@ -52,6 +52,14 @@ ORBIS_SIGNING_KEY=c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b1
 
 That hex value is the well-known SourceHub localnet devnet key (mnemonic `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about`), pre-funded only in local Docker Compose setups. It is public and deterministic — **never fund it, or use it, on a real network.**
 
+## Secret input
+
+Passing secrets as plain CLI arguments leaves them visible in shell history and to other processes on the same machine (e.g. via `ps`). To avoid that:
+
+- `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
+- `--reader-sk` (on `pre`) falls back to `ORBIS_READER_SK` if the flag isn't given.
+- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) falls back to `ORBIS_READER_DID_PK` — the same env var across all of them, so you can `export` it once per session instead of repeating the flag.
+
 ## Commands
 
 ### Node & key management
@@ -69,18 +77,18 @@ That hex value is the well-known SourceHub localnet devnet key (mnemonic `abando
 
 | Command | Description |
 |---------|-------------|
-| `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Options: `--secret`, `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex), `--tier`, `--timestamp`, `--salt`. |
+| `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Options: `--secret` (omit to be prompted), `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex), `--tier`, `--timestamp`, `--salt`. |
 | `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same options as `encrypt-secret` plus `--ring-pk-hex`. |
-| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk`, `--with-proof`, `--tier`, `--timestamp`. |
-| `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret`, `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk`, `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
-| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--ring-pk`, `--reader-pk`, `--object-id`, `--reader-sk` (required unless `--xnc-only`), optional `--reader-did-pk`, `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together), `--xnc-only`. |
+| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--with-proof`, `--tier`, `--timestamp`. |
+| `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret` (omit to be prompted), `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
+| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--ring-pk`, `--reader-pk`, `--object-id`, `--reader-sk` (or `ORBIS_READER_SK`; required unless `--xnc-only`), optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together), `--xnc-only`. |
 
 ### Signing (derivation + threshold sign)
 
 | Command | Description |
 |---------|-------------|
 | `post-key-derivation` | Post a `KeyDerivation` to the bulletin, registering a sign key derivation config. Options: `--ring-id`, `--derivation`, `--policy-id`, `--resource`, `--permission`. Prints `DERIVATION_ID=` and `DERIVED_PK=`. |
-| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (from `post-key-derivation`), optional `--reader-did-pk`, `--valid-window-start`/`--valid-window-end` (must be given together). |
+| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (from `post-key-derivation`), optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--valid-window-start`/`--valid-window-end` (must be given together). |
 
 ### Chain (policy, objects, relationships)
 
@@ -90,7 +98,7 @@ Requires `--signing-key`/`ORBIS_SIGNING_KEY`.
 |---------|-------------|
 | `add-policy-to-chain` | Create the default test policy on chain. Prints the new `POLICY_ID`. |
 | `register-object-to-chain` | Register an object under a policy. Options: `--policy-id`, `--object-id`, `--resource`. |
-| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, optional `--reader-did-pk`. |
+| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`). |
 
 ### Bulletin
 

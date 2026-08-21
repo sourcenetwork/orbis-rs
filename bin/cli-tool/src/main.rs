@@ -159,7 +159,7 @@ pub enum SubCommands {
 
         /// Reader's secret key in hex format (for decryption after PRE).
         /// Not required when --xnc-only is set.
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_SK", hide_env_values = true)]
         reader_sk: Option<String>,
 
         /// Id of object
@@ -167,7 +167,7 @@ pub enum SubCommands {
         object_id: String,
 
         /// A private key to generate a reader did
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
 
         /// Optional derivation path (hex encoded)
@@ -191,9 +191,9 @@ pub enum SubCommands {
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
-        /// Secret to encrypt
+        /// Secret to encrypt. If omitted, you'll be prompted for it (hidden input).
         #[clap(long)]
-        secret: String,
+        secret: Option<String>,
         /// Ring public key (from DKG) in hex format
         #[clap(long)]
         ring_pk: String,
@@ -248,7 +248,7 @@ pub enum SubCommands {
         #[clap(long)]
         relation: String,
         /// A private key to generate a reader did
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
     },
     /// Register a bulletin namespace
@@ -357,9 +357,9 @@ pub enum SubCommands {
     },
     /// Prepare a secret for storage (encrypt locally, output JSON for later use)
     PrepareSecret {
-        /// Plaintext secret to encrypt
+        /// Plaintext secret to encrypt. If omitted, you'll be prompted for it (hidden input).
         #[clap(long)]
-        secret: String,
+        secret: Option<String>,
         /// Ring public key (hex) - used for encryption
         #[clap(long)]
         ring_pk_hex: String,
@@ -403,7 +403,7 @@ pub enum SubCommands {
         #[clap(long)]
         permission: String,
         /// A private key to generate a reader did
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
         /// Request a proof
         #[clap(long)]
@@ -417,9 +417,9 @@ pub enum SubCommands {
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
-        /// Plaintext secret encrypted locally before sending
+        /// Plaintext secret encrypted locally before sending. If omitted, you'll be prompted for it (hidden input).
         #[clap(long)]
-        secret: String,
+        secret: Option<String>,
         /// Ring public key (hex) - used for encryption
         #[clap(long)]
         ring_pk_hex: String,
@@ -436,7 +436,7 @@ pub enum SubCommands {
         #[clap(long)]
         permission: String,
         /// A private key to generate a reader did
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
         /// Optional derivation path (hex encoded)
         #[clap(long)]
@@ -495,7 +495,7 @@ pub enum SubCommands {
         #[clap(long)]
         derivation_id: String,
         /// A private key to generate a reader DID for JWT
-        #[clap(long)]
+        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
         /// Start of the validity window (Unix timestamp, inclusive). Requires --valid-window-end.
         #[clap(long)]
@@ -504,6 +504,15 @@ pub enum SubCommands {
         #[clap(long)]
         valid_window_end: Option<u64>,
     },
+}
+
+/// Returns `secret` if given, otherwise prompts for it interactively with hidden input.
+fn resolve_secret(secret: Option<String>, prompt: &str) -> Result<String> {
+    match secret {
+        Some(s) => Ok(s),
+        None => rpassword::prompt_password(prompt)
+            .map_err(|e| anyhow::anyhow!("Failed to read secret from prompt: {}", e)),
+    }
 }
 
 #[tokio::main]
@@ -591,6 +600,7 @@ async fn main() -> Result<()> {
             timestamp,
             salt,
         } => {
+            let secret = resolve_secret(secret, "Secret to encrypt: ")?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_encrypt_secret(
@@ -777,6 +787,7 @@ async fn main() -> Result<()> {
             timestamp,
             salt,
         } => {
+            let secret = resolve_secret(secret, "Secret to encrypt: ")?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             let prepared = prepare_secret(
@@ -836,6 +847,7 @@ async fn main() -> Result<()> {
             derivation,
             with_proof,
         } => {
+            let secret = resolve_secret(secret, "Plaintext secret to store: ")?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_store_secret(
