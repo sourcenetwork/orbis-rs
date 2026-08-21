@@ -58,7 +58,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 
 - `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
 - `--reader-sk` (on `pre`) falls back to `ORBIS_READER_SK` if the flag isn't given.
-- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) falls back to `ORBIS_READER_DID_PK` — the same env var across all of them, so you can `export` it once per session instead of repeating the flag.
+- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity.
 
 ## Commands
 
@@ -79,16 +79,16 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 |---------|-------------|
 | `encrypt-secret` | Encrypt a secret to a ring public key locally (no node). Options: `--secret` (omit to be prompted), `--ring-pk`, `--policy-id`, `--resource`, `--permission`, optional `--derivation` (hex), `--tier`, `--timestamp`, `--salt`. |
 | `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same options as `encrypt-secret` plus `--ring-pk-hex`. |
-| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--with-proof`, `--tier`, `--timestamp`. |
-| `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret` (omit to be prompted), `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
-| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--ring-pk`, `--reader-pk`, `--object-id`, `--reader-sk` (or `ORBIS_READER_SK`; required unless `--xnc-only`), optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together), `--xnc-only`. |
+| `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--with-proof`, `--tier`, `--timestamp`. |
+| `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret` (omit to be prompted), `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
+| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--ring-pk`, `--reader-pk`, `--object-id`, `--reader-sk` (or `ORBIS_READER_SK`; required unless `--xnc-only`), `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together), `--xnc-only`. |
 
 ### Signing (derivation + threshold sign)
 
 | Command | Description |
 |---------|-------------|
 | `post-key-derivation` | Post a `KeyDerivation` to the bulletin, registering a sign key derivation config. Options: `--ring-id`, `--derivation`, `--policy-id`, `--resource`, `--permission`. Prints `DERIVATION_ID=` and `DERIVED_PK=`. |
-| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (from `post-key-derivation`), optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`), `--valid-window-start`/`--valid-window-end` (must be given together). |
+| `sign` | Start a threshold Sign session. Options: `--message` (hex), `--derivation-id` (from `post-key-derivation`), `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--valid-window-start`/`--valid-window-end` (must be given together). |
 
 ### Chain (policy, objects, relationships)
 
@@ -98,7 +98,7 @@ Requires `--signing-key`/`ORBIS_SIGNING_KEY`.
 |---------|-------------|
 | `add-policy-to-chain` | Create the default test policy on chain. Prints the new `POLICY_ID`. |
 | `register-object-to-chain` | Register an object under a policy. Options: `--policy-id`, `--object-id`, `--resource`. |
-| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, optional `--reader-did-pk` (or `ORBIS_READER_DID_PK`). |
+| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required). |
 
 ### Bulletin
 
@@ -151,13 +151,13 @@ cargo run -p cli-tool -- encrypt-secret --secret "my secret" --ring-pk <HEX> --p
 
 # Prepare then store (idempotent)
 cargo run -p cli-tool -- prepare-secret --secret "data" --ring-pk-hex <HEX> --policy-id <ID> --resource document --permission read
-cargo run -p cli-tool -- --signing-key $KEY store-prepared-secret --prepared-json '<JSON>' --ring-id <ID> --policy-id <ID> --resource document --permission read
+cargo run -p cli-tool -- --signing-key $KEY store-prepared-secret --prepared-json '<JSON>' --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
 
 # One-shot store
-cargo run -p cli-tool -- --signing-key $KEY store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read
+cargo run -p cli-tool -- --signing-key $KEY store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
 
 # PRE (after storing a secret and setting relationship)
-cargo run -p cli-tool -- pre --ring-pk <HEX> --reader-pk <HEX> --reader-sk <HEX> --object-id <ID>
+cargo run -p cli-tool -- pre --ring-pk <HEX> --reader-pk <HEX> --reader-sk <HEX> --object-id <ID> --reader-did-pk <YOUR_ID>
 
 # Chain / bulletin (requires a signing key)
 cargo run -p cli-tool -- --signing-key $KEY fund --address <ADDRESS>

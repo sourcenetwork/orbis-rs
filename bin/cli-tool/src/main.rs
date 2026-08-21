@@ -515,6 +515,18 @@ fn resolve_secret(secret: Option<String>, prompt: &str) -> Result<String> {
     }
 }
 
+/// Every user must supply their own value here (via `--reader-did-pk` or `ORBIS_READER_DID_PK`) —
+/// there is no shared default, since one would silently collapse every unspecified user onto the
+/// same on-chain DID identity.
+fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
+    reader_did_pk.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No reader DID identity configured. Pass --reader-did-pk <value> or set ORBIS_READER_DID_PK.\n\
+             Each user needs their own value — a shared default would collapse everyone onto the same DID."
+        )
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -572,6 +584,7 @@ async fn main() -> Result<()> {
                 }
                 _ => {}
             }
+            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_pre(
@@ -580,7 +593,7 @@ async fn main() -> Result<()> {
                 reader_pk,
                 reader_sk,
                 object_id,
-                reader_did_pk,
+                Some(reader_did_pk),
                 derivation_bytes,
                 salt,
                 valid_window_start,
@@ -647,12 +660,13 @@ async fn main() -> Result<()> {
             reader_did_pk,
         } => {
             let signing_key = network.require_signing_key()?;
+            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             set_relationship_on_chain(
                 policy_id,
                 object_id,
                 resource,
                 relation,
-                reader_did_pk,
+                Some(reader_did_pk),
                 network.chain_config(),
                 &signing_key,
             )
@@ -817,6 +831,7 @@ async fn main() -> Result<()> {
             tier,
             timestamp,
         } => {
+            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
                 .map_err(|e| anyhow::anyhow!("Invalid prepared_json: {}", e))?;
             store_prepared_secret(
@@ -826,7 +841,7 @@ async fn main() -> Result<()> {
                 policy_id,
                 resource,
                 permission,
-                reader_did_pk,
+                Some(reader_did_pk),
                 with_proof,
                 tier,
                 timestamp,
@@ -848,6 +863,7 @@ async fn main() -> Result<()> {
             with_proof,
         } => {
             let secret = resolve_secret(secret, "Plaintext secret to store: ")?;
+            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
             do_store_secret(
@@ -861,7 +877,7 @@ async fn main() -> Result<()> {
                 tier,
                 timestamp,
                 salt,
-                reader_did_pk,
+                Some(reader_did_pk),
                 derivation_bytes,
                 with_proof,
             )
@@ -916,13 +932,14 @@ async fn main() -> Result<()> {
                 }
                 _ => {}
             }
+            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let message_bytes = hex::decode(&message)
                 .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
             do_sign(
                 network.endpoint.clone(),
                 message_bytes,
                 derivation_id,
-                reader_did_pk,
+                Some(reader_did_pk),
                 valid_window_start,
                 valid_window_end,
             )
