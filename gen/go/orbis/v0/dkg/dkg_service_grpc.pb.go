@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DkgService_StartDkg_FullMethodName = "/orbis.v0.dkg.DkgService/StartDkg"
+	DkgService_StartDkg_FullMethodName            = "/orbis.v0.dkg.DkgService/StartDkg"
+	DkgService_GetDkgSessionStatus_FullMethodName = "/orbis.v0.dkg.DkgService/GetDkgSessionStatus"
 )
 
 // DkgServiceClient is the client API for DkgService service.
@@ -27,6 +28,7 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type DkgServiceClient interface {
 	StartDkg(ctx context.Context, in *StartDkgRequest, opts ...grpc.CallOption) (*StartDkgResponse, error)
+	GetDkgSessionStatus(ctx context.Context, in *GetDkgSessionStatusRequest, opts ...grpc.CallOption) (*GetDkgSessionStatusResponse, error)
 }
 
 type dkgServiceClient struct {
@@ -47,11 +49,22 @@ func (c *dkgServiceClient) StartDkg(ctx context.Context, in *StartDkgRequest, op
 	return out, nil
 }
 
+func (c *dkgServiceClient) GetDkgSessionStatus(ctx context.Context, in *GetDkgSessionStatusRequest, opts ...grpc.CallOption) (*GetDkgSessionStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDkgSessionStatusResponse)
+	err := c.cc.Invoke(ctx, DkgService_GetDkgSessionStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DkgServiceServer is the server API for DkgService service.
 // All implementations must embed UnimplementedDkgServiceServer
 // for forward compatibility.
 type DkgServiceServer interface {
 	StartDkg(context.Context, *StartDkgRequest) (*StartDkgResponse, error)
+	GetDkgSessionStatus(context.Context, *GetDkgSessionStatusRequest) (*GetDkgSessionStatusResponse, error)
 	mustEmbedUnimplementedDkgServiceServer()
 }
 
@@ -64,6 +77,9 @@ type UnimplementedDkgServiceServer struct{}
 
 func (UnimplementedDkgServiceServer) StartDkg(context.Context, *StartDkgRequest) (*StartDkgResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method StartDkg not implemented")
+}
+func (UnimplementedDkgServiceServer) GetDkgSessionStatus(context.Context, *GetDkgSessionStatusRequest) (*GetDkgSessionStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDkgSessionStatus not implemented")
 }
 func (UnimplementedDkgServiceServer) mustEmbedUnimplementedDkgServiceServer() {}
 func (UnimplementedDkgServiceServer) testEmbeddedByValue()                    {}
@@ -104,6 +120,24 @@ func _DkgService_StartDkg_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DkgService_GetDkgSessionStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDkgSessionStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DkgServiceServer).GetDkgSessionStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DkgService_GetDkgSessionStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DkgServiceServer).GetDkgSessionStatus(ctx, req.(*GetDkgSessionStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DkgService_ServiceDesc is the grpc.ServiceDesc for DkgService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -114,6 +148,10 @@ var DkgService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "StartDkg",
 			Handler:    _DkgService_StartDkg_Handler,
+		},
+		{
+			MethodName: "GetDkgSessionStatus",
+			Handler:    _DkgService_GetDkgSessionStatus_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

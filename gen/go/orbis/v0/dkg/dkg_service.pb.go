@@ -21,6 +21,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type DkgSessionStatus int32
+
+const (
+	DkgSessionStatus_DKG_SESSION_STATUS_UNSPECIFIED DkgSessionStatus = 0
+	DkgSessionStatus_DKG_SESSION_STATUS_IN_PROGRESS DkgSessionStatus = 1
+	DkgSessionStatus_DKG_SESSION_STATUS_COMPLETED   DkgSessionStatus = 2
+	DkgSessionStatus_DKG_SESSION_STATUS_FAILED      DkgSessionStatus = 3
+	DkgSessionStatus_DKG_SESSION_STATUS_NOT_FOUND   DkgSessionStatus = 4
+)
+
+// Enum value maps for DkgSessionStatus.
+var (
+	DkgSessionStatus_name = map[int32]string{
+		0: "DKG_SESSION_STATUS_UNSPECIFIED",
+		1: "DKG_SESSION_STATUS_IN_PROGRESS",
+		2: "DKG_SESSION_STATUS_COMPLETED",
+		3: "DKG_SESSION_STATUS_FAILED",
+		4: "DKG_SESSION_STATUS_NOT_FOUND",
+	}
+	DkgSessionStatus_value = map[string]int32{
+		"DKG_SESSION_STATUS_UNSPECIFIED": 0,
+		"DKG_SESSION_STATUS_IN_PROGRESS": 1,
+		"DKG_SESSION_STATUS_COMPLETED":   2,
+		"DKG_SESSION_STATUS_FAILED":      3,
+		"DKG_SESSION_STATUS_NOT_FOUND":   4,
+	}
+)
+
+func (x DkgSessionStatus) Enum() *DkgSessionStatus {
+	p := new(DkgSessionStatus)
+	*p = x
+	return p
+}
+
+func (x DkgSessionStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (DkgSessionStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_orbis_v0_dkg_dkg_service_proto_enumTypes[0].Descriptor()
+}
+
+func (DkgSessionStatus) Type() protoreflect.EnumType {
+	return &file_orbis_v0_dkg_dkg_service_proto_enumTypes[0]
+}
+
+func (x DkgSessionStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use DkgSessionStatus.Descriptor instead.
+func (DkgSessionStatus) EnumDescriptor() ([]byte, []int) {
+	return file_orbis_v0_dkg_dkg_service_proto_rawDescGZIP(), []int{0}
+}
+
 type StartDkgRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RingId        string                 `protobuf:"bytes,1,opt,name=ring_id,json=ringId,proto3" json:"ring_id,omitempty"` // Pre-created blank ring entry targeted by this DKG
@@ -133,6 +188,190 @@ func (x *StartDkgResponse) GetCreatedAt() int64 {
 	return 0
 }
 
+// Fresh-DKG-only. Lets a client that called StartDkg poll for the outcome of a
+// ceremony that fails after the RPC has already returned (e.g. a stalled
+// cryptographic phase), including which committee member(s) caused it — the
+// original StartDkg response carries no failure information at all.
+type GetDkgSessionStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RingId        string                 `protobuf:"bytes,1,opt,name=ring_id,json=ringId,proto3" json:"ring_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDkgSessionStatusRequest) Reset() {
+	*x = GetDkgSessionStatusRequest{}
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDkgSessionStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDkgSessionStatusRequest) ProtoMessage() {}
+
+func (x *GetDkgSessionStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDkgSessionStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetDkgSessionStatusRequest) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_dkg_dkg_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GetDkgSessionStatusRequest) GetRingId() string {
+	if x != nil {
+		return x.RingId
+	}
+	return ""
+}
+
+type MissingDkgParticipant struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        uint32                 `protobuf:"varint,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`   // 1-based committee index, for log/support correlation
+	NodeKey       string                 `protobuf:"bytes,2,opt,name=node_key,json=nodeKey,proto3" json:"node_key,omitempty"` // Matches an entry in this ring's peer_node_keys
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MissingDkgParticipant) Reset() {
+	*x = MissingDkgParticipant{}
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MissingDkgParticipant) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MissingDkgParticipant) ProtoMessage() {}
+
+func (x *MissingDkgParticipant) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MissingDkgParticipant.ProtoReflect.Descriptor instead.
+func (*MissingDkgParticipant) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_dkg_dkg_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *MissingDkgParticipant) GetNodeId() uint32 {
+	if x != nil {
+		return x.NodeId
+	}
+	return 0
+}
+
+func (x *MissingDkgParticipant) GetNodeKey() string {
+	if x != nil {
+		return x.NodeKey
+	}
+	return ""
+}
+
+type GetDkgSessionStatusResponse struct {
+	state               protoimpl.MessageState   `protogen:"open.v1"`
+	SessionId           string                   `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Status              DkgSessionStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=orbis.v0.dkg.DkgSessionStatus" json:"status,omitempty"`
+	Stage               string                   `protobuf:"bytes,3,opt,name=stage,proto3" json:"stage,omitempty"` // e.g. "preparing" | "commitment_hashes" | "commitments" | "share_exchange"; empty unless status == FAILED
+	MissingParticipants []*MissingDkgParticipant `protobuf:"bytes,4,rep,name=missing_participants,json=missingParticipants,proto3" json:"missing_participants,omitempty"`
+	Reason              string                   `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	FailedAt            int64                    `protobuf:"varint,6,opt,name=failed_at,json=failedAt,proto3" json:"failed_at,omitempty"` // unix seconds; 0 unless status == FAILED
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
+}
+
+func (x *GetDkgSessionStatusResponse) Reset() {
+	*x = GetDkgSessionStatusResponse{}
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDkgSessionStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDkgSessionStatusResponse) ProtoMessage() {}
+
+func (x *GetDkgSessionStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_dkg_dkg_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDkgSessionStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetDkgSessionStatusResponse) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_dkg_dkg_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *GetDkgSessionStatusResponse) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *GetDkgSessionStatusResponse) GetStatus() DkgSessionStatus {
+	if x != nil {
+		return x.Status
+	}
+	return DkgSessionStatus_DKG_SESSION_STATUS_UNSPECIFIED
+}
+
+func (x *GetDkgSessionStatusResponse) GetStage() string {
+	if x != nil {
+		return x.Stage
+	}
+	return ""
+}
+
+func (x *GetDkgSessionStatusResponse) GetMissingParticipants() []*MissingDkgParticipant {
+	if x != nil {
+		return x.MissingParticipants
+	}
+	return nil
+}
+
+func (x *GetDkgSessionStatusResponse) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *GetDkgSessionStatusResponse) GetFailedAt() int64 {
+	if x != nil {
+		return x.FailedAt
+	}
+	return 0
+}
+
 var File_orbis_v0_dkg_dkg_service_proto protoreflect.FileDescriptor
 
 const file_orbis_v0_dkg_dkg_service_proto_rawDesc = "" +
@@ -146,10 +385,30 @@ const file_orbis_v0_dkg_dkg_service_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x1d\n" +
 	"\n" +
-	"created_at\x18\x04 \x01(\x03R\tcreatedAt2W\n" +
+	"created_at\x18\x04 \x01(\x03R\tcreatedAt\"5\n" +
+	"\x1aGetDkgSessionStatusRequest\x12\x17\n" +
+	"\aring_id\x18\x01 \x01(\tR\x06ringId\"K\n" +
+	"\x15MissingDkgParticipant\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\rR\x06nodeId\x12\x19\n" +
+	"\bnode_key\x18\x02 \x01(\tR\anodeKey\"\x97\x02\n" +
+	"\x1bGetDkgSessionStatusResponse\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x126\n" +
+	"\x06status\x18\x02 \x01(\x0e2\x1e.orbis.v0.dkg.DkgSessionStatusR\x06status\x12\x14\n" +
+	"\x05stage\x18\x03 \x01(\tR\x05stage\x12V\n" +
+	"\x14missing_participants\x18\x04 \x03(\v2#.orbis.v0.dkg.MissingDkgParticipantR\x13missingParticipants\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x12\x1b\n" +
+	"\tfailed_at\x18\x06 \x01(\x03R\bfailedAt*\xbd\x01\n" +
+	"\x10DkgSessionStatus\x12\"\n" +
+	"\x1eDKG_SESSION_STATUS_UNSPECIFIED\x10\x00\x12\"\n" +
+	"\x1eDKG_SESSION_STATUS_IN_PROGRESS\x10\x01\x12 \n" +
+	"\x1cDKG_SESSION_STATUS_COMPLETED\x10\x02\x12\x1d\n" +
+	"\x19DKG_SESSION_STATUS_FAILED\x10\x03\x12 \n" +
+	"\x1cDKG_SESSION_STATUS_NOT_FOUND\x10\x042\xc3\x01\n" +
 	"\n" +
 	"DkgService\x12I\n" +
-	"\bStartDkg\x12\x1d.orbis.v0.dkg.StartDkgRequest\x1a\x1e.orbis.v0.dkg.StartDkgResponseB\xac\x01\n" +
+	"\bStartDkg\x12\x1d.orbis.v0.dkg.StartDkgRequest\x1a\x1e.orbis.v0.dkg.StartDkgResponse\x12j\n" +
+	"\x13GetDkgSessionStatus\x12(.orbis.v0.dkg.GetDkgSessionStatusRequest\x1a).orbis.v0.dkg.GetDkgSessionStatusResponseB\xac\x01\n" +
 	"\x10com.orbis.v0.dkgB\x0fDkgServiceProtoP\x01Z5github.com/sourcenetwork/orbis-rs/gen/go/orbis/v0/dkg\xa2\x02\x03OVD\xaa\x02\fOrbis.V0.Dkg\xca\x02\fOrbis\\V0\\Dkg\xe2\x02\x18Orbis\\V0\\Dkg\\GPBMetadata\xea\x02\x0eOrbis::V0::Dkgb\x06proto3"
 
 var (
@@ -164,19 +423,28 @@ func file_orbis_v0_dkg_dkg_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_dkg_dkg_service_proto_rawDescData
 }
 
-var file_orbis_v0_dkg_dkg_service_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_orbis_v0_dkg_dkg_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_orbis_v0_dkg_dkg_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_orbis_v0_dkg_dkg_service_proto_goTypes = []any{
-	(*StartDkgRequest)(nil),  // 0: orbis.v0.dkg.StartDkgRequest
-	(*StartDkgResponse)(nil), // 1: orbis.v0.dkg.StartDkgResponse
+	(DkgSessionStatus)(0),               // 0: orbis.v0.dkg.DkgSessionStatus
+	(*StartDkgRequest)(nil),             // 1: orbis.v0.dkg.StartDkgRequest
+	(*StartDkgResponse)(nil),            // 2: orbis.v0.dkg.StartDkgResponse
+	(*GetDkgSessionStatusRequest)(nil),  // 3: orbis.v0.dkg.GetDkgSessionStatusRequest
+	(*MissingDkgParticipant)(nil),       // 4: orbis.v0.dkg.MissingDkgParticipant
+	(*GetDkgSessionStatusResponse)(nil), // 5: orbis.v0.dkg.GetDkgSessionStatusResponse
 }
 var file_orbis_v0_dkg_dkg_service_proto_depIdxs = []int32{
-	0, // 0: orbis.v0.dkg.DkgService.StartDkg:input_type -> orbis.v0.dkg.StartDkgRequest
-	1, // 1: orbis.v0.dkg.DkgService.StartDkg:output_type -> orbis.v0.dkg.StartDkgResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: orbis.v0.dkg.GetDkgSessionStatusResponse.status:type_name -> orbis.v0.dkg.DkgSessionStatus
+	4, // 1: orbis.v0.dkg.GetDkgSessionStatusResponse.missing_participants:type_name -> orbis.v0.dkg.MissingDkgParticipant
+	1, // 2: orbis.v0.dkg.DkgService.StartDkg:input_type -> orbis.v0.dkg.StartDkgRequest
+	3, // 3: orbis.v0.dkg.DkgService.GetDkgSessionStatus:input_type -> orbis.v0.dkg.GetDkgSessionStatusRequest
+	2, // 4: orbis.v0.dkg.DkgService.StartDkg:output_type -> orbis.v0.dkg.StartDkgResponse
+	5, // 5: orbis.v0.dkg.DkgService.GetDkgSessionStatus:output_type -> orbis.v0.dkg.GetDkgSessionStatusResponse
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_dkg_dkg_service_proto_init() }
@@ -189,13 +457,14 @@ func file_orbis_v0_dkg_dkg_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_dkg_dkg_service_proto_rawDesc), len(file_orbis_v0_dkg_dkg_service_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   2,
+			NumEnums:      1,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_orbis_v0_dkg_dkg_service_proto_goTypes,
 		DependencyIndexes: file_orbis_v0_dkg_dkg_service_proto_depIdxs,
+		EnumInfos:         file_orbis_v0_dkg_dkg_service_proto_enumTypes,
 		MessageInfos:      file_orbis_v0_dkg_dkg_service_proto_msgTypes,
 	}.Build()
 	File_orbis_v0_dkg_dkg_service_proto = out.File
