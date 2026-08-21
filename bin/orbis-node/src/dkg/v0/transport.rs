@@ -673,7 +673,6 @@ pub struct PrepareSession {
     pub topic_id: [u8; 32],
     pub leader_node_key: String,
     pub committees: CeremonyConfig,
-    pub token_string: String,
     pub kind: SessionKind,
     pub pss_interval: u64,
     pub policy_id: Option<String>,
@@ -741,19 +740,16 @@ impl PrepareSession {
 pub enum DkgControlMessage {
     StartFresh {
         ring_id: String,
-        token_string: String,
     },
     StartAccepted {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
     },
-    /// Fresh-DKG-only. Forwarded to the canonical leader exactly like `StartFresh` — the
-    /// leader independently re-validates the token — since only the leader ever observes a
-    /// barrier-phase failure (followers just sit "prepared" waiting for the next control
-    /// message) and only the leader writes/reads the failure record.
+    /// Fresh-DKG-only. Forwarded to the canonical leader exactly like `StartFresh`, since only
+    /// the leader ever observes a barrier-phase failure (followers just sit "prepared" waiting
+    /// for the next control message) and only the leader writes/reads the failure record.
     GetSessionStatus {
         ring_id: String,
-        token_string: String,
     },
     SessionStatusResponse {
         session_id: Option<u128>,
@@ -1568,7 +1564,6 @@ mod tests {
                 },
                 next: None,
             },
-            token_string: "credential".into(),
             kind: SessionKind::Fresh,
             pss_interval: 60,
             policy_id: Some("policy".into()),
@@ -1702,7 +1697,6 @@ mod tests {
                     2,
                 )),
             },
-            token_string: String::new(),
             kind: SessionKind::Reshare {
                 ring_pk_hex: "ring-pk".into(),
                 new_peer_node_keys: vec!["new-a".into(), "new-b".into()],

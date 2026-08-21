@@ -1,10 +1,8 @@
-use crate::constants::{
-    JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_COMMITMENT_COEFFICIENTS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS,
-};
+use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
-    effective_new_peer_node_keys, fresh_commitment_hash, validate_dkg_claims,
+    effective_new_peer_node_keys, fresh_commitment_hash,
     validate_dkg_node_authorization_for_committee, validate_fresh_dkg_ring_payload,
     validate_fresh_session_init_params, validate_refresh_session_init_for_version,
     validate_reshare_session_init_for_version,
@@ -12,14 +10,12 @@ use crate::dkg::v0::helpers::{
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;
 use crate::dkg::v0::transport::AttemptKey;
-use crate::helpers::auth::request_actor;
 use crate::helpers::node_routes::{
     canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
     node_key_for_peer, peer_ids_from_routes, resolve_node_routes, validate_node_route_bindings,
 };
 use crate::ring_state::RingShareBundle;
 
-use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use crypto::r#trait::{
     DistributedShare, DkgRole, PolynomialCommitment as PolynomialCommitmentTrait,
 };
@@ -29,7 +25,6 @@ use crypto::{
 };
 use network::PeerId;
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{
     attempt_state_error, peers, phases,

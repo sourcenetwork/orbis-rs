@@ -305,8 +305,14 @@ where
     })
 }
 
-/// Validate a Fresh DKG SessionInit (JWT, ring payload, committee authorization)
+/// Validate a Fresh DKG SessionInit (ring payload, committee authorization)
 /// and resolve its routes.
+///
+/// No caller-credential check here by design: ring authorization already
+/// happened on-chain (policy-id ownership at ring creation, node whitelisting
+/// when this node joined the committee). `handle_session_init` no longer
+/// threads a caller JWT into this function — see `start_dkg`'s doc comment
+/// in `service.rs` for the full reasoning.
 #[allow(clippy::too_many_arguments)]
 async fn validate_fresh_init<D>(
     coord: &DkgCoordinator<D>,
@@ -314,7 +320,6 @@ async fn validate_fresh_init<D>(
     total_participants: u32,
     peer_ids: &[String],
     peer_node_keys: &[String],
-    token_string: &str,
     pss_interval: u64,
     policy_id: Option<&str>,
     ring_id: &str,
@@ -322,20 +327,6 @@ async fn validate_fresh_init<D>(
 where
     D: CoordinatorDkg,
 {
-    let current_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
-        .as_secs();
-    let token: BearerToken<DkgClaims> = resolve_jwt_did(
-        token_string,
-        current_time,
-        MAX_TOKEN_LIFETIME_SECS,
-        MAX_JWT_BYTES,
-        JWT_CLOCK_SKEW_LEEWAY_SECS,
-    )
-    .map_err(|e| DkgError::Unauthorized(format!("JWT validation failed: {}", e)))?;
-    validate_dkg_claims(&token, ring_id)?;
-
     let (bulletin_ring_payload, effective_routes) =
         read_ring_for_protocol(&*coord.app_state.bulletin, ring_id)
             .await
@@ -347,11 +338,6 @@ where
         )));
     }
     validate_fresh_dkg_ring_payload(ring_id, &bulletin_ring_payload)?;
-    let actor_id = request_actor(
-        &token,
-        bulletin_ring_payload.trusted_auth_relay_dids.as_deref(),
-    )
-    .map_err(DkgError::Unauthorized)?;
 
     validate_fresh_session_init_params(
         ring_id,
@@ -375,11 +361,9 @@ where
     )
     .await?;
     tracing::info!(
-        issuer = %token.issuer_id,
-        actor = %actor_id,
         threshold = threshold,
         policy_id = ?policy_id,
-        "DKG Coordinator: SessionInit JWT validated successfully"
+        "DKG Coordinator: Fresh SessionInit committee authorization validated"
     );
 
     let routes = resolve_node_routes(&coord.app_state.bulletin, peer_node_keys)
@@ -425,7 +409,6 @@ pub async fn handle_session_init<D>(
     peer_ids: &[String],
     peer_node_keys: &[String],
     node_id_assignments: &HashMap<String, u32>,
-    token_string: &str,
     kind: &SessionKind,
     pss_interval: u64,
     policy_id: Option<String>,
@@ -484,7 +467,6 @@ where
                 total_participants,
                 peer_ids,
                 peer_node_keys,
-                token_string,
                 pss_interval,
                 policy_id.as_deref(),
                 &ring_id,

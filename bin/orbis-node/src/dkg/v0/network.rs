@@ -6,7 +6,6 @@
 //! topic. Fresh DKG, refresh, and reshare all use this transport.
 
 use async_trait::async_trait;
-use authn::{resolve_jwt_did, BearerToken, DkgClaims};
 use bytes::Bytes;
 use futures::{stream::FuturesUnordered, StreamExt};
 use network::{Connection, Message, PeerId, ProtocolHandler, PubSubEvent, SignedPayload, Topic};
@@ -20,8 +19,8 @@ use crate::app_state::{AppState, DkgOfflineRelayReceipt};
 use crate::constants::{
     DKG_FORWARDED_START_RESPONSE_GRACE, DKG_GOSSIP_ISOLATION_GRACE, DKG_MAX_REPAIR_BACKOFF,
     DKG_PREPARATION_RETRY_MAX_BACKOFF, DKG_PREPARATION_TIMEOUT, DKG_REPAIR_STALL_INTERVAL,
-    DKG_TOPOLOGY_PROBE_INTERVAL, JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_DKG_COMMITTEE_SIZE, MAX_JWT_BYTES,
-    MAX_TOKEN_LIFETIME_SECS, PEER_RESPONSE_TIMEOUT, PSS_GRACE_PERIOD_SECS,
+    DKG_TOPOLOGY_PROBE_INTERVAL, MAX_DKG_COMMITTEE_SIZE, PEER_RESPONSE_TIMEOUT,
+    PSS_GRACE_PERIOD_SECS,
 };
 use crate::dkg::v0::coordinator::evidence::{
     commitments_prove_equivocation, handle_control_message_fault_evidence_relay,
@@ -49,7 +48,7 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
-    ring_payload_matches_ring_key, validate_dkg_claims, validate_fresh_dkg_ring_payload,
+    ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
 };
 use crate::dkg::v0::messages::{
     ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
@@ -77,8 +76,7 @@ use crate::helpers::node_routes::{
 use crate::helpers::protocol_version::read_ring_for_route;
 #[cfg(test)]
 use crate::helpers::test_helpers::{
-    create_test_app_state_default, create_test_app_state_with_bulletin, TestKeyPair,
-    TEST_FRESH_DKG_RING_ID,
+    create_test_app_state_default, create_test_app_state_with_bulletin, TEST_FRESH_DKG_RING_ID,
 };
 use crate::metrics::{DkgCeremonyKind, PrivatePairMetricsGuard};
 use crate::reporting::v0::types::{
@@ -2412,21 +2410,16 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     match request {
-        DkgControlMessage::StartFresh {
-            ring_id,
-            token_string,
-        } => {
-            let (ceremony_id, attempt_id) =
-                coordinate_fresh(state, routes, ring_id, token_string).await?;
+        DkgControlMessage::StartFresh { ring_id } => {
+            let (ceremony_id, attempt_id) = coordinate_fresh(state, routes, ring_id).await?;
             Ok(DkgControlMessage::StartAccepted {
                 ceremony_id,
                 attempt_id,
             })
         }
-        DkgControlMessage::GetSessionStatus {
-            ring_id,
-            token_string,
-        } => coordinate_dkg_session_status(state, routes, ring_id, token_string).await,
+        DkgControlMessage::GetSessionStatus { ring_id } => {
+            coordinate_dkg_session_status(state, routes, ring_id).await
+        }
         DkgControlMessage::StartReshare {
             ring_id,
             expected_ring_pk,
@@ -3952,7 +3945,6 @@ pub async fn start_fresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<(CeremonyId, AttemptId)>
 where
     D: CoordinatorDkg,
@@ -3966,7 +3958,7 @@ where
         .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader == state.node_key {
-        return coordinate_fresh(state, routes, ring_id, token_string).await;
+        return coordinate_fresh(state, routes, ring_id).await;
     }
     let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
@@ -3979,10 +3971,7 @@ where
         &state,
         routes,
         leader_peer,
-        DkgControlMessage::StartFresh {
-            ring_id,
-            token_string,
-        },
+        DkgControlMessage::StartFresh { ring_id },
         DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE,
     )
     .await?
@@ -4007,7 +3996,6 @@ pub async fn fetch_dkg_session_status<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<DkgControlMessage>
 where
     D: CoordinatorDkg,
@@ -4019,7 +4007,7 @@ where
         .ok_or(DkgError::InvalidParticipantCount(0))?
         .to_string();
     if leader == state.node_key {
-        return coordinate_dkg_session_status(state, routes, ring_id, token_string).await;
+        return coordinate_dkg_session_status(state, routes, ring_id).await;
     }
     let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
         .await
@@ -4032,10 +4020,7 @@ where
         &state,
         routes,
         leader_peer,
-        DkgControlMessage::GetSessionStatus {
-            ring_id,
-            token_string,
-        },
+        DkgControlMessage::GetSessionStatus { ring_id },
         PEER_RESPONSE_TIMEOUT,
     )
     .await
@@ -4045,31 +4030,20 @@ where
 /// written for an attempt that is no longer live), then a still-live session in `states`, then
 /// `NotFound` for anything neither knows about (never started, or aged out of both).
 ///
-/// Unlike `coordinate_fresh` (whose forwarded `token_string` is instead validated deeper in the
-/// flow, once per recipient, as part of accepting `Prepare`), this is a direct point answer with
-/// no further validated pipeline downstream — so the JWT is validated here, on the wire, before
-/// answering. `req.ring_id` is deliberately NOT checked against `validate_fresh_dkg_ring_payload`
-/// (which rejects a ring whose `ring_pk` is already set): unlike starting a ceremony, querying
-/// its status must still work for a ring whose Fresh DKG has already completed.
+/// No caller-credential check here, for the same reason `start_dkg` has none: a self-issued DID
+/// JWT proves nothing about who is allowed to ask about a given ring, so it adds no real
+/// access-control boundary — see `get_dkg_session_status`'s doc comment in `service.rs`.
+/// `ring_id` is deliberately NOT checked against `validate_fresh_dkg_ring_payload` (which
+/// rejects a ring whose `ring_pk` is already set): unlike starting a ceremony, querying its
+/// status must still work for a ring whose Fresh DKG has already completed.
 async fn coordinate_dkg_session_status<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<DkgControlMessage>
 where
     D: CoordinatorDkg,
 {
-    let current_time = current_unix_time().map_err(DkgError::SystemTime)?;
-    let token: BearerToken<DkgClaims> = resolve_jwt_did(
-        &token_string,
-        current_time,
-        MAX_TOKEN_LIFETIME_SECS,
-        MAX_JWT_BYTES,
-        JWT_CLOCK_SKEW_LEEWAY_SECS,
-    )
-    .map_err(|error| DkgError::Unauthorized(format!("JWT validation failed: {error}")))?;
-    validate_dkg_claims(&token, &ring_id)?;
     // Confirms the ring exists and this leader is still authoritative for its protocol
     // version — the narrower check the plan called for, deliberately not
     // `validate_fresh_dkg_ring_payload`'s "must still be pending" rule.
@@ -4402,7 +4376,6 @@ where
                 threshold: next_threshold,
             }),
         },
-        token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk,
             new_peer_node_keys: next_keys,
@@ -4599,7 +4572,6 @@ where
             },
             next: None,
         },
-        token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk,
         },
@@ -4727,7 +4699,6 @@ async fn coordinate_fresh<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,
-    token_string: String,
 ) -> Result<(CeremonyId, AttemptId)>
 where
     D: CoordinatorDkg,
@@ -4781,7 +4752,6 @@ where
             },
             next: None,
         },
-        token_string,
         kind: SessionKind::Fresh,
         pss_interval: ring.pss_interval,
         policy_id: ring.policy_id.clone(),
@@ -5854,7 +5824,6 @@ where
         &prepare.committees.current.peer_routes,
         &prepare.committees.current.node_keys,
         &prepare.committees.current.node_id_assignments,
-        &prepare.token_string,
         &prepare.kind,
         prepare.pss_interval,
         prepare.policy_id.clone(),
@@ -12195,7 +12164,6 @@ mod stability_tests {
             topic_id: [0; 32],
             leader_node_key: "next-a".into(),
             committees: committees.clone(),
-            token_string: String::new(),
             kind: SessionKind::Reshare {
                 ring_pk_hex: "ring-pk".into(),
                 new_peer_node_keys: committees.next.as_ref().unwrap().node_keys.clone(),
@@ -12841,7 +12809,6 @@ mod stability_tests {
                 },
                 next: None,
             },
-            token_string: String::new(),
             kind: SessionKind::Refresh {
                 ring_pk_hex: "test-ring".to_string(),
             },
@@ -15152,7 +15119,6 @@ mod stability_tests {
         state: &Arc<AppState<crypto::DkgImpl>>,
         ring_id: &str,
         node_key: &str,
-        token: String,
         ceremony_id: CeremonyId,
     ) -> PrepareSession {
         let leader = transport::canonical_leader(std::slice::from_ref(&node_key.to_string()))
@@ -15192,7 +15158,6 @@ mod stability_tests {
                 },
                 next: None,
             },
-            token_string: token,
             kind: SessionKind::Fresh,
             pss_interval: 60,
             policy_id: Some("test-policy".to_string()),
@@ -15240,11 +15205,8 @@ mod stability_tests {
             .expect("seed fresh ring");
 
         let state = Arc::new(app_state);
-        let token = TestKeyPair::new()
-            .create_dkg_jwt(&ring_id)
-            .expect("create JWT");
         let ceremony_id = CeremonyId(0xC0FFEE);
-        let prepare = fresh_self_prepare(&state, &ring_id, &node_key, token, ceremony_id).await;
+        let prepare = fresh_self_prepare(&state, &ring_id, &node_key, ceremony_id).await;
         let self_peer = state.network.local_peer_id();
 
         match prepare_participant(state.clone(), &network::V0, prepare.clone(), &self_peer)
@@ -15298,18 +15260,8 @@ mod stability_tests {
             .expect("seed fresh ring");
 
         let state = Arc::new(app_state);
-        let token = TestKeyPair::new()
-            .create_dkg_jwt(&ring_id)
-            .expect("create JWT");
         let first_ceremony_id = CeremonyId(0xC0FFEE);
-        let first = fresh_self_prepare(
-            &state,
-            &ring_id,
-            &node_key,
-            token.clone(),
-            first_ceremony_id,
-        )
-        .await;
+        let first = fresh_self_prepare(&state, &ring_id, &node_key, first_ceremony_id).await;
         let self_peer = state.network.local_peer_id();
 
         prepare_participant(state.clone(), &network::V0, first.clone(), &self_peer)

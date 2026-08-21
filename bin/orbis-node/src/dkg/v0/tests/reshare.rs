@@ -65,7 +65,6 @@ fn reshare_session_init(
         peer_ids: peer_ids.clone(),
         peer_node_keys,
         node_id_assignments,
-        token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk.to_string(),
             new_peer_node_keys,
@@ -340,7 +339,6 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
         peer_ids: vec![old_peer_hex],
         peer_node_keys: vec![old_node_key.clone()],
         node_id_assignments: std::collections::HashMap::from([(old_node_key, 1)]),
-        token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk.to_string(),
             new_peer_node_keys: next_node_keys,
@@ -439,7 +437,6 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
         peer_ids: vec![sender_peer_hex.clone()],
         peer_node_keys: vec![sender_node_key],
         node_id_assignments,
-        token_string: String::new(),
         kind: SessionKind::Reshare {
             ring_pk_hex: ring_pk.to_string(),
             new_peer_node_keys: vec![receiver_node_key],

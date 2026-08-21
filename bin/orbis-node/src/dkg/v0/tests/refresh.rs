@@ -1018,7 +1018,6 @@ fn refresh_session_init(ring_pk: &str, peer_node_key: &str, peer_id: &str) -> Te
         peer_ids: peer_ids.clone(),
         peer_node_keys,
         node_id_assignments,
-        token_string: String::new(),
         kind: SessionKind::Refresh {
             ring_pk_hex: ring_pk.to_string(),
         },
