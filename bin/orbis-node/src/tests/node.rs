@@ -603,7 +603,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
         .start_pre(StartPreRequest {
             rdr_pk: Vec::new(),
             object_id: "object-id".to_string(),
-            derivation: Some(vec![0u8; MAX_SMALL_GRPC_REQUEST_BYTES]),
+            derivation: Some(vec![0u8; MAX_PRE_REQUEST_BYTES]),
             salt: None,
             valid_window: None,
             document: None,
