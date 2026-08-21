@@ -15,8 +15,8 @@ use crate::reporting::v0::registry::{
     PreparedReport, ReportPreparationContext, ReportValidationContext, ReportValidationMode,
 };
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, RelayRequestStatement, ReportSigningContext, SignedReport,
-    RELAY_REQUEST_DOMAIN,
+    ring_state_sha256, CommitteeScope, RelayRequestStatement, ReportSigningContext,
+    ReportedDocumentEvidence, SignedReport, RELAY_REQUEST_DOMAIN,
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
@@ -165,6 +165,11 @@ pub struct RelayRequestBinding {
     pub valid_window: Option<ValidWindow>,
     pub timestamp: RelayRequestTimestampBinding,
     pub from_node_id: u32,
+    /// This node's own view of the request's inline document, if any — `Some` only when
+    /// `ctx.document` was used. The statement's `inline_document` must match exactly, in both
+    /// directions: a relayer attaching inline evidence to a bulletin-sourced request (or omitting
+    /// it for an inline-sourced one) is itself a binding mismatch.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 /// Ensure the signed relay statement is about the exact request that failed this
@@ -287,6 +292,13 @@ pub fn validate_relay_request_binding(
             "relayer_node_id",
             relayer_node_id,
             statement.from_node_id,
+        ));
+    }
+
+    if statement.inline_document != expected.inline_document {
+        return Err(ReportingError::InvalidReport(
+            "relay request statement does not bind to failed request: inline_document mismatch"
+                .to_string(),
         ));
     }
 
@@ -438,6 +450,9 @@ pub struct RelayStatementInputs {
     /// The timestamp the relayer used for its ACP check (PRE: document timestamp; Sign: now-or-none).
     pub acp_timestamp: Option<u64>,
     pub valid_window: Option<ValidWindow>,
+    /// Present only when the relayed request's document was supplied inline rather than read
+    /// from the bulletin — see `ReportedDocumentEvidence`.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 /// Build and sign the relayer's `RelayRequestStatement` — its self-incriminating record that it
@@ -493,6 +508,7 @@ pub fn build_signed_relay_statement(
         valid_window_start,
         valid_window_end,
         timestamp: inputs.acp_timestamp,
+        inline_document: inputs.inline_document,
     };
     let signature = sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;

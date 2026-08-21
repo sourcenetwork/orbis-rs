@@ -8,7 +8,8 @@ use crate::pre::v0::helpers::{
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
 use crate::reporting::v0::types::{
-    ring_state_sha256, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    ring_state_sha256, PreReencryptResponseStatement, ReportedDocumentEvidence,
+    PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
 use crate::reporting::v0::{
     report_unauthorized_relay, validate_relay_request_binding, RelayRequestBinding,
@@ -131,6 +132,14 @@ where
             ctx.document.clone(),
         )
         .await?;
+        let document_evidence = ctx.document.as_ref().map(|doc| ReportedDocumentEvidence {
+            document: doc.document.clone(),
+            proof: doc.proof.clone(),
+            policy_id: doc.policy_id.clone(),
+            resource: doc.resource.clone(),
+            permission: doc.permission.clone(),
+            tier: doc.tier.clone(),
+        });
         let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
 
@@ -174,6 +183,7 @@ where
                         valid_window: ctx.valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
                         from_node_id,
+                        inline_document: document_evidence.clone(),
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
@@ -272,6 +282,8 @@ where
             challenge: challenge_bytes.clone(),
             proof: proof_bytes.clone(),
             crypto_backend: T::name(),
+            timestamp: document_payload.timestamp,
+            inline_document: document_evidence,
         };
         let signing_key = self
             .app_state

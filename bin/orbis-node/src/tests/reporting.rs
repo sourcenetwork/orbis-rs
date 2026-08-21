@@ -1893,6 +1893,7 @@ fn signed_unauthorized_relay_statement(
         valid_window_start: None,
         valid_window_end: None,
         timestamp: None,
+        inline_document: None,
     };
     let signature =
         sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())

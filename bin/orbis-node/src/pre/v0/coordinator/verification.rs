@@ -2,8 +2,8 @@ use super::PreCoordinator;
 use crate::pre::v0::messages::PreMessage;
 use crate::reporting::v0::observation::InvalidCryptoResponseObservation;
 use crate::reporting::v0::types::{
-    InvalidCryptoResponse, PreReencryptResponseStatement, CHAIN_BLOCK_GRACE_SECS,
-    PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_TTL_SECS,
+    InvalidCryptoResponse, PreReencryptResponseStatement, ReportedDocumentEvidence,
+    CHAIN_BLOCK_GRACE_SECS, PRE_REENCRYPT_RESPONSE_DOMAIN, REPORT_TTL_SECS,
 };
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
@@ -25,13 +25,16 @@ pub(crate) struct PreResponseReportContext {
     pub object_id: String,
     pub rdr_pk: Vec<u8>,
     pub derivation: Option<Vec<u8>>,
+    /// The document's ACP timestamp (`DocumentPayload.timestamp`) — carried through to the
+    /// signed `PreReencryptResponseStatement` so `inline_document`, when present, can be
+    /// recomputed against `object_id` via `generate_document_id`.
+    pub timestamp: Option<u64>,
     /// Set when this request's document was supplied inline rather than read from the bulletin.
-    /// `invalid_crypto_response` reports are verified by re-reading the document from the
-    /// bulletin by `object_id` (`require_pre_proof_verification_failure`,
-    /// `reporting/v0/registry.rs`) — a document that was never posted there can't be re-read, so
-    /// such a report could never be confirmed on-chain. `report_invalid_pre_response` skips
-    /// generating one in that case instead of submitting a report that can't verify.
-    pub is_inline_document: bool,
+    /// `invalid_crypto_response` reports are normally verified by re-reading the document from
+    /// the bulletin by `object_id` (`require_pre_proof_verification_failure`,
+    /// `reporting/v0/registry.rs`) — this carries the document instead, so the report is
+    /// self-verifying even though it was never posted there.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 pub(crate) enum PeerResponseVerification<PublicKey> {
@@ -131,6 +134,8 @@ where
             challenge: challenge_bytes.clone(),
             proof: proof_bytes.clone(),
             crypto_backend: T::name(),
+            timestamp: report_context.timestamp,
+            inline_document: report_context.inline_document.clone(),
         };
 
         if let Err(error) = verify_node_message(
@@ -257,9 +262,6 @@ where
         seen_node_ids: &mut HashSet<u32>,
     ) -> PeerResponseVerification<G1Affine> {
         seen_node_ids.insert(from_node_id);
-        if report_context.is_inline_document {
-            return PeerResponseVerification::Rejected;
-        }
         PeerResponseVerification::InvalidProof(Box::new(InvalidCryptoResponseObservation {
             ring_id: report_context.ring_id.clone(),
             accused_node_key: report_context.accused_node_key.clone(),
@@ -391,6 +393,8 @@ mod tests {
             challenge: challenge.clone(),
             proof: proof.clone(),
             crypto_backend: PreImpl::name(),
+            timestamp: None,
+            inline_document: None,
         };
         let mut response_signature =
             sign_node_message_with_hex_key(&fixture.signing_key_hex, &statement.canonical_bytes())
@@ -423,7 +427,8 @@ mod tests {
             object_id: fixture.object_id.clone(),
             rdr_pk: rdr_pk_bytes.to_vec(),
             derivation: None,
-            is_inline_document: false,
+            timestamp: None,
+            inline_document: None,
         }
     }
 
@@ -559,27 +564,66 @@ mod tests {
     }
 
     /// An inline-sourced request's document was never posted to the bulletin, so
-    /// `require_pre_proof_verification_failure` (`reporting/v0/registry.rs`) could never re-read
-    /// it to verify an `invalid_crypto_response` report. A bad proof from such a request must
-    /// still be rejected (dropped from the threshold count), just without generating a report
-    /// that could never be confirmed on-chain.
+    /// `require_pre_proof_verification_failure` (`reporting/v0/registry.rs`) can't re-read it —
+    /// instead the responder embeds the document directly (`inline_document`) so the report is
+    /// self-verifying. A bad proof from such a request must still produce a full report, with the
+    /// embedded evidence intact, exactly like a bulletin-sourced request would.
     #[test]
-    fn invalid_pre_response_is_rejected_without_a_report_when_document_is_inline() {
+    fn invalid_pre_response_produces_a_self_verifying_report_when_document_is_inline() {
         let fixture = verify_fixture();
         let rdr_pk_bytes = CryptoSerialize::to_bytes(&fixture.rdr_pk).unwrap();
         let mut context = report_context(&fixture, &rdr_pk_bytes);
-        context.is_inline_document = true;
+        let evidence = ReportedDocumentEvidence {
+            document: "ciphertext-blob".to_string(),
+            proof: "proof-blob".to_string(),
+            policy_id: "policy-1".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+        };
+        context.timestamp = Some(1_700_000_000);
+        context.inline_document = Some(evidence.clone());
+
+        // Built by hand (not via `signed_response`) because the responder must sign over the
+        // same `timestamp`/`inline_document` the coordinator's `report_context` carries, for the
+        // reconstructed statement inside `verify_peer_response` to match this signature.
+        let signed_at = unix_now();
+        let statement = PreReencryptResponseStatement {
+            domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: fixture.ring_state_sha256.clone(),
+            protocol_version: 0,
+            request_id: fixture.request_id.clone(),
+            signed_at,
+            responder_node_key: fixture.responder_node_key.clone(),
+            origin_protocol: "pre".to_string(),
+            object_id: fixture.object_id.clone(),
+            rdr_pk: rdr_pk_bytes.clone(),
+            derivation: None,
+            from_node_id: fixture.from_node_id,
+            share: fixture.share.clone(),
+            challenge: fixture.challenge.clone(),
+            proof: fixture.invalid_proof.clone(),
+            crypto_backend: PreImpl::name(),
+            timestamp: Some(1_700_000_000),
+            inline_document: Some(evidence.clone()),
+        };
+        let response_signature =
+            sign_node_message_with_hex_key(&fixture.signing_key_hex, &statement.canonical_bytes())
+                .unwrap();
+        let invalid_proof = PreMessage::ReencryptResponse {
+            request_id: fixture.request_id.clone(),
+            from_node_id: fixture.from_node_id,
+            share: fixture.share.clone(),
+            challenge: fixture.challenge.clone(),
+            proof: fixture.invalid_proof.clone(),
+            signed_at,
+            response_signature,
+        };
 
         let mut seen = HashSet::new();
-        let invalid_proof = signed_response(
-            &fixture,
-            fixture.share.clone(),
-            fixture.challenge.clone(),
-            fixture.invalid_proof.clone(),
-            fixture.from_node_id,
-            unix_now(),
-            true,
-        );
         let result = PreCoordinator::<DkgImpl, PreImpl>::verify_peer_response(
             &fixture.dealer,
             invalid_proof,
@@ -591,11 +635,18 @@ mod tests {
             &context,
             &mut seen,
         );
-        assert!(matches!(result, PeerResponseVerification::Rejected));
-        assert!(
-            seen.contains(&fixture.from_node_id),
-            "the responder must still be excluded from being counted again"
-        );
+        let PeerResponseVerification::InvalidProof(observation) = result else {
+            panic!("inline-sourced invalid PRE proof should still produce a report observation");
+        };
+        let InvalidCryptoResponse::Pre {
+            statement: reported,
+            ..
+        } = &observation.evidence
+        else {
+            panic!("PRE observation must carry PRE evidence");
+        };
+        assert_eq!(reported.inline_document, Some(evidence));
+        assert!(seen.contains(&fixture.from_node_id));
     }
 
     #[test]

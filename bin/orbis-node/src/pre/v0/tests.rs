@@ -28,6 +28,7 @@ use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::check_policy_access;
 use crate::pre::v0::messages::PreRequestContext;
+use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 
@@ -83,14 +84,16 @@ async fn setup_document_in_bulletin(
 fn test_report_binding(
     dummy_bulletin: &DummyBulletin,
     ring_payload: &RingPayload,
-    is_inline: bool,
+    timestamp: Option<u64>,
+    inline_document: Option<ReportedDocumentEvidence>,
 ) -> PreReportBinding {
     let ring_post = get_test_ring_post(dummy_bulletin);
     PreReportBinding::from_ring(
         dummy_bulletin.chain_id(),
         ring_post.id,
         ring_payload,
-        is_inline,
+        timestamp,
+        inline_document,
     )
 }
 
@@ -294,7 +297,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await
         .expect("PRE should succeed");
@@ -483,6 +486,15 @@ async fn test_pre_with_inline_document_end_to_end() {
         document.tier.as_deref(),
         document.timestamp,
     );
+    let document_evidence = ReportedDocumentEvidence {
+        document: document.document.clone(),
+        proof: document.proof.clone(),
+        policy_id: document.policy_id.clone(),
+        resource: document.resource.clone(),
+        permission: document.permission.clone(),
+        tier: document.tier.clone(),
+    };
+    let document_timestamp = document.timestamp;
 
     // Confirm this test is actually exercising the inline path: nothing was ever posted here.
     assert!(
@@ -547,7 +559,12 @@ async fn test_pre_with_inline_document_end_to_end() {
                 relay_signature: Vec::new(),
                 document: Some(document),
             },
-            test_report_binding(dummy_bulletin, &ring_payload, true),
+            test_report_binding(
+                dummy_bulletin,
+                &ring_payload,
+                document_timestamp,
+                Some(document_evidence),
+            ),
         )
         .await
         .expect("PRE should succeed against an inline document");
@@ -675,7 +692,7 @@ async fn test_pre_with_large_secret() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await
         .expect("PRE should succeed");
@@ -814,7 +831,7 @@ async fn test_pre_fails_with_wrong_key() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await
         .expect("PRE should succeed");
@@ -949,7 +966,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await;
 
@@ -1105,7 +1122,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await;
 
@@ -1403,7 +1420,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1577,7 +1594,7 @@ async fn test_pre_fails_with_bad_proof() {
                 relay_signature: Vec::new(),
                 document: None,
             },
-            test_report_binding(dummy_bulletin, &ring_payload, false),
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
         .await;
 
@@ -1701,7 +1718,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 "local-verify-failure-ring".to_string(),
                 String::new(),
                 String::new(),
-                false,
+                None,
+                None,
             ),
         )
         .await;

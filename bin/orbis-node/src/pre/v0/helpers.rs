@@ -281,14 +281,38 @@ mod tests {
         let object_id = object_id_for(&document_b());
 
         let mutations: Vec<(&str, Box<dyn Fn(&mut DocumentPayload)>)> = vec![
-            ("ring_id", Box::new(|d: &mut DocumentPayload| d.ring_id = "ring-2".to_string())),
-            ("document", Box::new(|d: &mut DocumentPayload| d.document = "tampered".to_string())),
-            ("proof", Box::new(|d: &mut DocumentPayload| d.proof = "tampered".to_string())),
-            ("policy_id", Box::new(|d: &mut DocumentPayload| d.policy_id = "policy-attacker".to_string())),
-            ("resource", Box::new(|d: &mut DocumentPayload| d.resource = "other-resource".to_string())),
-            ("permission", Box::new(|d: &mut DocumentPayload| d.permission = "write".to_string())),
-            ("tier", Box::new(|d: &mut DocumentPayload| d.tier = Some("silver".to_string()))),
-            ("timestamp", Box::new(|d: &mut DocumentPayload| d.timestamp = Some(1))),
+            (
+                "ring_id",
+                Box::new(|d: &mut DocumentPayload| d.ring_id = "ring-2".to_string()),
+            ),
+            (
+                "document",
+                Box::new(|d: &mut DocumentPayload| d.document = "tampered".to_string()),
+            ),
+            (
+                "proof",
+                Box::new(|d: &mut DocumentPayload| d.proof = "tampered".to_string()),
+            ),
+            (
+                "policy_id",
+                Box::new(|d: &mut DocumentPayload| d.policy_id = "policy-attacker".to_string()),
+            ),
+            (
+                "resource",
+                Box::new(|d: &mut DocumentPayload| d.resource = "other-resource".to_string()),
+            ),
+            (
+                "permission",
+                Box::new(|d: &mut DocumentPayload| d.permission = "write".to_string()),
+            ),
+            (
+                "tier",
+                Box::new(|d: &mut DocumentPayload| d.tier = Some("silver".to_string())),
+            ),
+            (
+                "timestamp",
+                Box::new(|d: &mut DocumentPayload| d.timestamp = Some(1)),
+            ),
         ];
 
         for (field, mutate) in mutations {

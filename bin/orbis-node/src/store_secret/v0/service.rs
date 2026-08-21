@@ -126,12 +126,11 @@ where
         };
 
         // 3. Validate the encrypted document structure
-        let _encrypted_secret =
-            crate::helpers::encrypted_document::validate_encrypted_document(
-                &req.encrypted_document,
-                &req.enc_cmt,
-            )
-            .map_err(StoreSecretError::Validation)?;
+        let _encrypted_secret = crate::helpers::encrypted_document::validate_encrypted_document(
+            &req.encrypted_document,
+            &req.enc_cmt,
+        )
+        .map_err(StoreSecretError::Validation)?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         // DocumentPayload.document is a String (JSON), so convert from bytes (valid UTF-8)

@@ -11,12 +11,15 @@ use crate::pre::v0::helpers::{
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::PreRequestContext;
+use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use authn::PreClaims;
 use authz::sourcehub::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
-use crypto::r#trait::{DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer};
+use crypto::r#trait::{
+    DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
+};
 use crypto::PreImpl as ThresholdDealerNode;
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
@@ -26,7 +29,9 @@ use tonic::{Request, Response, Status};
 /// validating the encrypted document's structure along the way. Does not check `object_id` —
 /// that happens in `resolve_document_and_ring_payloads` via `validate_inline_document_id`, which
 /// every node (including cascaded committee members) independently re-runs.
-fn document_payload_from_inline(inline: proto::v0::pre::InlineDocument) -> Result<DocumentPayload, PreError> {
+fn document_payload_from_inline(
+    inline: proto::v0::pre::InlineDocument,
+) -> Result<DocumentPayload, PreError> {
     crate::helpers::encrypted_document::validate_encrypted_document(
         &inline.encrypted_document,
         &inline.enc_cmt,
@@ -153,7 +158,11 @@ where
         // Either way, ring_payload is always read live from the bulletin.
         // Validates that the ring's effective protocol version matches this service (v0).
         // Returns an error with version details if the ring has migrated to a newer version.
-        let inline_document = req.document.take().map(document_payload_from_inline).transpose()?;
+        let inline_document = req
+            .document
+            .take()
+            .map(document_payload_from_inline)
+            .transpose()?;
         let is_inline = inline_document.is_some();
         let (document_payload, ring_payload) = resolve_document_and_ring_payloads(
             &*self.state.bulletin,
@@ -163,6 +172,14 @@ where
         )
         .await?;
         let ctx_document = is_inline.then(|| document_payload.clone());
+        let document_evidence = ctx_document.as_ref().map(|doc| ReportedDocumentEvidence {
+            document: doc.document.clone(),
+            proof: doc.proof.clone(),
+            policy_id: doc.policy_id.clone(),
+            resource: doc.resource.clone(),
+            permission: doc.permission.clone(),
+            tier: doc.tier.clone(),
+        });
         let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
         check_policy_access(
@@ -251,36 +268,33 @@ where
             self.state.bulletin.chain_id(),
             document_payload.ring_id.clone(),
             &ring_payload,
-            is_inline,
+            document_payload.timestamp,
+            document_evidence.clone(),
         );
         // The relayer signs a record that it forwarded this request (after passing its own ACP
         // check above), so a peer whose re-check fails can attribute it via `unauthorized_request`.
-        // Skipped on the inline-document path: the report verifier re-reads the document from the
-        // bulletin by object_id (`reporting/v0/registry.rs`), which doesn't exist for a document
-        // that was never posted there, so such a report could never be confirmed on-chain.
-        let (relay_statement, relay_signature) = if is_inline {
-            (None, Vec::new())
-        } else {
-            let (relay_statement, relay_signature) = build_signed_relay_statement(
-                RelayStatementInputs {
-                    ring: ring_payload.clone(),
-                    ring_id: document_payload.ring_id.clone(),
-                    protocol_version: self.routes.version,
-                    chain_id: self.state.bulletin.chain_id(),
-                    request_id: request_id.clone(),
-                    origin_protocol: "pre".to_string(),
-                    relayer_node_key: self.state.node_key.clone(),
-                    actor_id: actor_id.clone(),
-                    object_id: req.object_id.clone(),
-                    user_signed_at: token.issued_time,
-                    acp_timestamp: document_payload.timestamp,
-                    valid_window: valid_window.clone(),
-                },
-                &self.state.local_storage,
-            )
-            .map_err(|e| PreError::Generic(format!("Failed to build relay statement: {}", e)))?;
-            (Some(relay_statement), relay_signature)
-        };
+        // `inline_document` (set above when this request's document was supplied inline) lets the
+        // report verifier recompute object_id instead of reading the document from the bulletin.
+        let (relay_statement, relay_signature) = build_signed_relay_statement(
+            RelayStatementInputs {
+                ring: ring_payload.clone(),
+                ring_id: document_payload.ring_id.clone(),
+                protocol_version: self.routes.version,
+                chain_id: self.state.bulletin.chain_id(),
+                request_id: request_id.clone(),
+                origin_protocol: "pre".to_string(),
+                relayer_node_key: self.state.node_key.clone(),
+                actor_id: actor_id.clone(),
+                object_id: req.object_id.clone(),
+                user_signed_at: token.issued_time,
+                acp_timestamp: document_payload.timestamp,
+                valid_window: valid_window.clone(),
+                inline_document: document_evidence,
+            },
+            &self.state.local_storage,
+        )
+        .map_err(|e| PreError::Generic(format!("Failed to build relay statement: {}", e)))?;
+        let relay_statement = Some(relay_statement);
         let ring = RingConfig {
             ring_id: document_payload.ring_id.clone(),
             ring_pk_bytes,
