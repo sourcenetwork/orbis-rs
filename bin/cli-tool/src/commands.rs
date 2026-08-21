@@ -605,14 +605,10 @@ fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
         .gas_multiplier(Some(config.gas_multiplier))
 }
 
-pub async fn add_policy_to_chain() -> Result<String> {
-    add_policy_to_chain_with_config(ChainConfig::local()).await
-}
-
-pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
+async fn add_policy_to_chain_impl(config: ChainConfig, signing_key_hex: &str) -> Result<String> {
     let client = SourceHubClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
@@ -646,23 +642,26 @@ pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<Stri
     Ok(policy_id)
 }
 
-pub async fn register_object_to_chain(
-    policy_id: String,
-    object_id: String,
-    resource: String,
-) -> Result<()> {
-    register_object_to_chain_with_config(policy_id, object_id, resource, ChainConfig::local()).await
+pub async fn add_policy_to_chain(config: ChainConfig, signing_key_hex: &str) -> Result<String> {
+    add_policy_to_chain_impl(config, signing_key_hex).await
 }
 
-pub async fn register_object_to_chain_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
+    add_policy_to_chain_impl(config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn register_object_to_chain_impl(
     policy_id: String,
     object_id: String,
     resource: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
     let client = SourceHubClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -691,35 +690,41 @@ pub async fn register_object_to_chain_with_config(
 
     Ok(())
 }
-pub async fn set_relationship_on_chain(
+
+pub async fn register_object_to_chain(
     policy_id: String,
     object_id: String,
     resource: String,
-    relation: String,
-    reader_did_pk: Option<String>,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    set_relationship_on_chain_with_config(
-        policy_id,
-        object_id,
-        resource,
-        relation,
-        reader_did_pk,
-        ChainConfig::local(),
-    )
-    .await
+    register_object_to_chain_impl(policy_id, object_id, resource, config, signing_key_hex).await
 }
 
-pub async fn set_relationship_on_chain_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn register_object_to_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    config: ChainConfig,
+) -> Result<()> {
+    register_object_to_chain_impl(policy_id, object_id, resource, config, TEST_ACCOUNT_HEX_KEY)
+        .await
+}
+
+async fn set_relationship_on_chain_impl(
     policy_id: String,
     object_id: String,
     resource: String,
     relation: String,
     reader_did_pk: Option<String>,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
     let client = SourceHubClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -765,8 +770,55 @@ pub async fn set_relationship_on_chain_with_config(
     Ok(())
 }
 
-pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
-    let read_client = SourceHubClient::new(ChainConfig::local())
+pub async fn set_relationship_on_chain(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    reader_did_pk: Option<String>,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    set_relationship_on_chain_impl(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        reader_did_pk,
+        config,
+        signing_key_hex,
+    )
+    .await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn set_relationship_on_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    reader_did_pk: Option<String>,
+    config: ChainConfig,
+) -> Result<()> {
+    set_relationship_on_chain_impl(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        reader_did_pk,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+pub async fn register_bulletin_namespace(
+    namespace: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let read_client = SourceHubClient::new(config.clone())
         .await
         .map_err(|e| anyhow!("Failed to create chain client: {}", e))?;
 
@@ -775,10 +827,10 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
         return Ok(());
     }
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create chain client with signer: {}", e))?;
 
@@ -801,11 +853,13 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
 pub async fn add_bulletin_collaborator(
     namespace: String,
     collaborator_address: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = SourceHubClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create blockchain client: {}", e))?;
 
@@ -875,27 +929,14 @@ pub async fn create_bulletin_post_with_config(
     Ok(post_id)
 }
 
-pub async fn start_ring_reshare_by_acp(
-    ring_id: String,
-    new_peer_node_keys: Vec<String>,
-    new_threshold: Option<u32>,
-) -> Result<()> {
-    start_ring_reshare_by_acp_with_config(
-        ring_id,
-        new_peer_node_keys,
-        new_threshold,
-        ChainConfig::local(),
-    )
-    .await
-}
-
-pub async fn start_ring_reshare_by_acp_with_config(
+async fn start_ring_reshare_by_acp_impl(
     ring_id: String,
     new_peer_node_keys: Vec<String>,
     new_threshold: Option<u32>,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -915,16 +956,48 @@ pub async fn start_ring_reshare_by_acp_with_config(
     Ok(())
 }
 
-pub async fn set_ring_pss_interval_by_acp(ring_id: String, pss_interval: u64) -> Result<()> {
-    set_ring_pss_interval_by_acp_with_config(ring_id, pss_interval, ChainConfig::local()).await
+pub async fn start_ring_reshare_by_acp(
+    ring_id: String,
+    new_peer_node_keys: Vec<String>,
+    new_threshold: Option<u32>,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    start_ring_reshare_by_acp_impl(
+        ring_id,
+        new_peer_node_keys,
+        new_threshold,
+        config,
+        signing_key_hex,
+    )
+    .await
 }
 
-pub async fn set_ring_pss_interval_by_acp_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn start_ring_reshare_by_acp_with_config(
+    ring_id: String,
+    new_peer_node_keys: Vec<String>,
+    new_threshold: Option<u32>,
+    config: ChainConfig,
+) -> Result<()> {
+    start_ring_reshare_by_acp_impl(
+        ring_id,
+        new_peer_node_keys,
+        new_threshold,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+async fn set_ring_pss_interval_by_acp_impl(
     ring_id: String,
     pss_interval: u64,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -944,27 +1017,33 @@ pub async fn set_ring_pss_interval_by_acp_with_config(
     Ok(())
 }
 
-pub async fn schedule_ring_upgrade_by_acp(
+pub async fn set_ring_pss_interval_by_acp(
     ring_id: String,
-    next_version: u64,
-    activation_time: u64,
+    pss_interval: u64,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    schedule_ring_upgrade_by_acp_with_config(
-        ring_id,
-        next_version,
-        activation_time,
-        ChainConfig::local(),
-    )
-    .await
+    set_ring_pss_interval_by_acp_impl(ring_id, pss_interval, config, signing_key_hex).await
 }
 
-pub async fn schedule_ring_upgrade_by_acp_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn set_ring_pss_interval_by_acp_with_config(
+    ring_id: String,
+    pss_interval: u64,
+    config: ChainConfig,
+) -> Result<()> {
+    set_ring_pss_interval_by_acp_impl(ring_id, pss_interval, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn schedule_ring_upgrade_by_acp_impl(
     ring_id: String,
     next_version: u64,
     activation_time: u64,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -984,15 +1063,47 @@ pub async fn schedule_ring_upgrade_by_acp_with_config(
     Ok(())
 }
 
-pub async fn cancel_ring_upgrade_by_acp(ring_id: String) -> Result<()> {
-    cancel_ring_upgrade_by_acp_with_config(ring_id, ChainConfig::local()).await
+pub async fn schedule_ring_upgrade_by_acp(
+    ring_id: String,
+    next_version: u64,
+    activation_time: u64,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    schedule_ring_upgrade_by_acp_impl(
+        ring_id,
+        next_version,
+        activation_time,
+        config,
+        signing_key_hex,
+    )
+    .await
 }
 
-pub async fn cancel_ring_upgrade_by_acp_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn schedule_ring_upgrade_by_acp_with_config(
     ring_id: String,
+    next_version: u64,
+    activation_time: u64,
     config: ChainConfig,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    schedule_ring_upgrade_by_acp_impl(
+        ring_id,
+        next_version,
+        activation_time,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+async fn cancel_ring_upgrade_by_acp_impl(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -1012,16 +1123,30 @@ pub async fn cancel_ring_upgrade_by_acp_with_config(
     Ok(())
 }
 
-pub async fn update_node_peer_id(node_key: String, peer_id: String) -> Result<()> {
-    update_node_peer_id_with_config(node_key, peer_id, ChainConfig::local()).await
+pub async fn cancel_ring_upgrade_by_acp(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    cancel_ring_upgrade_by_acp_impl(ring_id, config, signing_key_hex).await
 }
 
-pub async fn update_node_peer_id_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn cancel_ring_upgrade_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    cancel_ring_upgrade_by_acp_impl(ring_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn update_node_peer_id_impl(
     node_key: String,
     peer_id: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -1041,16 +1166,32 @@ pub async fn update_node_peer_id_with_config(
     Ok(())
 }
 
-pub async fn transfer_node_controller(node_key: String, controller_key: String) -> Result<()> {
-    transfer_node_controller_with_config(node_key, controller_key, ChainConfig::local()).await
+pub async fn update_node_peer_id(
+    node_key: String,
+    peer_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    update_node_peer_id_impl(node_key, peer_id, config, signing_key_hex).await
 }
 
-pub async fn transfer_node_controller_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn update_node_peer_id_with_config(
+    node_key: String,
+    peer_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    update_node_peer_id_impl(node_key, peer_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn transfer_node_controller_impl(
     node_key: String,
     controller_key: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -1070,16 +1211,32 @@ pub async fn transfer_node_controller_with_config(
     Ok(())
 }
 
-pub async fn add_node_to_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
-    add_node_to_whitelist_with_config(node_key, target, ChainConfig::local()).await
+pub async fn transfer_node_controller(
+    node_key: String,
+    controller_key: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    transfer_node_controller_impl(node_key, controller_key, config, signing_key_hex).await
 }
 
-pub async fn add_node_to_whitelist_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn transfer_node_controller_with_config(
+    node_key: String,
+    controller_key: String,
+    config: ChainConfig,
+) -> Result<()> {
+    transfer_node_controller_impl(node_key, controller_key, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn add_node_to_whitelist_impl(
     node_key: String,
     target: WhitelistTarget,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -1099,16 +1256,32 @@ pub async fn add_node_to_whitelist_with_config(
     Ok(())
 }
 
-pub async fn remove_node_from_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
-    remove_node_from_whitelist_with_config(node_key, target, ChainConfig::local()).await
+pub async fn add_node_to_whitelist(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    add_node_to_whitelist_impl(node_key, target, config, signing_key_hex).await
 }
 
-pub async fn remove_node_from_whitelist_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn add_node_to_whitelist_with_config(
     node_key: String,
     target: WhitelistTarget,
     config: ChainConfig,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    add_node_to_whitelist_impl(node_key, target, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn remove_node_from_whitelist_impl(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = SourceHubClient::with_signer(config, signer)
         .await
@@ -1128,9 +1301,23 @@ pub async fn remove_node_from_whitelist_with_config(
     Ok(())
 }
 
-/// Read a bulletin post by ID
-pub async fn read_bulletin_post(id: String, kind: BulletinKind) -> Result<Vec<u8>> {
-    read_bulletin_post_with_config(id, kind, ChainConfig::local()).await
+pub async fn remove_node_from_whitelist(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    remove_node_from_whitelist_impl(node_key, target, config, signing_key_hex).await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn remove_node_from_whitelist_with_config(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+) -> Result<()> {
+    remove_node_from_whitelist_impl(node_key, target, config, TEST_ACCOUNT_HEX_KEY).await
 }
 
 pub async fn read_bulletin_post_with_config(
@@ -1151,8 +1338,8 @@ pub async fn read_bulletin_post_with_config(
 }
 
 /// List all bulletin posts in a namespace
-pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn list_bulletin_posts(namespace: String, config: ChainConfig) -> Result<Vec<Vec<u8>>> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1166,8 +1353,8 @@ pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
 
 /// Fetch a ring from the orbis module by ring_id.
 /// Returns (ring_id, ring_pk_hex).
-pub async fn get_latest_ring(ring_id: String) -> Result<(String, String)> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn get_latest_ring(ring_id: String, config: ChainConfig) -> Result<(String, String)> {
+    let client = SourceHubClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1279,31 +1466,14 @@ pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig
 ///
 /// The caller must ensure the node's public address has been added as a
 /// collaborator on the namespace before posting.
-pub async fn post_key_derivation(
-    ring_id: String,
-    derivation: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
-) -> Result<(String, String)> {
-    post_key_derivation_with_config(
-        ring_id,
-        derivation,
-        policy_id,
-        resource,
-        permission,
-        ChainConfig::local(),
-    )
-    .await
-}
-
-pub async fn post_key_derivation_with_config(
+async fn post_key_derivation_impl(
     ring_id: String,
     derivation: String,
     policy_id: String,
     resource: String,
     permission: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
     let ring_bulletin = SourceHubBulletin::new(chain_config_builder(&config))
@@ -1331,7 +1501,7 @@ pub async fn post_key_derivation_with_config(
             .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
     );
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
     let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
@@ -1359,6 +1529,49 @@ pub async fn post_key_derivation_with_config(
         post_id, derived_pk_hex
     );
     Ok((post_id, derived_pk_hex))
+}
+
+pub async fn post_key_derivation(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<(String, String)> {
+    post_key_derivation_impl(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        config,
+        signing_key_hex,
+    )
+    .await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn post_key_derivation_with_config(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+) -> Result<(String, String)> {
+    post_key_derivation_impl(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
 }
 
 /// Result of a Sign operation
@@ -1436,7 +1649,7 @@ pub async fn do_sign(
     })
 }
 
-pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) -> Result<()> {
     println!("Funding address: {}", address);
 
     // Transfer a reasonable amount (e.g., 1000000 uopen = 1 OPEN)
@@ -1453,8 +1666,8 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
     let mut last_error = None;
 
     // Create the signer once
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer from test account: {}", e))?;
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
     let client = SourceHubClient::with_signer(config.clone(), signer)
         .await
@@ -1496,4 +1709,18 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
         max_retries,
         last_error.map(|e| e.to_string()).unwrap_or_default()
     ))
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+    fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+pub async fn fund_with_signer(
+    address: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    fund_impl(address, config, signing_key_hex).await
 }
