@@ -527,6 +527,29 @@ fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
     })
 }
 
+/// `--valid-window-start`/`--valid-window-end` must be given together or not at all.
+fn require_valid_window_pair(start: Option<u64>, end: Option<u64>) -> Result<()> {
+    match (start, end) {
+        (Some(_), None) | (None, Some(_)) => {
+            anyhow::bail!("--valid-window-start and --valid-window-end must both be provided");
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Resolve `--policy-id`/`--ring-id` into a single whitelist target. Clap's `conflicts_with`
+/// already rejects both being given; this handles neither being given.
+fn resolve_whitelist_target(
+    policy_id: Option<String>,
+    ring_id: Option<String>,
+) -> Result<WhitelistTarget> {
+    match (policy_id, ring_id) {
+        (Some(id), _) => Ok(WhitelistTarget::PolicyId(id)),
+        (_, Some(id)) => Ok(WhitelistTarget::RingId(id)),
+        _ => Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -576,14 +599,7 @@ async fn main() -> Result<()> {
             if !xnc_only && reader_sk.is_none() {
                 anyhow::bail!("--reader-sk is required unless --xnc-only is set");
             }
-            match (valid_window_start, valid_window_end) {
-                (Some(_), None) | (None, Some(_)) => {
-                    anyhow::bail!(
-                        "--valid-window-start and --valid-window-end must both be provided"
-                    );
-                }
-                _ => {}
-            }
+            require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let derivation_bytes =
                 derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
@@ -758,11 +774,7 @@ async fn main() -> Result<()> {
             policy_id,
             ring_id,
         } => {
-            let target = match (policy_id, ring_id) {
-                (Some(id), _) => WhitelistTarget::PolicyId(id),
-                (_, Some(id)) => WhitelistTarget::RingId(id),
-                _ => return Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
-            };
+            let target = resolve_whitelist_target(policy_id, ring_id)?;
             let signing_key = network.require_signing_key()?;
             add_node_to_whitelist(node_key, target, network.chain_config(), &signing_key).await?;
         }
@@ -771,11 +783,7 @@ async fn main() -> Result<()> {
             policy_id,
             ring_id,
         } => {
-            let target = match (policy_id, ring_id) {
-                (Some(id), _) => WhitelistTarget::PolicyId(id),
-                (_, Some(id)) => WhitelistTarget::RingId(id),
-                _ => return Err(anyhow::anyhow!("Must provide --policy-id or --ring-id")),
-            };
+            let target = resolve_whitelist_target(policy_id, ring_id)?;
             let signing_key = network.require_signing_key()?;
             remove_node_from_whitelist(node_key, target, network.chain_config(), &signing_key)
                 .await?;
@@ -924,14 +932,7 @@ async fn main() -> Result<()> {
             valid_window_start,
             valid_window_end,
         } => {
-            match (valid_window_start, valid_window_end) {
-                (Some(_), None) | (None, Some(_)) => {
-                    anyhow::bail!(
-                        "--valid-window-start and --valid-window-end must both be provided"
-                    );
-                }
-                _ => {}
-            }
+            require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let message_bytes = hex::decode(&message)
                 .map_err(|e| anyhow::anyhow!("Failed to decode message hex: {}", e))?;
@@ -949,3 +950,6 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

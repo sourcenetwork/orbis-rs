@@ -165,6 +165,12 @@ cargo run -p cli-tool -- --signing-key $KEY add-policy-to-chain
 cargo run -p cli-tool -- --signing-key $KEY register-bulletin-namespace --namespace my-ns
 ```
 
-## Integration tests
+## Testing
 
-The command implementations live in `src/commands.rs` and are re-exported from `src/lib.rs` so they can be called from integration tests without invoking the CLI binary.
+Fast, local unit tests (no Docker, no live chain) live in `src/tests.rs` — argument-validation helpers (`require_signing_key`, `require_reader_did_pk`, `require_valid_window_pair`, `resolve_whitelist_target`), clap parsing sanity checks, `did_seed`'s hashing, and `prepare_secret`'s local encryption. Run with:
+
+```bash
+cargo test -p cli-tool
+```
+
+The command implementations in `src/commands.rs` are also re-exported from `src/lib.rs` so they can be driven directly (bypassing the CLI binary and its arg parsing) from `orbis-node`'s Docker-Compose-based integration tests, which cover real DKG/PRE/Sign/PSS/reporting flows against a live chain and node cluster.

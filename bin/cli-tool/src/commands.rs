@@ -48,7 +48,7 @@ pub struct DkgResult {
     pub message: String,
 }
 
-fn is_retryable_dkg_start_error(status: &Status) -> bool {
+pub(crate) fn is_retryable_dkg_start_error(status: &Status) -> bool {
     status.code() == Code::Unavailable
         && status.message().to_ascii_lowercase().contains("timed out")
 }
@@ -344,7 +344,7 @@ pub async fn do_store_secret(
 /// `did_key::generate` only uses the seed deterministically when it is exactly
 /// 32 bytes; for any other length it falls back to a random key. Hashing to 32
 /// bytes ensures consistent, reproducible DIDs regardless of the input length.
-fn did_seed(s: &str) -> [u8; 32] {
+pub(crate) fn did_seed(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
 
