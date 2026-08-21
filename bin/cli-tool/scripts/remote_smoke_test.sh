@@ -19,6 +19,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # ---------------------------------------------------------------------------
 CLI_BIN="${CLI_BIN:-}"
 WHITELIST_POLICY_ID="${ORBIS_WHITELIST_POLICY_ID:-}"
+OBJECT_POLICY_ID="${ORBIS_OBJECT_POLICY_ID:-}"
 PEER_NODE_KEYS="${ORBIS_SMOKE_PEER_NODE_KEYS:-}"
 THRESHOLD="${ORBIS_SMOKE_THRESHOLD:-}"
 DKG_TIMEOUT_SECS="${ORBIS_SMOKE_DKG_TIMEOUT_SECS:-180}"
@@ -32,7 +33,6 @@ RELATION="${ORBIS_SMOKE_RELATION:-reader}"
 RING_NONCE="${ORBIS_SMOKE_RING_NONCE:-}"
 
 # State populated by step functions, reported in the exit summary.
-OBJECT_POLICY_ID=""
 RING_ID=""
 RING_PK=""
 READER_SK=""
@@ -59,6 +59,7 @@ variables (export these before running):
 Options (flag > env var > default):
   --cli-bin <path>             CLI_BIN                             (autodetect target/release/cli-tool)
   --whitelist-policy-id <id>   ORBIS_WHITELIST_POLICY_ID            (required, no default)
+  --object-policy-id <id>      ORBIS_OBJECT_POLICY_ID               (required, no default)
   --peer-node-keys <csv>       ORBIS_SMOKE_PEER_NODE_KEYS           (required)
   --threshold <n>              ORBIS_SMOKE_THRESHOLD                (required)
   --dkg-timeout <secs>         ORBIS_SMOKE_DKG_TIMEOUT_SECS         (default 180)
@@ -72,12 +73,13 @@ Options (flag > env var > default):
   --ring-nonce <string>        ORBIS_SMOKE_RING_NONCE               (default: generated)
   -h, --help                   show this help and exit
 
---resource/--permission/--relation must match the fixed policy schema that
-add-policy-to-chain creates (resource "document", relations creator/reader,
-permission read = creator + reader) -- see scripts/README.md.
+--resource/--permission/--relation must match the ACP schema of the policy
+behind --object-policy-id (e.g. cli-tool's built-in add-policy-to-chain
+schema: resource "document", relations creator/reader, permission
+read = creator + reader) -- see scripts/README.md.
 
 See scripts/README.md for prerequisites, especially the whitelist-policy-id
-assumption.
+and object-policy-id assumptions.
 EOF
 }
 
@@ -86,6 +88,7 @@ parse_args() {
     case "$1" in
       --cli-bin) CLI_BIN="$2"; shift 2 ;;
       --whitelist-policy-id) WHITELIST_POLICY_ID="$2"; shift 2 ;;
+      --object-policy-id) OBJECT_POLICY_ID="$2"; shift 2 ;;
       --peer-node-keys) PEER_NODE_KEYS="$2"; shift 2 ;;
       --threshold) THRESHOLD="$2"; shift 2 ;;
       --dkg-timeout) DKG_TIMEOUT_SECS="$2"; shift 2 ;;
@@ -167,6 +170,10 @@ step_preflight() {
     echo "--whitelist-policy-id/ORBIS_WHITELIST_POLICY_ID is not set. Target nodes must already be whitelisted (once, out-of-band) for a known policy_id -- see scripts/README.md 'Prerequisites'."
     return 1
   fi
+  if [ -z "$OBJECT_POLICY_ID" ]; then
+    echo "--object-policy-id/ORBIS_OBJECT_POLICY_ID is not set. This must be an existing ACP policy_id (create once with 'cli-tool add-policy-to-chain' or your own equivalent) -- see scripts/README.md 'Prerequisites'."
+    return 1
+  fi
   if [ -z "$PEER_NODE_KEYS" ]; then
     echo "--peer-node-keys/ORBIS_SMOKE_PEER_NODE_KEYS is not set"
     return 1
@@ -179,21 +186,6 @@ step_preflight() {
   peer_count="$(printf '%s' "$PEER_NODE_KEYS" | tr ',' '\n' | grep -c .)" || true
   if [ "${peer_count:-0}" -lt "$THRESHOLD" ]; then
     echo "peer_node_keys count (${peer_count:-0}) is less than threshold ($THRESHOLD)"
-    return 1
-  fi
-  return 0
-}
-
-step_create_object_policy() {
-  local out
-  if ! out="$("$CLI_BIN" add-policy-to-chain 2>&1)"; then
-    printf '%s\n' "$out"
-    return 1
-  fi
-  printf '%s\n' "$out"
-  OBJECT_POLICY_ID="$(printf '%s\n' "$out" | grep '^POLICY_ID=' | cut -d= -f2-)" || true
-  if [ -z "$OBJECT_POLICY_ID" ]; then
-    echo "POLICY_ID not found in add-policy-to-chain output"
     return 1
   fi
   return 0
@@ -395,7 +387,7 @@ on_exit() {
   echo
   echo 'Resources from this run:'
   echo "  whitelist_policy_id : ${WHITELIST_POLICY_ID:-<not set>}"
-  echo "  object_policy_id    : ${OBJECT_POLICY_ID:-<not created>}"
+  echo "  object_policy_id    : ${OBJECT_POLICY_ID:-<not set>}"
   echo "  ring_id             : ${RING_ID:-<not created>}"
   echo "  ring_pk             : ${RING_PK:-<not finalized>}"
   echo "  object_id           : ${OBJECT_ID:-<not stored>}"
@@ -422,7 +414,6 @@ main() {
   trap 'exit 130' INT TERM
 
   run_step "preflight" step_preflight
-  run_step "create_object_policy" step_create_object_policy
   run_step "create_ring" step_create_ring
   run_step "start_dkg" step_start_dkg
   wait_for_dkg_finalization || exit 1
