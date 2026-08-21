@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
+use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
@@ -520,6 +521,15 @@ async fn run_server(
         .take_stall_report_receiver()
         .map(|rx| spawn_pss_stall_reporter(node.app_state.clone(), rx));
 
+    // Start the DKG soft-stall worker: proactively aborts a Fresh DKG crypto phase that's
+    // genuinely stuck on an unreachable peer, well before the 15-minute hard deadline, and
+    // records a client-facing failure reason queryable via `GetDkgSessionStatus`.
+    let dkg_soft_stall_worker = node
+        .app_state
+        .dkg_session_state
+        .take_soft_stall_receiver()
+        .map(|rx| spawn_dkg_soft_stall_worker(node.app_state.clone(), rx));
+
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
     tracing::info!(p2p_addr = %node.local_address, "P2P address for node-to-node communication");
@@ -629,6 +639,9 @@ async fn run_server(
     }
     if let Some(reporter) = pss_stall_reporter {
         reporter.shutdown().await;
+    }
+    if let Some(worker) = dkg_soft_stall_worker {
+        worker.shutdown().await;
     }
 
     // Clean shutdown of router

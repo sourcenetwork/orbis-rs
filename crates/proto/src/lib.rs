@@ -39,6 +39,13 @@ mod tests {
         ) -> Result<tonic::Response<dkg::StartDkgResponse>, tonic::Status> {
             unreachable!()
         }
+
+        async fn get_dkg_session_status(
+            &self,
+            _: tonic::Request<dkg::GetDkgSessionStatusRequest>,
+        ) -> Result<tonic::Response<dkg::GetDkgSessionStatusResponse>, tonic::Status> {
+            unreachable!()
+        }
     }
 
     #[tonic::async_trait]

@@ -9,8 +9,10 @@
 
 use crate::app_state::DkgOfflineRelayReceipt;
 use crate::constants::{
-    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, DKG_PRIVATE_EXCHANGE_CONCURRENCY,
-    MAX_DKG_SESSIONS, SESSION_EXPIRATION_CHECK_INTERVAL,
+    DKG_ATTEMPT_TIMEOUT, DKG_COMPLETED_SESSION_TTL, DKG_FAILED_SESSION_RECORD_TTL,
+    DKG_PRIVATE_EXCHANGE_CONCURRENCY, DKG_SOFT_STALL_CHECK_INTERVAL,
+    DKG_SOFT_STALL_MIN_REPAIR_ATTEMPTS, DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD, MAX_DKG_SESSIONS,
+    SESSION_EXPIRATION_CHECK_INTERVAL,
 };
 use crate::dkg::v0::coordinator::evidence::commitments_prove_equivocation;
 use crate::dkg::v0::error::DkgError;
@@ -23,13 +25,14 @@ use crate::dkg::v0::transport::{
     decode, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeScope, DkgPrivateMessage,
     MessageId, ParticipantRef, PublicPhase,
 };
+use crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys;
 use crate::metrics;
 use crate::ring_state::RingShareBundle;
 use crate::sign::v0::messages::RefreshHealthCheckStatement;
 use crypto::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::sync::Mutex as TokioMutex;
@@ -226,6 +229,100 @@ pub struct AbandonedPssSession {
     pub ring_id: String,
     pub protocol_version: u64,
     pub missing_peer_ids: Vec<String>,
+}
+
+/// One committee member a Fresh DKG attempt could not get a response or
+/// contribution from. Identity is the chain signing key from
+/// `RingPayload.peer_node_keys` — the only form the external caller (the one
+/// who started the ceremony) already has and can act on to swap in a
+/// different node, unlike an internal peer route/id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingDkgParticipant {
+    pub node_id: u32,
+    pub node_key: String,
+}
+
+/// Coarse, client-facing stage label for a failed Fresh DKG attempt.
+///
+/// Deliberately NOT a `DkgPhase` variant: `DkgPhase` feeds the pure state
+/// machine (`coordinator::state_machine`), `SessionSnapshot`, and every phase
+/// handler, so adding a `Failed` case there would ripple through all of it.
+/// This is a small, separate label used only by `FailedDkgSessionRecord`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DkgFailureStage {
+    /// Prepare/TopologyProbe/Activate/Begin barrier, before the crypto phases
+    /// ever started.
+    Preparing,
+    /// Fresh Phase0 (commitment-hash pre-round).
+    CommitmentHashes,
+    /// Fresh Phase1 (commitment reveal).
+    Commitments,
+    /// Fresh Phase2 (share exchange).
+    ShareExchange,
+    /// Caught by the hard-deadline fallback in a state the other stages
+    /// don't cover (e.g. still `Initializing` past `Begin`).
+    Unknown,
+}
+
+impl DkgFailureStage {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::CommitmentHashes => "commitment_hashes",
+            Self::Commitments => "commitments",
+            Self::ShareExchange => "share_exchange",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Short-lived, client-facing failure attribution for a Fresh DKG attempt.
+///
+/// Deliberately NOT the full `DkgSessionState<D>` — that struct holds live
+/// crypto material (some zeroized on `Drop`) and connection state that
+/// should not linger for a client-polling window. This is a handful of
+/// scalar-ish fields, written at the exact points a Fresh session is torn
+/// down for cause (barrier abort, soft-stall, hard-deadline) and read by
+/// `GetDkgSessionStatus`. Purely a client-facing diagnostic — not wired into
+/// the on-chain `node_offline`/reputation reporting pipeline.
+#[derive(Clone, Debug)]
+pub struct FailedDkgSessionRecord {
+    pub session_id: u128,
+    pub ring_id: String,
+    pub attempt_id: Option<AttemptId>,
+    pub stage: DkgFailureStage,
+    pub missing: Vec<MissingDkgParticipant>,
+    pub reason: String,
+    pub failed_at: SystemTime,
+}
+
+/// Published by the soft-stall detector when the leader observes a Fresh DKG
+/// crypto phase that has genuinely stopped making progress against a
+/// specific peer (repair/private-exchange retries already failing, not just
+/// ordinary Gossip jitter). Drained by `spawn_dkg_soft_stall_worker`, which
+/// does the actual abort + record write with full `AppState` access — the
+/// detection tick itself only has access to the session-state maps.
+#[derive(Clone, Debug)]
+pub struct SoftStalledDkgAttempt {
+    pub session_id: u128,
+    pub attempt_id: AttemptId,
+    pub ring_id: String,
+    pub protocol_version: u64,
+    pub missing: Vec<MissingDkgParticipant>,
+    pub stage: DkgFailureStage,
+}
+
+/// Per-peer no-progress tracking for the soft-stall detector.
+///
+/// Populated only when repair (public plane) or a private pair-exchange
+/// retry (private plane) against that peer has already failed at least once
+/// — never on the first miss — so this reflects "repair tried and still
+/// failing," not ordinary Gossip jitter. Cleared the moment that peer's
+/// contribution or share is recorded.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PeerNoProgressInfo {
+    pub first_failure_at: Instant,
+    pub consecutive_failures: u32,
 }
 
 #[derive(Default)]
@@ -441,6 +538,15 @@ pub(crate) struct DkgSessionTransportState {
     pub public_contributions:
         HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
     pub public_phase_started_at: HashMap<PublicPhase, Instant>,
+    /// Soft-stall gating: node_id -> repair/retry failure streak against that
+    /// peer. Fresh DKG's `CommitteeScope` is always `Current`, so `node_id`
+    /// alone is unambiguous here.
+    pub(crate) peer_no_progress: HashMap<u32, PeerNoProgressInfo>,
+    /// Set once a `SoftStalledDkgAttempt` has been successfully queued for this attempt, so
+    /// repeated soft-stall scan ticks (this attempt is still alive while the drain worker
+    /// hasn't processed the event yet) don't keep re-publishing duplicates into the bounded
+    /// channel and potentially crowding out other attempts' events.
+    pub(crate) soft_stall_reported: bool,
     public_repairs: HashMap<PublicPhase, PublicRepairState>,
     pub(crate) publishing_public_phases: HashSet<PublicPhase>,
     pub published_public_phases: HashSet<PublicPhase>,
@@ -493,6 +599,8 @@ impl Default for DkgSessionTransportState {
             last_progress_at: Instant::now(),
             public_contributions: HashMap::new(),
             public_phase_started_at: HashMap::new(),
+            peer_no_progress: HashMap::new(),
+            soft_stall_reported: false,
             public_repairs: HashMap::new(),
             publishing_public_phases: HashSet::new(),
             published_public_phases: HashSet::new(),
@@ -780,6 +888,131 @@ impl<D: Dkg> DkgSessionState<D> {
             .filter_map(|node_id| self.routing.node_id_to_peer_id.get(&node_id).cloned())
             .collect()
     }
+
+    /// Fresh-only. Committee members this node has not yet heard from in the
+    /// current crypto phase, as (node_id, node_key) pairs for client display
+    /// via `GetDkgSessionStatus`. Unlike `missing_dealer_peer_ids` (peer_id,
+    /// for internal `node_offline` attribution), this returns chain signing
+    /// keys — the identity form the external caller already has from
+    /// `RingPayload.peer_node_keys` and can act on to swap in a different
+    /// node.
+    ///
+    /// Diffs `transport.public_contributions` for Phase0/Phase1 rather than
+    /// `commit_reveal.received_hashes`: both are populated from the same
+    /// write path, but using `public_contributions` uniformly means "missing"
+    /// is defined identically to what the repair loop itself is failing to
+    /// fetch — an abort's attribution can never disagree with what repair was
+    /// actually struggling with. Phase2 has no public-plane equivalent, so it
+    /// diffs `commitment_audit.received_shares`, which (despite a stale
+    /// "Refresh/reshare-only" doc comment on the parent field) is populated
+    /// unconditionally for Fresh too.
+    pub(crate) fn missing_fresh_participants(&self) -> Vec<MissingDkgParticipant> {
+        if !matches!(self.kind, SessionKind::Fresh) {
+            return Vec::new();
+        }
+        let own_node_id = self.node.node_id();
+        let total_nodes = self.node.total_nodes() as u32;
+        let missing_ids: Vec<u32> = match self.phase {
+            DkgPhase::Phase0CommitmentHashes => (1..=total_nodes)
+                .filter(|id| *id != own_node_id)
+                .filter(|id| {
+                    !self
+                        .transport
+                        .public_contributions
+                        .get(&PublicPhase::CommitmentHashes)
+                        .is_some_and(|c| c.contains_key(&ParticipantRef::current(*id)))
+                })
+                .collect(),
+            DkgPhase::Phase1Commitments => (1..=total_nodes)
+                .filter(|id| *id != own_node_id)
+                .filter(|id| {
+                    !self
+                        .transport
+                        .public_contributions
+                        .get(&PublicPhase::Commitments)
+                        .is_some_and(|c| c.contains_key(&ParticipantRef::current(*id)))
+                })
+                .collect(),
+            DkgPhase::Phase2Shares => (1..=total_nodes)
+                .filter(|id| *id != own_node_id)
+                .filter(|id| !self.commitment_audit.received_shares.contains(id))
+                .collect(),
+            _ => Vec::new(),
+        };
+        if missing_ids.is_empty() {
+            return Vec::new();
+        }
+        let node_key_by_id: HashMap<u32, String> =
+            match canonical_node_id_assignments_from_node_keys(&self.routing.peer_node_keys) {
+                Ok(assignments) => assignments.into_iter().map(|(key, id)| (id, key)).collect(),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        peer_node_keys_len = self.routing.peer_node_keys.len(),
+                        "missing_fresh_participants: failed to derive canonical node-id \
+                         assignments from routing.peer_node_keys"
+                    );
+                    return Vec::new();
+                }
+            };
+        if node_key_by_id.len() < total_nodes as usize {
+            tracing::warn!(
+                peer_node_keys_len = self.routing.peer_node_keys.len(),
+                total_nodes,
+                "missing_fresh_participants: routing.peer_node_keys does not cover the full \
+                 committee; some missing participants may go unattributed"
+            );
+        }
+        missing_ids
+            .into_iter()
+            .filter_map(|id| {
+                node_key_by_id
+                    .get(&id)
+                    .cloned()
+                    .map(|node_key| MissingDkgParticipant {
+                        node_id: id,
+                        node_key,
+                    })
+            })
+            .collect()
+    }
+
+    /// Whether this node is the canonical leader of its own session, derived
+    /// purely from local state (own node ID, sorted committee key list, and
+    /// the leader key recorded at Prepare time) — no external "own node key"
+    /// parameter needed.
+    pub(crate) fn is_local_leader(&self) -> bool {
+        let Some(leader) = self.transport.leader_node_key.as_deref() else {
+            return false;
+        };
+        let own_node_id = self.node.node_id();
+        match canonical_node_id_assignments_from_node_keys(&self.routing.peer_node_keys) {
+            Ok(assignments) => assignments
+                .into_iter()
+                .any(|(key, id)| id == own_node_id && key == leader),
+            Err(_) => false,
+        }
+    }
+
+    /// Node IDs currently past the soft-stall gate: repair/private-exchange
+    /// retries against that peer have failed at least `min_attempts` times,
+    /// spanning at least `threshold` of elapsed time since the first failure.
+    pub(crate) fn soft_stalled_peer_ids(
+        &self,
+        threshold: Duration,
+        min_attempts: u32,
+    ) -> HashSet<u32> {
+        let now = Instant::now();
+        self.transport
+            .peer_no_progress
+            .iter()
+            .filter(|(_, info)| {
+                info.consecutive_failures >= min_attempts
+                    && now.duration_since(info.first_failure_at) >= threshold
+            })
+            .map(|(node_id, _)| *node_id)
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -837,6 +1070,17 @@ pub struct SessionStateManager<D: Dkg> {
     /// subsystem as a whole, not any one session, so it lives here rather than
     /// on `DkgSessionState`.
     private_exchange_permits: Arc<tokio::sync::Semaphore>,
+    /// Receiver for Fresh DKG attempts the soft-stall scan has detected as
+    /// genuinely stuck. Taken once via [`SessionStateManager::take_soft_stall_receiver`]
+    /// at node startup; the sender lives inside the expiration worker.
+    soft_stall_rx: StdMutex<Option<mpsc::Receiver<SoftStalledDkgAttempt>>>,
+    /// Short-lived Fresh-DKG failure attribution, queried by
+    /// `GetDkgSessionStatus`. Populated at every point a Fresh attempt is
+    /// torn down for cause (barrier abort, soft-stall, hard-deadline). Kept
+    /// separate from `states` deliberately (see `FailedDkgSessionRecord`),
+    /// and aged out independently on `DKG_FAILED_SESSION_RECORD_TTL`, swept
+    /// in `expiration_worker`.
+    failed_sessions: Arc<RwLock<HashMap<u128, (FailedDkgSessionRecord, Instant)>>>,
 }
 
 impl<D: Dkg + 'static> SessionStateManager<D> {
@@ -855,16 +1099,23 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         // growing without bound. A full channel just drops the newest event (see
         // `expiration_worker`) and counts it, rather than blocking the expiration sweep.
         let (stall_report_tx, stall_report_rx) = mpsc::channel(256);
+        // Bounded for the same reason as `stall_report_tx`: caps queued-but-unprocessed
+        // soft-stall events rather than growing without bound if the drain worker stalls.
+        let (soft_stall_tx, soft_stall_rx) = mpsc::channel(256);
+        let failed_sessions = Arc::new(RwLock::new(HashMap::new()));
         let states_clone = states.clone();
         let pss_clone = rings_pss.clone();
         let ready_clone = reshare_signature_ready.clone();
+        let failed_sessions_clone = failed_sessions.clone();
         background_tasks.push(tokio::spawn(async move {
             Self::expiration_worker(
                 states_clone,
                 pss_clone,
                 ready_clone,
+                failed_sessions_clone,
                 shutdown_rx,
                 stall_report_tx,
+                soft_stall_tx,
             )
             .await;
         }));
@@ -883,6 +1134,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             private_exchange_permits: Arc::new(tokio::sync::Semaphore::new(
                 DKG_PRIVATE_EXCHANGE_CONCURRENCY,
             )),
+            soft_stall_rx: StdMutex::new(Some(soft_stall_rx)),
+            failed_sessions,
         }
     }
 
@@ -898,6 +1151,65 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .take()
     }
 
+    /// Take the receiver for soft-stalled Fresh DKG attempts. Returns `Some` exactly once
+    /// (the first caller); subsequent calls return `None`. Called at node startup to spawn
+    /// `spawn_dkg_soft_stall_worker`. If no one takes it, published events accumulate unread
+    /// in the channel until it fills, after which further events are dropped and counted
+    /// (see `expiration_worker`) — never fatal, just never turned into an early abort.
+    pub fn take_soft_stall_receiver(&self) -> Option<mpsc::Receiver<SoftStalledDkgAttempt>> {
+        self.soft_stall_rx
+            .lock()
+            .expect("soft_stall_rx mutex poisoned")
+            .take()
+    }
+
+    /// Record a repair/private-exchange retry failure against `node_id` for the soft-stall
+    /// gate. A no-op if the attempt is no longer current (stale task, already torn down).
+    pub(crate) async fn record_peer_no_progress(&self, attempt: AttemptKey, node_id: u32) {
+        let _ = self
+            .with_attempt_state_mut(attempt, |state| {
+                let entry =
+                    state
+                        .transport
+                        .peer_no_progress
+                        .entry(node_id)
+                        .or_insert(PeerNoProgressInfo {
+                            first_failure_at: Instant::now(),
+                            consecutive_failures: 0,
+                        });
+                entry.consecutive_failures += 1;
+            })
+            .await;
+    }
+
+    /// Clear any soft-stall failure streak against `node_id` once its contribution or share
+    /// is recorded. A no-op if the attempt is no longer current.
+    pub(crate) async fn clear_peer_no_progress(&self, attempt: AttemptKey, node_id: u32) {
+        let _ = self
+            .with_attempt_state_mut(attempt, |state| {
+                state.transport.peer_no_progress.remove(&node_id);
+            })
+            .await;
+    }
+
+    /// Write (or overwrite) the queryable failure record for a Fresh DKG attempt.
+    pub(crate) async fn record_failed_session(&self, record: FailedDkgSessionRecord) {
+        self.failed_sessions
+            .write()
+            .await
+            .insert(record.session_id, (record, Instant::now()));
+    }
+
+    /// Read the queryable failure record for a Fresh DKG attempt, if one is still retained
+    /// (see `DKG_FAILED_SESSION_RECORD_TTL`).
+    pub(crate) async fn failed_session(&self, session_id: &u128) -> Option<FailedDkgSessionRecord> {
+        self.failed_sessions
+            .read()
+            .await
+            .get(session_id)
+            .map(|(record, _)| record.clone())
+    }
+
     /// Background task that periodically removes expired sessions
     ///
     /// Active sessions are removed only at their hard attempt deadline. Completed
@@ -906,10 +1218,13 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
         reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
+        failed_sessions: Arc<RwLock<HashMap<u128, (FailedDkgSessionRecord, Instant)>>>,
         mut shutdown_rx: watch::Receiver<bool>,
         stall_report_tx: mpsc::Sender<AbandonedPssSession>,
+        soft_stall_tx: mpsc::Sender<SoftStalledDkgAttempt>,
     ) {
         let mut interval = tokio::time::interval(SESSION_EXPIRATION_CHECK_INTERVAL);
+        let mut soft_stall_interval = tokio::time::interval(DKG_SOFT_STALL_CHECK_INTERVAL);
 
         loop {
             tokio::select! {
@@ -917,6 +1232,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     if changed.is_err() || *shutdown_rx.borrow() {
                         break;
                     }
+                    continue;
+                }
+                _ = soft_stall_interval.tick() => {
+                    Self::soft_stall_scan(&states, &soft_stall_tx).await;
                     continue;
                 }
                 _ = interval.tick() => {}
@@ -929,6 +1248,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             // Collect session IDs to remove (expired or stalled)
             let mut to_remove_ids: Vec<u128> = Vec::new();
             let mut completed_ids: HashSet<u128> = HashSet::new();
+            let mut fresh_failures: Vec<FailedDkgSessionRecord> = Vec::new();
             for (session_id, state) in states.iter() {
                 let phase_age = now.duration_since(state.phase_started_at);
                 if state.phase == DkgPhase::Phase4Complete {
@@ -1002,6 +1322,38 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                             }
                         }
                     }
+
+                    // Safety net for a stalled Fresh DKG attempt the soft-stall scan didn't
+                    // catch (e.g. a follower whose leader vanished before ever broadcasting
+                    // Abort, or a session stuck in `Initializing` past `Begin`). Client-facing
+                    // diagnostic only — not wired into the on-chain reporting pipeline above.
+                    if matches!(state.kind, SessionKind::Fresh) {
+                        let stage = match state.phase {
+                            DkgPhase::Phase0CommitmentHashes => DkgFailureStage::CommitmentHashes,
+                            DkgPhase::Phase1Commitments => DkgFailureStage::Commitments,
+                            DkgPhase::Phase2Shares => DkgFailureStage::ShareExchange,
+                            _ => DkgFailureStage::Unknown,
+                        };
+                        fresh_failures.push(FailedDkgSessionRecord {
+                            session_id: *session_id,
+                            ring_id: state.routing.ring_id.clone(),
+                            attempt_id: state.transport.attempt_id,
+                            stage,
+                            missing: state.missing_fresh_participants(),
+                            reason:
+                                "attempt reached the 15-minute hard deadline without completing"
+                                    .to_string(),
+                            failed_at: SystemTime::now(),
+                        });
+                    }
+                }
+            }
+
+            if !fresh_failures.is_empty() {
+                let mut failed = failed_sessions.write().await;
+                let inserted_at = Instant::now();
+                for record in fresh_failures {
+                    failed.insert(record.session_id, (record, inserted_at));
                 }
             }
 
@@ -1078,6 +1430,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     now.duration_since(*inserted_at) < DKG_COMPLETED_SESSION_TTL
                 });
 
+            // Failure records are decoupled from `states` (see `FailedDkgSessionRecord`), so
+            // they're aged out on their own TTL rather than tied to any session's lifecycle.
+            failed_sessions.write().await.retain(|_, (_, inserted_at)| {
+                now.duration_since(*inserted_at) < DKG_FAILED_SESSION_RECORD_TTL
+            });
+
             let removed = initial_count - states.len();
             if removed > 0 {
                 tracing::info!(
@@ -1085,6 +1443,92 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     remaining = states.len(),
                     "SessionStateManager: Expired session cleanup complete"
                 );
+            }
+        }
+    }
+
+    /// Leader-only scan for Fresh DKG crypto phases that have genuinely
+    /// stopped making progress against a specific peer. Runs on its own
+    /// (shorter) tick from `expiration_worker`, independent of the
+    /// hard-deadline sweep. Only detects and publishes — the drain worker
+    /// spawned via `take_soft_stall_receiver` does the actual abort + record
+    /// write, since it needs full `AppState` access this task doesn't have.
+    async fn soft_stall_scan(
+        states: &Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
+        soft_stall_tx: &mpsc::Sender<SoftStalledDkgAttempt>,
+    ) {
+        // Write lock (not read): a successfully-queued attempt gets marked
+        // `soft_stall_reported` below, under the same lock as the scan itself, so a
+        // still-alive attempt awaiting drain-worker processing can't be re-published on
+        // every subsequent tick.
+        let mut states = states.write().await;
+        for (session_id, state) in states.iter_mut() {
+            if !matches!(state.kind, SessionKind::Fresh) {
+                continue;
+            }
+            if state.transport.soft_stall_reported {
+                continue;
+            }
+            if !matches!(
+                state.phase,
+                DkgPhase::Phase0CommitmentHashes
+                    | DkgPhase::Phase1Commitments
+                    | DkgPhase::Phase2Shares
+            ) {
+                continue;
+            }
+            if !state.is_local_leader() {
+                continue;
+            }
+            let Some(attempt_id) = state.transport.attempt_id else {
+                continue;
+            };
+            let stalled_ids = state.soft_stalled_peer_ids(
+                DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD,
+                DKG_SOFT_STALL_MIN_REPAIR_ATTEMPTS,
+            );
+            if stalled_ids.is_empty() {
+                continue;
+            }
+            // Only report peers that are both "missing" (per the phase-specific
+            // diff) and "soft-stalled" (per the repair-retry gate), so a peer
+            // whose contribution simply hasn't been repair-attempted yet is
+            // never attributed.
+            let missing: Vec<MissingDkgParticipant> = state
+                .missing_fresh_participants()
+                .into_iter()
+                .filter(|participant| stalled_ids.contains(&participant.node_id))
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let stage = match state.phase {
+                DkgPhase::Phase0CommitmentHashes => DkgFailureStage::CommitmentHashes,
+                DkgPhase::Phase1Commitments => DkgFailureStage::Commitments,
+                DkgPhase::Phase2Shares => DkgFailureStage::ShareExchange,
+                _ => DkgFailureStage::Unknown,
+            };
+            match soft_stall_tx.try_send(SoftStalledDkgAttempt {
+                session_id: *session_id,
+                attempt_id,
+                ring_id: state.routing.ring_id.clone(),
+                protocol_version: state.protocol_version,
+                missing,
+                stage,
+            }) {
+                // Only mark reported once the event is actually queued — if the channel is
+                // full or closed, leave the flag unset so a later tick can retry once the
+                // drain worker (or a fresh one) catches up, rather than getting permanently
+                // stuck unreported.
+                Ok(()) => state.transport.soft_stall_reported = true,
+                Err(error) => {
+                    crate::metrics::record_dkg_transport_event("dkg_soft_stall", "dropped");
+                    tracing::warn!(
+                        session_id = session_id,
+                        %error,
+                        "SessionStateManager: soft-stall channel full or closed; dropping early-abort event"
+                    );
+                }
             }
         }
     }
@@ -2116,6 +2560,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         transport.public_repairs.remove(&phase);
                     }
                     transport.last_progress_at = Instant::now();
+                    transport.peer_no_progress.remove(&origin.node_id);
                     PublicContributionRecordOutcome::Recorded
                 }
             }
@@ -2155,14 +2600,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
             }
 
-            let mut recorded = false;
+            let mut newly_recorded_origins: Vec<ParticipantRef> = Vec::new();
             for (origin, contribution) in contributions {
                 if let std::collections::btree_map::Entry::Vacant(entry) = retained.entry(origin) {
                     entry.insert(contribution);
-                    recorded = true;
+                    newly_recorded_origins.push(origin);
                 }
             }
-            if recorded {
+            if !newly_recorded_origins.is_empty() {
                 transport
                     .public_phase_started_at
                     .entry(phase)
@@ -2175,6 +2620,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     transport.public_repairs.remove(&phase);
                 }
                 transport.last_progress_at = Instant::now();
+                for origin in newly_recorded_origins {
+                    transport.peer_no_progress.remove(&origin.node_id);
+                }
                 PublicBatchRecordOutcome::Recorded
             } else {
                 PublicBatchRecordOutcome::DuplicateSame
@@ -3041,6 +3489,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             if state.commitment_audit.received_shares.insert(dealer_id) {
                 state.shares_received += 1;
             }
+            state.transport.peer_no_progress.remove(&dealer_id);
         })
         .await
     }
@@ -5114,5 +5563,376 @@ mod tests {
             .await
         );
         assert!(!mgr.session_exists(&session_id).await);
+    }
+
+    // =========================================================================
+    // Fresh DKG failure attribution / soft-stall detection
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_missing_fresh_participants_non_fresh_returns_empty() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(500, make_node(1), 3, |s| {
+            s.kind = SessionKind::Refresh {
+                ring_pk_hex: "pk".to_string(),
+            };
+            s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
+            s.phase = DkgPhase::Phase1Commitments;
+        })
+        .await;
+        let missing = mgr
+            .with_state(&500, |s| s.missing_fresh_participants())
+            .await
+            .unwrap();
+        assert!(
+            missing.is_empty(),
+            "missing_fresh_participants is Fresh-only, mirroring missing_dealer_peer_ids"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_missing_fresh_participants_diffs_each_phase() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(501, make_node(1), 3, |s| {
+            s.kind = SessionKind::Fresh;
+            s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
+        })
+        .await;
+
+        // Phase0: neither peer 2 nor 3 has hashed in yet.
+        mgr.with_state_mut(&501, |s| s.phase = DkgPhase::Phase0CommitmentHashes)
+            .await;
+        let missing = mgr
+            .with_state(&501, |s| s.missing_fresh_participants())
+            .await
+            .unwrap();
+        let missing_ids: BTreeSet<_> = missing.iter().map(|p| p.node_id).collect();
+        assert_eq!(missing_ids, BTreeSet::from([2, 3]));
+
+        // Record peer 2's Phase0 hash; only 3 should remain missing.
+        mgr.with_state_mut(&501, |s| {
+            s.transport
+                .public_contributions
+                .entry(PublicPhase::CommitmentHashes)
+                .or_default()
+                .insert(ParticipantRef::current(2), test_signed_public(2));
+        })
+        .await;
+        let missing = mgr
+            .with_state(&501, |s| s.missing_fresh_participants())
+            .await
+            .unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].node_id, 3);
+        assert_eq!(missing[0].node_key, "k3");
+
+        // Phase1: commitments tracked independently of Phase0's hashes.
+        mgr.with_state_mut(&501, |s| {
+            s.phase = DkgPhase::Phase1Commitments;
+            s.transport
+                .public_contributions
+                .entry(PublicPhase::Commitments)
+                .or_default()
+                .insert(ParticipantRef::current(3), test_signed_public(3));
+        })
+        .await;
+        let missing = mgr
+            .with_state(&501, |s| s.missing_fresh_participants())
+            .await
+            .unwrap();
+        assert_eq!(
+            missing.len(),
+            1,
+            "Phase1 must diff PublicPhase::Commitments, not carry over Phase0's map"
+        );
+        assert_eq!(missing[0].node_id, 2);
+
+        // Phase2: shares tracked via commitment_audit.received_shares, not the public plane.
+        mgr.with_state_mut(&501, |s| {
+            s.phase = DkgPhase::Phase2Shares;
+            s.commitment_audit.received_shares.insert(2);
+        })
+        .await;
+        let missing = mgr
+            .with_state(&501, |s| s.missing_fresh_participants())
+            .await
+            .unwrap();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].node_id, 3);
+    }
+
+    #[tokio::test]
+    async fn test_soft_stalled_peer_ids_gating_and_clear() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ceremony_id = CeremonyId(502);
+        let attempt_id = AttemptId([3; 32]);
+        mgr.create_session(502, make_node(1), 3, |s| {
+            s.transport.ceremony_id = Some(ceremony_id);
+            s.transport.attempt_id = Some(attempt_id);
+        })
+        .await;
+        let attempt = AttemptKey::new(ceremony_id, attempt_id);
+
+        mgr.record_peer_no_progress(attempt, 2).await;
+        mgr.record_peer_no_progress(attempt, 2).await;
+
+        assert!(
+            mgr.with_state(&502, |s| s.soft_stalled_peer_ids(Duration::from_secs(0), 2))
+                .await
+                .unwrap()
+                .contains(&2),
+            "2 recorded failures at min_attempts=2 (no elapsed-time requirement) should count as stalled"
+        );
+        assert!(
+            !mgr.with_state(&502, |s| s.soft_stalled_peer_ids(Duration::from_secs(0), 3))
+                .await
+                .unwrap()
+                .contains(&2),
+            "below min_attempts should not count as stalled even with no elapsed-time requirement"
+        );
+        assert!(
+            !mgr.with_state(&502, |s| s.soft_stalled_peer_ids(Duration::from_secs(3600), 0))
+                .await
+                .unwrap()
+                .contains(&2),
+            "a freshly-recorded streak should not satisfy a large elapsed-time gate, regardless of attempt count"
+        );
+
+        mgr.clear_peer_no_progress(attempt, 2).await;
+        assert!(
+            mgr.with_state(&502, |s| s.soft_stalled_peer_ids(Duration::from_secs(0), 0))
+                .await
+                .unwrap()
+                .is_empty(),
+            "clearing should remove the streak entirely"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_public_contribution_clears_peer_no_progress() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ceremony_id = CeremonyId(503);
+        let attempt_id = AttemptId([4; 32]);
+        mgr.create_session(503, make_node(1), 3, |s| {
+            s.transport.ceremony_id = Some(ceremony_id);
+            s.transport.attempt_id = Some(attempt_id);
+        })
+        .await;
+        let attempt = AttemptKey::new(ceremony_id, attempt_id);
+        mgr.record_peer_no_progress(attempt, 2).await;
+        assert!(mgr
+            .with_state(&503, |s| s.transport.peer_no_progress.contains_key(&2))
+            .await
+            .unwrap());
+
+        let outcome = mgr
+            .record_public_contribution(
+                &503,
+                attempt_id,
+                PublicPhase::Commitments,
+                ParticipantRef::current(2),
+                test_signed_public(1),
+            )
+            .await;
+        assert_eq!(outcome, PublicContributionRecordOutcome::Recorded);
+
+        assert!(
+            !mgr.with_state(&503, |s| s.transport.peer_no_progress.contains_key(&2))
+                .await
+                .unwrap(),
+            "recording a contribution from the peer should clear its no-progress streak"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_public_batch_clears_peer_no_progress_only_for_newly_recorded_origins() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        let ceremony_id = CeremonyId(509);
+        let attempt_id = AttemptId([6; 32]);
+        mgr.create_session(509, make_node(1), 3, |s| {
+            s.transport.ceremony_id = Some(ceremony_id);
+            s.transport.attempt_id = Some(attempt_id);
+        })
+        .await;
+        let attempt = AttemptKey::new(ceremony_id, attempt_id);
+
+        // Peer 2's contribution is already retained (e.g. a prior direct submission); peer 3's
+        // is not. Seed both with a no-progress streak.
+        mgr.record_public_contribution(
+            &509,
+            attempt_id,
+            PublicPhase::Commitments,
+            ParticipantRef::current(2),
+            test_signed_public(2),
+        )
+        .await;
+        mgr.record_peer_no_progress(attempt, 2).await;
+        mgr.record_peer_no_progress(attempt, 3).await;
+
+        let mut batch = BTreeMap::new();
+        batch.insert(ParticipantRef::current(2), test_signed_public(2)); // same bytes: already retained
+        batch.insert(ParticipantRef::current(3), test_signed_public(3)); // newly recorded
+        let outcome = mgr
+            .record_public_batch(&509, attempt_id, PublicPhase::Commitments, batch)
+            .await;
+        assert_eq!(outcome, PublicBatchRecordOutcome::Recorded);
+
+        assert!(
+            mgr.with_state(&509, |s| s.transport.peer_no_progress.contains_key(&2))
+                .await
+                .unwrap(),
+            "peer 2's contribution was already retained (duplicate-same in the batch), so the \
+             batch recorded nothing new from it — its no-progress streak must be left alone"
+        );
+        assert!(
+            !mgr.with_state(&509, |s| s.transport.peer_no_progress.contains_key(&3))
+                .await
+                .unwrap(),
+            "peer 3's contribution was newly recorded by the batch, so its streak must clear"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_is_local_leader() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        mgr.create_session(504, make_node(1), 3, |s| {
+            s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
+            s.transport.leader_node_key = Some("k1".to_string());
+        })
+        .await;
+        assert!(
+            mgr.with_state(&504, |s| s.is_local_leader()).await.unwrap(),
+            "node_id 1 maps to k1, the recorded leader key"
+        );
+
+        mgr.create_session(505, make_node(2), 3, |s| {
+            s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
+            s.transport.leader_node_key = Some("k1".to_string());
+        })
+        .await;
+        assert!(
+            !mgr.with_state(&505, |s| s.is_local_leader()).await.unwrap(),
+            "node_id 2 maps to k2, not the recorded leader key k1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_record_and_read_failed_session_round_trip() {
+        let mgr = SessionStateManager::<DkgImpl>::new();
+        assert!(mgr.failed_session(&600).await.is_none());
+
+        mgr.record_failed_session(FailedDkgSessionRecord {
+            session_id: 600,
+            ring_id: "ring-600".to_string(),
+            attempt_id: Some(AttemptId([5; 32])),
+            stage: DkgFailureStage::ShareExchange,
+            missing: vec![MissingDkgParticipant {
+                node_id: 2,
+                node_key: "k2".to_string(),
+            }],
+            reason: "test failure".to_string(),
+            failed_at: SystemTime::now(),
+        })
+        .await;
+
+        let record = mgr
+            .failed_session(&600)
+            .await
+            .expect("record should be queryable");
+        assert_eq!(record.ring_id, "ring-600");
+        assert_eq!(record.stage, DkgFailureStage::ShareExchange);
+        assert_eq!(record.missing.len(), 1);
+        assert_eq!(record.missing[0].node_key, "k2");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_failed_sessions_ttl_sweep_ages_out() {
+        // `Instant` here is `std::time::Instant`, which `tokio::time::advance` does NOT move
+        // (only tokio's own timers respect the paused clock) — so, mirroring
+        // `test_expiration_worker_removes_completed_sessions_past_ttl`'s
+        // `phase_started_at` backdating above, the record is inserted already past its TTL
+        // rather than relying on `advance` to age it there. `advance` below is only to make
+        // the tokio `interval` tick that drives the sweep actually fire.
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let record = FailedDkgSessionRecord {
+            session_id: 601,
+            ring_id: "ring-601".to_string(),
+            attempt_id: None,
+            stage: DkgFailureStage::Unknown,
+            missing: Vec::new(),
+            reason: "test".to_string(),
+            failed_at: SystemTime::now(),
+        };
+        let backdated_insert =
+            Instant::now() - (DKG_FAILED_SESSION_RECORD_TTL + Duration::from_secs(10));
+        mgr.failed_sessions
+            .write()
+            .await
+            .insert(601, (record, backdated_insert));
+        assert!(mgr.failed_session(&601).await.is_some());
+
+        tokio::time::advance(SESSION_EXPIRATION_CHECK_INTERVAL + Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            mgr.failed_session(&601).await.is_none(),
+            "failure record should age out after DKG_FAILED_SESSION_RECORD_TTL"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_soft_stall_scan_publishes_event_for_genuinely_stalled_leader() {
+        let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
+        let mut soft_stall_rx = mgr
+            .take_soft_stall_receiver()
+            .expect("receiver available exactly once");
+
+        let attempt_id = AttemptId([9; 32]);
+        mgr.create_session(602, make_node(1), 3, |s| {
+            s.kind = SessionKind::Fresh;
+            s.routing.ring_id = "ring-602".to_string();
+            s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
+            s.transport.leader_node_key = Some("k1".to_string());
+            s.transport.attempt_id = Some(attempt_id);
+            s.phase = DkgPhase::Phase1Commitments;
+            // Backdated rather than `Instant::now()` + `tokio::time::advance`: `Instant` here
+            // is `std::time::Instant`, unaffected by tokio's paused clock (see the TTL sweep
+            // test above for the same reasoning).
+            s.transport.peer_no_progress.insert(
+                2,
+                PeerNoProgressInfo {
+                    first_failure_at: Instant::now()
+                        - (DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD + Duration::from_secs(1)),
+                    consecutive_failures: DKG_SOFT_STALL_MIN_REPAIR_ATTEMPTS,
+                },
+            );
+            // Peer 3 never sent a commitment either, but with no recorded no-progress streak
+            // it must NOT be reported — only a peer repair has actually failed against counts.
+        })
+        .await;
+
+        // Only needs to cross the soft-stall scan's own tick interval now — the elapsed-time
+        // gate is already satisfied by the backdated `first_failure_at` above.
+        tokio::time::advance(DKG_SOFT_STALL_CHECK_INTERVAL + Duration::from_secs(1)).await;
+        let mut event = None;
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+            if let Ok(e) = soft_stall_rx.try_recv() {
+                event = Some(e);
+                break;
+            }
+        }
+        let event = event.expect("a soft-stall event should have been published");
+
+        assert_eq!(event.session_id, 602);
+        assert_eq!(event.ring_id, "ring-602");
+        assert_eq!(event.stage, DkgFailureStage::Commitments);
+        assert_eq!(
+            event.missing.len(),
+            1,
+            "only peer 2 has both a recorded no-progress streak and a missing contribution"
+        );
+        assert_eq!(event.missing[0].node_id, 2);
+        assert_eq!(event.missing[0].node_key, "k2");
     }
 }

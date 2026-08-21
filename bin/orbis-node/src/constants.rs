@@ -129,6 +129,15 @@ pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
+///
+/// Deliberately NOT shortened under `cfg(test)`, unlike `DKG_ATTEMPT_TIMEOUT` above: reshare
+/// tests that add a genuinely new committee member need real headroom for that node's Gossip
+/// mesh to converge under actual (occasionally slow) network conditions, not just for a
+/// deliberately-refused connection to fail fast. A prior attempt at a 20s test value broke
+/// `test_reshare_one_old_dealer_offline_completes` — a live new-committee node missed the
+/// topology-probe barrier by about a second under real network jitter. A barrier-failure test
+/// that specifically wants to run fast should use its own bounded fault, not rely on this shared
+/// production constant being shortened.
 pub const DKG_PREPARATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 
 /// Interval between retransmissions of the exact preparation topology probe.
@@ -146,7 +155,14 @@ pub const DKG_PREPARATION_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(2);
 pub const DKG_FORWARDED_START_RESPONSE_GRACE: Duration = Duration::from_secs(30);
 
 /// Lack of progress that triggers explicit public/private repair.
+///
+/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT` above: a live
+/// fault-injection test that blocks a peer mid-ceremony needs repair to actually retry
+/// against it within the test's real-time budget, not once per real 10 seconds.
+#[cfg(not(test))]
 pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub const DKG_REPAIR_STALL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum backoff between repair attempts.
 pub const DKG_MAX_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
@@ -161,6 +177,47 @@ pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 /// so five minutes leaves margin for that task while bounding leaks if explicit
 /// cleanup never runs.
 pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
+
+/// Cadence of the Fresh-DKG soft-stall scan. Matches `DKG_REPAIR_STALL_INTERVAL`
+/// so soft-stall detection is checked at least as often as repair itself runs.
+///
+/// Shortened under `cfg(test)` alongside `DKG_REPAIR_STALL_INTERVAL` and
+/// `DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD` so a live fault-injection soft-stall test
+/// completes in real seconds rather than real minutes.
+#[cfg(not(test))]
+pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_secs(10);
+#[cfg(test)]
+pub const DKG_SOFT_STALL_CHECK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How long a peer must have been failing repair/private-exchange retries
+/// before the leader treats a Fresh DKG crypto phase as genuinely stalled and
+/// aborts early rather than waiting for `DKG_ATTEMPT_TIMEOUT`. Public-plane
+/// repair backs off to `DKG_MAX_REPAIR_BACKOFF` (30s) after a failed attempt,
+/// so this comfortably spans at least two failed repair cycles (10s initial +
+/// 30s + margin) before concluding the peer, not transient Gossip loss, is
+/// the problem.
+///
+/// Shortened under `cfg(test)`, same rationale as `DKG_ATTEMPT_TIMEOUT`/
+/// `DKG_REPAIR_STALL_INTERVAL` above; still comfortably spans several shortened
+/// repair cycles (`DKG_REPAIR_STALL_INTERVAL` under test) before firing, so the
+/// "real stall vs. transient loss" distinction the production value protects
+/// still holds at test scale.
+#[cfg(not(test))]
+pub const DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD: Duration = Duration::from_secs(60);
+#[cfg(test)]
+pub const DKG_SOFT_STALL_NO_PROGRESS_THRESHOLD: Duration = Duration::from_secs(3);
+
+/// Minimum consecutive failed repair/retry attempts against one peer before
+/// it counts toward soft-stall, in addition to the elapsed-time gate above.
+/// Prevents a single missed repair cycle (or a scan racing a phase's very
+/// first attempt) from being treated as a stall.
+pub const DKG_SOFT_STALL_MIN_REPAIR_ATTEMPTS: u32 = 2;
+
+/// TTL for a queryable Fresh DKG failure record after the attempt is torn
+/// down. Long enough for a client polling `GetDkgSessionStatus` on a normal
+/// interval to reliably observe the failure once before it ages out; short
+/// enough not to accumulate unboundedly across many retried ceremonies.
+pub const DKG_FAILED_SESSION_RECORD_TTL: Duration = Duration::from_secs(10 * 60);
 
 // ============================================================================
 // Ring Finalization Constants

@@ -101,6 +101,23 @@ pub enum DkgError {
         total: usize,
         threshold: usize,
     },
+
+    /// Multiple committee members failed the same preparation barrier
+    /// (prepare/activate/begin). Carries every failure, not just the first,
+    /// unlike a plain retry error from a single peer.
+    #[error(
+        "{barrier} barrier failed for {} of the committee: {}",
+        failed_peers.len(),
+        failed_peers
+            .iter()
+            .map(|(peer, reason)| format!("{peer}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )]
+    BarrierFailure {
+        barrier: &'static str,
+        failed_peers: Vec<(String, String)>,
+    },
 }
 
 /// Result type for DKG operations
@@ -143,6 +160,9 @@ impl GrpcServiceError for DkgError {
             }
             DkgError::NetworkCommunication(_) | DkgError::InsufficientPeers { .. } => {
                 GrpcErrorClassification::new(Code::Internal, Level::WARN, true)
+            }
+            DkgError::BarrierFailure { .. } => {
+                GrpcErrorClassification::new(Code::Unavailable, Level::WARN, true)
             }
             DkgError::SystemTime(_) => {
                 GrpcErrorClassification::new(Code::Internal, Level::ERROR, false)
@@ -318,6 +338,15 @@ mod tests {
                     threshold: 2,
                 },
                 Code::Internal,
+                Level::WARN,
+                true,
+            ),
+            (
+                DkgError::BarrierFailure {
+                    barrier: "prepare",
+                    failed_peers: vec![("peer-a".into(), "timeout".into())],
+                },
+                Code::Unavailable,
                 Level::WARN,
                 true,
             ),

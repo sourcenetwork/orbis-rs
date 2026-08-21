@@ -136,6 +136,19 @@ pub enum CommitteeScope {
     Next,
 }
 
+/// Wire status value for `GetSessionStatus`/`SessionStatusResponse`. Deliberately independent
+/// of `session_state::DkgFailureStage`/`DkgPhase` — this module cannot depend on
+/// `session_state` (the dependency runs the other way), and this is a coarser, purely
+/// client-facing status than either of those internal types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DkgSessionStatusValue {
+    InProgress,
+    Completed,
+    Failed,
+    NotFound,
+}
+
 /// Attempt-scoped participant identity used by message IDs and deduplication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ParticipantRef {
@@ -732,6 +745,23 @@ pub enum DkgControlMessage {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
     },
+    /// Fresh-DKG-only. Forwarded to the canonical leader exactly like `StartFresh`, since only
+    /// the leader ever observes a barrier-phase failure (followers just sit "prepared" waiting
+    /// for the next control message) and only the leader writes/reads the failure record.
+    GetSessionStatus {
+        ring_id: String,
+    },
+    SessionStatusResponse {
+        session_id: Option<u128>,
+        status: DkgSessionStatusValue,
+        /// Empty unless `status == Failed`. One of "preparing" |
+        /// "commitment_hashes" | "commitments" | "share_exchange" | "unknown".
+        stage: String,
+        missing: Vec<(u32, String)>,
+        reason: String,
+        /// Unix seconds; `None` unless `status == Failed`.
+        failed_at: Option<i64>,
+    },
     StartReshare {
         ring_id: String,
         expected_ring_pk: String,
@@ -981,6 +1011,8 @@ impl DkgControlMessage {
         match self {
             Self::StartFresh { .. } => "start_fresh",
             Self::StartAccepted { .. } => "start_accepted",
+            Self::GetSessionStatus { .. } => "get_session_status",
+            Self::SessionStatusResponse { .. } => "session_status_response",
             Self::StartReshare { .. } => "start_reshare",
             Self::ReshareStartAccepted { .. } => "reshare_start_accepted",
             Self::StartRefresh { .. } => "start_refresh",
