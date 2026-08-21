@@ -1237,15 +1237,25 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         )
         .await
         .expect("store PRE document");
-    register_object_with_client(&controller_client, &policy_id, &bulletin_object_id, &resource)
-        .await;
+    register_object_with_client(
+        &controller_client,
+        &policy_id,
+        &bulletin_object_id,
+        &resource,
+    )
+    .await;
 
     let (_, bulletin_reader_pk) = generate_keypair().expect("generate PRE reader keypair");
     let bulletin_reader_pk_bytes =
         CryptoSerialize::to_bytes(&bulletin_reader_pk).expect("serialize PRE reader public key");
     let bulletin_jwt_signer = JwtSigner::new();
     let bulletin_token = bulletin_jwt_signer
-        .create_pre_jwt(bulletin_reader_pk_bytes.clone(), &bulletin_object_id, None, None)
+        .create_pre_jwt(
+            bulletin_reader_pk_bytes.clone(),
+            &bulletin_object_id,
+            None,
+            None,
+        )
         .expect("create PRE JWT");
     let bulletin_actor_is_reader = controller_client
         .acp_has_relationship(
@@ -1273,7 +1283,9 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         None,
     );
 
-    println!("Submitting bulletin-sourced unauthorized relay evidence against node1 through node3...");
+    println!(
+        "Submitting bulletin-sourced unauthorized relay evidence against node1 through node3..."
+    );
     let bulletin_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
         .await
         .expect("connect bulletin unauthorized report event subscription");
@@ -1308,7 +1320,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         encrypted_data: vec![1, 2, 3, 4],
         nonce: vec![0u8; 12],
     };
-    let inline_document_bytes = serde_json::to_vec(&inline_secret).expect("serialize inline secret");
+    let inline_document_bytes =
+        serde_json::to_vec(&inline_secret).expect("serialize inline secret");
     let inline_document_str =
         String::from_utf8(inline_document_bytes.clone()).expect("secret JSON is valid utf8");
     let inline_proof = EncryptionProof {
@@ -1332,15 +1345,19 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         None,
     );
 
-    register_object_with_client(&controller_client, &policy_id, &inline_object_id, &resource)
-        .await;
+    register_object_with_client(&controller_client, &policy_id, &inline_object_id, &resource).await;
 
     let (_, inline_reader_pk) = generate_keypair().expect("generate PRE reader keypair");
     let inline_reader_pk_bytes =
         CryptoSerialize::to_bytes(&inline_reader_pk).expect("serialize PRE reader public key");
     let inline_jwt_signer = JwtSigner::new();
     let inline_token = inline_jwt_signer
-        .create_pre_jwt(inline_reader_pk_bytes.clone(), &inline_object_id, None, None)
+        .create_pre_jwt(
+            inline_reader_pk_bytes.clone(),
+            &inline_object_id,
+            None,
+            None,
+        )
         .expect("create PRE JWT");
     let inline_actor_is_reader = controller_client
         .acp_has_relationship(
@@ -1389,7 +1406,9 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         timestamp: None,
     };
 
-    println!("Submitting inline-document unauthorized relay evidence against node1 through node3...");
+    println!(
+        "Submitting inline-document unauthorized relay evidence against node1 through node3..."
+    );
     let inline_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
         .await
         .expect("connect inline unauthorized report event subscription");
