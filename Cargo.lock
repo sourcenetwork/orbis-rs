@@ -943,6 +943,7 @@ dependencies = [
  "anyhow",
  "authn",
  "authz",
+ "bs58 0.5.1",
  "bulletin",
  "clap",
  "common",

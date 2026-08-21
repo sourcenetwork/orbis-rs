@@ -5,8 +5,8 @@ use bulletin::r#trait::BulletinKind;
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
-    cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring, do_dkg, do_encrypt_secret,
-    do_generate_reader_key, do_pre, do_sign, do_store_secret, fund_with_signer,
+    cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring, derive_signer_did, do_dkg,
+    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund_with_signer,
     get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
     prepare_secret, query_node_info, query_ring_state, read_bulletin_post_with_config,
     register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
@@ -14,6 +14,7 @@ pub use commands::{
     start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
     update_node_peer_id, PreparedSecret, SignResult,
 };
+use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
 
 /// Network and signing configuration, shared across every subcommand.
@@ -222,6 +223,13 @@ pub enum SubCommands {
 
     /// Generate a reader keypair for PRE decryption
     GenerateReaderKey,
+    /// Derive the secp256k1 public key and did:key for --signing-key. Pure local
+    /// computation, no network calls. SourceHub resolves ACP actor identity for
+    /// signed transactions (e.g. create-ring's `create_ring` permission check)
+    /// from this same derivation -- use this to find out, ahead of time, which
+    /// DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`)
+    /// before such a transaction will be authorized.
+    DeriveSignerDid,
     /// Add a policy to the chain
     AddPolicyToChain,
     /// Register object to the chain
@@ -248,8 +256,18 @@ pub enum SubCommands {
         #[clap(long)]
         relation: String,
         /// A private key to generate a reader did
-        #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
+        #[clap(
+            long,
+            env = "ORBIS_READER_DID_PK",
+            hide_env_values = true,
+            conflicts_with = "actor_pubkey"
+        )]
         reader_did_pk: Option<String>,
+        /// Grant this relation to the DID derived from a secp256k1 public key
+        /// instead of --reader-did-pk -- matches the identity SourceHub resolves
+        /// for ACP checks on signed transactions (see `derive-signer-did`).
+        #[clap(long, conflicts_with = "reader_did_pk")]
+        actor_pubkey: Option<String>,
     },
     /// Register a bulletin namespace
     RegisterBulletinNamespace {
@@ -527,6 +545,26 @@ fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
     })
 }
 
+/// Resolve the DID to grant a relationship to: either the Ed25519 DID derived
+/// from --reader-did-pk's seed, or the secp256k1 DID derived from
+/// --actor-pubkey (matching SourceHub's ACP actor identity for signed
+/// transactions -- see `derive-signer-did`). Clap's `conflicts_with` already
+/// rejects both being given; this handles neither being given.
+fn resolve_relationship_actor_did(
+    reader_did_pk: Option<String>,
+    actor_pubkey: Option<String>,
+) -> Result<String> {
+    if let Some(seed) = reader_did_pk {
+        return Ok(reader_did_from_seed(&seed));
+    }
+    if let Some(pubkey_hex) = actor_pubkey {
+        return secp256k1_pubkey_to_did(&pubkey_hex);
+    }
+    Err(anyhow::anyhow!(
+        "Must provide --reader-did-pk or --actor-pubkey"
+    ))
+}
+
 /// `--valid-window-start`/`--valid-window-end` must be given together or not at all.
 fn require_valid_window_pair(start: Option<u64>, end: Option<u64>) -> Result<()> {
     match (start, end) {
@@ -648,6 +686,12 @@ async fn main() -> Result<()> {
         SubCommands::GenerateReaderKey => {
             do_generate_reader_key()?;
         }
+        SubCommands::DeriveSignerDid => {
+            let signing_key = network.require_signing_key()?;
+            let (public_key, did) = derive_signer_did(&signing_key, network.chain_config())?;
+            println!("PUBLIC_KEY={}", public_key);
+            println!("DID={}", did);
+        }
         SubCommands::AddPolicyToChain => {
             let signing_key = network.require_signing_key()?;
             let policy_id = add_policy_to_chain(network.chain_config(), &signing_key).await?;
@@ -674,15 +718,16 @@ async fn main() -> Result<()> {
             resource,
             relation,
             reader_did_pk,
+            actor_pubkey,
         } => {
             let signing_key = network.require_signing_key()?;
-            let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
+            let did_uri = resolve_relationship_actor_did(reader_did_pk, actor_pubkey)?;
             set_relationship_on_chain(
                 policy_id,
                 object_id,
                 resource,
                 relation,
-                Some(reader_did_pk),
+                did_uri,
                 network.chain_config(),
                 &signing_key,
             )

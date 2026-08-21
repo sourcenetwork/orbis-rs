@@ -58,7 +58,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 
 - `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
 - `--reader-sk` (on `pre`) falls back to `ORBIS_READER_SK` if the flag isn't given.
-- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity.
+- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity. On `set-relationship-on-chain` only, `--actor-pubkey` is an alternative to `--reader-did-pk` (mutually exclusive) — see `derive-signer-did` above.
 
 ## Commands
 
@@ -71,6 +71,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 | `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry (create one with `create-ring`). |
 | `ring-state` | Query the local ring state (public polynomial + last PSS refresh timestamp). Requires `--ring-pk-hex`. |
 | `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
+| `derive-signer-did` | Derive the secp256k1 public key and `did:key` for `--signing-key`/`ORBIS_SIGNING_KEY`. Pure local computation, no network calls. This is the identity SourceHub resolves for ACP checks on signed transactions (e.g. `create-ring`'s `create_ring` permission) — use it to find out, ahead of time, which DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`) before such a transaction will be authorized. Prints `PUBLIC_KEY=` and `DID=`. |
 | `get-latest-ring` | Fetch a ring from the orbis module by `--ring-id`. Prints `RING_ID=` and `RING_PK=`. |
 
 ### Secrets: encrypt, store, re-encrypt
@@ -98,7 +99,7 @@ Requires `--signing-key`/`ORBIS_SIGNING_KEY`.
 |---------|-------------|
 | `add-policy-to-chain` | Create the default test policy on chain. Prints the new `POLICY_ID`. |
 | `register-object-to-chain` | Register an object under a policy. Options: `--policy-id`, `--object-id`, `--resource`. |
-| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required). |
+| `set-relationship-on-chain` | Set a relationship on an object (e.g. reader). Options: `--policy-id`, `--object-id`, `--resource`, `--relation`, and exactly one of `--reader-did-pk` (or `ORBIS_READER_DID_PK`) for an Ed25519 DID derived from a seed, or `--actor-pubkey` for the secp256k1 `did:key` of a given public key (see `derive-signer-did`) — use the latter to grant relations checked against a transaction signer's own identity, e.g. `ring_creator` on a `ring_policy` object for `create-ring`. |
 
 ### Bulletin
 

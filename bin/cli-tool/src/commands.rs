@@ -713,12 +713,51 @@ pub async fn register_object_to_chain_with_config(
         .await
 }
 
+/// Derive the Ed25519 did:key from an arbitrary seed string -- the same scheme
+/// used everywhere `--reader-did-pk` is accepted (JWT-authenticated requests
+/// to orbis-node: pre, sign, store-secret, store-prepared-secret).
+pub(crate) fn reader_did_from_seed(seed: &str) -> String {
+    let hashed = did_seed(seed);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&hashed));
+    format!("did:key:{}", key_pair.fingerprint())
+}
+
+/// Derive a did:key from a compressed secp256k1 public key, using the same
+/// multicodec encoding (0xe7 0x01 prefix, base58) SourceHub uses to resolve
+/// the ACP actor identity for signed transactions (e.g. MsgCreateRing's
+/// `create_ring` permission, MsgFinalizeRing's `update_ring` permission) --
+/// a different derivation from the Ed25519 `--reader-did-pk` scheme, since
+/// those transactions are authenticated by tx signature, not a JWT.
+pub(crate) fn secp256k1_pubkey_to_did(pubkey_hex: &str) -> Result<String> {
+    let pubkey_bytes =
+        hex::decode(pubkey_hex).map_err(|e| anyhow!("Invalid public key hex: {}", e))?;
+    let mut prefixed = vec![0xe7u8, 0x01u8];
+    prefixed.extend_from_slice(&pubkey_bytes);
+    Ok(format!(
+        "did:key:z{}",
+        bs58::encode(&prefixed).into_string()
+    ))
+}
+
+/// Derive the compressed secp256k1 public key and did:key for a signing key.
+/// Pure local computation, no network calls. Use this to find out, ahead of
+/// time, which DID needs an ACP relation granted (e.g. `ring_creator`) before
+/// a transaction signed with this key -- such as `create-ring` -- will be
+/// authorized.
+pub fn derive_signer_did(signing_key_hex: &str, config: ChainConfig) -> Result<(String, String)> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config)
+        .map_err(|e| anyhow!("Failed to derive signer: {}", e))?;
+    let public_key_hex = signer.public_key_hex();
+    let did = secp256k1_pubkey_to_did(&public_key_hex)?;
+    Ok((public_key_hex, did))
+}
+
 async fn set_relationship_on_chain_impl(
     policy_id: String,
     object_id: String,
     resource: String,
     relation: String,
-    reader_did_pk: Option<String>,
+    did_uri: String,
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<()> {
@@ -733,11 +772,6 @@ async fn set_relationship_on_chain_impl(
         resource,
         id: object_id,
     };
-
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
 
     let reader_relationship = Relationship {
         object: Some(document),
@@ -775,7 +809,7 @@ pub async fn set_relationship_on_chain(
     object_id: String,
     resource: String,
     relation: String,
-    reader_did_pk: Option<String>,
+    did_uri: String,
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<()> {
@@ -784,7 +818,7 @@ pub async fn set_relationship_on_chain(
         object_id,
         resource,
         relation,
-        reader_did_pk,
+        did_uri,
         config,
         signing_key_hex,
     )
@@ -801,12 +835,13 @@ pub async fn set_relationship_on_chain_with_config(
     reader_did_pk: Option<String>,
     config: ChainConfig,
 ) -> Result<()> {
+    let did_uri = reader_did_from_seed(&reader_did_pk.unwrap_or("test_jwt".to_string()));
     set_relationship_on_chain_impl(
         policy_id,
         object_id,
         resource,
         relation,
-        reader_did_pk,
+        did_uri,
         config,
         TEST_ACCOUNT_HEX_KEY,
     )
