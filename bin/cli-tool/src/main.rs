@@ -5,7 +5,7 @@ use bulletin::r#trait::BulletinKind;
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
-    cancel_ring_upgrade_by_acp, create_bulletin_post, do_dkg, do_encrypt_secret,
+    cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring, do_dkg, do_encrypt_secret,
     do_generate_reader_key, do_pre, do_sign, do_store_secret, fund_with_signer,
     get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
     prepare_secret, query_node_info, query_ring_state, read_bulletin_post_with_config,
@@ -116,9 +116,33 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum SubCommands {
+    /// Create a blank ring on-chain, to be targeted by a subsequent `dkg` session
+    CreateRing {
+        /// Peer node keys for the ring's initial committee (comma-separated, secp256k1 hex)
+        #[clap(long, value_delimiter = ',')]
+        peer_node_keys: Vec<String>,
+        /// Signing/reconstruction threshold
+        #[clap(long)]
+        threshold: u32,
+        /// Seconds between automatic PSS refresh ceremonies (the chain enforces a minimum)
+        #[clap(long, default_value_t = 86400)]
+        pss_interval: u64,
+        /// ACP policy ID authorizing this ring
+        #[clap(long)]
+        policy_id: String,
+        /// Optional nonce to avoid ring_id collisions when creating multiple rings in one block
+        #[clap(long)]
+        nonce: Option<String>,
+        /// Protocol version this ring starts on
+        #[clap(long, default_value_t = 0)]
+        current_version: u64,
+        /// Trusted auth-relay DIDs allowed to relay requests on this ring's behalf (comma-separated)
+        #[clap(long, value_delimiter = ',')]
+        trusted_auth_relay_dids: Vec<String>,
+    },
     /// Start a Distributed Key Generation session
     Dkg {
-        /// Pre-created blank ring entry targeted by this DKG
+        /// Blank ring entry targeted by this DKG (create one with `create-ring`)
         #[clap(long)]
         ring_id: String,
     },
@@ -489,6 +513,30 @@ async fn main() -> Result<()> {
     let network = cli.network.clone();
 
     match cli.command {
+        SubCommands::CreateRing {
+            peer_node_keys,
+            threshold,
+            pss_interval,
+            policy_id,
+            nonce,
+            current_version,
+            trusted_auth_relay_dids,
+        } => {
+            let signing_key = network.require_signing_key()?;
+            let ring_id = create_ring(
+                peer_node_keys,
+                threshold,
+                pss_interval,
+                policy_id,
+                nonce,
+                current_version,
+                trusted_auth_relay_dids,
+                network.chain_config(),
+                &signing_key,
+            )
+            .await?;
+            println!("RING_ID={}", ring_id);
+        }
         SubCommands::Dkg { ring_id } => {
             do_dkg(network.endpoint.clone(), ring_id).await?;
         }

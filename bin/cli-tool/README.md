@@ -59,7 +59,8 @@ That hex value is the well-known SourceHub localnet devnet key (mnemonic `abando
 | Command | Description |
 |---------|-------------|
 | `info` | Query node info (public address, peer ID, P2P address, status). |
-| `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry. |
+| `create-ring` | Create a blank ring on-chain, to be targeted by a subsequent `dkg` session. Requires `--signing-key`/`ORBIS_SIGNING_KEY`. Options: `--peer-node-keys` (comma-separated), `--threshold`, `--policy-id`, optional `--pss-interval` (default `86400`, the chain-enforced minimum), `--nonce`, `--current-version` (default `0`), `--trusted-auth-relay-dids` (comma-separated). Prints `RING_ID=`. |
+| `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry (create one with `create-ring`). |
 | `ring-state` | Query the local ring state (public polynomial + last PSS refresh timestamp). Requires `--ring-pk-hex`. |
 | `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
 | `get-latest-ring` | Fetch a ring from the orbis module by `--ring-id`. Prints `RING_ID=` and `RING_PK=`. |
@@ -130,7 +131,8 @@ Requires `--signing-key`/`ORBIS_SIGNING_KEY`, and requires the caller to be auth
 cargo run -p cli-tool -- info
 cargo run -p cli-tool -- --endpoint http://localhost:50051 info
 
-# DKG (targets a pre-created blank ring)
+# Create a blank ring, then run DKG against it
+cargo run -p cli-tool -- --signing-key $KEY create-ring --peer-node-keys <NODE_KEY_1>,<NODE_KEY_2> --threshold 2 --policy-id <POLICY_ID>
 cargo run -p cli-tool -- dkg --ring-id <RING_ID>
 
 # Reader keypair for PRE

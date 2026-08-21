@@ -929,6 +929,51 @@ pub async fn create_bulletin_post_with_config(
     Ok(post_id)
 }
 
+/// Create a blank ring on-chain, to be targeted by a subsequent `dkg` session.
+///
+/// Returns the chain-assigned `ring_id`.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_ring(
+    peer_node_keys: Vec<String>,
+    threshold: u32,
+    pss_interval: u64,
+    policy_id: String,
+    nonce: Option<String>,
+    current_version: u64,
+    trusted_auth_relay_dids: Vec<String>,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<String> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+
+    let trusted_auth_relay_dids =
+        (!trusted_auth_relay_dids.is_empty()).then_some(trusted_auth_relay_dids);
+
+    let (result, ring_id) = client
+        .orbis_create_ring_get_id(
+            peer_node_keys,
+            threshold,
+            pss_interval,
+            &policy_id,
+            nonce,
+            current_version,
+            None,
+            trusted_auth_relay_dids,
+        )
+        .await
+        .map_err(|e| anyhow!("Failed to create ring: {}", e))?;
+
+    println!(
+        "[Orbis] create_ring: hash={} ring_id={}",
+        result.tx_hash, ring_id
+    );
+    Ok(ring_id)
+}
+
 async fn start_ring_reshare_by_acp_impl(
     ring_id: String,
     new_peer_node_keys: Vec<String>,
