@@ -4,8 +4,9 @@ use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     error::DkgError,
+    helpers::derive_fresh_dkg_session_id,
     messages::SessionKind,
-    session_state::{CreateSessionOutcome, SessionStateManager},
+    session_state::{CreateSessionOutcome, DkgPhase, SessionStateManager},
 };
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::node_routes::canonical_node_id_assignments_from_node_keys;
@@ -21,7 +22,9 @@ use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
-use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
+use proto::v0::dkg::{
+    dkg_service_server::DkgService, DkgSessionStatus, GetDkgSessionStatusRequest, StartDkgRequest,
+};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
@@ -426,6 +429,282 @@ async fn test_start_dkg_fails_on_connection_failure() {
         tonic::Code::Unavailable,
         "connection failure should return Unavailable: {}",
         status.message()
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// Regression test for the Prepare/Activate/Begin barrier fan-out fix: previously the
+/// `JoinSet` loop returned on the FIRST failing peer and silently dropped the rest. With this
+/// node as leader and both other committee members unreachable, the failure must name both —
+/// not just one — both directly in the StartDkg error text and via `GetDkgSessionStatus`'s
+/// `missing_participants`.
+#[tokio::test]
+async fn test_start_dkg_barrier_failure_reports_all_missing_peers() {
+    let db_name = "test_start_dkg_barrier_failure_reports_all_missing_peers";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+    // This node's key is a real hex-encoded public key, so it always sorts before the
+    // 'z'-prefixed fake keys below — guaranteeing this node is the canonical leader and
+    // therefore actually runs the Prepare/Activate/Begin fan-out being tested.
+    let self_key = app_state.node_key.clone();
+
+    let fake_peer_1 = "zz-unreachable-peer-1".to_string();
+    let fake_peer_2 = "zz-unreachable-peer-2".to_string();
+    // 64 hex chars (passes validate_peer_id) + port 1 (immediately refused).
+    let fake_route_1 = format!("{}@127.0.0.1:1", "aa".repeat(32));
+    let fake_route_2 = format!("{}@127.0.0.1:1", "bb".repeat(32));
+
+    for (key, route) in [(&fake_peer_1, &fake_route_1), (&fake_peer_2, &fake_route_2)] {
+        bulletin
+            .set_node_info(
+                key.clone(),
+                NodeInfo {
+                    peer_id: route.clone(),
+                    controller_key: "controller".to_string(),
+                    whitelisted_policy_ids: vec![],
+                    whitelisted_ring_ids: vec![],
+                },
+            )
+            .expect("seed NodeInfo for unreachable peer");
+    }
+
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: String::new(),
+                peer_node_keys: vec![self_key, fake_peer_1.clone(), fake_peer_2.clone()],
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 2,
+                pss_interval: 86400,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
+                reporting: Default::default(),
+            },
+        )
+        .expect("seed ring");
+
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+    let tonic_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+
+    let result = service.start_dkg(tonic_request).await;
+    assert!(
+        result.is_err(),
+        "start_dkg should fail: both non-self committee members are unreachable"
+    );
+    let status = result.unwrap_err();
+    assert!(
+        status.message().contains("2 of the committee"),
+        "both unreachable peers should be named, not just the first: {}",
+        status.message()
+    );
+
+    // The failure is also queryable afterward via GetDkgSessionStatus.
+    let status_token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+    let status_request = create_authenticated_request(
+        GetDkgSessionStatusRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &status_token,
+    )
+    .unwrap();
+    let status_response = service
+        .get_dkg_session_status(status_request)
+        .await
+        .expect("get_dkg_session_status should succeed")
+        .into_inner();
+    assert_eq!(
+        status_response.status,
+        DkgSessionStatus::Failed as i32,
+        "status should report Failed"
+    );
+    assert_eq!(
+        status_response.missing_participants.len(),
+        2,
+        "both unreachable committee members should be attributed, not just one"
+    );
+    let missing_keys: std::collections::BTreeSet<_> = status_response
+        .missing_participants
+        .iter()
+        .map(|p| p.node_key.clone())
+        .collect();
+    assert!(missing_keys.contains(&fake_peer_1));
+    assert!(missing_keys.contains(&fake_peer_2));
+
+    cleanup_db(&db_path);
+}
+
+/// `GetDkgSessionStatus` on a valid ring that has never had a Fresh DKG attempt started
+/// against it should report `NOT_FOUND`, not an error.
+#[tokio::test]
+async fn test_get_dkg_session_status_not_found_for_untouched_ring() {
+    let db_name = "test_get_dkg_session_status_not_found_for_untouched_ring";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+    let self_key = app_state.node_key.clone();
+
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: String::new(),
+                peer_node_keys: vec![self_key],
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 1,
+                pss_interval: 86400,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
+                reporting: Default::default(),
+            },
+        )
+        .expect("seed ring");
+
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
+
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("Failed to create JWT");
+    let request = create_authenticated_request(
+        GetDkgSessionStatusRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &token,
+    )
+    .unwrap();
+
+    let response = service
+        .get_dkg_session_status(request)
+        .await
+        .expect("status lookup should succeed for a valid ring")
+        .into_inner();
+    assert_eq!(response.status, DkgSessionStatus::NotFound as i32);
+    assert!(response.missing_participants.is_empty());
+    assert!(response.session_id.is_empty());
+
+    cleanup_db(&db_path);
+}
+
+/// `GetDkgSessionStatus` reflects a still-live session as `IN_PROGRESS` and a session that has
+/// reached `Phase4Complete` as `COMPLETED` — the two non-failure branches
+/// `test_get_dkg_session_status_not_found_for_untouched_ring` and
+/// `test_start_dkg_barrier_failure_reports_all_missing_peers` don't exercise.
+#[tokio::test]
+async fn test_get_dkg_session_status_reflects_live_and_completed_sessions() {
+    let db_name = "test_get_dkg_session_status_reflects_live_and_completed_sessions";
+    let db_path = test_db_path(db_name);
+
+    let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
+    let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
+    let self_key = app_state.node_key.clone();
+
+    bulletin
+        .set_ring(
+            TEST_FRESH_DKG_RING_ID.to_string(),
+            RingPayload {
+                upgrade_info: Default::default(),
+                ring_pk: String::new(),
+                peer_node_keys: vec![self_key],
+                new_peer_node_keys: None,
+                new_threshold: None,
+                threshold: 1,
+                pss_interval: 86400,
+                block_number_nonce: 0,
+                policy_id: Some("test-policy".to_string()),
+                trusted_auth_relay_dids: None,
+                reporting: Default::default(),
+            },
+        )
+        .expect("seed ring");
+
+    // Directly create the session the same way a real ceremony would (via the deterministic
+    // session_id), rather than driving a full ceremony through — this test is only about
+    // whether GetDkgSessionStatus reflects SessionStateManager's state correctly, which is
+    // already covered end-to-end by test_start_dkg_succeeds_on_all_connections elsewhere.
+    let session_id =
+        derive_fresh_dkg_session_id(TEST_FRESH_DKG_RING_ID).expect("derive session id");
+    let node = *crypto::DkgImpl::new(1, 1, 1, session_id, DkgRole::Standard).expect("DkgImpl::new");
+    let create_outcome = app_state
+        .dkg_session_state
+        .create_session(session_id, node, 1, |_| {})
+        .await;
+    assert_eq!(
+        create_outcome,
+        CreateSessionOutcome::Created,
+        "test setup must actually create the session, not silently no-op \
+         (e.g. LimitReached/InvalidParticipantCount), or the status assertions below would \
+         fail as a confusing NOT_FOUND instead"
+    );
+
+    let service = DkgServiceImpl::<DkgImpl>::with_routes(app_state, &network::V0);
+    let test_keys = TestKeyPair::new();
+
+    let in_progress_request = create_authenticated_request(
+        GetDkgSessionStatusRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &test_keys
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("jwt"),
+    )
+    .unwrap();
+    let in_progress_response = service
+        .get_dkg_session_status(in_progress_request)
+        .await
+        .expect("status lookup should succeed")
+        .into_inner();
+    assert_eq!(
+        in_progress_response.status,
+        DkgSessionStatus::InProgress as i32
+    );
+
+    service
+        .state
+        .dkg_session_state
+        .update_phase(&session_id, DkgPhase::Phase4Complete)
+        .await;
+
+    let completed_request = create_authenticated_request(
+        GetDkgSessionStatusRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &test_keys
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("jwt"),
+    )
+    .unwrap();
+    let completed_response = service
+        .get_dkg_session_status(completed_request)
+        .await
+        .expect("status lookup should succeed")
+        .into_inner();
+    assert_eq!(
+        completed_response.status,
+        DkgSessionStatus::Completed as i32
     );
 
     cleanup_db(&db_path);
@@ -1517,4 +1796,292 @@ async fn test_commitment_and_share_counters() {
     );
 
     manager.remove_session(&session_id).await;
+}
+
+/// `GetDkgSessionStatus` must forward to the canonical leader when called on a different node —
+/// only the leader ever observes barrier failures and owns the failure-record store. Seeds a
+/// failure record directly on the leader (a real failure scenario reaching this same RPC is
+/// already covered by `test_start_dkg_barrier_failure_reports_all_missing_peers`) and confirms a
+/// non-leader node returns that exact leader-owned answer — which it could not produce from its
+/// own (empty) local state — rather than a coincidentally-similar local NOT_FOUND.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_get_dkg_session_status_forwards_to_leader() {
+    let db_name = "test_get_dkg_session_status_forwards_to_leader";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let nodes = [&network.alice, &network.bob, &network.charlie];
+    let leader_index = nodes
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, node)| node.app_state.node_key.as_str())
+        .map(|(index, _)| index)
+        .expect("three nodes always have a canonical leader");
+    let non_leader_index = (leader_index + 1) % 3;
+
+    let session_id =
+        derive_fresh_dkg_session_id(TEST_FRESH_DKG_RING_ID).expect("derive session id");
+    nodes[leader_index]
+        .app_state
+        .dkg_session_state
+        .record_failed_session(crate::dkg::v0::session_state::FailedDkgSessionRecord {
+            session_id,
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            attempt_id: None,
+            stage: crate::dkg::v0::session_state::DkgFailureStage::Commitments,
+            missing: vec![crate::dkg::v0::session_state::MissingDkgParticipant {
+                node_id: 7,
+                node_key: "leader-owned-answer".to_string(),
+            }],
+            reason: "seeded directly on the leader for this test".to_string(),
+            failed_at: std::time::SystemTime::now(),
+        })
+        .await;
+
+    let non_leader_service = DkgServiceImpl::<DkgImpl>::with_routes(
+        nodes[non_leader_index].app_state.clone(),
+        &network::V0,
+    );
+    let test_keys = TestKeyPair::new();
+    let request = create_authenticated_request(
+        GetDkgSessionStatusRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &test_keys
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("create JWT"),
+    )
+    .unwrap();
+
+    let response = non_leader_service
+        .get_dkg_session_status(request)
+        .await
+        .expect("non-leader status lookup should succeed via forwarding")
+        .into_inner();
+
+    assert_eq!(
+        response.status,
+        DkgSessionStatus::Failed as i32,
+        "the non-leader has no local record of this session; a FAILED answer can only come \
+         from forwarding to the leader"
+    );
+    assert_eq!(response.missing_participants.len(), 1);
+    assert_eq!(
+        response.missing_participants[0].node_key,
+        "leader-owned-answer"
+    );
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Live end-to-end soft-stall test. A real Fresh DKG ceremony clears the barrier with all three
+/// nodes reachable, so `start_dkg` returns "started" with the crypto phase already spawned. Only
+/// then is one committee member cut off: its own Gossip broadcasts are silently swallowed (so any
+/// public-plane contribution it hasn't already sent never reaches anyone) and the leader's direct
+/// connection to it is blocked (so origin repair and private share delivery, the only other ways
+/// to reach it, also fail). That's exactly the condition `record_peer_no_progress` is meant to
+/// detect — whichever phase it lands in (a fast same-machine ceremony can race ahead of this
+/// test's own fault-injection calls, so it isn't always Phase0). Verifies the leader's soft-stall
+/// scan catches this well within the test-shortened `DKG_ATTEMPT_TIMEOUT`, that a real
+/// `GetDkgSessionStatus` call reports the correct (and only the correct) missing participant, and
+/// that the ring is immediately free for a retry once the victim is reachable again.
+#[cfg(feature = "fault-injection")]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_fresh_dkg_soft_stall_triggers_early_abort_and_status_reflects_it() {
+    let db_name = "test_fresh_dkg_soft_stall_triggers_early_abort_and_status_reflects_it";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(false, db_name).await;
+
+    let mut controllers = Vec::with_capacity(3);
+    for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
+        let (fault_network, controller) =
+            network::FaultNetwork::new(node.app_state.network.clone());
+        node.app_state.network = Arc::new(fault_network);
+        controllers.push(controller);
+    }
+    for node in [&mut network.alice, &mut network.bob, &mut network.charlie] {
+        node.router = Some(
+            crate::helpers::create_routers::create_router_with_all_handlers::<
+                DkgImpl,
+                crypto::PreImpl,
+                crypto::SignImpl,
+            >(&node.app_state.network, Arc::new(node.app_state.clone()))
+            .expect("start faultable soft-stall test router"),
+        );
+    }
+
+    let nodes = [&network.alice, &network.bob, &network.charlie];
+    let leader_index = nodes
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, node)| node.app_state.node_key.as_str())
+        .map(|(index, _)| index)
+        .expect("three nodes always have a canonical leader");
+    let victim_index = nodes
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != leader_index)
+        .max_by_key(|(_, node)| node.app_state.node_key.as_str())
+        .map(|(index, _)| index)
+        .expect("soft-stall test requires a non-leader victim");
+
+    let leader_app_state = nodes[leader_index].app_state.clone();
+    let victim_node_key = nodes[victim_index].app_state.node_key.clone();
+    let victim_peer_hex = hex::encode(nodes[victim_index].peer_id.as_bytes());
+
+    // The soft-stall *detector* runs inside SessionStateManager's own background task
+    // regardless of setup (every AppState spawns it), but it only has access to the
+    // session-state maps — it can't broadcast Abort or write the failure record itself.
+    // That's the drain worker's job, and unlike the detector it is NOT auto-spawned;
+    // production wires it up in runtime.rs's bootstrap, which this test bypasses entirely
+    // by constructing AppState directly. Without this, the detector still fires and tries
+    // to publish, but nothing ever drains the channel, so the session just retries forever.
+    let soft_stall_rx = leader_app_state
+        .dkg_session_state
+        .take_soft_stall_receiver()
+        .expect("receiver available exactly once");
+    let soft_stall_worker = crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker(
+        Arc::new(leader_app_state.clone()),
+        soft_stall_rx,
+    );
+
+    let test_keys = TestKeyPair::new();
+    let start_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &test_keys
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("create JWT"),
+    )
+    .unwrap();
+
+    // All three nodes are healthy for the barrier, so start_dkg blocks through
+    // Prepare/Activate/Begin and only returns once the crypto phase has begun.
+    DkgServiceImpl::<DkgImpl>::with_routes(leader_app_state.clone(), &network::V0)
+        .start_dkg(start_request)
+        .await
+        .expect("DKG should clear the barrier while all three nodes are reachable");
+
+    controllers[victim_index]
+        .drop_gossip_broadcasts_after(0, usize::MAX)
+        .await;
+    controllers[leader_index].block_peer(&victim_peer_hex).await;
+
+    // Generous real-world bound: with the test-shortened soft-stall constants this should land
+    // in single-digit seconds, but CI can be slow. The point of the bound is "well before
+    // DKG_ATTEMPT_TIMEOUT" (3 minutes under test) — proving this is the soft-stall path, not the
+    // hard-deadline fallback.
+    let poll_deadline = Instant::now() + Duration::from_secs(30);
+    let response = loop {
+        let status_request = create_authenticated_request(
+            GetDkgSessionStatusRequest {
+                ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+            },
+            &test_keys
+                .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+                .expect("create JWT"),
+        )
+        .unwrap();
+        let response =
+            DkgServiceImpl::<DkgImpl>::with_routes(leader_app_state.clone(), &network::V0)
+                .get_dkg_session_status(status_request)
+                .await
+                .expect("status lookup should succeed")
+                .into_inner();
+        if response.status == DkgSessionStatus::Failed as i32 {
+            break response;
+        }
+        assert!(
+            Instant::now() < poll_deadline,
+            "soft-stall should have aborted the ceremony well within 30s, last status: {}",
+            response.status
+        );
+        sleep(Duration::from_millis(200)).await;
+    };
+
+    // Which phase the stall is actually caught in depends on exactly when, relative to the
+    // ceremony's own (very fast, same-machine) progress, the fault calls above land — a healthy
+    // 3-node loopback ceremony can clear the public phases in under the time it takes this test
+    // to make two more async calls. Any of the three is a genuine soft-stall catch; the
+    // structural invariant under test is "the correct lone victim gets attributed," not which
+    // specific phase it happened in.
+    assert!(
+        matches!(
+            response.stage.as_str(),
+            "commitment_hashes" | "commitments" | "share_exchange"
+        ),
+        "unexpected stage: {}",
+        response.stage
+    );
+    assert_eq!(
+        response.missing_participants.len(),
+        1,
+        "exactly the cut-off victim should be attributed, not the healthy third node"
+    );
+    assert_eq!(response.missing_participants[0].node_key, victim_node_key);
+
+    // Unblock the victim and confirm start_dkg is accepted again rather than rejected as an
+    // already-active session.
+    //
+    // One thing this surfaced that's worth being explicit about: the leader's Abort broadcast to
+    // the victim (sent the moment soft-stall fires) could never reach her — she was still
+    // blocked at that instant, by construction. So her session from the first attempt is left
+    // un-aborted, holding the *old* attempt_id. This is not soft-stall-specific: the exact same
+    // thing happens on the pre-existing barrier-failure and hard-deadline abort paths whenever
+    // the unreachable peer is unreachable specifically because the leader can't reach it. Left
+    // alone, a same-committee retry against her would hit `ConflictingAttempt` (her stale
+    // attempt_id doesn't match the new one) until her own hard deadline eventually expires it.
+    // A real recovery flow needs to reconcile that stale state once reachability returns before
+    // retrying the same committee; simulate that reconciliation directly here rather than
+    // asserting on a failure this test isn't about.
+    let session_id =
+        derive_fresh_dkg_session_id(TEST_FRESH_DKG_RING_ID).expect("derive session id");
+    controllers[victim_index].clear_gossip_faults().await;
+    controllers[leader_index]
+        .unblock_peer(&victim_peer_hex)
+        .await;
+    nodes[victim_index]
+        .app_state
+        .dkg_session_state
+        .remove_session(&session_id)
+        .await;
+    let retry_request = create_authenticated_request(
+        StartDkgRequest {
+            ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+        },
+        &test_keys
+            .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+            .expect("create JWT"),
+    )
+    .unwrap();
+    DkgServiceImpl::<DkgImpl>::with_routes(leader_app_state, &network::V0)
+        .start_dkg(retry_request)
+        .await
+        .expect("the ring must be free for an immediate retry after the soft-stall abort");
+
+    soft_stall_worker.shutdown().await;
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
 }

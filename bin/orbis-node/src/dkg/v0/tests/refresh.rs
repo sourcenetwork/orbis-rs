@@ -519,8 +519,8 @@ async fn run_topology_barrier_offline_report_case(
     assert!(
         matches!(
             &error,
-            DkgError::NetworkCommunication(message)
-                if message.contains("topology probe acknowledgement missing")
+            DkgError::BarrierFailure { barrier, failed_peers }
+                if *barrier == "topology_probe" && !failed_peers.is_empty()
         ),
         "Refresh must expose the topology-barrier failure, got: {error}"
     );
