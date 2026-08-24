@@ -58,7 +58,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 
 - `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
 - `--reader-sk` (on `pre`) falls back to `ORBIS_READER_SK` if the flag isn't given.
-- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity. On `set-relationship-on-chain` only, `--actor-pubkey` is an alternative to `--reader-did-pk` (mutually exclusive) — see `derive-signer-did` above.
+- `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity. On `set-relationship-on-chain` only, `--actor-pubkey` is an alternative to `--reader-did-pk` (mutually exclusive) — see `derive-signer-did` below.
 
 ## Commands
 
@@ -152,10 +152,10 @@ cargo run -p cli-tool -- encrypt-secret --secret "my secret" --ring-pk <HEX> --p
 
 # Prepare then store (idempotent)
 cargo run -p cli-tool -- prepare-secret --secret "data" --ring-pk-hex <HEX> --policy-id <ID> --resource document --permission read
-cargo run -p cli-tool -- --signing-key $KEY store-prepared-secret --prepared-json '<JSON>' --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
+cargo run -p cli-tool -- store-prepared-secret --prepared-json '<JSON>' --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
 
 # One-shot store
-cargo run -p cli-tool -- --signing-key $KEY store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
+cargo run -p cli-tool -- store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
 
 # PRE (after storing a secret and setting relationship)
 cargo run -p cli-tool -- pre --ring-pk <HEX> --reader-pk <HEX> --reader-sk <HEX> --object-id <ID> --reader-did-pk <YOUR_ID>
