@@ -103,11 +103,13 @@ where
         )
     };
 
-    let readiness_info = prepared_update.as_ref().map(|prepared| ReshareReadinessInfo {
-        ready_key: prepared.ready_key.clone(),
-        expected_new_committee: prepared.sorted_new_peer_node_keys.clone(),
-        expected_new_threshold: *new_threshold,
-    });
+    let readiness_info = prepared_update
+        .as_ref()
+        .map(|prepared| ReshareReadinessInfo {
+            ready_key: prepared.ready_key.clone(),
+            expected_new_committee: prepared.sorted_new_peer_node_keys.clone(),
+            expected_new_threshold: *new_threshold,
+        });
 
     let reshare_new_node_id = reshare_new_node_id(
         coord,

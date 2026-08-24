@@ -1010,7 +1010,11 @@ mod ring_reshare_update_tests {
         };
         assert!(
             state
-                .mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone(), staged.clone())
+                .mark_reshare_signature_ready_for_attempt(
+                    attempt,
+                    ready_key.clone(),
+                    staged.clone()
+                )
                 .await,
             "staging against a live attempt must succeed"
         );

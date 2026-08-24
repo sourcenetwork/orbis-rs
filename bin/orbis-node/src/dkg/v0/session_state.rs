@@ -1070,7 +1070,8 @@ pub struct SessionStateManager<D: Dkg> {
     /// session (see `finish_removed_session`), so entries are aged out by
     /// `expiration_worker` on a timer rather than tied to any session's
     /// lifecycle.
-    reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, ReshareSignatureReadyMaterial>>>,
+    reshare_signature_ready:
+        Arc<RwLock<HashMap<ReshareSignatureReadyKey, ReshareSignatureReadyMaterial>>>,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: StdMutex<Vec<JoinHandle<()>>>,
     /// Receiver for stalled refresh/reshare sessions published by the expiration sweep for
@@ -1456,12 +1457,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             // revisits its marker. Age those out independently, on the same TTL
             // used to bound retained completed sessions, so this set can't grow
             // without bound over a node's lifetime.
-            reshare_signature_ready
-                .write()
-                .await
-                .retain(|_, material| {
-                    now.duration_since(material.marked_at()) < DKG_COMPLETED_SESSION_TTL
-                });
+            reshare_signature_ready.write().await.retain(|_, material| {
+                now.duration_since(material.marked_at()) < DKG_COMPLETED_SESSION_TTL
+            });
 
             // Failure records are decoupled from `states` (see `FailedDkgSessionRecord`), so
             // they're aged out on their own TTL rather than tied to any session's lifecycle.

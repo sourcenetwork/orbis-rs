@@ -35,8 +35,14 @@ pub fn spawn_bulletin_finalized_cleanup<D>(
     D: Dkg + Clone + Send + Sync + 'static,
 {
     tokio::spawn(async move {
-        wait_for_reshare_bulletin_finalized(app_state, ring_key, attempt, bulletin_post_id, outcome)
-            .await;
+        wait_for_reshare_bulletin_finalized(
+            app_state,
+            ring_key,
+            attempt,
+            bulletin_post_id,
+            outcome,
+        )
+        .await;
     });
 }
 
@@ -169,37 +175,38 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                         .peek_staged_reshare_bundle(&info.ready_key)
                         .await
                     {
-                        Some(bundle) => match bundle.save_by_ring_key(&app_state.local_storage, &key)
-                        {
-                            Ok(()) => {
-                                app_state
-                                    .dkg_session_state
-                                    .mark_reshare_promoted(&info.ready_key)
-                                    .await;
-                                tracing::info!(
-                                    session_id,
-                                    ring_key = %key,
-                                    "Reshare: promoted staged bundle after chain confirmation"
-                                );
+                        Some(bundle) => {
+                            match bundle.save_by_ring_key(&app_state.local_storage, &key) {
+                                Ok(()) => {
+                                    app_state
+                                        .dkg_session_state
+                                        .mark_reshare_promoted(&info.ready_key)
+                                        .await;
+                                    tracing::info!(
+                                        session_id,
+                                        ring_key = %key,
+                                        "Reshare: promoted staged bundle after chain confirmation"
+                                    );
+                                }
+                                Err(error) => {
+                                    // Chain confirmed the reshare, but the local write failed:
+                                    // this node is now locally-stale-but-chain-confirmed. No
+                                    // automatic retry — matches the existing Fresh-DKG precedent
+                                    // of preferring a diagnosable gap over new retry machinery.
+                                    // The map entry is deliberately left `Staged` (not marked
+                                    // promoted) so this isn't silently reported as resolved.
+                                    tracing::error!(
+                                        session_id,
+                                        ring_key = %key,
+                                        %error,
+                                        "Reshare: chain confirmed but writing the promoted bundle to \
+                                         local storage failed; this node's local share is now stale \
+                                         relative to the chain-recognized committee. Operator \
+                                         investigation required."
+                                    );
+                                }
                             }
-                            Err(error) => {
-                                // Chain confirmed the reshare, but the local write failed:
-                                // this node is now locally-stale-but-chain-confirmed. No
-                                // automatic retry — matches the existing Fresh-DKG precedent
-                                // of preferring a diagnosable gap over new retry machinery.
-                                // The map entry is deliberately left `Staged` (not marked
-                                // promoted) so this isn't silently reported as resolved.
-                                tracing::error!(
-                                    session_id,
-                                    ring_key = %key,
-                                    %error,
-                                    "Reshare: chain confirmed but writing the promoted bundle to \
-                                     local storage failed; this node's local share is now stale \
-                                     relative to the chain-recognized committee. Operator \
-                                     investigation required."
-                                );
-                            }
-                        },
+                        }
                         None => {
                             tracing::error!(
                                 session_id,
