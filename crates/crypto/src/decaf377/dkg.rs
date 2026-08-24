@@ -16,7 +16,7 @@ use crate::{
 const MAX_NONCES_PER_NODE: usize = 1000;
 
 /// Complete DKG state for a single node (decaf377)
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DKGNode {
     pub id: u32,
     pub threshold: usize,
@@ -61,6 +61,40 @@ pub struct DKGNode {
 
     // Track complaints about malicious nodes
     complaints: HashMap<u32, Vec<u32>>, // complainer_id -> list of accused_ids
+}
+
+// Manual impl (rather than derive) so the secret `polynomial_coeffs` and
+// `received_shares` scalars can never be printed.
+impl std::fmt::Debug for DKGNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DKGNode")
+            .field("id", &self.id)
+            .field("threshold", &self.threshold)
+            .field("total_nodes", &self.total_nodes)
+            .field("role", &self.role)
+            .field("effective_total_nodes", &self.effective_total_nodes)
+            .field("effective_threshold", &self.effective_threshold)
+            .field("effective_receive_id", &self.effective_receive_id)
+            .field("polynomial_coeffs", &"[REDACTED]")
+            .field("commitment", &self.commitment)
+            .field(
+                "received_shares",
+                &self
+                    .received_shares
+                    .keys()
+                    .map(|from_id| (*from_id, "[REDACTED]"))
+                    .collect::<HashMap<_, _>>(),
+            )
+            .field("received_commitments", &self.received_commitments)
+            .field(
+                "selected_reshare_participants",
+                &self.selected_reshare_participants,
+            )
+            .field("session_id", &self.session_id)
+            .field("received_nonces", &self.received_nonces)
+            .field("complaints", &self.complaints)
+            .finish()
+    }
 }
 
 impl Dkg for DKGNode {

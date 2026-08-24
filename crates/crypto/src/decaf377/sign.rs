@@ -108,7 +108,6 @@ impl CryptoDeserialize for FrostNonceCommitment {
 }
 
 /// Secret nonce state held between Round 1 and Round 2
-#[derive(Debug)]
 pub struct FrostSigningState {
     pub hiding_nonce: Fr,  // d_i (secret)
     pub binding_nonce: Fr, // e_i (secret)
@@ -120,6 +119,18 @@ impl Drop for FrostSigningState {
         use zeroize::Zeroize;
         self.hiding_nonce.zeroize();
         self.binding_nonce.zeroize();
+    }
+}
+
+// Manual impl (rather than derive) so the secret `hiding_nonce`/`binding_nonce`
+// scalars can never be printed.
+impl std::fmt::Debug for FrostSigningState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrostSigningState")
+            .field("hiding_nonce", &"[REDACTED]")
+            .field("binding_nonce", &"[REDACTED]")
+            .field("participant_index", &self.participant_index)
+            .finish()
     }
 }
 
