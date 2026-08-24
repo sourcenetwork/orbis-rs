@@ -614,7 +614,7 @@ async fn run_server(
                     )
                     .add_service(
                         PreServiceServer::new(pre_service)
-                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                            .max_decoding_message_size(constants::MAX_PRE_REQUEST_BYTES),
                     )
                     .add_service(
                         StoreSecretServiceServer::new(store_secret_service)

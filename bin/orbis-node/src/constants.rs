@@ -55,6 +55,18 @@ pub const MAX_SMALL_GRPC_REQUEST_BYTES: usize = MAX_JWT_BYTES;
 pub const MAX_STORE_SECRET_REQUEST_BYTES: usize = 256 * 1024;
 
 // ============================================================================
+// PRE Constants
+// ============================================================================
+
+/// Maximum protobuf-encoded byte length for a StartPre request.
+///
+/// StartPreRequest's optional `document` field carries the same shape of payload
+/// (encrypted document, proof, policy fields) as StoreSecretRequest when the caller
+/// supplies the document inline instead of posting it to the bulletin first, so this
+/// matches `MAX_STORE_SECRET_REQUEST_BYTES`.
+pub const MAX_PRE_REQUEST_BYTES: usize = MAX_STORE_SECRET_REQUEST_BYTES;
+
+// ============================================================================
 // Cryptographic Constants
 // ============================================================================
 

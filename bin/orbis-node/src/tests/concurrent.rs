@@ -10,8 +10,9 @@
 use crate::{
     app_state::AppState,
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
-        MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
+        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+        MIN_NODE_BALANCE,
     },
     dkg::v0::helpers::serialize_commitment_coefficients,
     dkg::v0::service::DkgServiceImpl,
@@ -145,8 +146,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
             )
             .add_service(
-                PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+                PreServiceServer::new(pre_service).max_decoding_message_size(MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)

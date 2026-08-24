@@ -10,7 +10,7 @@ use crate::sign::v0::messages::SignContext;
 use crate::store_secret::v0::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
 use bulletin::r#trait::{BulletinPost, BulletinWriteKind, DocumentPayload};
-use crypto::r#trait::{Dkg, EncryptionProof, Secret};
+use crypto::r#trait::{Dkg, EncryptionProof};
 use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
 };
@@ -126,7 +126,11 @@ where
         };
 
         // 3. Validate the encrypted document structure
-        let _encrypted_secret = validate_encrypted_document(&req.encrypted_document, &req.enc_cmt)?;
+        let _encrypted_secret = crate::helpers::encrypted_document::validate_encrypted_document(
+            &req.encrypted_document,
+            &req.enc_cmt,
+        )
+        .map_err(StoreSecretError::Validation)?;
 
         // 4. Create DocumentPayload with the pre-encrypted secret
         // DocumentPayload.document is a String (JSON), so convert from bytes (valid UTF-8)
@@ -250,40 +254,6 @@ where
             signature,
         }))
     }
-}
-
-/// Validates the encrypted document structure and enc_cmt.
-///
-/// This function performs structural validation to ensure the encrypted data
-/// is well-formed before posting to the bulletin.
-fn validate_encrypted_document(
-    encrypted_document: &[u8],
-    enc_cmt: &[u8],
-) -> Result<Secret, StoreSecretError> {
-    // 1. Parse the encrypted document as a Secret struct
-    let secret: Secret = serde_json::from_slice(encrypted_document).map_err(|e| {
-        StoreSecretError::Validation(format!(
-            "Failed to parse encrypted_document as Secret: {}",
-            e
-        ))
-    })?;
-
-    // 3. Validate the enc_cmt in the Secret matches the provided enc_cmt
-    if secret.enc_cmt != enc_cmt {
-        return Err(StoreSecretError::Validation(
-            "enc_cmt in encrypted_document does not match provided enc_cmt".to_string(),
-        ));
-    }
-
-    // 4. Validate nonce is 12 bytes (AES-GCM standard)
-    if secret.nonce.len() != 12 {
-        return Err(StoreSecretError::Validation(format!(
-            "Invalid nonce length: expected 12 bytes, got {}",
-            secret.nonce.len()
-        )));
-    }
-
-    Ok(secret)
 }
 
 fn validate_store_secret_claims(

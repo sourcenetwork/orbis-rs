@@ -17,9 +17,9 @@ use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
-        MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
-        PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
+        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+        MIN_NODE_BALANCE, PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
@@ -120,8 +120,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
             )
             .add_service(
-                PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+                PreServiceServer::new(pre_service).max_decoding_message_size(MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)

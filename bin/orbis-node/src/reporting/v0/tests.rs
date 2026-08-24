@@ -3,8 +3,8 @@ use super::observation::{InvalidCryptoResponseObservation, OfflineObservation, R
 use super::types::{
     ring_state_sha256, CommitteeScope, DkgControlMessageFaultKind, DkgPublicOriginFaultKind,
     InvalidCryptoResponse, PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope,
-    CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN,
-    RELAY_REQUEST_DOMAIN,
+    ReportedDocumentEvidence, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN,
 };
 #[cfg(feature = "bls12-381")]
 use super::types::{SignResponseStatement, SIGN_RESPONSE_DOMAIN};
@@ -120,6 +120,7 @@ fn relay_binding_statement(
         valid_window_start,
         valid_window_end,
         timestamp,
+        inline_document: None,
     }
 }
 
@@ -142,6 +143,7 @@ fn relay_binding(
         valid_window,
         timestamp,
         from_node_id: RELAY_BINDING_FROM_NODE_ID,
+        inline_document: None,
     }
 }
 
@@ -166,6 +168,101 @@ fn relay_request_binding_accepts_valid_pre_statement() {
         ),
     )
     .unwrap();
+}
+
+fn test_document_evidence() -> ReportedDocumentEvidence {
+    ReportedDocumentEvidence {
+        document: "ciphertext-blob".to_string(),
+        proof: "proof-blob".to_string(),
+        policy_id: "policy-1".to_string(),
+        resource: "document".to_string(),
+        permission: "read".to_string(),
+        tier: Some("gold".to_string()),
+    }
+}
+
+#[test]
+fn relay_request_binding_accepts_matching_inline_document() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+    let mut statement = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    statement.inline_document = Some(test_document_evidence());
+    let mut expected = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    expected.inline_document = Some(test_document_evidence());
+
+    validate_relay_request_binding(&statement, expected).unwrap();
+}
+
+#[test]
+fn relay_request_binding_rejects_tampered_inline_document_fields() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+    let mut statement = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    statement.inline_document = Some(test_document_evidence());
+    let mut expected = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    let mut tampered = test_document_evidence();
+    tampered.document = "different-ciphertext".to_string();
+    expected.inline_document = Some(tampered);
+
+    assert!(validate_relay_request_binding(&statement, expected).is_err());
+}
+
+#[test]
+fn relay_request_binding_rejects_inline_document_presence_mismatch() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+
+    // Statement carries inline evidence but this node resolved the document from the bulletin.
+    let mut statement_with_evidence = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    statement_with_evidence.inline_document = Some(test_document_evidence());
+    let expected_without = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    assert!(validate_relay_request_binding(&statement_with_evidence, expected_without).is_err());
+
+    // The reverse: this node resolved the document inline, but the statement carries none.
+    let statement_without = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    let mut expected_with = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    expected_with.inline_document = Some(test_document_evidence());
+    assert!(validate_relay_request_binding(&statement_without, expected_with).is_err());
 }
 
 #[test]
@@ -320,6 +417,7 @@ async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
             user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
             acp_timestamp: Some(RELAY_BINDING_PRE_TIMESTAMP),
             valid_window: None,
+            inline_document: None,
         },
         &app_state.local_storage,
     )
@@ -2501,6 +2599,8 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         challenge: challenge_bytes,
         proof: proof_bytes,
         crypto_backend: PreImpl::name(),
+        timestamp: None,
+        inline_document: None,
     };
     let signing_key = network
         .charlie

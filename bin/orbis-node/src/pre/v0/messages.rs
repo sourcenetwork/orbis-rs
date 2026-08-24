@@ -27,10 +27,19 @@ pub struct PreRequestContext {
     /// Optional valid window for time-bounded authz checks
     pub valid_window: Option<ValidWindow>,
     /// The relayer's signed record of this request, so a peer whose ACP re-check fails can attribute
-    /// the relaying node via an `unauthorized_request` report. Always set on the live relay path;
-    /// `None` only in unit tests that construct the context directly.
+    /// the relaying node via an `unauthorized_request` report. Always set on the live relay path,
+    /// including the inline-document path (the statement carries the inline document's evidence so
+    /// it can be re-verified without reading the bulletin); `None` only in unit tests that construct
+    /// the context directly.
     pub relay_statement: Option<crate::reporting::v0::types::RelayRequestStatement>,
     pub relay_signature: Vec<u8>,
+    /// Present only when the caller supplied the document inline instead of posting it to the
+    /// bulletin first. Every node (leader and cascaded committee members) uses this directly and
+    /// independently re-verifies it via `validate_inline_document_id` — mirrors the existing
+    /// pattern where each node independently re-does `check_policy_access`/`verify_encryption_binding`
+    /// rather than trusting the relay's word. `None` means the document is read from the bulletin
+    /// by `object_id`, exactly as before this field existed.
+    pub document: Option<bulletin::r#trait::DocumentPayload>,
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a reencryption share.

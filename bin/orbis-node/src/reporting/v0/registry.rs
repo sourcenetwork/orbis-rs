@@ -45,6 +45,7 @@ use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
+use common::blockchain::orbis::generate_document_id;
 use common::blockchain::verify_node_message;
 use crypto::r#trait::{
     CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PubShare,
@@ -2933,20 +2934,57 @@ async fn require_relayed_request_unauthorized(
 
     let access_request = match statement.origin_protocol.as_str() {
         "pre" => {
-            let document_post = context
-                .bulletin
-                .read(statement.object_id.clone(), BulletinKind::Document)
-                .await
-                .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-            let document = DocumentPayload::try_from(document_post)
-                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+            let (policy_id, resource, permission, tier, timestamp) = match &statement
+                .inline_document
+            {
+                Some(evidence) => {
+                    let expected_object_id = generate_document_id(
+                        &statement.ring_id,
+                        &evidence.document,
+                        &evidence.proof,
+                        &evidence.policy_id,
+                        &evidence.resource,
+                        &evidence.permission,
+                        evidence.tier.as_deref(),
+                        statement.timestamp,
+                    );
+                    if expected_object_id != statement.object_id {
+                        return Err(ReportingError::InvalidReport(
+                            "relay request inline_document does not match object_id".to_string(),
+                        ));
+                    }
+                    (
+                        evidence.policy_id.clone(),
+                        evidence.resource.clone(),
+                        evidence.permission.clone(),
+                        evidence.tier.clone(),
+                        statement.timestamp,
+                    )
+                }
+                None => {
+                    let document_post = context
+                        .bulletin
+                        .read(statement.object_id.clone(), BulletinKind::Document)
+                        .await
+                        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+                    let document = DocumentPayload::try_from(document_post)
+                        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+                    (
+                        document.policy_id,
+                        document.resource,
+                        document.permission,
+                        document.tier,
+                        document.timestamp,
+                    )
+                }
+            };
             AccessCheckRequest::new(
-                document.policy_id,
-                document.resource,
+                policy_id,
+                resource,
                 statement.object_id.clone(),
-                document.permission,
-                document.tier,
-                document.timestamp,
+                permission,
+                tier,
+                timestamp,
                 valid_window,
             )
         }
@@ -3744,21 +3782,43 @@ async fn require_pre_proof_verification_failure(
     statement: &crate::reporting::v0::types::PreReencryptResponseStatement,
     context: &ReportValidationContext,
 ) -> Result<()> {
-    let document_post = context
-        .bulletin
-        .read(statement.object_id.clone(), BulletinKind::Document)
-        .await
-        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-    let document = DocumentPayload::try_from(document_post)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    if document.ring_id != statement.ring_id {
-        return Err(ReportingError::Unauthorized(
-            "PRE response object is not bound to the report ring".to_string(),
-        ));
-    }
-
-    let secret = deserialize_secret(&document.document)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let secret = match &statement.inline_document {
+        Some(evidence) => {
+            let expected_object_id = generate_document_id(
+                &statement.ring_id,
+                &evidence.document,
+                &evidence.proof,
+                &evidence.policy_id,
+                &evidence.resource,
+                &evidence.permission,
+                evidence.tier.as_deref(),
+                statement.timestamp,
+            );
+            if expected_object_id != statement.object_id {
+                return Err(ReportingError::InvalidReport(
+                    "PRE response inline_document does not match object_id".to_string(),
+                ));
+            }
+            deserialize_secret(&evidence.document)
+                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
+        }
+        None => {
+            let document_post = context
+                .bulletin
+                .read(statement.object_id.clone(), BulletinKind::Document)
+                .await
+                .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+            let document = DocumentPayload::try_from(document_post)
+                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+            if document.ring_id != statement.ring_id {
+                return Err(ReportingError::Unauthorized(
+                    "PRE response object is not bound to the report ring".to_string(),
+                ));
+            }
+            deserialize_secret(&document.document)
+                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
+        }
+    };
     let rdr_pk = GroupAffine::from_bytes(&statement.rdr_pk).map_err(|error| {
         ReportingError::InvalidReport(format!("failed to deserialize reader public key: {error}"))
     })?;
@@ -3833,10 +3893,10 @@ mod tests {
     };
     use crate::reporting::v0::types::{
         CommitteeScope, DkgCommitmentStatement, DkgShareStatement, InvalidCryptoResponse,
-        NodeOffline, PreReencryptResponseStatement, RelayRequestStatement, SignResponseStatement,
-        DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
-        PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
-        SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
+        NodeOffline, PreReencryptResponseStatement, RelayRequestStatement,
+        ReportedDocumentEvidence, SignResponseStatement, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
+        INVALID_CRYPTO_RESPONSE_REPORT_TYPE, PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN,
+        REPORT_DOMAIN, REPORT_TTL_SECS, SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
     };
     use bulletin::dummy::DummyBulletin;
     use bulletin::r#trait::{BulletinPost, UpgradeInfo};
@@ -3928,6 +3988,8 @@ mod tests {
                     challenge: vec![3],
                     proof: vec![4],
                     crypto_backend: "elgamal/test".to_string(),
+                    timestamp: None,
+                    inline_document: None,
                 },
                 response_signature: vec![5; 64],
             },
@@ -3992,6 +4054,7 @@ mod tests {
             valid_window_start: Some(signed_at.saturating_sub(10)),
             valid_window_end: Some(signed_at + 10),
             timestamp: Some(signed_at),
+            inline_document: None,
         }
     }
 
@@ -4397,6 +4460,152 @@ mod tests {
                 "{origin_protocol} should reject authorized requests, got {error}"
             );
         }
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    /// A self-verifying `inline_document` reaches the same "authorized" refutation as a
+    /// bulletin-sourced request — without ever posting the document to the bulletin. Proves the
+    /// hash recompute is what's gating the check, not a coincidental bulletin lookup.
+    #[tokio::test]
+    async fn relayed_request_refutation_accepts_matching_inline_document() {
+        let db_name = "registry_relay_request_inline_document_matches";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let bulletin = std::sync::Arc::new(DummyBulletin::default());
+        let base_context = validation_context(&app_state, 10);
+        let context = ReportValidationContext {
+            bulletin,
+            ..base_context
+        };
+
+        let evidence = ReportedDocumentEvidence {
+            document: "{}".to_string(),
+            proof: String::new(),
+            policy_id: "policy".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("tier-a".to_string()),
+        };
+        let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
+        statement.origin_protocol = "pre".to_string();
+        statement.timestamp = Some(10);
+        statement.object_id = generate_document_id(
+            &statement.ring_id,
+            &evidence.document,
+            &evidence.proof,
+            &evidence.policy_id,
+            &evidence.resource,
+            &evidence.permission,
+            evidence.tier.as_deref(),
+            statement.timestamp,
+        );
+        statement.inline_document = Some(evidence);
+
+        // DummyAuthZ always authorizes, so this must still hit the "authorized" refutation —
+        // proving the request reached the real ACP check rather than failing earlier on a
+        // (nonexistent) bulletin read.
+        let error = require_relayed_request_unauthorized(&context, &statement, "0")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("relayed request was authorized"),
+            "matching inline_document should reach the ACP check, got {error}"
+        );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    /// `inline_document` whose fields don't hash to `object_id` must be rejected before any
+    /// ACP/chain work — this is the confused-deputy check for report evidence.
+    #[tokio::test]
+    async fn relayed_request_refutation_rejects_mismatched_inline_document() {
+        let db_name = "registry_relay_request_inline_document_mismatch";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let bulletin = std::sync::Arc::new(DummyBulletin::default());
+        let base_context = validation_context(&app_state, 10);
+        let context = ReportValidationContext {
+            bulletin,
+            ..base_context
+        };
+
+        let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
+        statement.origin_protocol = "pre".to_string();
+        statement.timestamp = Some(10);
+        statement.object_id = "claimed-object-id".to_string();
+        statement.inline_document = Some(ReportedDocumentEvidence {
+            document: "{}".to_string(),
+            proof: String::new(),
+            policy_id: "policy".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("tier-a".to_string()),
+        });
+
+        let error = require_relayed_request_unauthorized(&context, &statement, "0")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match object_id"),
+            "mismatched inline_document should be rejected before the ACP check, got {error}"
+        );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    /// `require_pre_proof_verification_failure`'s `inline_document` hash check runs before any
+    /// crypto (rdr_pk/share/challenge/proof parsing, polynomial lookup) — a mismatch is rejected
+    /// immediately, so this doesn't need a real proof/local_storage fixture to exercise it.
+    #[tokio::test]
+    async fn pre_proof_refutation_rejects_mismatched_inline_document() {
+        let db_name = "registry_pre_proof_inline_document_mismatch";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let context = validation_context(&app_state, 10);
+
+        let statement = PreReencryptResponseStatement {
+            domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "pre-request-1".to_string(),
+            signed_at: 10,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pre".to_string(),
+            object_id: "claimed-object-id".to_string(),
+            rdr_pk: vec![1],
+            derivation: None,
+            from_node_id: 2,
+            share: vec![2],
+            challenge: vec![3],
+            proof: vec![4],
+            crypto_backend: "elgamal/test".to_string(),
+            timestamp: Some(10),
+            inline_document: Some(ReportedDocumentEvidence {
+                document: "{}".to_string(),
+                proof: String::new(),
+                policy_id: "policy".to_string(),
+                resource: "document".to_string(),
+                permission: "read".to_string(),
+                tier: None,
+            }),
+        };
+
+        let error = require_pre_proof_verification_failure(&statement, &context)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match object_id"),
+            "mismatched inline_document should be rejected before any crypto work, got {error}"
+        );
 
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }

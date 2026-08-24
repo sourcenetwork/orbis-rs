@@ -3,12 +3,13 @@ use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFE
 use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, fetch_bulletin_payloads_for_version,
+    check_policy_access, decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
     validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
 use crate::reporting::v0::types::{
-    ring_state_sha256, PreReencryptResponseStatement, PRE_REENCRYPT_RESPONSE_DOMAIN,
+    ring_state_sha256, PreReencryptResponseStatement, ReportedDocumentEvidence,
+    PRE_REENCRYPT_RESPONSE_DOMAIN,
 };
 use crate::reporting::v0::{
     report_unauthorized_relay, validate_relay_request_binding, RelayRequestBinding,
@@ -120,12 +121,25 @@ where
             &ctx.salt,
         )?;
 
-        let (document_payload, ring_payload) = fetch_bulletin_payloads_for_version(
+        // When the caller supplied the document inline (ctx.document), it's used directly and
+        // independently re-verified against object_id here — this node does not trust that the
+        // relay/leader already checked it. Otherwise this reads from the bulletin exactly as
+        // before.
+        let (document_payload, ring_payload) = resolve_document_and_ring_payloads(
             &*self.app_state.bulletin,
             &ctx.object_id,
             self.routes.version,
+            ctx.document.clone(),
         )
         .await?;
+        let document_evidence = ctx.document.as_ref().map(|doc| ReportedDocumentEvidence {
+            document: doc.document.clone(),
+            proof: doc.proof.clone(),
+            policy_id: doc.policy_id.clone(),
+            resource: doc.resource.clone(),
+            permission: doc.permission.clone(),
+            tier: doc.tier.clone(),
+        });
         let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
 
@@ -169,6 +183,7 @@ where
                         valid_window: ctx.valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
                         from_node_id,
+                        inline_document: document_evidence.clone(),
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
@@ -267,6 +282,8 @@ where
             challenge: challenge_bytes.clone(),
             proof: proof_bytes.clone(),
             crypto_backend: T::name(),
+            timestamp: document_payload.timestamp,
+            inline_document: document_evidence,
         };
         let signing_key = self
             .app_state

@@ -9,25 +9,74 @@ use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::sourcehub::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
+use common::blockchain::orbis::generate_document_id;
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
 use std::sync::Arc;
 
-pub async fn fetch_bulletin_payloads_for_version(
+async fn fetch_document_payload(
     bulletin: &(dyn Bulletin + Send + Sync),
     object_id: &str,
-    protocol_version: u64,
-) -> Result<(DocumentPayload, RingPayload)> {
+) -> Result<DocumentPayload> {
     let object_info = bulletin
         .read(object_id.to_string(), BulletinKind::Document)
         .await
         .map_err(|e| PreError::Storage(format!("Failed to read object '{}': {}", object_id, e)))?;
 
-    let document_payload = serde_json::from_slice::<DocumentPayload>(&object_info.payload)
-        .map_err(|e| {
-            PreError::Deserialization(format!("Failed to parse document payload: {}", e))
-        })?;
+    serde_json::from_slice::<DocumentPayload>(&object_info.payload)
+        .map_err(|e| PreError::Deserialization(format!("Failed to parse document payload: {}", e)))
+}
+
+/// Confirms a caller-supplied document is genuinely the one `object_id` refers to.
+///
+/// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same
+/// deterministic ID SourceHub assigns when a document is posted to the bulletin
+/// (`crates/bulletin/src/sourcehub/mod.rs`). Recomputing and comparing it here means a document
+/// supplied directly on the wire (never posted to the bulletin) is just as tightly bound to
+/// `object_id` as one read back from chain — a caller cannot pair an `object_id` they're
+/// authorized for with a different document's ciphertext/proof without this failing.
+pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) -> Result<()> {
+    let expected = generate_document_id(
+        &document.ring_id,
+        &document.document,
+        &document.proof,
+        &document.policy_id,
+        &document.resource,
+        &document.permission,
+        document.tier.as_deref(),
+        document.timestamp,
+    );
+
+    if expected != object_id {
+        return Err(PreError::Unauthorized(format!(
+            "supplied document does not match object_id '{}'",
+            object_id
+        )));
+    }
+
+    Ok(())
+}
+
+/// Resolves the document and ring payloads for a PRE request, either from a caller-supplied
+/// `DocumentPayload` (validated against `object_id` via [`validate_inline_document_id`]) or, when
+/// none is supplied, by reading the document from the bulletin by `object_id`.
+///
+/// `ring_payload` is always read live from the bulletin regardless of the document's source —
+/// ring membership/threshold and the live ACP check are not made caller-suppliable.
+pub async fn resolve_document_and_ring_payloads(
+    bulletin: &(dyn Bulletin + Send + Sync),
+    object_id: &str,
+    protocol_version: u64,
+    inline_document: Option<DocumentPayload>,
+) -> Result<(DocumentPayload, RingPayload)> {
+    let document_payload = match inline_document {
+        Some(document) => {
+            validate_inline_document_id(object_id, &document)?;
+            document
+        }
+        None => fetch_document_payload(bulletin, object_id).await?,
+    };
 
     let ring_payload = read_ring_for_route(bulletin, &document_payload.ring_id, protocol_version)
         .await
@@ -188,4 +237,122 @@ pub async fn store_response(
         )
         .await
         == ResponseStoreOutcome::Stored
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn document_b() -> DocumentPayload {
+        DocumentPayload {
+            ring_id: "ring-1".to_string(),
+            document: "b-ciphertext".to_string(),
+            proof: "b-proof".to_string(),
+            policy_id: "policy-b".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("gold".to_string()),
+            timestamp: Some(1_700_000_000),
+        }
+    }
+
+    fn object_id_for(document: &DocumentPayload) -> String {
+        generate_document_id(
+            &document.ring_id,
+            &document.document,
+            &document.proof,
+            &document.policy_id,
+            &document.resource,
+            &document.permission,
+            document.tier.as_deref(),
+            document.timestamp,
+        )
+    }
+
+    #[test]
+    fn validate_inline_document_id_accepts_matching_document() {
+        let document = document_b();
+        let object_id = object_id_for(&document);
+        assert!(validate_inline_document_id(&object_id, &document).is_ok());
+    }
+
+    #[test]
+    fn validate_inline_document_id_rejects_tampered_fields() {
+        let object_id = object_id_for(&document_b());
+
+        let mutations: Vec<(&str, Box<dyn Fn(&mut DocumentPayload)>)> = vec![
+            (
+                "ring_id",
+                Box::new(|d: &mut DocumentPayload| d.ring_id = "ring-2".to_string()),
+            ),
+            (
+                "document",
+                Box::new(|d: &mut DocumentPayload| d.document = "tampered".to_string()),
+            ),
+            (
+                "proof",
+                Box::new(|d: &mut DocumentPayload| d.proof = "tampered".to_string()),
+            ),
+            (
+                "policy_id",
+                Box::new(|d: &mut DocumentPayload| d.policy_id = "policy-attacker".to_string()),
+            ),
+            (
+                "resource",
+                Box::new(|d: &mut DocumentPayload| d.resource = "other-resource".to_string()),
+            ),
+            (
+                "permission",
+                Box::new(|d: &mut DocumentPayload| d.permission = "write".to_string()),
+            ),
+            (
+                "tier",
+                Box::new(|d: &mut DocumentPayload| d.tier = Some("silver".to_string())),
+            ),
+            (
+                "timestamp",
+                Box::new(|d: &mut DocumentPayload| d.timestamp = Some(1)),
+            ),
+        ];
+
+        for (field, mutate) in mutations {
+            let mut tampered = document_b();
+            mutate(&mut tampered);
+            assert!(
+                matches!(
+                    validate_inline_document_id(&object_id, &tampered),
+                    Err(PreError::Unauthorized(_))
+                ),
+                "tampering '{field}' should have been rejected"
+            );
+        }
+    }
+
+    /// Regression test for the confused-deputy scenario found while designing this feature:
+    /// an attacker who is genuinely authorized for `object_id = B` cannot get a *different*,
+    /// honestly-generated document C's ciphertext/proof re-encrypted by pairing them with `B`.
+    /// `object_id` commits to every field of the document (including the ciphertext and proof),
+    /// so C's fields can never hash to B's object_id.
+    #[test]
+    fn validate_inline_document_id_rejects_a_different_honest_document_under_the_wrong_object_id() {
+        let object_id_b = object_id_for(&document_b());
+
+        let document_c = DocumentPayload {
+            ring_id: "ring-1".to_string(),
+            document: "c-ciphertext".to_string(),
+            proof: "c-proof".to_string(),
+            policy_id: "policy-b".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("gold".to_string()),
+            timestamp: Some(1_700_000_000),
+        };
+        // document_c is itself internally valid for its own object_id...
+        assert!(validate_inline_document_id(&object_id_for(&document_c), &document_c).is_ok());
+        // ...but cannot be smuggled in under B's object_id.
+        assert!(matches!(
+            validate_inline_document_id(&object_id_b, &document_c),
+            Err(PreError::Unauthorized(_))
+        ));
+    }
 }

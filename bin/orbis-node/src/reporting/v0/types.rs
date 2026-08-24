@@ -90,6 +90,64 @@ impl NodeOffline {
     }
 }
 
+/// The document fields needed to independently re-derive `object_id` via
+/// `generate_document_id`, so a co-signer can verify a report's evidence is genuinely bound to
+/// `object_id` without reading it from the bulletin. Populated only for requests whose document
+/// was supplied inline (never posted to the bulletin) — see `PreRequestContext::document`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReportedDocumentEvidence {
+    pub document: String,
+    pub proof: String,
+    pub policy_id: String,
+    pub resource: String,
+    pub permission: String,
+    pub tier: Option<String>,
+}
+
+impl ReportedDocumentEvidence {
+    fn write_canonical(&self, out: &mut Vec<u8>) {
+        write_string(out, &self.document);
+        write_string(out, &self.proof);
+        write_string(out, &self.policy_id);
+        write_string(out, &self.resource);
+        write_string(out, &self.permission);
+        write_optional_string(out, self.tier.as_deref());
+    }
+
+    fn read_canonical(decoder: &mut Decoder<'_>) -> Result<Self> {
+        Ok(Self {
+            document: decoder.read_string("inline_document_document")?,
+            proof: decoder.read_string("inline_document_proof")?,
+            policy_id: decoder.read_string("inline_document_policy_id")?,
+            resource: decoder.read_string("inline_document_resource")?,
+            permission: decoder.read_string("inline_document_permission")?,
+            tier: decoder.read_optional_string("inline_document_tier")?,
+        })
+    }
+}
+
+fn write_optional_document_evidence(out: &mut Vec<u8>, value: Option<&ReportedDocumentEvidence>) {
+    match value {
+        Some(evidence) => {
+            out.push(1);
+            evidence.write_canonical(out);
+        }
+        None => out.push(0),
+    }
+}
+
+fn read_optional_document_evidence(
+    decoder: &mut Decoder<'_>,
+) -> Result<Option<ReportedDocumentEvidence>> {
+    match decoder.read_u8("inline_document_present")? {
+        0 => Ok(None),
+        1 => ReportedDocumentEvidence::read_canonical(decoder).map(Some),
+        value => Err(ReportingError::InvalidReport(format!(
+            "invalid optional inline_document tag {value}"
+        ))),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreReencryptResponseStatement {
     pub domain: String,
@@ -113,6 +171,13 @@ pub struct PreReencryptResponseStatement {
     pub challenge: Vec<u8>,
     pub proof: Vec<u8>,
     pub crypto_backend: String,
+    /// The document's ACP timestamp (`DocumentPayload.timestamp`). Not needed for the crypto
+    /// re-verification itself — carried so `inline_document`, when present, can be recomputed
+    /// against `object_id` via `generate_document_id`.
+    pub timestamp: Option<u64>,
+    /// Present only when the request's document was supplied inline rather than read from the
+    /// bulletin — see [`ReportedDocumentEvidence`].
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 impl PreReencryptResponseStatement {
@@ -138,6 +203,8 @@ impl PreReencryptResponseStatement {
         write_bytes(&mut out, &self.challenge);
         write_bytes(&mut out, &self.proof);
         write_string(&mut out, &self.crypto_backend);
+        write_optional_u64(&mut out, self.timestamp);
+        write_optional_document_evidence(&mut out, self.inline_document.as_ref());
         out
     }
 
@@ -161,6 +228,8 @@ impl PreReencryptResponseStatement {
         let challenge = decoder.read_bytes("challenge")?;
         let proof = decoder.read_bytes("proof")?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
+        let timestamp = decoder.read_optional_u64("timestamp")?;
+        let inline_document = read_optional_document_evidence(&mut decoder)?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -181,6 +250,8 @@ impl PreReencryptResponseStatement {
             challenge,
             proof,
             crypto_backend,
+            timestamp,
+            inline_document,
         })
     }
 }
@@ -286,10 +357,13 @@ impl SignResponseStatement {
 
 /// A relaying node's signed record of a Sign/PRE request it forwarded to a peer. If the peer's
 /// ACP re-check fails, this statement is the on-chain-verifiable evidence attributing the relayer.
-/// The document-derived ACP inputs (policy_id, resource, permission, tier) are NOT carried — they
-/// are re-fetched from the bulletin during the refutation — so the statement stays lean and the
-/// re-check reproducible. `valid_window_*` and `timestamp` are the relayer's own ACP-check inputs
-/// (both window bounds present-or-both-absent), used verbatim so the refutation is deterministic.
+/// The document-derived ACP inputs (policy_id, resource, permission, tier) are normally NOT
+/// carried — they are re-fetched from the bulletin during the refutation, so the statement stays
+/// lean and the re-check reproducible. `inline_document` is the one exception: for a PRE request
+/// whose document was supplied inline (never posted to the bulletin), there is nothing to
+/// re-fetch, so the relayer embeds the document instead — see [`ReportedDocumentEvidence`].
+/// `valid_window_*` and `timestamp` are the relayer's own ACP-check inputs (both window bounds
+/// present-or-both-absent), used verbatim so the refutation is deterministic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayRequestStatement {
     pub domain: String,
@@ -318,6 +392,9 @@ pub struct RelayRequestStatement {
     pub valid_window_start: Option<u64>,
     pub valid_window_end: Option<u64>,
     pub timestamp: Option<u64>,
+    /// Present only when the relayed request's document was supplied inline rather than read
+    /// from the bulletin — see [`ReportedDocumentEvidence`].
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 impl RelayRequestStatement {
@@ -344,6 +421,7 @@ impl RelayRequestStatement {
         write_optional_u64(&mut out, self.valid_window_start);
         write_optional_u64(&mut out, self.valid_window_end);
         write_optional_u64(&mut out, self.timestamp);
+        write_optional_document_evidence(&mut out, self.inline_document.as_ref());
         out
     }
 
@@ -370,6 +448,7 @@ impl RelayRequestStatement {
         let valid_window_start = decoder.read_optional_u64("valid_window_start")?;
         let valid_window_end = decoder.read_optional_u64("valid_window_end")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
+        let inline_document = read_optional_document_evidence(&mut decoder)?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -391,6 +470,7 @@ impl RelayRequestStatement {
             valid_window_start,
             valid_window_end,
             timestamp,
+            inline_document,
         })
     }
 }
@@ -1934,6 +2014,16 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    fn read_optional_string(&mut self, label: &str) -> Result<Option<String>> {
+        match self.read_u8(&format!("{label}_present"))? {
+            0 => Ok(None),
+            1 => self.read_string(label).map(Some),
+            value => Err(ReportingError::InvalidReport(format!(
+                "invalid optional {label} tag {value}"
+            ))),
+        }
+    }
+
     fn read_optional_u64(&mut self, label: &str) -> Result<Option<u64>> {
         match self.read_u8(&format!("{label}_present"))? {
             0 => Ok(None),
@@ -2004,12 +2094,34 @@ mod tests {
             valid_window_start: Some(1_699_999_000),
             valid_window_end: Some(1_700_001_000),
             timestamp: Some(1_700_000_000),
+            inline_document: None,
+        }
+    }
+
+    fn document_evidence() -> ReportedDocumentEvidence {
+        ReportedDocumentEvidence {
+            document: "ciphertext-blob".to_string(),
+            proof: "proof-blob".to_string(),
+            policy_id: "policy-1".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("gold".to_string()),
         }
     }
 
     #[test]
     fn relay_request_statement_round_trips() {
         let statement = relay_request_statement();
+        assert_eq!(
+            RelayRequestStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+            statement
+        );
+    }
+
+    #[test]
+    fn relay_request_statement_with_inline_document_round_trips() {
+        let mut statement = relay_request_statement();
+        statement.inline_document = Some(document_evidence());
         assert_eq!(
             RelayRequestStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
             statement
@@ -2072,6 +2184,8 @@ mod tests {
             challenge: vec![9, 10],
             proof: vec![11, 12],
             crypto_backend: "elgamal/test".to_string(),
+            timestamp: Some(1_700_000_000),
+            inline_document: None,
         }
     }
 
@@ -2134,6 +2248,17 @@ mod tests {
         let mut changed = pre_statement();
         changed.domain = "other".to_string();
         assert_ne!(pre_statement().canonical_bytes(), changed.canonical_bytes());
+    }
+
+    #[test]
+    fn pre_response_statement_with_inline_document_round_trips() {
+        let mut statement = pre_statement();
+        statement.inline_document = Some(document_evidence());
+        assert_eq!(
+            PreReencryptResponseStatement::from_canonical_bytes(&statement.canonical_bytes())
+                .unwrap(),
+            statement
+        );
     }
 
     #[test]

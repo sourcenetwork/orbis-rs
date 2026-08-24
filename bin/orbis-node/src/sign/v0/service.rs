@@ -198,6 +198,7 @@ where
                 user_signed_at: token.issued_time,
                 acp_timestamp: relay_acp_timestamp,
                 valid_window: valid_window.clone(),
+                inline_document: None,
             },
             &self.state.local_storage,
         )

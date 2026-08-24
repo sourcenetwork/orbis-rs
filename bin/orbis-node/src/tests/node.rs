@@ -4,8 +4,9 @@ use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
     complete_initialization_or_shutdown,
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_MESSAGE_BYTES,
-        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
+        MAX_SIGN_MESSAGE_BYTES, MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES,
+        MAX_STORE_SECRET_REQUEST_BYTES,
     },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
@@ -216,8 +217,7 @@ fn spawn_full_test_grpc_server(
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
             )
             .add_service(
-                PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+                PreServiceServer::new(pre_service).max_decoding_message_size(MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)
@@ -603,9 +603,10 @@ async fn test_full_grpc_server_enforces_decode_caps() {
         .start_pre(StartPreRequest {
             rdr_pk: Vec::new(),
             object_id: "object-id".to_string(),
-            derivation: Some(vec![0u8; MAX_SMALL_GRPC_REQUEST_BYTES]),
+            derivation: Some(vec![0u8; MAX_PRE_REQUEST_BYTES]),
             salt: None,
             valid_window: None,
+            document: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");
