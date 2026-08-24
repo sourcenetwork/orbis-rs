@@ -176,8 +176,9 @@ impl<D: Dkg + 'static> Drop for TransportMessageClaimGuard<D> {
 
 /// Exact reshare bulletin update that this node is ready to sign.
 ///
-/// A node records this only after it has locally persisted the new reshare bundle.
-/// The hashes bind readiness to one bulletin pre-state and one final payload, so a
+/// A node records this once it has locally computed the new reshare share — not
+/// necessarily written it to disk yet, see [`ReshareSignatureReadyMaterial`]. The
+/// hashes bind readiness to one bulletin pre-state and one final payload, so a
 /// later or different update must earn its own readiness marker.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReshareSignatureReadyKey {
@@ -187,6 +188,35 @@ pub struct ReshareSignatureReadyKey {
     pub ring_id: String,
     pub current_ring_sha256: String,
     pub finalized_ring_sha256: String,
+}
+
+/// Material backing a reshare readiness marker.
+///
+/// `Staged` holds the new-committee share this node computed locally but has not
+/// yet confirmed on the bulletin — disk still holds the OLD share, so a co-signer
+/// for the exact statement this key names must sign with `bundle`, not disk.
+/// `Promoted` means the bundle has since been written to disk (or this marker was
+/// created via the test-only [`SessionStateManager::mark_reshare_signature_ready`]
+/// without a bundle) — a late/retried co-signer request can safely fall back to
+/// disk. The map entry is never removed on promotion (only on ceremony teardown),
+/// so a late/retried finalize-sign request continues to authorize correctly.
+#[derive(Debug, Clone)]
+pub(crate) enum ReshareSignatureReadyMaterial {
+    Staged {
+        bundle: RingShareBundle,
+        marked_at: Instant,
+    },
+    Promoted {
+        marked_at: Instant,
+    },
+}
+
+impl ReshareSignatureReadyMaterial {
+    fn marked_at(&self) -> Instant {
+        match self {
+            Self::Staged { marked_at, .. } | Self::Promoted { marked_at } => *marked_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1035,11 +1065,12 @@ pub struct SessionStateManager<D: Dkg> {
     /// that a new ceremony can be initiated after failure.
     rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
     /// Exact reshare bulletin updates this node is ready to sign, with the
-    /// time each became ready. A successfully completed attempt's marker
-    /// deliberately outlives its session (see `finish_removed_session`), so
-    /// entries are aged out by `expiration_worker` on a timer rather than
-    /// tied to any session's lifecycle.
-    reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
+    /// staged (or already-promoted) share material backing each. A
+    /// successfully completed attempt's marker deliberately outlives its
+    /// session (see `finish_removed_session`), so entries are aged out by
+    /// `expiration_worker` on a timer rather than tied to any session's
+    /// lifecycle.
+    reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, ReshareSignatureReadyMaterial>>>,
     shutdown_tx: watch::Sender<bool>,
     background_tasks: StdMutex<Vec<JoinHandle<()>>>,
     /// Receiver for stalled refresh/reshare sessions published by the expiration sweep for
@@ -1217,7 +1248,9 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     async fn expiration_worker(
         states: Arc<RwLock<HashMap<u128, DkgSessionState<D>>>>,
         rings_pss: Arc<RwLock<HashMap<String, RingPssOwner>>>,
-        reshare_signature_ready: Arc<RwLock<HashMap<ReshareSignatureReadyKey, Instant>>>,
+        reshare_signature_ready: Arc<
+            RwLock<HashMap<ReshareSignatureReadyKey, ReshareSignatureReadyMaterial>>,
+        >,
         failed_sessions: Arc<RwLock<HashMap<u128, (FailedDkgSessionRecord, Instant)>>>,
         mut shutdown_rx: watch::Receiver<bool>,
         stall_report_tx: mpsc::Sender<AbandonedPssSession>,
@@ -1418,7 +1451,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             // Markers for a *successfully completed* attempt are deliberately not
             // cleared above (or in `finish_removed_session`) so a late or retried
             // co-signer sign request still validates after this node's own
-            // transport attempt is gone — see `is_reshare_signature_ready_for_update`.
+            // transport attempt is gone — see `reshare_signature_ready_material`.
             // That session is no longer in `states` by then, so nothing else ever
             // revisits its marker. Age those out independently, on the same TTL
             // used to bound retained completed sessions, so this set can't grow
@@ -1426,8 +1459,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             reshare_signature_ready
                 .write()
                 .await
-                .retain(|_, inserted_at| {
-                    now.duration_since(*inserted_at) < DKG_COMPLETED_SESSION_TTL
+                .retain(|_, material| {
+                    now.duration_since(material.marked_at()) < DKG_COMPLETED_SESSION_TTL
                 });
 
             // Failure records are decoupled from `states` (see `FailedDkgSessionRecord`), so
@@ -1612,27 +1645,39 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             .map(|owner| owner.session_id)
     }
 
-    /// Mark one exact reshare bulletin update as ready to sign.
+    /// Mark one exact reshare bulletin update as ready to sign, already
+    /// promoted (bundle on disk) — test-only convenience for tests that only
+    /// care about readiness/key lifecycle, not the staged-material path.
     #[cfg(test)]
     pub async fn mark_reshare_signature_ready(&self, key: ReshareSignatureReadyKey) {
-        self.reshare_signature_ready
-            .write()
-            .await
-            .insert(key, Instant::now());
+        self.reshare_signature_ready.write().await.insert(
+            key,
+            ReshareSignatureReadyMaterial::Promoted {
+                marked_at: Instant::now(),
+            },
+        );
     }
 
+    /// Mark one exact reshare bulletin update as ready to sign, staging
+    /// `bundle` (the newly computed, not-yet-persisted share) as the material
+    /// co-signers should sign with until this node's own bulletin-confirmation
+    /// poll promotes it to disk.
     pub(crate) async fn mark_reshare_signature_ready_for_attempt(
         &self,
         attempt: AttemptKey,
         key: ReshareSignatureReadyKey,
+        bundle: RingShareBundle,
     ) -> bool {
         if self.with_attempt_state(attempt, |_| ()).await.is_err() {
             return false;
         }
-        self.reshare_signature_ready
-            .write()
-            .await
-            .insert(key.clone(), Instant::now());
+        self.reshare_signature_ready.write().await.insert(
+            key.clone(),
+            ReshareSignatureReadyMaterial::Staged {
+                bundle,
+                marked_at: Instant::now(),
+            },
+        );
         if self.with_attempt_state(attempt, |_| ()).await.is_ok() {
             true
         } else {
@@ -1647,29 +1692,74 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         self.reshare_signature_ready.read().await.contains_key(key)
     }
 
-    /// Returns true iff this node has locally completed the exact reshare
-    /// update, matched without requiring the live transport attempt to still
-    /// exist. The bulletin pre/post-state hashes already bind readiness to
-    /// one exact ceremony result (see [`ReshareSignatureReadyKey`]'s docs), so
-    /// a late or retried sign request does not need to look up an `attempt_id`
-    /// via `transport_attempt` — which may already be gone once this node's
-    /// own ceremony work finished successfully and its transport attempt was
+    /// Returns the share material to sign a reshare finalize statement with,
+    /// matched without requiring the live transport attempt to still exist.
+    /// The bulletin pre/post-state hashes already bind readiness to one exact
+    /// ceremony result (see [`ReshareSignatureReadyKey`]'s docs), so a late or
+    /// retried sign request does not need to look up an `attempt_id` via
+    /// `transport_attempt` — which may already be gone once this node's own
+    /// ceremony work finished successfully and its transport attempt was
     /// cleaned up.
-    pub async fn is_reshare_signature_ready_for_update(
+    ///
+    /// Returns `None` if no marker matches (not ready — caller should treat
+    /// this as `ReshareInProgress`). Returns `Some(None)` if a marker matches
+    /// but the bundle has already been promoted to disk (caller should read
+    /// disk). Returns `Some(Some(bundle))` if a marker matches and the bundle
+    /// is still only staged (caller must sign with `bundle`, not disk — disk
+    /// still holds the old, pre-reshare share).
+    pub(crate) async fn reshare_signature_ready_material(
         &self,
         ring_key: &str,
         session_id: u128,
         ring_id: &str,
         current_ring_sha256: &str,
         finalized_ring_sha256: &str,
-    ) -> bool {
-        self.reshare_signature_ready.read().await.keys().any(|key| {
-            key.ring_key == ring_key
-                && key.session_id == session_id
-                && key.ring_id == ring_id
-                && key.current_ring_sha256 == current_ring_sha256
-                && key.finalized_ring_sha256 == finalized_ring_sha256
-        })
+    ) -> Option<Option<RingShareBundle>> {
+        self.reshare_signature_ready
+            .read()
+            .await
+            .iter()
+            .find(|(key, _)| {
+                key.ring_key == ring_key
+                    && key.session_id == session_id
+                    && key.ring_id == ring_id
+                    && key.current_ring_sha256 == current_ring_sha256
+                    && key.finalized_ring_sha256 == finalized_ring_sha256
+            })
+            .map(|(_, material)| match material {
+                ReshareSignatureReadyMaterial::Staged { bundle, .. } => Some(bundle.clone()),
+                ReshareSignatureReadyMaterial::Promoted { .. } => None,
+            })
+    }
+
+    /// Clone out the staged bundle for `key`, if any, without mutating the
+    /// map. Used by `wait_for_reshare_bulletin_finalized` to obtain the bytes
+    /// to write to disk; the entry is only flipped to `Promoted` afterward,
+    /// via `mark_reshare_promoted`, once that write has actually succeeded —
+    /// so a disk-write failure never loses the only copy of the material.
+    pub(crate) async fn peek_staged_reshare_bundle(
+        &self,
+        key: &ReshareSignatureReadyKey,
+    ) -> Option<RingShareBundle> {
+        match self.reshare_signature_ready.read().await.get(key)? {
+            ReshareSignatureReadyMaterial::Staged { bundle, .. } => Some(bundle.clone()),
+            ReshareSignatureReadyMaterial::Promoted { .. } => None,
+        }
+    }
+
+    /// Flip `key`'s material from `Staged` to `Promoted` after its bundle has
+    /// been successfully written to disk. The entry itself is kept (not
+    /// removed) so a late/retried finalize-sign request continues to
+    /// authorize and correctly falls back to disk.
+    pub(crate) async fn mark_reshare_promoted(&self, key: &ReshareSignatureReadyKey) {
+        let mut ready = self.reshare_signature_ready.write().await;
+        if let Some(material) = ready.get(key) {
+            let marked_at = material.marked_at();
+            ready.insert(
+                key.clone(),
+                ReshareSignatureReadyMaterial::Promoted { marked_at },
+            );
+        }
     }
 
     /// Clear the in-progress PSS claim for a ring (called on setup failure before a
@@ -5038,8 +5128,13 @@ mod tests {
             mgr.claim_ring_pss_attempt("ring_complete", attempt).await,
             RingPssClaimOutcome::Claimed
         );
+        let staged_bundle = RingShareBundle {
+            share_bytes: zeroize::Zeroizing::new(vec![1, 2, 3]),
+            public_polynomial: "poly".to_string(),
+            last_pss: 0,
+        };
         assert!(
-            mgr.mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone())
+            mgr.mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone(), staged_bundle)
                 .await
         );
 

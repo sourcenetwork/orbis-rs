@@ -13,6 +13,7 @@ use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::ring::RingConfig;
+use crate::ring_state::RingShareBundle;
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
@@ -28,6 +29,7 @@ use super::super::{attempt_state_error, DkgCoordinator};
 
 #[derive(Clone)]
 struct PreparedReshareUpdate {
+    ready_key: ReshareSignatureReadyKey,
     sorted_new_peer_node_keys: Vec<String>,
     new_route_peer_ids: Vec<String>,
     new_committee_size: usize,
@@ -38,6 +40,18 @@ struct PreparedReshareUpdate {
     chain_id: String,
 }
 
+/// What a non-Dealer Reshare node needs to promote or discard its own staged
+/// bundle once `wait_for_reshare_bulletin_finalized` observes the bulletin's
+/// pending-reshare fields clear. Produced for every such node (not just node
+/// 1), since promotion/discard is a per-node decision made independently.
+#[derive(Clone)]
+pub(crate) struct ReshareReadinessInfo {
+    pub(crate) ready_key: ReshareSignatureReadyKey,
+    pub(crate) expected_new_committee: Vec<String>,
+    pub(crate) expected_new_threshold: u32,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn update_bulletin_if_selector<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -48,7 +62,8 @@ pub async fn update_bulletin_if_selector<D>(
     pub_poly_bytes: &[u8],
     reshare_new_peer_node_keys: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
-) -> Result<()>
+    reshare_staged_bundle: Option<RingShareBundle>,
+) -> Result<Option<ReshareReadinessInfo>>
 where
     D: CoordinatorDkg + Send + Sync,
     SignImpl: CoordinatorReportSigner<D>,
@@ -61,12 +76,18 @@ where
         ..
     } = kind
     else {
-        return Ok(());
+        return Ok(None);
     };
 
     let prepared_update = if dkg_role == DkgRole::Dealer {
         None
     } else {
+        let staged_bundle = reshare_staged_bundle.ok_or_else(|| {
+            DkgError::InvalidState(
+                "Reshare: non-Dealer node reached bulletin update without a staged bundle"
+                    .to_string(),
+            )
+        })?;
         Some(
             prepare_reshare_update(
                 coord,
@@ -76,10 +97,17 @@ where
                 *new_threshold,
                 reshare_new_peer_node_keys,
                 reshare_bulletin_post_id,
+                staged_bundle,
             )
             .await?,
         )
     };
+
+    let readiness_info = prepared_update.as_ref().map(|prepared| ReshareReadinessInfo {
+        ready_key: prepared.ready_key.clone(),
+        expected_new_committee: prepared.sorted_new_peer_node_keys.clone(),
+        expected_new_threshold: *new_threshold,
+    });
 
     let reshare_new_node_id = reshare_new_node_id(
         coord,
@@ -87,7 +115,7 @@ where
     );
 
     if reshare_new_node_id != 1 {
-        return Ok(());
+        return Ok(readiness_info);
     }
 
     let Some(prepared) = prepared_update else {
@@ -192,9 +220,10 @@ where
         "Reshare: Successfully updated RingPayload on bulletin"
     );
 
-    Ok(())
+    Ok(readiness_info)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_reshare_update<D>(
     coord: &DkgCoordinator<D>,
     attempt: AttemptKey,
@@ -203,6 +232,7 @@ async fn prepare_reshare_update<D>(
     new_threshold: u32,
     reshare_new_peer_node_keys: Option<&[String]>,
     reshare_bulletin_post_id: Option<&str>,
+    staged_bundle: RingShareBundle,
 ) -> Result<PreparedReshareUpdate>
 where
     D: CoordinatorDkg,
@@ -258,20 +288,18 @@ where
         finalized_ring_payload_reshare_sign_state_sha256_hex(&current_ring_payload);
     let chain_id = coord.app_state.bulletin.chain_id();
 
+    let ready_key = ReshareSignatureReadyKey {
+        ring_key: storage_key.to_string(),
+        session_id,
+        attempt_id: attempt.attempt_id,
+        ring_id: ring_id.to_string(),
+        current_ring_sha256: current_ring_sha256.clone(),
+        finalized_ring_sha256: finalized_ring_sha256.clone(),
+    };
     if !coord
         .app_state
         .dkg_session_state
-        .mark_reshare_signature_ready_for_attempt(
-            attempt,
-            ReshareSignatureReadyKey {
-                ring_key: storage_key.to_string(),
-                session_id,
-                attempt_id: attempt.attempt_id,
-                ring_id: ring_id.to_string(),
-                current_ring_sha256: current_ring_sha256.clone(),
-                finalized_ring_sha256: finalized_ring_sha256.clone(),
-            },
-        )
+        .mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone(), staged_bundle)
         .await
     {
         return Err(DkgError::StaleAttempt {
@@ -280,6 +308,7 @@ where
     }
 
     Ok(PreparedReshareUpdate {
+        ready_key,
         sorted_new_peer_node_keys,
         new_route_peer_ids,
         new_committee_size,
