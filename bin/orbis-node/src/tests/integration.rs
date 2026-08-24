@@ -200,23 +200,25 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID tx failed");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update NodeInfo peer ID tx failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add ring to NodeInfo whitelist tx failed");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add ring to NodeInfo whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "add ring to NodeInfo whitelist tx failed: {}",
+            whitelist_update.log
+        );
     }
 
     // Ring is in genesis — no on-chain creation needed.

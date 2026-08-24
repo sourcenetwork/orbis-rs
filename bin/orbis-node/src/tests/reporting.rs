@@ -561,23 +561,25 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -877,23 +879,25 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -1169,23 +1173,25 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -1572,23 +1578,25 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -2140,23 +2148,25 @@ async fn test_refresh_offline_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -2309,23 +2319,25 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -2478,23 +2490,25 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -2687,23 +2701,25 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -2884,23 +2900,25 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -3119,23 +3137,25 @@ async fn test_reshare_offline_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -3355,23 +3375,25 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -3628,23 +3650,25 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
@@ -3915,23 +3939,25 @@ async fn test_report_kick_promotes_backup_node() {
             Duration::from_millis(500),
         )
         .await;
-        cli_tool::update_node_peer_id(
-            node_key.to_string(),
-            peer_address.to_string(),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("update NodeInfo peer ID");
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
 
-        cli_tool::add_node_to_whitelist(
-            node_key.to_string(),
-            WhitelistTarget::RingId(RING_ID.to_string()),
-            chain_config.clone(),
-            TEST_ACCOUNT_HEX_KEY,
-        )
-        .await
-        .expect("add node to whitelist");
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
     }
 
     println!("Starting DKG for ring {RING_ID}...");
