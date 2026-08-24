@@ -19,7 +19,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 # ---------------------------------------------------------------------------
 CLI_BIN="${CLI_BIN:-}"
 WHITELIST_POLICY_ID="${ORBIS_WHITELIST_POLICY_ID:-}"
-OBJECT_POLICY_ID="${ORBIS_OBJECT_POLICY_ID:-}"
+# If set, skips create_ring/start_dkg entirely and uses this already-finalized
+# ring instead -- --whitelist-policy-id/--peer-node-keys/--threshold/--ring-nonce
+# are then unused (not required by preflight).
+RING_ID="${ORBIS_SMOKE_RING_ID:-}"
 PEER_NODE_KEYS="${ORBIS_SMOKE_PEER_NODE_KEYS:-}"
 THRESHOLD="${ORBIS_SMOKE_THRESHOLD:-}"
 DKG_TIMEOUT_SECS="${ORBIS_SMOKE_DKG_TIMEOUT_SECS:-180}"
@@ -30,10 +33,13 @@ SIGN_MESSAGE="${ORBIS_SMOKE_SIGN_MESSAGE:-orbis-remote-smoke-test-sign-message}"
 RESOURCE="${ORBIS_SMOKE_RESOURCE:-document}"
 PERMISSION="${ORBIS_SMOKE_PERMISSION:-read}"
 RELATION="${ORBIS_SMOKE_RELATION:-reader}"
+CREATOR_RELATION="${ORBIS_SMOKE_CREATOR_RELATION:-creator}"
 RING_NONCE="${ORBIS_SMOKE_RING_NONCE:-}"
 
 # State populated by step functions, reported in the exit summary.
-RING_ID=""
+SIGNING_KEY_PUBKEY=""
+SIGNING_KEY_DID=""
+OBJECT_POLICY_ID=""
 RING_PK=""
 READER_SK=""
 READER_PK=""
@@ -58,10 +64,10 @@ variables (export these before running):
 
 Options (flag > env var > default):
   --cli-bin <path>             CLI_BIN                             (autodetect target/release/cli-tool)
-  --whitelist-policy-id <id>   ORBIS_WHITELIST_POLICY_ID            (required, no default)
-  --object-policy-id <id>      ORBIS_OBJECT_POLICY_ID               (required, no default)
-  --peer-node-keys <csv>       ORBIS_SMOKE_PEER_NODE_KEYS           (required)
-  --threshold <n>              ORBIS_SMOKE_THRESHOLD                (required)
+  --ring-id <id>               ORBIS_SMOKE_RING_ID                  (optional -- skips create-ring/dkg, uses this ring)
+  --whitelist-policy-id <id>   ORBIS_WHITELIST_POLICY_ID            (required unless --ring-id is set)
+  --peer-node-keys <csv>       ORBIS_SMOKE_PEER_NODE_KEYS           (required unless --ring-id is set)
+  --threshold <n>              ORBIS_SMOKE_THRESHOLD                (required unless --ring-id is set)
   --dkg-timeout <secs>         ORBIS_SMOKE_DKG_TIMEOUT_SECS         (default 180)
   --dkg-poll-interval <secs>   ORBIS_SMOKE_DKG_POLL_INTERVAL_SECS   (default 5)
   --secret <string>            ORBIS_SMOKE_SECRET                   (default: generated)
@@ -70,16 +76,27 @@ Options (flag > env var > default):
   --resource <string>          ORBIS_SMOKE_RESOURCE                 (default: document)
   --permission <string>        ORBIS_SMOKE_PERMISSION               (default: read)
   --relation <string>          ORBIS_SMOKE_RELATION                 (default: reader)
+  --creator-relation <string>  ORBIS_SMOKE_CREATOR_RELATION         (default: creator)
   --ring-nonce <string>        ORBIS_SMOKE_RING_NONCE               (default: generated)
   -h, --help                   show this help and exit
 
---resource/--permission/--relation must match the ACP schema of the policy
-behind --object-policy-id (e.g. cli-tool's built-in add-policy-to-chain
-schema: resource "document", relations creator/reader, permission
-read = creator + reader) -- see scripts/README.md.
+This script creates its own object-access ACP policy every run (via
+'cli-tool add-policy-to-chain', schema: resource "document", relations
+creator/reader, permissions read = creator + reader, write = creator) --
+no pre-provisioned --object-policy-id needed. On every object it creates
+(the stored secret, the key derivation), it grants the --creator-relation
+relation (full read+write) to ORBIS_SIGNING_KEY's own derived identity, in
+addition to the --relation (read-only) grant to the generated reader key.
+--resource/--permission/--relation/--creator-relation must match that
+built-in schema -- see scripts/README.md.
+
+If --ring-id/ORBIS_SMOKE_RING_ID is set, this script skips create-ring and
+dkg entirely and targets that already-finalized ring instead -- useful for
+re-running the store-secret..sign portion without paying for a fresh DKG
+ceremony each time.
 
 See scripts/README.md for prerequisites, especially the whitelist-policy-id
-and object-policy-id assumptions.
+assumption.
 EOF
 }
 
@@ -87,8 +104,8 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --cli-bin) CLI_BIN="$2"; shift 2 ;;
+      --ring-id) RING_ID="$2"; shift 2 ;;
       --whitelist-policy-id) WHITELIST_POLICY_ID="$2"; shift 2 ;;
-      --object-policy-id) OBJECT_POLICY_ID="$2"; shift 2 ;;
       --peer-node-keys) PEER_NODE_KEYS="$2"; shift 2 ;;
       --threshold) THRESHOLD="$2"; shift 2 ;;
       --dkg-timeout) DKG_TIMEOUT_SECS="$2"; shift 2 ;;
@@ -99,6 +116,7 @@ parse_args() {
       --resource) RESOURCE="$2"; shift 2 ;;
       --permission) PERMISSION="$2"; shift 2 ;;
       --relation) RELATION="$2"; shift 2 ;;
+      --creator-relation) CREATOR_RELATION="$2"; shift 2 ;;
       --ring-nonce) RING_NONCE="$2"; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -166,26 +184,55 @@ step_preflight() {
     echo "ORBIS_SIGNING_KEY is not set (a funded signing key is required for every write this script performs)"
     return 1
   fi
-  if [ -z "$WHITELIST_POLICY_ID" ]; then
-    echo "--whitelist-policy-id/ORBIS_WHITELIST_POLICY_ID is not set. Target nodes must already be whitelisted (once, out-of-band) for a known policy_id -- see scripts/README.md 'Prerequisites'."
+  if [ -z "$RING_ID" ]; then
+    if [ -z "$WHITELIST_POLICY_ID" ]; then
+      echo "--whitelist-policy-id/ORBIS_WHITELIST_POLICY_ID is not set. Target nodes must already be whitelisted (once, out-of-band) for a known policy_id -- see scripts/README.md 'Prerequisites'."
+      return 1
+    fi
+    if [ -z "$PEER_NODE_KEYS" ]; then
+      echo "--peer-node-keys/ORBIS_SMOKE_PEER_NODE_KEYS is not set"
+      return 1
+    fi
+    if [ -z "$THRESHOLD" ]; then
+      echo "--threshold/ORBIS_SMOKE_THRESHOLD is not set"
+      return 1
+    fi
+    local peer_count
+    peer_count="$(printf '%s' "$PEER_NODE_KEYS" | tr ',' '\n' | grep -c .)" || true
+    if [ "${peer_count:-0}" -lt "$THRESHOLD" ]; then
+      echo "peer_node_keys count (${peer_count:-0}) is less than threshold ($THRESHOLD)"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+step_derive_signer_identity() {
+  local out
+  if ! out="$("$CLI_BIN" derive-signer-did 2>&1)"; then
+    printf '%s\n' "$out"
     return 1
   fi
+  printf '%s\n' "$out"
+  SIGNING_KEY_PUBKEY="$(printf '%s\n' "$out" | grep '^PUBLIC_KEY=' | cut -d= -f2-)" || true
+  SIGNING_KEY_DID="$(printf '%s\n' "$out" | grep '^DID=' | cut -d= -f2-)" || true
+  if [ -z "$SIGNING_KEY_PUBKEY" ]; then
+    echo "PUBLIC_KEY not found in derive-signer-did output"
+    return 1
+  fi
+  return 0
+}
+
+step_create_object_policy() {
+  local out
+  if ! out="$("$CLI_BIN" add-policy-to-chain 2>&1)"; then
+    printf '%s\n' "$out"
+    return 1
+  fi
+  printf '%s\n' "$out"
+  OBJECT_POLICY_ID="$(printf '%s\n' "$out" | grep '^POLICY_ID=' | cut -d= -f2-)" || true
   if [ -z "$OBJECT_POLICY_ID" ]; then
-    echo "--object-policy-id/ORBIS_OBJECT_POLICY_ID is not set. This must be an existing ACP policy_id (create once with 'cli-tool add-policy-to-chain' or your own equivalent) -- see scripts/README.md 'Prerequisites'."
-    return 1
-  fi
-  if [ -z "$PEER_NODE_KEYS" ]; then
-    echo "--peer-node-keys/ORBIS_SMOKE_PEER_NODE_KEYS is not set"
-    return 1
-  fi
-  if [ -z "$THRESHOLD" ]; then
-    echo "--threshold/ORBIS_SMOKE_THRESHOLD is not set"
-    return 1
-  fi
-  local peer_count
-  peer_count="$(printf '%s' "$PEER_NODE_KEYS" | tr ',' '\n' | grep -c .)" || true
-  if [ "${peer_count:-0}" -lt "$THRESHOLD" ]; then
-    echo "peer_node_keys count (${peer_count:-0}) is less than threshold ($THRESHOLD)"
+    echo "POLICY_ID not found in add-policy-to-chain output"
     return 1
   fi
   return 0
@@ -292,6 +339,21 @@ step_register_secret_object() {
     --resource "$RESOURCE"
 }
 
+step_grant_secret_creator_access() {
+  # ORBIS_READER_DID_PK may already be exported (from generate_reader_key) by
+  # the time this runs -- clap's --actor-pubkey/--reader-did-pk conflict fires
+  # on any *sourced* value, env included, so it must be unset for this call
+  # even though we never pass --reader-did-pk on the command line. Scoped to
+  # a subshell so it doesn't affect the rest of the script.
+  ( unset ORBIS_READER_DID_PK
+    "$CLI_BIN" set-relationship-on-chain \
+      --policy-id "$OBJECT_POLICY_ID" \
+      --object-id "$OBJECT_ID" \
+      --resource "$RESOURCE" \
+      --relation "$CREATOR_RELATION" \
+      --actor-pubkey "$SIGNING_KEY_PUBKEY" )
+}
+
 step_grant_secret_reader_access() {
   "$CLI_BIN" set-relationship-on-chain \
     --policy-id "$OBJECT_POLICY_ID" \
@@ -346,6 +408,18 @@ step_register_derivation_object() {
     --resource "$RESOURCE"
 }
 
+step_grant_derivation_creator_access() {
+  # See step_grant_secret_creator_access for why ORBIS_READER_DID_PK must be
+  # unset here.
+  ( unset ORBIS_READER_DID_PK
+    "$CLI_BIN" set-relationship-on-chain \
+      --policy-id "$OBJECT_POLICY_ID" \
+      --object-id "$DERIVATION_ID" \
+      --resource "$RESOURCE" \
+      --relation "$CREATOR_RELATION" \
+      --actor-pubkey "$SIGNING_KEY_PUBKEY" )
+}
+
 step_grant_derivation_reader_access() {
   "$CLI_BIN" set-relationship-on-chain \
     --policy-id "$OBJECT_POLICY_ID" \
@@ -387,7 +461,8 @@ on_exit() {
   echo
   echo 'Resources from this run:'
   echo "  whitelist_policy_id : ${WHITELIST_POLICY_ID:-<not set>}"
-  echo "  object_policy_id    : ${OBJECT_POLICY_ID:-<not set>}"
+  echo "  signing_key_did     : ${SIGNING_KEY_DID:-<not derived>}"
+  echo "  object_policy_id    : ${OBJECT_POLICY_ID:-<not created>}"
   echo "  ring_id             : ${RING_ID:-<not created>}"
   echo "  ring_pk             : ${RING_PK:-<not finalized>}"
   echo "  object_id           : ${OBJECT_ID:-<not stored>}"
@@ -414,16 +489,25 @@ main() {
   trap 'exit 130' INT TERM
 
   run_step "preflight" step_preflight
-  run_step "create_ring" step_create_ring
-  run_step "start_dkg" step_start_dkg
+  run_step "derive_signer_identity" step_derive_signer_identity
+  run_step "create_object_policy" step_create_object_policy
+  if [ -z "$RING_ID" ]; then
+    run_step "create_ring" step_create_ring
+    run_step "start_dkg" step_start_dkg
+  else
+    printf '==> create_ring... skipped (using --ring-id/ORBIS_SMOKE_RING_ID=%s)\n' "$RING_ID"
+    printf '==> start_dkg... skipped\n'
+  fi
   wait_for_dkg_finalization || exit 1
   run_step "generate_reader_key" step_generate_reader_key
   run_step "store_secret" step_store_secret
   run_step "register_secret_object" step_register_secret_object
+  run_step "grant_secret_creator_access" step_grant_secret_creator_access
   run_step "grant_secret_reader_access" step_grant_secret_reader_access
   run_step "run_pre_and_verify_plaintext" step_run_pre_and_verify_plaintext
   run_step "post_key_derivation" step_post_key_derivation
   run_step "register_derivation_object" step_register_derivation_object
+  run_step "grant_derivation_creator_access" step_grant_derivation_creator_access
   run_step "grant_derivation_reader_access" step_grant_derivation_reader_access
   run_step "threshold_sign" step_threshold_sign
 }
