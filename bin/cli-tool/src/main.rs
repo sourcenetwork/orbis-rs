@@ -771,7 +771,8 @@ async fn main() -> Result<()> {
             .await?;
         }
         SubCommands::CancelRingReshare { ring_id } => {
-            cancel_ring_reshare_by_acp(ring_id).await?;
+            let signing_key = network.require_signing_key()?;
+            cancel_ring_reshare_by_acp(ring_id, network.chain_config(), &signing_key).await?;
         }
         SubCommands::SetRingPssInterval {
             ring_id,
