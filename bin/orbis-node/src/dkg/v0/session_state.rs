@@ -200,7 +200,7 @@ pub struct ReshareSignatureReadyKey {
 /// without a bundle) — a late/retried co-signer request can safely fall back to
 /// disk. The map entry is never removed on promotion (only on ceremony teardown),
 /// so a late/retried finalize-sign request continues to authorize correctly.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) enum ReshareSignatureReadyMaterial {
     Staged {
         bundle: RingShareBundle,
@@ -209,6 +209,25 @@ pub(crate) enum ReshareSignatureReadyMaterial {
     Promoted {
         marked_at: Instant,
     },
+}
+
+// Manual impl (not derived): `Staged` carries a `RingShareBundle`, whose
+// `share_bytes` is a private key share — deriving Debug would print it in
+// plaintext (`Zeroizing` only wipes memory on drop, it doesn't redact Debug
+// output). Show the variant and `marked_at` only.
+impl std::fmt::Debug for ReshareSignatureReadyMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Staged { marked_at, .. } => f
+                .debug_struct("Staged")
+                .field("marked_at", marked_at)
+                .finish_non_exhaustive(),
+            Self::Promoted { marked_at } => f
+                .debug_struct("Promoted")
+                .field("marked_at", marked_at)
+                .finish(),
+        }
+    }
 }
 
 impl ReshareSignatureReadyMaterial {

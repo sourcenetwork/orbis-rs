@@ -195,6 +195,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                                     // of preferring a diagnosable gap over new retry machinery.
                                     // The map entry is deliberately left `Staged` (not marked
                                     // promoted) so this isn't silently reported as resolved.
+                                    //
+                                    // The transport attempt still completes normally below
+                                    // (the ceremony itself succeeded), so this counter is the
+                                    // only signal distinguishing this from a clean promotion.
+                                    crate::metrics::record_reshare_promotion_write_failure();
                                     tracing::error!(
                                         session_id,
                                         ring_key = %key,

@@ -248,6 +248,16 @@ lazy_static! {
     )
     .expect("failed to register reshare_active_sessions");
 
+    /// A reshare the chain confirmed still counts as a "completed" session (the
+    /// ceremony itself succeeded), but this counts the narrower, operator-actionable
+    /// failure of the local promotion write afterward — the node is left
+    /// locally-stale relative to the chain-recognized committee.
+    pub static ref RESHARE_PROMOTION_WRITE_FAILURES_TOTAL: Counter = register_counter!(
+        "reshare_promotion_write_failures_total",
+        "Total number of chain-confirmed reshares whose local bundle promotion write failed"
+    )
+    .expect("failed to register reshare_promotion_write_failures_total");
+
     // ============================================================================
     // Refresh Protocol Metrics
     // ============================================================================
@@ -677,6 +687,11 @@ pub fn record_reshare_session_completed() {
 pub fn record_reshare_session_failed() {
     RESHARE_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
     RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record a chain-confirmed reshare whose local bundle promotion write failed.
+pub fn record_reshare_promotion_write_failure() {
+    RESHARE_PROMOTION_WRITE_FAILURES_TOTAL.inc();
 }
 
 /// Record Refresh session started
