@@ -1,6 +1,7 @@
 target/
 .git/
 .github/
-docker/
+docker/*
+!docker/SOURCEHUB_REF
 *.md
 .env

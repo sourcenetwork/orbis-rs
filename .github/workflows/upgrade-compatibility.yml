@@ -1,0 +1,77 @@
+name: Upgrade Compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_ref:
+        description: Baseline git ref containing the upgrade-driver v1 contract
+        required: true
+        type: string
+      to_ref:
+        description: Target ref (defaults to the dispatched commit)
+        required: false
+        type: string
+      crypto:
+        description: Crypto implementation matrix
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - bls12-381
+          - decaf377
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    name: ${{ matrix.crypto }} upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: ${{ fromJSON(inputs.crypto == 'both' && '["bls12-381","decaf377"]' || format('["{0}"]', inputs.crypto)) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.to_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve baseline revision
+        id: baseline
+        env:
+          FROM_REF: ${{ inputs.from_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if sha=$(git rev-parse --verify "${FROM_REF}^{commit}" 2>/dev/null); then
+            :
+          elif sha=$(git rev-parse --verify "origin/${FROM_REF}^{commit}" 2>/dev/null); then
+            :
+          else
+            echo "Unable to resolve baseline ref: ${FROM_REF}" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Run cross-commit upgrade gate
+        shell: bash
+        run: |
+          scripts/test-upgrade.sh \
+            --from "${{ steps.baseline.outputs.sha }}" \
+            --to WORKTREE \
+            --crypto "${{ matrix.crypto }}" \
+            --output "upgrade-results/${{ matrix.crypto }}"
+
+      - name: Upload upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upgrade-${{ matrix.crypto }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: upgrade-results/${{ matrix.crypto }}
+          if-no-files-found: warn
+          retention-days: 14

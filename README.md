@@ -402,6 +402,32 @@ docker compose -f docker/docker-compose-metrics-network-test.yml up --build
 docker compose -f docker/docker-compose-integration-test.yml logs -f node1 node2 node3                                                                                                                                            
 ```
 
+### Cross-commit storage upgrade gate
+
+The upgrade harness verifies that production-feature nodes from a target
+revision can reopen redb databases created by a baseline revision, continue
+PRE and SIGN, and complete a threshold-2 reshare from nodes 1/2/3 to 1/2/4.
+SourceHub remains live throughout the cutover and only each node's
+`/data/dbs` volume survives container replacement.
+
+```bash
+scripts/test-upgrade.sh \
+  --from <baseline-ref> \
+  --to <target-ref-or-WORKTREE> \
+  --crypto both
+```
+
+Both revisions must contain the `orbis-upgrade-driver` v1 contract, so the
+commit introducing this harness is the compatibility floor. Use
+`--keep-on-failure` to retain a failed local Compose project, or `--dry-run`
+to validate ref resolution and worktree fingerprinting without Docker. Raw
+manifests, image/ref metadata, logs, phase timings, and redb snapshots are
+written under `target/upgrade-tests/` unless `--output` is provided.
+
+The **Upgrade Compatibility** GitHub Actions workflow exposes the same gate as
+a manual dispatch and runs BLS12-381 and Decaf377 independently when `both` is
+selected.
+
 ### Metrics & Monitoring
 
 The metrics compose file (`docker/docker-compose-metrics-network-test.yml`) spins up 3 Orbis nodes alongside Prometheus and Grafana.

@@ -2,6 +2,7 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
+use crate::helpers::identity::{extract_node_part, validate_peer_id};
 use bulletin::{
     error::BulletinError,
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
@@ -298,7 +299,15 @@ pub async fn ensure_node_info(
     };
 
     if let Some(existing) = existing {
-        if existing.peer_id != peer_id {
+        if let Err(error) = validate_peer_id(&existing.peer_id) {
+            return Err(format!(
+                "existing node info for node_key {} has invalid peer_id {}: {}",
+                node_key, existing.peer_id, error
+            )
+            .into());
+        }
+        if !extract_node_part(&existing.peer_id).eq_ignore_ascii_case(&extract_node_part(&peer_id))
+        {
             return Err(format!(
                 "existing node info for node_key {} has peer_id {}, expected {}",
                 node_key, existing.peer_id, peer_id

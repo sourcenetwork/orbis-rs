@@ -1,0 +1,100 @@
+services:
+  sourcehub:
+    image: "${ORBIS_UPGRADE_SOURCEHUB_IMAGE}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        rm -rf /home/node/.sourcehub/*
+        sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
+        sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
+        sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
+        sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
+        exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+    ports:
+      - "127.0.0.1::26657"
+      - "127.0.0.1::1317"
+      - "127.0.0.1::9090"
+    networks: [orbis-upgrade]
+    healthcheck:
+      test: ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 20s
+
+  node-001:
+    <<: &node
+      image: "${ORBIS_UPGRADE_IMAGE}"
+      environment:
+        RUST_LOG: info
+      ports:
+        - "127.0.0.1::50051"
+        - "127.0.0.1::9090"
+      networks: [orbis-upgrade]
+      depends_on:
+        sourcehub:
+          condition: service_healthy
+      healthcheck:
+        test: ["CMD-SHELL", "nc -z 127.0.0.1 50051"]
+        interval: 5s
+        timeout: 5s
+        retries: 60
+        start_period: 10s
+      # The production runtime installs a Ctrl-C handler. Docker defaults to
+      # SIGTERM, so use SIGINT to exercise that graceful shutdown path.
+      stop_signal: SIGINT
+      stop_grace_period: 2m
+    command: ["node", "--index", "1"]
+    environment:
+      RUST_LOG: info
+      ORBIS_PASSWORD: orbis-upgrade-storage-001
+    volumes:
+      - node-001-db:/data/dbs
+
+  node-002:
+    <<: *node
+    command: ["node", "--index", "2"]
+    environment:
+      RUST_LOG: info
+      ORBIS_PASSWORD: orbis-upgrade-storage-002
+    volumes:
+      - node-002-db:/data/dbs
+
+  node-003:
+    <<: *node
+    command: ["node", "--index", "3"]
+    environment:
+      RUST_LOG: info
+      ORBIS_PASSWORD: orbis-upgrade-storage-003
+    volumes:
+      - node-003-db:/data/dbs
+
+  node-004:
+    <<: *node
+    command: ["node", "--index", "4"]
+    environment:
+      RUST_LOG: info
+      ORBIS_PASSWORD: orbis-upgrade-storage-004
+    volumes:
+      - node-004-db:/data/dbs
+
+  driver:
+    image: "${ORBIS_UPGRADE_IMAGE}"
+    profiles: [driver]
+    networks: [orbis-upgrade]
+    volumes:
+      - "${ORBIS_UPGRADE_OUTPUT}:/artifacts"
+
+networks:
+  orbis-upgrade:
+    driver: bridge
+
+volumes:
+  node-001-db: {}
+  node-002-db: {}
+  node-003-db: {}
+  node-004-db: {}
