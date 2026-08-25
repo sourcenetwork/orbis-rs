@@ -58,3 +58,6 @@ public_key.txt
 tasks/
 
 bench-results/
+
+# Personal smoke-test config wrapper -- holds a real signing key once filled in
+bin/cli-tool/scripts/run_local.sh

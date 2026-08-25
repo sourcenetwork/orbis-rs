@@ -983,29 +983,19 @@ pub async fn create_ring_on_chain_with_trusted_relays(
     nonce: Option<&str>,
     trusted_auth_relay_dids: Vec<String>,
 ) -> String {
-    let client = SourceHubClient::with_signer(
+    cli_tool::create_ring(
+        node_keys.to_vec(),
+        threshold,
+        86400,
+        policy_id.to_string(),
+        nonce.map(String::from),
+        network::V0.version,
+        trusted_auth_relay_dids,
         chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
+        TEST_ACCOUNT_HEX_KEY,
     )
     .await
-    .expect("chain client for ring creation");
-
-    let (_, ring_id) = client
-        .orbis_create_ring_get_id(
-            node_keys.to_vec(),
-            threshold,
-            86400,
-            policy_id,
-            nonce.map(String::from),
-            network::V0.version,
-            None,
-            (!trusted_auth_relay_dids.is_empty()).then_some(trusted_auth_relay_dids),
-        )
-        .await
-        .expect("create ring on-chain");
-
-    ring_id
+    .expect("create ring on-chain")
 }
 
 /// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
