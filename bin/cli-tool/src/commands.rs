@@ -1037,6 +1037,48 @@ async fn start_ring_reshare_by_acp_impl(
     Ok(())
 }
 
+async fn cancel_ring_reshare_by_acp_impl(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = SourceHubClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+    let result = client
+        .orbis_cancel_ring_reshare_by_acp(&ring_id)
+        .await
+        .map_err(|e| anyhow!("Failed to cancel ring reshare: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to cancel ring reshare: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Cancelled reshare for ring: {}", ring_id);
+    Ok(())
+}
+
+pub async fn cancel_ring_reshare_by_acp(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    cancel_ring_reshare_by_acp_impl(ring_id, config, signing_key_hex).await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn cancel_ring_reshare_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    cancel_ring_reshare_by_acp_impl(ring_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
 pub async fn start_ring_reshare_by_acp(
     ring_id: String,
     new_peer_node_keys: Vec<String>,

@@ -56,7 +56,7 @@ where
         ring_key,
         attempt,
         bulletin_post_id,
-        true,
+        super::reshare::cleanup::ReshareCleanupOutcome::DepartingDealer,
     );
     tracing::info!(
         session_id = session_id,

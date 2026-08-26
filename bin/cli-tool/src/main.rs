@@ -5,14 +5,14 @@ use bulletin::r#trait::BulletinKind;
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
-    cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring, derive_signer_did, do_dkg,
-    do_encrypt_secret, do_generate_reader_key, do_pre, do_sign, do_store_secret, fund_with_signer,
-    get_account_sequence, get_latest_ring, list_bulletin_posts, post_key_derivation,
-    prepare_secret, query_node_info, query_ring_state, read_bulletin_post_with_config,
-    register_bulletin_namespace, register_object_to_chain, remove_node_from_whitelist,
-    schedule_ring_upgrade_by_acp, set_relationship_on_chain, set_ring_pss_interval_by_acp,
-    start_ring_reshare_by_acp, store_prepared_secret, transfer_node_controller,
-    update_node_peer_id, PreparedSecret, SignResult,
+    cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
+    derive_signer_did, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
+    do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring, list_bulletin_posts,
+    post_key_derivation, prepare_secret, query_node_info, query_ring_state,
+    read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
+    remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
+    set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
+    transfer_node_controller, update_node_peer_id, PreparedSecret, SignResult,
 };
 use commands::{reader_did_from_seed, secp256k1_pubkey_to_did};
 use common::blockchain::{orbis::WhitelistTarget, ChainConfig};
@@ -294,6 +294,11 @@ pub enum SubCommands {
         /// New threshold (absent means keep current)
         #[clap(long)]
         new_threshold: Option<u32>,
+    },
+    /// Cancel a pending reshare for a ring via ACP authorization
+    CancelRingReshare {
+        #[clap(long)]
+        ring_id: String,
     },
     /// Set the PSS refresh interval for a ring via ACP authorization
     SetRingPssInterval {
@@ -764,6 +769,10 @@ async fn main() -> Result<()> {
                 &signing_key,
             )
             .await?;
+        }
+        SubCommands::CancelRingReshare { ring_id } => {
+            let signing_key = network.require_signing_key()?;
+            cancel_ring_reshare_by_acp(ring_id, network.chain_config(), &signing_key).await?;
         }
         SubCommands::SetRingPssInterval {
             ring_id,

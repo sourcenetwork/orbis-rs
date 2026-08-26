@@ -119,6 +119,7 @@ Requires `--signing-key`/`ORBIS_SIGNING_KEY`, and requires the caller to be auth
 | Command | Description |
 |---------|-------------|
 | `start-ring-reshare` | Initiate a committee/threshold reshare. Options: `--ring-id`, `--new-peer-node-keys` (comma-separated), optional `--new-threshold`. |
+| `cancel-ring-reshare` | Cancel a pending reshare, reverting to the ring's prior committee/threshold. Option: `--ring-id`. |
 | `set-ring-pss-interval` | Set the PSS refresh interval. Options: `--ring-id`, `--pss-interval` (seconds). |
 | `schedule-ring-upgrade` | Schedule a protocol version upgrade. Options: `--ring-id`, `--next-version`, `--activation-time` (Unix timestamp, must be at least 10 minutes in the future). |
 | `cancel-ring-upgrade` | Cancel a pending protocol version upgrade. Option: `--ring-id`. |
