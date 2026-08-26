@@ -1,6 +1,6 @@
 //! x/orbis module types and operations.
 //!
-//! This module provides types and methods for interacting with SourceHub's orbis module,
+//! This module provides types and methods for interacting with Vera's Orbis module,
 //! which manages typed ring, document, and key derivation state.
 
 use crate::blockchain::{BlockchainError, Result};
@@ -179,7 +179,7 @@ pub struct MsgCreateRing {
 }
 
 impl MsgCreateRing {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCreateRing";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgCreateRing";
 
     pub fn new(
         creator: &str,
@@ -227,7 +227,7 @@ pub struct MsgStartRingReshareByAcp {
 }
 
 impl MsgStartRingReshareByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgStartRingReshareByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgStartRingReshareByAcp";
 
     pub fn new(
         creator: &str,
@@ -280,7 +280,7 @@ pub struct MsgSetRingPssIntervalByAcp {
 }
 
 impl MsgSetRingPssIntervalByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSetRingPssIntervalByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgSetRingPssIntervalByAcp";
 
     pub fn new(creator: &str, ring_id: &str, pss_interval: u64) -> Self {
         Self {
@@ -305,7 +305,7 @@ pub struct MsgSetRingReportingByAcp {
 }
 
 impl MsgSetRingReportingByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSetRingReportingByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgSetRingReportingByAcp";
 
     pub fn new(creator: &str, ring_id: &str, reporting: ReportingConfig) -> Self {
         Self {
@@ -330,7 +330,7 @@ pub struct MsgAddRingTrustedAuthRelayByAcp {
 }
 
 impl MsgAddRingTrustedAuthRelayByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgAddRingTrustedAuthRelayByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgAddRingTrustedAuthRelayByAcp";
 
     pub fn new(creator: &str, ring_id: &str, relay_did: &str) -> Self {
         Self {
@@ -355,7 +355,7 @@ pub struct MsgRemoveRingTrustedAuthRelayByAcp {
 }
 
 impl MsgRemoveRingTrustedAuthRelayByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgRemoveRingTrustedAuthRelayByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgRemoveRingTrustedAuthRelayByAcp";
 
     pub fn new(creator: &str, ring_id: &str, relay_did: &str) -> Self {
         Self {
@@ -382,7 +382,7 @@ pub struct MsgScheduleRingUpgradeByAcp {
 }
 
 impl MsgScheduleRingUpgradeByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgScheduleRingUpgradeByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgScheduleRingUpgradeByAcp";
 
     pub fn new(creator: &str, ring_id: &str, next_version: u64, activation_time: u64) -> Self {
         Self {
@@ -406,7 +406,7 @@ pub struct MsgCancelRingUpgradeByAcp {
 }
 
 impl MsgCancelRingUpgradeByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelRingUpgradeByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgCancelRingUpgradeByAcp";
 
     pub fn new(creator: &str, ring_id: &str) -> Self {
         Self {
@@ -428,7 +428,7 @@ pub struct MsgCancelPendingRing {
 }
 
 impl MsgCancelPendingRing {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelPendingRing";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgCancelPendingRing";
 
     pub fn new(creator: &str, ring_id: &str) -> Self {
         Self {
@@ -452,7 +452,7 @@ pub struct MsgFinalizeRing {
 }
 
 impl MsgFinalizeRing {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgFinalizeRing";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgFinalizeRing";
 
     pub fn new(creator: &str, ring_id: &str, ring_pk: &str) -> Self {
         Self {
@@ -479,8 +479,7 @@ pub struct MsgFinalizeRingReshareByThresholdSignature {
 }
 
 impl MsgFinalizeRingReshareByThresholdSignature {
-    pub const TYPE_URL: &'static str =
-        "/sourcehub.orbis.MsgFinalizeRingReshareByThresholdSignature";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgFinalizeRingReshareByThresholdSignature";
 
     pub fn new(creator: &str, ring_id: &str, signature_scheme: &str, signature: Vec<u8>) -> Self {
         Self {
@@ -515,7 +514,7 @@ pub struct MsgStoreDocument {
 }
 
 impl MsgStoreDocument {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgStoreDocument";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgStoreDocument";
 }
 
 #[derive(Clone, Message)]
@@ -541,7 +540,7 @@ pub struct MsgStoreKeyDerivation {
 }
 
 impl MsgStoreKeyDerivation {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgStoreKeyDerivation";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgStoreKeyDerivation";
 }
 
 #[derive(Clone, Message)]
@@ -565,7 +564,7 @@ pub struct MsgCreateNodeInfo {
 }
 
 impl MsgCreateNodeInfo {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCreateNodeInfo";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgCreateNodeInfo";
 }
 
 #[derive(Clone, Message)]
@@ -582,7 +581,7 @@ pub struct MsgUpdateNodePeerId {
 }
 
 impl MsgUpdateNodePeerId {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgUpdateNodePeerId";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgUpdateNodePeerId";
 
     pub fn new(creator: &str, node_key: &str, peer_id: &str) -> Self {
         Self {
@@ -607,7 +606,7 @@ pub struct MsgTransferNodeController {
 }
 
 impl MsgTransferNodeController {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgTransferNodeController";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgTransferNodeController";
 
     pub fn new(creator: &str, node_key: &str, controller_key: &str) -> Self {
         Self {
@@ -640,7 +639,7 @@ pub struct MsgAddNodeToWhitelist {
 }
 
 impl MsgAddNodeToWhitelist {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgAddNodeToWhitelist";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgAddNodeToWhitelist";
 
     pub fn new(creator: &str, node_key: &str, target: WhitelistTarget) -> Self {
         let (policy_id, ring_id) = match target {
@@ -672,7 +671,7 @@ pub struct MsgRemoveNodeFromWhitelist {
 }
 
 impl MsgRemoveNodeFromWhitelist {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgRemoveNodeFromWhitelist";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgRemoveNodeFromWhitelist";
 
     pub fn new(creator: &str, node_key: &str, target: WhitelistTarget) -> Self {
         let (policy_id, ring_id) = match target {
@@ -736,7 +735,7 @@ pub struct MsgSubmitReport {
 }
 
 impl MsgSubmitReport {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgSubmitReport";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgSubmitReport";
 }
 
 #[derive(Clone, Message)]
@@ -899,7 +898,7 @@ pub struct RingReshareFinalizeSignDoc {
 
 /// Canonical Orbis protocol state hashed into reshare finalization sign docs.
 ///
-/// This intentionally excludes SourceHub storage-only fields such as creator DID,
+/// This intentionally excludes Vera storage-only fields such as creator DID,
 /// fresh-DKG confirmations, and operational scheduling metadata such as PSS
 /// interval. Participant lists must be sorted before hashing.
 #[derive(Clone, Message)]
@@ -924,7 +923,7 @@ pub struct RingReshareSignState {
     pub allow_trusted_auth_relays: bool,
 }
 
-/// Build SourceHub-compatible sign bytes for a ring reshare finalization.
+/// Build Vera-compatible sign bytes for a ring reshare finalization.
 /// `current_ring_sha256` and `finalized_ring_sha256` must each be exactly 32 bytes —
 /// SHA-256 of the canonical Orbis reshare sign-state for the current and finalized states.
 pub fn ring_reshare_finalize_sign_bytes(
@@ -969,7 +968,7 @@ pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
     Sha256::digest(canonical.encode_to_vec()).into()
 }
 
-/// Compute the deterministic document ID matching SourceHub's on-chain `GenerateDocumentID`.
+/// Compute the deterministic document ID matching Vera's on-chain `GenerateDocumentID`.
 pub fn generate_document_id(
     ring_id: &str,
     document: &str,
@@ -995,7 +994,7 @@ pub fn generate_document_id(
     hex::encode(h.finalize())
 }
 
-/// Compute the deterministic key derivation ID matching SourceHub's on-chain `GenerateKeyDerivationID`.
+/// Compute the deterministic key derivation ID matching Vera's on-chain `GenerateKeyDerivationID`.
 pub fn generate_key_derivation_id(
     ring_id: &str,
     derivation: &str,
@@ -1116,7 +1115,7 @@ where
 }
 
 // ============================================================================
-// SourceHubClient extension methods
+// Chain client extension methods
 // ============================================================================
 
 use crate::blockchain::{BroadcastResult, SourceHubClient};
@@ -1617,7 +1616,7 @@ impl SourceHubClient {
         };
         let Some(response_bytes) = self
             .abci_query_optional(
-                "/sourcehub.orbis.Query/Ring",
+                "/vera.orbis.Query/Ring",
                 request.encode_to_vec(),
                 None,
                 false,
@@ -1636,7 +1635,7 @@ impl SourceHubClient {
         let request = QueryDocumentRequest { id: id.to_string() };
         let Some(response_bytes) = self
             .abci_query_optional(
-                "/sourcehub.orbis.Query/Document",
+                "/vera.orbis.Query/Document",
                 request.encode_to_vec(),
                 None,
                 false,
@@ -1655,7 +1654,7 @@ impl SourceHubClient {
         let request = QueryKeyDerivationRequest { id: id.to_string() };
         let Some(response_bytes) = self
             .abci_query_optional(
-                "/sourcehub.orbis.Query/KeyDerivation",
+                "/vera.orbis.Query/KeyDerivation",
                 request.encode_to_vec(),
                 None,
                 false,
@@ -1680,7 +1679,7 @@ impl SourceHubClient {
         };
         let Some(response_bytes) = self
             .abci_query_optional(
-                "/sourcehub.orbis.Query/NodeInfo",
+                "/vera.orbis.Query/NodeInfo",
                 request.encode_to_vec(),
                 None,
                 false,
@@ -1702,7 +1701,7 @@ impl SourceHubClient {
         };
         let response_bytes = self
             .abci_query(
-                "/sourcehub.orbis.Query/NodeDemerits",
+                "/vera.orbis.Query/NodeDemerits",
                 request.encode_to_vec(),
                 None,
                 false,
@@ -1854,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn node_demerits_query_wire_fields_match_sourcehub_proto() {
+    fn node_demerits_query_wire_fields_match_vera_proto() {
         let request = QueryNodeDemeritsRequest {
             ring_id: "r".to_string(),
             node_key: "n".to_string(),
@@ -1866,36 +1865,36 @@ mod tests {
     }
 
     #[test]
-    fn finalize_ring_wire_fields_match_sourcehub_proto() {
+    fn finalize_ring_wire_fields_match_vera_proto() {
         let msg = MsgFinalizeRing::new("c", "r", "pk");
 
         assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a02706b");
     }
 
     #[test]
-    fn cancel_pending_ring_wire_fields_match_sourcehub_proto() {
+    fn cancel_pending_ring_wire_fields_match_vera_proto() {
         let msg = MsgCancelPendingRing::new("c", "r");
 
         assert_eq!(
             MsgCancelPendingRing::TYPE_URL,
-            "/sourcehub.orbis.MsgCancelPendingRing"
+            "/vera.orbis.MsgCancelPendingRing"
         );
         assert_eq!(hex::encode(msg.encode_to_vec()), "0a0163120172");
     }
 
     #[test]
-    fn add_ring_trusted_auth_relay_wire_fields_match_sourcehub_proto() {
+    fn add_ring_trusted_auth_relay_wire_fields_match_vera_proto() {
         let msg = MsgAddRingTrustedAuthRelayByAcp::new("c", "r", "d");
 
         assert_eq!(
             MsgAddRingTrustedAuthRelayByAcp::TYPE_URL,
-            "/sourcehub.orbis.MsgAddRingTrustedAuthRelayByAcp"
+            "/vera.orbis.MsgAddRingTrustedAuthRelayByAcp"
         );
         assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a0164");
     }
 
     #[test]
-    fn finalize_ring_reshare_wire_fields_match_sourcehub_proto() {
+    fn finalize_ring_reshare_wire_fields_match_vera_proto() {
         let msg = MsgFinalizeRingReshareByThresholdSignature::new("c", "r", "s", vec![1, 2]);
 
         assert_eq!(
