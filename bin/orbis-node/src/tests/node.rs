@@ -12,7 +12,7 @@ use crate::{
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
-            ensure_node_info, CorsPolicy, LogLevel,
+            ensure_node_info, existing_peer_identity_matches, CorsPolicy, LogLevel,
         },
         test_helpers::{cleanup_db, test_db_path},
     },
@@ -367,32 +367,18 @@ async fn test_ensure_node_info_keeps_existing_whitelists() {
     );
 }
 
-#[tokio::test]
-async fn test_ensure_node_info_accepts_existing_routed_peer_address() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-routed-peer";
-    let peer_id = hex::encode(network.local_peer_id().as_bytes());
-    let existing = NodeInfo {
-        peer_id: format!("{peer_id}@node-001:55316"),
-        controller_key: "controller-key".to_string(),
-        whitelisted_policy_ids: vec!["existing-policy".to_string()],
-        whitelisted_ring_ids: vec![],
-    };
-    bulletin
-        .set_node_info(node_key.to_string(), existing.clone())
-        .expect("seed routed node info");
-    let args = node_info_test_args("controller-key", None, vec![], vec![]);
-
-    ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect("routed peer address should retain the same node identity");
-
-    let post = bulletin
-        .read(node_key.to_string(), BulletinKind::NodeInfo)
-        .await
-        .expect("read existing node info");
-    assert_eq!(NodeInfo::try_from(post).expect("parse node info"), existing);
+#[test]
+fn test_existing_routed_peer_address_keeps_the_same_identity() {
+    let peer_id = "ab".repeat(32);
+    assert!(
+        existing_peer_identity_matches(&format!("{peer_id}@node-001:55316"), &peer_id)
+            .expect("valid routed peer address")
+    );
+    assert!(!existing_peer_identity_matches(
+        &format!("{}@node-001:55316", "cd".repeat(32)),
+        &peer_id
+    )
+    .expect("valid mismatched peer address"));
 }
 
 #[tokio::test]

@@ -423,10 +423,14 @@ commit introducing this harness is the compatibility floor. Use
 to validate ref resolution and worktree fingerprinting without Docker. Raw
 manifests, image/ref metadata, logs, phase timings, and redb snapshots are
 written under `target/upgrade-tests/` unless `--output` is provided.
+Run `scripts/test-upgrade-unit.sh` for the shell syntax, ref-resolution, and
+argument-validation checks without starting Docker.
 
-The **Upgrade Compatibility** GitHub Actions workflow exposes the same gate as
-a manual dispatch and runs BLS12-381 and Decaf377 independently when `both` is
-selected.
+The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
+pull requests targeting `develop`, comparing the immutable PR base SHA with
+the immutable PR head SHA. BLS12-381 and Decaf377 run as independent jobs.
+The workflow also supports manual dispatch with explicit baseline and target
+refs.
 
 ### Metrics & Monitoring
 

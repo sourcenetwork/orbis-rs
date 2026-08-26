@@ -587,21 +587,7 @@ async fn wait_for_reshare(
                 .ring_states(&RESHARED_MEMBERS, &manifest.ring.ring_pk)
                 .await
             {
-                let polynomial = states
-                    .first()
-                    .map(|state| state.public_polynomial.as_str())
-                    .filter(|value| !value.is_empty());
-                let converged = polynomial.is_some()
-                    && states
-                        .iter()
-                        .all(|state| Some(state.public_polynomial.as_str()) == polynomial)
-                    && RESHARED_MEMBERS.iter().zip(&states).all(|(member, state)| {
-                        baseline.get(member).is_none_or(|old| {
-                            state.last_pss > old.last_pss
-                                && state.public_polynomial != old.public_polynomial
-                        })
-                    });
-                if converged {
+                if reshare_local_states_converged(&RESHARED_MEMBERS, &states, &baseline) {
                     return state_fixtures(&RESHARED_MEMBERS, &states);
                 }
             }
@@ -610,6 +596,36 @@ async fn wait_for_reshare(
     })
     .await
     .context("reshare did not converge before timeout")?
+}
+
+fn reshare_local_states_converged(
+    members: &[usize],
+    states: &[GetRingStateResponse],
+    baseline: &BTreeMap<usize, &RingStateFixtureV1>,
+) -> bool {
+    if members.len() != states.len() {
+        return false;
+    }
+    let Some(polynomial) = states
+        .first()
+        .map(|state| state.public_polynomial.as_str())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    let baseline_last_pss = baseline
+        .values()
+        .map(|state| state.last_pss)
+        .max()
+        .unwrap_or(0);
+
+    members.iter().zip(states).all(|(member, state)| {
+        state.public_polynomial == polynomial
+            && state.last_pss > baseline_last_pss
+            && baseline
+                .get(member)
+                .is_none_or(|old| state.public_polynomial != old.public_polynomial)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -953,6 +969,50 @@ mod tests {
             "pk",
             &expected,
             2,
+        ));
+    }
+
+    #[test]
+    fn reshare_local_convergence_requires_every_members_timestamp_to_advance() {
+        let baseline_states = [
+            RingStateFixtureV1 {
+                node_index: 1,
+                public_polynomial: "old-1".to_string(),
+                last_pss: 10,
+            },
+            RingStateFixtureV1 {
+                node_index: 2,
+                public_polynomial: "old-2".to_string(),
+                last_pss: 10,
+            },
+            RingStateFixtureV1 {
+                node_index: 3,
+                public_polynomial: "old-3".to_string(),
+                last_pss: 10,
+            },
+        ];
+        let baseline = baseline_states
+            .iter()
+            .map(|state| (state.node_index, state))
+            .collect();
+        let mut states = RESHARED_MEMBERS
+            .iter()
+            .map(|_| GetRingStateResponse {
+                public_polynomial: "new".to_string(),
+                last_pss: 11,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(reshare_local_states_converged(
+            &RESHARED_MEMBERS,
+            &states,
+            &baseline
+        ));
+        states[2].last_pss = 10;
+        assert!(!reshare_local_states_converged(
+            &RESHARED_MEMBERS,
+            &states,
+            &baseline
         ));
     }
 

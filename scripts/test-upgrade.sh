@@ -177,6 +177,19 @@ archive_databases() {
   done
 }
 
+assert_nodes_stopped_cleanly() {
+  local stage=$1
+  local service container exit_code
+  for service in "${NODE_SERVICES[@]}"; do
+    container=$(compose ps --all --quiet "$service")
+    [[ -n "$container" ]] || die "$stage: $service container is missing"
+    exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container")
+    printf '%s_%s=%q\n' "${stage//-/_}" "${service//-/_}" "$exit_code" \
+      >>"$CURRENT_OUTPUT/container-exit-codes.env"
+    [[ "$exit_code" == 0 ]] || die "$stage: $service did not stop cleanly (exit $exit_code)"
+  done
+}
+
 cleanup_current_project() {
   compose --profile driver down --volumes --remove-orphans >/dev/null 2>&1 || true
   CURRENT_PROJECT=
@@ -313,6 +326,7 @@ run_crypto_upgrade() {
   export ORBIS_UPGRADE_SOURCEHUB_IMAGE=$SOURCEHUB_IMAGE
   export ORBIS_UPGRADE_IMAGE=$from_image
   export ORBIS_UPGRADE_OUTPUT=$CURRENT_OUTPUT
+  compose config >"$CURRENT_OUTPUT/compose-rendered-baseline.yaml"
 
   run_phase start-baseline compose up --detach --wait --wait-timeout 600 \
     sourcehub "${NODE_SERVICES[@]}"
@@ -333,10 +347,12 @@ run_crypto_upgrade() {
     --sourcehub-ref "$SOURCEHUB_REF"
 
   run_phase stop-baseline compose stop --timeout 30 "${NODE_SERVICES[@]}"
+  assert_nodes_stopped_cleanly baseline
   run_phase archive-baseline archive_databases pre-cutover
 
   export ORBIS_UPGRADE_IMAGE=$to_image
   CURRENT_IMAGE=$to_image
+  compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
   run_phase start-target compose up --detach --no-deps --force-recreate \
     --wait --wait-timeout 600 "${NODE_SERVICES[@]}"
   [[ "$(compose ps --quiet sourcehub)" == "$sourcehub_container" ]] \
@@ -357,6 +373,7 @@ run_crypto_upgrade() {
     --target-sha "$TO_DESCRIPTION"
 
   run_phase stop-target compose stop --timeout 30 "${NODE_SERVICES[@]}"
+  assert_nodes_stopped_cleanly target
   run_phase archive-target archive_databases post-reshare
   collect_diagnostics
   cleanup_current_project

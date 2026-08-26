@@ -299,15 +299,14 @@ pub async fn ensure_node_info(
     };
 
     if let Some(existing) = existing {
-        if let Err(error) = validate_peer_id(&existing.peer_id) {
-            return Err(format!(
-                "existing node info for node_key {} has invalid peer_id {}: {}",
-                node_key, existing.peer_id, error
-            )
-            .into());
-        }
-        if !extract_node_part(&existing.peer_id).eq_ignore_ascii_case(&extract_node_part(&peer_id))
-        {
+        let identity_matches = existing_peer_identity_matches(&existing.peer_id, &peer_id)
+            .map_err(|error| {
+                format!(
+                    "existing node info for node_key {} has invalid peer_id {}: {}",
+                    node_key, existing.peer_id, error
+                )
+            })?;
+        if !identity_matches {
             return Err(format!(
                 "existing node info for node_key {} has peer_id {}, expected {}",
                 node_key, existing.peer_id, peer_id
@@ -356,6 +355,15 @@ pub async fn ensure_node_info(
         "Created node info"
     );
     Ok(())
+}
+
+pub(crate) fn existing_peer_identity_matches(
+    existing_peer_id: &str,
+    expected_peer_id: &str,
+) -> Result<bool, crate::error::PeerIdValidationError> {
+    validate_peer_id(existing_peer_id)?;
+    Ok(extract_node_part(existing_peer_id)
+        .eq_ignore_ascii_case(&extract_node_part(expected_peer_id)))
 }
 
 pub fn build_node_info_from_args(peer_id: String, controller_key: &str, args: &Args) -> NodeInfo {
