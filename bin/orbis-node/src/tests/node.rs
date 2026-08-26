@@ -381,6 +381,17 @@ fn test_existing_routed_peer_address_keeps_the_same_identity() {
     .expect("valid mismatched peer address"));
 }
 
+#[test]
+fn test_existing_peer_identity_rejects_invalid_expected_route() {
+    let peer_id = "ab".repeat(32);
+    let result = existing_peer_identity_matches(&peer_id, &format!("{peer_id}@invalid-route"));
+
+    assert!(matches!(
+        result,
+        Err(crate::error::PeerIdValidationError::InvalidSocketAddr(_))
+    ));
+}
+
 #[tokio::test]
 async fn test_ensure_node_info_fails_when_existing_peer_mismatches() {
     let network = NetworkImpl::new().await.expect("create network");

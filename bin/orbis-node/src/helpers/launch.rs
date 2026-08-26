@@ -362,6 +362,7 @@ pub(crate) fn existing_peer_identity_matches(
     expected_peer_id: &str,
 ) -> Result<bool, crate::error::PeerIdValidationError> {
     validate_peer_id(existing_peer_id)?;
+    validate_peer_id(expected_peer_id)?;
     Ok(extract_node_part(existing_peer_id)
         .eq_ignore_ascii_case(&extract_node_part(expected_peer_id)))
 }

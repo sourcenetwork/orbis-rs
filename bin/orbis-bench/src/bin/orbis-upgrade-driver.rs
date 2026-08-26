@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use orbis_bench::upgrade::{prepare_upgrade_fixture, run_upgrade_node, verify_upgrade_fixture};
+use orbis_bench::upgrade::{
+    self, prepare_upgrade_fixture, run_upgrade_node, verify_upgrade_fixture,
+};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -68,8 +70,9 @@ async fn main() -> Result<()> {
         } => {
             let evidence = verify_upgrade_fixture(&manifest, &result, target_sha).await?;
             println!(
-                "upgrade verified: crypto={} final_committee=1,2,4",
-                evidence.crypto
+                "upgrade verified: crypto={} final_committee={:?}",
+                evidence.crypto,
+                upgrade::RESHARED_MEMBERS
             );
             Ok(())
         }

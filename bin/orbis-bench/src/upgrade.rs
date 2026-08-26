@@ -346,14 +346,28 @@ pub async fn verify_upgrade_fixture(
         RESHARE_TIMEOUT,
     )
     .await?;
-    wait_for_departed_share_deletion(&endpoints[2], &manifest.ring.ring_pk, RESHARE_TIMEOUT)
-        .await?;
+    let departed_member = INITIAL_MEMBERS
+        .iter()
+        .copied()
+        .find(|member| !RESHARED_MEMBERS.contains(member))
+        .context("reshare committee must remove one initial member")?;
+    wait_for_departed_share_deletion(
+        &endpoints[departed_member - 1],
+        &manifest.ring.ring_pk,
+        RESHARE_TIMEOUT,
+    )
+    .await?;
 
     run_fixture_set(&endpoints, &RESHARED_MEMBERS, &legacy).await?;
     run_fixture_set(&endpoints, &RESHARED_MEMBERS, &target_pre_reshare).await?;
 
+    let added_member = RESHARED_MEMBERS
+        .iter()
+        .copied()
+        .find(|member| !INITIAL_MEMBERS.contains(member))
+        .context("reshare committee must add one new member")?;
     let target_post_reshare = prepare_online_fixtures(
-        &endpoints[3],
+        &endpoints[added_member - 1],
         &manifest.ring.ring_id,
         &manifest.ring.ring_pk,
         chain_config,
