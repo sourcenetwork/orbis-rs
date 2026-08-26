@@ -73,7 +73,7 @@ jobs:
         run: |
           scripts/test-upgrade-unit.sh
           scripts/test-upgrade.sh \
-            --from "${{ steps.baseline.outputs.sha }}" \
+            --from e800fb7460445638ad58407a2de1fbed1b177094 \
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \
             --output "upgrade-results/${{ matrix.crypto }}"
