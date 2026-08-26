@@ -256,7 +256,7 @@ pub struct MsgCancelRingReshareByAcp {
 }
 
 impl MsgCancelRingReshareByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelRingReshareByAcp";
+    pub const TYPE_URL: &'static str = "/vera.orbis.MsgCancelRingReshareByAcp";
 
     pub fn new(creator: &str, ring_id: &str) -> Self {
         Self {

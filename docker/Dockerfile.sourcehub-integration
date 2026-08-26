@@ -9,16 +9,17 @@ ARG SOURCEHUB_REF
 COPY SOURCEHUB_REF /tmp/SOURCEHUB_REF
 RUN git init /app \
     && cd /app \
-    && git remote add origin https://github.com/sourcenetwork/sourcehub.git \
+    && git remote add origin https://github.com/sourcenetwork/vera.git \
     && git fetch --depth 1 origin "${SOURCEHUB_REF:-$(cat /tmp/SOURCEHUB_REF)}" \
     && git checkout --detach FETCH_HEAD
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache \
-    go build -o /app/build/sourcehubd ./cmd/sourcehubd
+    go build -o /app/build/verad ./cmd/verad
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/build/sourcehubd /usr/local/bin/sourcehubd
+COPY --from=builder /app/build/verad /usr/local/bin/verad
+RUN ln -s verad /usr/local/bin/sourcehubd
 RUN useradd --create-home --home-dir /home/node node
 USER node
