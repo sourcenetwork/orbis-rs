@@ -11,7 +11,6 @@ COPY . .
 
 ARG CRYPTO_FEATURE=bls12-381
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/app/target,sharing=locked \
     cargo build --release -p orbis-bench --bin orbis-upgrade-driver \
         --no-default-features --features "${CRYPTO_FEATURE}" \
     && cp /app/target/release/orbis-upgrade-driver /orbis-upgrade-driver
