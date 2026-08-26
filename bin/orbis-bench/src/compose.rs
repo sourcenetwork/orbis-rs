@@ -5,7 +5,7 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const SOURCEHUB_SERVICE: &str = "vera";
+pub const VERA_SERVICE: &str = "vera";
 pub const CONTROLLER_PUBLIC_KEY: &str =
     "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
 /// ACP policy IDs are `sha256(sha256(policy content) || counter)`, where
@@ -78,18 +78,18 @@ pub fn node_service(index: usize) -> String {
 
 /// Name of the Vera Compose service for a given replica index. Index 0
 /// is always the sole validator, kept as the plain `"vera"` name so
-/// every existing single-replica reference (`SOURCEHUB_SERVICE`, the bench
+/// every existing single-replica reference (`VERA_SERVICE`, the bench
 /// controller's own chain client) needs no change when `vera_replicas`
 /// stays at its default of 1.
 pub fn vera_service_name(replica_index: usize) -> String {
     if replica_index == 0 {
-        SOURCEHUB_SERVICE.to_string()
+        VERA_SERVICE.to_string()
     } else {
         format!("vera-{replica_index:03}")
     }
 }
 
-const SOURCEHUB_HANDOFF_VOLUME: &str = "vera-handoff";
+const VERA_HANDOFF_VOLUME: &str = "vera-handoff";
 
 fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     let mut services = Map::new();
@@ -106,7 +106,7 @@ fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     }
 
     let mut volumes = Map::new();
-    volumes.insert(SOURCEHUB_HANDOFF_VOLUME.to_string(), json!({}));
+    volumes.insert(VERA_HANDOFF_VOLUME.to_string(), json!({}));
     for index in 1..=input.stack.network_size {
         volumes.insert(format!("node-{index:03}-data"), json!({}));
     }
@@ -169,7 +169,7 @@ exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.e
         // created named volume (owned root:root until something chowns it),
         // and the validator is the only service that writes into /handoff.
         "user": "root",
-        "volumes": [format!("{SOURCEHUB_HANDOFF_VOLUME}:/handoff")],
+        "volumes": [format!("{VERA_HANDOFF_VOLUME}:/handoff")],
         "ports": ["127.0.0.1::26657", "127.0.0.1::1317", "127.0.0.1::9090"],
         "networks": ["orbis-bench"],
         "labels": {
@@ -246,7 +246,7 @@ exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.e
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
-        "volumes": [format!("{SOURCEHUB_HANDOFF_VOLUME}:/handoff:ro")],
+        "volumes": [format!("{VERA_HANDOFF_VOLUME}:/handoff:ro")],
         "ports": ["127.0.0.1::26657", "127.0.0.1::1317", "127.0.0.1::9090"],
         "networks": ["orbis-bench"],
         "labels": {

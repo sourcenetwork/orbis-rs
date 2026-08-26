@@ -1,4 +1,4 @@
-use crate::compose::{node_service, vera_service_name, SOURCEHUB_SERVICE};
+use crate::compose::{node_service, vera_service_name, VERA_SERVICE};
 use crate::config::{NetworkProfile, NetworkProfileKind};
 use crate::results::ResourceSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -98,7 +98,7 @@ impl DockerCompose {
     }
 
     pub async fn build(&self) -> Result<()> {
-        self.streamed_status(&["build", SOURCEHUB_SERVICE, "node-001"])
+        self.streamed_status(&["build", VERA_SERVICE, "node-001"])
             .await
     }
 
