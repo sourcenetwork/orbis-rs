@@ -5,21 +5,21 @@ use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const SOURCEHUB_SERVICE: &str = "sourcehub";
+pub const SOURCEHUB_SERVICE: &str = "vera";
 pub const CONTROLLER_PUBLIC_KEY: &str =
     "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62";
 /// ACP policy IDs are `sha256(sha256(policy content) || counter)`, where
 /// `counter` is a per-chain monotonic sequence number. This is always the
-/// first policy created on a freshly booted SourceHub (see
+/// first policy created on a freshly booted Vera (see
 /// `setup::create_ring_governance_policy`), so `counter` — and therefore this
 /// ID — is fully deterministic. `create_ring_governance_policy` asserts the
-/// chain actually returns this value, so a change on the SourceHub side
+/// chain actually returns this value, so a change on the Vera side
 /// (e.g. a different policy-numbering scheme) fails loudly instead of
 /// silently drifting.
 pub const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
 
-// SourceHub simulation can under-report the final write cost when a large
+// Vera simulation can under-report the final write cost when a large
 // FinalizeRing transaction changes chain state between simulation and delivery.
 // Capacity runs need enough headroom that chain bookkeeping does not turn a
 // completed 50-member ceremony into a false protocol timeout.
@@ -45,8 +45,8 @@ pub struct ComposeInput<'a> {
     pub stack_id: &'a str,
     pub stack: &'a StackPlan,
     pub crypto: CryptoFeature,
-    pub sourcehub_ref: &'a str,
-    pub sourcehub_replicas: usize,
+    pub vera_ref: &'a str,
+    pub vera_replicas: usize,
     pub resources: &'a ResourceLimits,
     pub scheduler_poll_secs: u64,
 }
@@ -76,30 +76,30 @@ pub fn node_service(index: usize) -> String {
     format!("node-{index:03}")
 }
 
-/// Name of the SourceHub Compose service for a given replica index. Index 0
-/// is always the sole validator, kept as the plain `"sourcehub"` name so
+/// Name of the Vera Compose service for a given replica index. Index 0
+/// is always the sole validator, kept as the plain `"vera"` name so
 /// every existing single-replica reference (`SOURCEHUB_SERVICE`, the bench
-/// controller's own chain client) needs no change when `sourcehub_replicas`
+/// controller's own chain client) needs no change when `vera_replicas`
 /// stays at its default of 1.
-pub fn sourcehub_service_name(replica_index: usize) -> String {
+pub fn vera_service_name(replica_index: usize) -> String {
     if replica_index == 0 {
         SOURCEHUB_SERVICE.to_string()
     } else {
-        format!("sourcehub-{replica_index:03}")
+        format!("vera-{replica_index:03}")
     }
 }
 
-const SOURCEHUB_HANDOFF_VOLUME: &str = "sourcehub-handoff";
+const SOURCEHUB_HANDOFF_VOLUME: &str = "vera-handoff";
 
 fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     let mut services = Map::new();
-    for replica_index in 0..input.sourcehub_replicas {
+    for replica_index in 0..input.vera_replicas {
         let value = if replica_index == 0 {
-            sourcehub_service(input)
+            vera_service(input)
         } else {
-            sourcehub_replica_service(input)
+            vera_replica_service(input)
         };
-        services.insert(sourcehub_service_name(replica_index), value);
+        services.insert(vera_service_name(replica_index), value);
     }
     for index in 1..=input.stack.network_size {
         services.insert(node_service(index), node_service_value(input, index));
@@ -119,49 +119,49 @@ fn compose_document(input: &ComposeInput<'_>) -> Result<Value> {
     }))
 }
 
-/// The full `orbis-bench-sourcehub:<tag>` image reference for a given
-/// `sourcehub_ref`, truncated to at most 12 characters (not bytes, so a
+/// The full `orbis-bench-vera:<tag>` image reference for a given
+/// `vera_ref`, truncated to at most 12 characters (not bytes, so a
 /// multi-byte character straddling that boundary doesn't panic on slicing).
 /// Shared by the compose service definitions and the manifest image-digest
 /// lookup so the tag can't drift between the two.
-pub fn sourcehub_image_tag(sourcehub_ref: &str) -> String {
-    let truncated: String = sourcehub_ref.chars().take(12).collect();
-    format!("orbis-bench-sourcehub:{truncated}")
+pub fn vera_image_tag(vera_ref: &str) -> String {
+    let truncated: String = vera_ref.chars().take(12).collect();
+    format!("orbis-bench-vera:{truncated}")
 }
 
-fn sourcehub_service(input: &ComposeInput<'_>) -> Value {
-    let sourcehub_context = input.repository_root.join("docker");
+fn vera_service(input: &ComposeInput<'_>) -> Value {
+    let vera_context = input.repository_root.join("docker");
     let command = r#"
 set -eu
-# SourceHub boots exactly once per stack and is never recreated (rings are
+# Vera boots exactly once per stack and is never recreated (rings are
 # created via live transaction after boot, not baked into genesis), so the
 # handoff volume should always be empty here. Clear it defensively anyway —
 # harmless if already empty, and it means a replica can never read leftover
 # data from an earlier, unrelated stack if a volume were ever reused.
 rm -f /handoff/ready
-rm -rf /home/node/.sourcehub/*
-sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
-sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
-echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
-sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
-sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
-cp /home/node/.sourcehub/config/genesis.json /handoff/genesis.json
-sourcehubd comet show-node-id --home /home/node/.sourcehub > /handoff/node-id.txt
+rm -rf /home/node/.vera/*
+verad init local-node --chain-id vera-localnet --home /home/node/.vera
+verad keys add validator --keyring-backend test --home /home/node/.vera
+echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
+verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
+verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
+verad genesis collect-gentxs --home /home/node/.vera
+cp /home/node/.vera/config/genesis.json /handoff/genesis.json
+verad comet show-node-id --home /home/node/.vera > /handoff/node-id.txt
 # Replicas read these files as the image's default non-root `node` user.
 # Root's default umask on this volume leaves them unreadable by anyone else,
 # so make the handoff directory and its contents world-readable explicitly.
 chmod -R a+rX /handoff
 touch /handoff/ready
-exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
 "#;
     let mut value = json!({
-        "image": sourcehub_image_tag(input.sourcehub_ref),
+        "image": vera_image_tag(input.vera_ref),
         "build": {
-            "context": sourcehub_context,
-            "dockerfile": "Dockerfile.sourcehub-integration",
-            "args": {"SOURCEHUB_REF": input.sourcehub_ref},
+            "context": vera_context,
+            "dockerfile": "Dockerfile.vera-integration",
+            "args": {"SOURCEHUB_REF": input.vera_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
@@ -175,50 +175,48 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
         "labels": {
             "dev.orbis.bench.run": input.run_id,
             "dev.orbis.bench.stack": input.stack_id,
-            "dev.orbis.bench.role": "sourcehub",
+            "dev.orbis.bench.role": "vera",
         },
         "healthcheck": {
-            "test": ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"],
+            "test": ["CMD", "verad", "status", "--home", "/home/node/.vera"],
             "interval": "5s",
             "timeout": "5s",
             "retries": 60,
             "start_period": "20s",
         },
     });
-    apply_sourcehub_resource_limits(&mut value, input);
+    apply_vera_resource_limits(&mut value, input);
     value
 }
 
-fn apply_sourcehub_resource_limits(value: &mut Value, input: &ComposeInput<'_>) {
-    let object = value
-        .as_object_mut()
-        .expect("sourcehub service is an object");
-    if let Some(cpus) = input.resources.cpus_per_sourcehub {
+fn apply_vera_resource_limits(value: &mut Value, input: &ComposeInput<'_>) {
+    let object = value.as_object_mut().expect("vera service is an object");
+    if let Some(cpus) = input.resources.cpus_per_vera {
         object.insert("cpus".to_string(), json!(cpus));
     }
-    if let Some(memory) = &input.resources.memory_per_sourcehub {
+    if let Some(memory) = &input.resources.memory_per_vera {
         object.insert("mem_limit".to_string(), json!(memory));
     }
 }
 
-/// A non-validating SourceHub full node: syncs the validator's chain via P2P
+/// A non-validating Vera full node: syncs the validator's chain via P2P
 /// and independently serves REST/RPC reads and tx relay, so 50 orbis nodes
 /// hitting `FinalizeRing` around the same time aren't all queuing behind one
 /// REST server. Needs no keyring — it never signs or broadcasts anything of
 /// its own.
-fn sourcehub_replica_service(input: &ComposeInput<'_>) -> Value {
-    let sourcehub_context = input.repository_root.join("docker");
+fn vera_replica_service(input: &ComposeInput<'_>) -> Value {
+    let vera_context = input.repository_root.join("docker");
     let command = r#"
 set -eu
-# SourceHub boots exactly once per stack, so /handoff should never have
+# Vera boots exactly once per stack, so /handoff should never have
 # leftover data when this container starts — but if a volume were ever
 # reused, racing the validator to clear it first is not reliable (both sides
 # start around the same time). Recording our own boot marker before checking
 # lets us require a `ready` that is provably newer than this boot, not merely
 # present, so we can never read a stale genesis/node-id.
 touch /tmp/boot-marker
-rm -rf /home/node/.sourcehub/*
-sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
+rm -rf /home/node/.vera/*
+verad init local-node --chain-id vera-localnet --home /home/node/.vera
 handoff_timeout_seconds=300
 handoff_waited_seconds=0
 while :; do
@@ -230,21 +228,21 @@ while :; do
     break
   fi
   if [ "$$handoff_waited_seconds" -ge "$$handoff_timeout_seconds" ]; then
-    echo "sourcehub replica timed out after $${handoff_timeout_seconds}s waiting for a current /handoff/ready marker" >&2
+    echo "vera replica timed out after $${handoff_timeout_seconds}s waiting for a current /handoff/ready marker" >&2
     exit 1
   fi
   sleep 1
   handoff_waited_seconds=$$((handoff_waited_seconds + 1))
 done
-cp /handoff/genesis.json /home/node/.sourcehub/config/genesis.json
-exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@sourcehub:26656"
+cp /handoff/genesis.json /home/node/.vera/config/genesis.json
+exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317 --p2p.persistent_peers "$$(cat /handoff/node-id.txt)@vera:26656"
 "#;
     let mut value = json!({
-        "image": sourcehub_image_tag(input.sourcehub_ref),
+        "image": vera_image_tag(input.vera_ref),
         "build": {
-            "context": sourcehub_context,
-            "dockerfile": "Dockerfile.sourcehub-integration",
-            "args": {"SOURCEHUB_REF": input.sourcehub_ref},
+            "context": vera_context,
+            "dockerfile": "Dockerfile.vera-integration",
+            "args": {"SOURCEHUB_REF": input.vera_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
@@ -254,17 +252,17 @@ exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:266
         "labels": {
             "dev.orbis.bench.run": input.run_id,
             "dev.orbis.bench.stack": input.stack_id,
-            "dev.orbis.bench.role": "sourcehub-replica",
+            "dev.orbis.bench.role": "vera-replica",
         },
         "healthcheck": {
-            "test": ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"],
+            "test": ["CMD", "verad", "status", "--home", "/home/node/.vera"],
             "interval": "5s",
             "timeout": "5s",
             "retries": 60,
             "start_period": "20s",
         },
     });
-    apply_sourcehub_resource_limits(&mut value, input);
+    apply_vera_resource_limits(&mut value, input);
     value
 }
 
@@ -279,27 +277,27 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
     // without it, and stalls indefinitely with it). Iroh's default relay/discovery
     // add real but acceptable overhead for a same-host Docker network.
     //
-    // Bucket nodes across SourceHub replicas (index 0 is always the
+    // Bucket nodes across Vera replicas (index 0 is always the
     // validator) so REST/RPC load during ring finalization scales
     // horizontally instead of queuing behind one server.
     // `Experiment::validate()` rejects zero replicas, but `ComposeInput` can
     // also be reached directly (e.g. via `write_stack_files` from a test or
     // library caller) without going through that check first — normalize
     // rather than let an unvalidated zero panic here on the modulo.
-    let sourcehub_target = sourcehub_service_name((index - 1) % input.sourcehub_replicas.max(1));
+    let vera_target = vera_service_name((index - 1) % input.vera_replicas.max(1));
     let command = vec![
         "--addr".to_string(),
         "0.0.0.0:50051".to_string(),
         "--log-level".to_string(),
         "info".to_string(),
         "--authz-grpc".to_string(),
-        format!("http://{sourcehub_target}:9090"),
+        format!("http://{vera_target}:9090"),
         "--bulletin-grpc".to_string(),
-        format!("http://{sourcehub_target}:9090"),
+        format!("http://{vera_target}:9090"),
         "--chain-rpc".to_string(),
-        format!("http://{sourcehub_target}:26657"),
+        format!("http://{vera_target}:26657"),
         "--chain-rest".to_string(),
-        format!("http://{sourcehub_target}:1317"),
+        format!("http://{vera_target}:1317"),
         "--chain-gas-multiplier".to_string(),
         BENCHMARK_CHAIN_GAS_MULTIPLIER.to_string(),
         "--metrics-addr".to_string(),
@@ -335,7 +333,7 @@ fn node_service_value(input: &ComposeInput<'_>, index: usize) -> Value {
         "volumes": [format!("{service}-data:/data")],
         "ports": ["127.0.0.1::50051", "127.0.0.1::9090"],
         "networks": ["orbis-bench"],
-        "depends_on": {sourcehub_target.clone(): {"condition": "service_healthy"}},
+        "depends_on": {vera_target.clone(): {"condition": "service_healthy"}},
         "labels": {
             "dev.orbis.bench.run": input.run_id,
             "dev.orbis.bench.stack": input.stack_id,
@@ -383,8 +381,8 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            sourcehub_ref: &experiment.sourcehub_ref,
-            sourcehub_replicas: experiment.sourcehub_replicas,
+            vera_ref: &experiment.vera_ref,
+            vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
@@ -443,8 +441,8 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            sourcehub_ref: &experiment.sourcehub_ref,
-            sourcehub_replicas: experiment.sourcehub_replicas,
+            vera_ref: &experiment.vera_ref,
+            vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
@@ -456,9 +454,9 @@ mod tests {
     }
 
     #[test]
-    fn nodes_are_bucketed_across_sourcehub_replicas() {
+    fn nodes_are_bucketed_across_vera_replicas() {
         let mut experiment = Experiment::single(6, 6, 2);
-        experiment.sourcehub_replicas = 3;
+        experiment.vera_replicas = 3;
         experiment.profiles = vec![NetworkProfile::lan()];
         let mut plan = experiment.resolve().unwrap();
         plan.assign_indices();
@@ -468,18 +466,18 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            sourcehub_ref: &experiment.sourcehub_ref,
-            sourcehub_replicas: experiment.sourcehub_replicas,
+            vera_ref: &experiment.vera_ref,
+            vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
         let document = compose_document(&input).unwrap();
         let services = document["services"].as_object().unwrap();
 
-        assert!(services.contains_key("sourcehub"));
-        assert!(services.contains_key("sourcehub-001"));
-        assert!(services.contains_key("sourcehub-002"));
-        assert!(!services.contains_key("sourcehub-003"));
+        assert!(services.contains_key("vera"));
+        assert!(services.contains_key("vera-001"));
+        assert!(services.contains_key("vera-002"));
+        assert!(!services.contains_key("vera-003"));
 
         let target_of = |node: &str| -> String {
             let command = services[node]["command"].as_array().unwrap();
@@ -494,18 +492,18 @@ mod tests {
                 .unwrap()
                 .to_string()
         };
-        assert_eq!(target_of("node-001"), "sourcehub");
-        assert_eq!(target_of("node-002"), "sourcehub-001");
-        assert_eq!(target_of("node-003"), "sourcehub-002");
-        assert_eq!(target_of("node-004"), "sourcehub");
-        assert_eq!(target_of("node-005"), "sourcehub-001");
-        assert_eq!(target_of("node-006"), "sourcehub-002");
+        assert_eq!(target_of("node-001"), "vera");
+        assert_eq!(target_of("node-002"), "vera-001");
+        assert_eq!(target_of("node-003"), "vera-002");
+        assert_eq!(target_of("node-004"), "vera");
+        assert_eq!(target_of("node-005"), "vera-001");
+        assert_eq!(target_of("node-006"), "vera-002");
     }
 
     #[test]
     fn replica_handoff_wait_is_posix_and_bounded() {
         let mut experiment = Experiment::single(3, 3, 2);
-        experiment.sourcehub_replicas = 2;
+        experiment.vera_replicas = 2;
         experiment.profiles = vec![NetworkProfile::lan()];
         let mut plan = experiment.resolve().unwrap();
         plan.assign_indices();
@@ -515,19 +513,19 @@ mod tests {
             stack_id: "orbis-bench-run-s000",
             stack: &plan.stacks[0],
             crypto: experiment.crypto,
-            sourcehub_ref: &experiment.sourcehub_ref,
-            sourcehub_replicas: experiment.sourcehub_replicas,
+            vera_ref: &experiment.vera_ref,
+            vera_replicas: experiment.vera_replicas,
             resources: &experiment.resources,
             scheduler_poll_secs: 1,
         };
         let document = compose_document(&input).unwrap();
-        let command = document["services"]["sourcehub-001"]["command"][0]
+        let command = document["services"]["vera-001"]["command"][0]
             .as_str()
             .expect("replica startup command");
         assert!(!command.contains(" -ot "));
         assert!(command.contains("find /handoff/ready -newer /tmp/boot-marker -print"));
         assert!(command.contains("handoff_timeout_seconds=300"));
-        assert!(command.contains("sourcehub replica timed out after"));
+        assert!(command.contains("vera replica timed out after"));
         assert!(command.contains("exit 1"));
     }
 

@@ -679,7 +679,7 @@ pub struct PrepareSession {
     pub ring_id: String,
     /// Node-key signature over `config_digest`, binding the sender to this
     /// exact committee/config claim so a noncanonical-leader impersonation
-    /// attempt or a route/digest claim contradicting SourceHub stays
+    /// attempt or a route/digest claim contradicting Vera stays
     /// provable after the fact. Every real construction site always signs
     /// (Fresh DKG included — it's the target of a `leader_prepare_fault`
     /// report the same as Refresh/Reshare); `Option` exists only because
@@ -772,7 +772,7 @@ pub enum DkgControlMessage {
     },
     /// Ask the canonical current-committee leader to coordinate a due refresh.
     /// The requester key lets the receiver authenticate only the sender's
-    /// SourceHub route instead of resolving the entire committee.
+    /// Vera route instead of resolving the entire committee.
     StartRefresh {
         ring_id: String,
         expected_ring_pk: String,

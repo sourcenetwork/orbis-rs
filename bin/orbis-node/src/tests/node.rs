@@ -1209,8 +1209,8 @@ fn test_create_and_store_node_key() {
     let signer1 = result.unwrap();
     let address1 = signer1.address();
     assert!(
-        address1.starts_with("source1"),
-        "Address should be bech32 with source1 prefix, got: {}",
+        address1.starts_with("vera1"),
+        "Address should be bech32 with vera1 prefix, got: {}",
         address1
     );
 

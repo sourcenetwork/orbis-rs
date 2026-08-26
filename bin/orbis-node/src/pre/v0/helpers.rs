@@ -7,7 +7,7 @@ use crate::pre::v0::{
 };
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
@@ -31,8 +31,8 @@ async fn fetch_document_payload(
 /// Confirms a caller-supplied document is genuinely the one `object_id` refers to.
 ///
 /// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same
-/// deterministic ID SourceHub assigns when a document is posted to the bulletin
-/// (`crates/bulletin/src/sourcehub/mod.rs`). Recomputing and comparing it here means a document
+/// deterministic ID Vera assigns when a document is posted to the bulletin
+/// (`crates/bulletin/src/vera/mod.rs`). Recomputing and comparing it here means a document
 /// supplied directly on the wire (never posted to the bulletin) is just as tightly bound to
 /// `object_id` as one read back from chain — a caller cannot pair an `object_id` they're
 /// authorized for with a different document's ciphertext/proof without this failing.

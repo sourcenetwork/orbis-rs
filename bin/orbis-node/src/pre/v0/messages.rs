@@ -3,7 +3,7 @@
 //! This module defines the message types used for PRE (Proxy Re-Encryption)
 //! protocol communication between nodes over the iroh network.
 
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use serde::{Deserialize, Serialize};
 
 /// All parameters specific to a reencryption request.

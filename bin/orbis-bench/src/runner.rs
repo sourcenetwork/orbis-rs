@@ -23,9 +23,7 @@ use crate::setup::{
     update_peer_addresses,
 };
 use anyhow::{bail, Context, Result};
-use common::blockchain::{
-    orbis::Ring, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
-};
+use common::blockchain::{orbis::Ring, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{Dkg, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoSerialize, DkgImpl, PreImpl, SignImpl};
@@ -139,9 +137,9 @@ impl BenchmarkRunner {
                 status: RunStatus::Running,
                 experiment: self.experiment.clone(),
                 host: host_metadata(),
-                sourcehub_ref: self.experiment.sourcehub_ref.clone(),
+                vera_ref: self.experiment.vera_ref.clone(),
                 node_image: None,
-                sourcehub_image: None,
+                vera_image: None,
                 crypto_implementation: format!(
                     "dkg={}; pre={}; sign={}",
                     <DkgImpl as Dkg>::name(),
@@ -322,8 +320,8 @@ impl BenchmarkRunner {
             stack_id,
             stack,
             crypto: self.experiment.crypto,
-            sourcehub_ref: &self.experiment.sourcehub_ref,
-            sourcehub_replicas: self.experiment.sourcehub_replicas,
+            vera_ref: &self.experiment.vera_ref,
+            vera_replicas: self.experiment.vera_replicas,
             resources: &self.experiment.resources,
             scheduler_poll_secs: self.experiment.pss_poll_interval_secs,
         };
@@ -339,7 +337,7 @@ impl BenchmarkRunner {
                 compose.down().await.ok();
             }
             eprintln!(
-                "[{stack_id}] building SourceHub and production node images (the first build can take several minutes)"
+                "[{stack_id}] building Vera and production node images (the first build can take several minutes)"
             );
             compose.build().await?;
             manifest.node_image = image_digest(&format!(
@@ -348,20 +346,17 @@ impl BenchmarkRunner {
             ))
             .await
             .ok();
-            manifest.sourcehub_image = image_digest(&crate::compose::sourcehub_image_tag(
-                &self.experiment.sourcehub_ref,
-            ))
-            .await
-            .ok();
+            manifest.vera_image =
+                image_digest(&crate::compose::vera_image_tag(&self.experiment.vera_ref))
+                    .await
+                    .ok();
             store.update_manifest(manifest)?;
 
             eprintln!(
-                "[{stack_id}] starting SourceHub and {} nodes",
+                "[{stack_id}] starting Vera and {} nodes",
                 stack.network_size
             );
-            compose
-                .up_sourcehub(self.experiment.sourcehub_replicas)
-                .await?;
+            compose.up_vera(self.experiment.vera_replicas).await?;
             compose.up_nodes().await?;
             let endpoints = discover_endpoints(&compose, stack.network_size).await?;
             let identities = discover_identities(
@@ -545,7 +540,7 @@ impl BenchmarkRunner {
 
     /// In-process counterpart of `run_stack`: real orbis-node instances as
     /// tokio tasks over loopback Iroh, backed by a shared `DummyBulletin`
-    /// instead of a Dockerized SourceHub. No Compose project, no chain setup,
+    /// instead of a Dockerized Vera. No Compose project, no chain setup,
     /// no resource sampling (there are no containers to sample). `validate()`
     /// restricts this backend to the `dkg`, `pre`, `sign`, and `pss_refresh`
     /// operations; `pss_reshare` is rejected. WAN profiles are supported and
@@ -1246,7 +1241,7 @@ impl BenchmarkRunner {
         stack: &StackPlan,
         stack_id: &str,
         compose: &DockerCompose,
-        controller: &SourceHubClient,
+        controller: &VeraClient,
         endpoints: &[NodeEndpoint],
         clients: &mut DirectClients,
         rings: &CaseRings,
@@ -1764,7 +1759,7 @@ impl BenchmarkRunner {
         stack: &StackPlan,
         stack_id: &str,
         compose: &DockerCompose,
-        controller: &SourceHubClient,
+        controller: &VeraClient,
         endpoints: &[NodeEndpoint],
         clients: &mut DirectClients,
         rings: &CaseRings,
@@ -1904,7 +1899,7 @@ impl BenchmarkRunner {
         stack: &StackPlan,
         stack_id: &str,
         compose: &DockerCompose,
-        controller: &SourceHubClient,
+        controller: &VeraClient,
         endpoints: &[NodeEndpoint],
         clients: &mut DirectClients,
         rings: &CaseRings,
@@ -1963,7 +1958,7 @@ impl BenchmarkRunner {
                         )
                         .await?;
                     if response.code != 0 {
-                        bail!("SourceHub rejected reshare announcement: {}", response.log);
+                        bail!("Vera rejected reshare announcement: {}", response.log);
                     }
                     wait_reshare_finalized(
                         controller,
@@ -2092,7 +2087,7 @@ fn plan_rings(
                 .collect();
             Ok(PlannedRing {
                 // Filled in by `create_rings_on_chain` once the ring exists on-chain
-                // (SourceHub assigns the ID; it's no longer precomputed).
+                // (Vera assigns the ID; it's no longer precomputed).
                 definition: RingDefinition {
                     id: String::new(),
                     peer_node_keys: node_keys.clone(),
@@ -2193,7 +2188,7 @@ fn committee_endpoints(ring: &PlannedRing, endpoints: &[NodeEndpoint]) -> Vec<No
 
 async fn establish_ring(
     clients: &mut DirectClients,
-    controller: &SourceHubClient,
+    controller: &VeraClient,
     ring: &PlannedRing,
     rng: &mut StdRng,
     deadline: Duration,
@@ -2745,9 +2740,9 @@ async fn discover_identities(
 }
 
 async fn discover_chain_config(compose: &DockerCompose) -> Result<ChainConfig> {
-    let rpc = compose.published_port("sourcehub", 26657).await?;
-    let rest = compose.published_port("sourcehub", 1317).await?;
-    let grpc = compose.published_port("sourcehub", 9090).await?;
+    let rpc = compose.published_port("vera", 26657).await?;
+    let rest = compose.published_port("vera", 1317).await?;
+    let grpc = compose.published_port("vera", 9090).await?;
     Ok(ChainConfig::builder()
         .rpc_url(Some(format!("http://127.0.0.1:{rpc}")))
         .rest_url(Some(format!("http://127.0.0.1:{rest}")))
@@ -2755,9 +2750,9 @@ async fn discover_chain_config(compose: &DockerCompose) -> Result<ChainConfig> {
         .build())
 }
 
-async fn controller_client(config: ChainConfig) -> Result<SourceHubClient> {
+async fn controller_client(config: ChainConfig) -> Result<VeraClient> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())?;
-    Ok(SourceHubClient::with_signer(config, signer).await?)
+    Ok(VeraClient::with_signer(config, signer).await?)
 }
 
 async fn scrape_committee(committee: &[NodeEndpoint]) -> Vec<MetricSnapshot> {
@@ -2830,7 +2825,7 @@ fn pss_timing(
 }
 
 async fn wait_reshare_finalized(
-    controller: &SourceHubClient,
+    controller: &VeraClient,
     clients: &DirectClients,
     ring_id: &str,
     original_ring_pk: &str,
@@ -2847,7 +2842,7 @@ async fn wait_reshare_finalized(
     loop {
         let ring = read_ring_with_retry(controller, ring_id)
             .await?
-            .with_context(|| format!("reshare ring {ring_id} disappeared from SourceHub"))?;
+            .with_context(|| format!("reshare ring {ring_id} disappeared from Vera"))?;
         let mut actual_keys = ring.peer_node_keys.clone();
         actual_keys.sort();
         let chain_finalized = ring.ring_pk == original_ring_pk
@@ -2878,14 +2873,14 @@ async fn wait_reshare_finalized(
                     }
                     if last_progress.elapsed() >= Duration::from_secs(10) {
                         eprintln!(
-                            "ring {ring_id}: SourceHub reshare finalized; waiting for matching new-committee state and last_pss advancement"
+                            "ring {ring_id}: Vera reshare finalized; waiting for matching new-committee state and last_pss advancement"
                         );
                         last_progress = Instant::now();
                     }
                 }
                 Err(error) if last_progress.elapsed() >= Duration::from_secs(10) => {
                     eprintln!(
-                        "ring {ring_id}: SourceHub reshare finalized; local-state verification pending: {error:#}"
+                        "ring {ring_id}: Vera reshare finalized; local-state verification pending: {error:#}"
                     );
                     last_progress = Instant::now();
                 }
@@ -2906,7 +2901,7 @@ async fn wait_reshare_finalized(
 }
 
 pub(crate) async fn read_ring_with_retry(
-    controller: &SourceHubClient,
+    controller: &VeraClient,
     ring_id: &str,
 ) -> Result<Option<Ring>> {
     const MAX_ATTEMPTS: usize = 3;
@@ -2916,14 +2911,14 @@ pub(crate) async fn read_ring_with_retry(
             Ok(ring) => return Ok(ring),
             Err(error) if attempt < MAX_ATTEMPTS => {
                 eprintln!(
-                    "ring {ring_id}: SourceHub read failed ({attempt}/{MAX_ATTEMPTS}): {error:#}; retrying"
+                    "ring {ring_id}: Vera read failed ({attempt}/{MAX_ATTEMPTS}): {error:#}; retrying"
                 );
                 sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(2));
             }
             Err(error) => {
                 return Err(error).with_context(|| {
-                    format!("read ring {ring_id} from SourceHub after {MAX_ATTEMPTS} attempts")
+                    format!("read ring {ring_id} from Vera after {MAX_ATTEMPTS} attempts")
                 });
             }
         }

@@ -1,4 +1,4 @@
-use crate::compose::{node_service, sourcehub_service_name, SOURCEHUB_SERVICE};
+use crate::compose::{node_service, vera_service_name, SOURCEHUB_SERVICE};
 use crate::config::{NetworkProfile, NetworkProfileKind};
 use crate::results::ResourceSample;
 use anyhow::{anyhow, bail, Context, Result};
@@ -102,14 +102,14 @@ impl DockerCompose {
             .await
     }
 
-    pub async fn up_sourcehub(&self, replicas: usize) -> Result<()> {
-        let services: Vec<String> = (0..replicas).map(sourcehub_service_name).collect();
+    pub async fn up_vera(&self, replicas: usize) -> Result<()> {
+        let services: Vec<String> = (0..replicas).map(vera_service_name).collect();
         let mut args = vec![
             "up".to_string(),
             "--detach".to_string(),
             "--wait".to_string(),
             // Without an explicit bound, `--wait` blocks forever if a
-            // container never reports healthy. The sourcehub healthcheck
+            // container never reports healthy. The vera healthcheck
             // (compose.rs) allows a 20s start period plus 60 retries at a 5s
             // interval — 320s worst case — so give it comfortable margin
             // rather than hanging the whole run on a stuck container.

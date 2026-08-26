@@ -20,7 +20,7 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
 use authn::{DkgClaims, SignClaims};
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{
     Bulletin, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation, RingPayload,
@@ -1626,7 +1626,7 @@ async fn test_sign_policy_check_policy_access_at_uses_supplied_timestamp() {
 
 /// check_policy_access must deny access when the current time falls outside the valid_window.
 ///
-/// The authz mock here validates the window exactly as SourceHubAuth does — it deserializes
+/// The authz mock here validates the window exactly as VeraAuth does — it deserializes
 /// the AccessCheckRequest and returns false when `now < window.start || now > window.end`.
 /// Passing `end: 1` (epoch + 1 s) guarantees the window is in the past.
 #[tokio::test]

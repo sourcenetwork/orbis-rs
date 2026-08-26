@@ -1,16 +1,18 @@
-use super::{parse_anchor_height, SourceHubAuth};
+//! Tests for the Vera authorization backend.
+
+use super::{parse_anchor_height, VeraAuth};
 use crate::r#trait::Authz;
-use crate::sourcehub::{AccessCheckRequest, ValidWindow};
+use crate::vera::{AccessCheckRequest, ValidWindow};
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use common::SourceHubTestContainer;
+use common::VeraTestContainer;
 use did_key::{generate, Ed25519KeyPair, Fingerprint};
 
 #[test]
 fn test_name() {
-    assert_eq!(SourceHubAuth::name(), "authz/sourcehub");
+    assert_eq!(VeraAuth::name(), "authz/vera");
 }
 
 #[test]
@@ -44,8 +46,8 @@ resources:
 #[tokio::test]
 #[serial_test::serial]
 async fn test_create_and_query_policy() {
-    // 1. Spin up SourceHub container
-    let container = SourceHubTestContainer::new();
+    // 1. Spin up Vera container
+    let container = VeraTestContainer::new();
 
     let config = container.chain_config();
 
@@ -55,7 +57,7 @@ async fn test_create_and_query_policy() {
 
     println!("Test signer address: {}", signer.address());
 
-    let client = SourceHubClient::with_signer(config.clone(), signer)
+    let client = VeraClient::with_signer(config.clone(), signer)
         .await
         .expect("Failed to create client with signer");
 
@@ -72,7 +74,7 @@ async fn test_create_and_query_policy() {
 
     assert_eq!(result.code, 0, "Transaction should succeed");
 
-    // 4. Query the policy using SourceHubAuth
+    // 4. Query the policy using VeraAuth
     // Note: We need to extract the policy ID from the response
     // For now, we'll query all policies and find ours
     let policy_ids = client
@@ -89,8 +91,8 @@ async fn test_create_and_query_policy() {
     // Get the first policy ID (our newly created one)
     let policy_id = &policy_ids.ids[0];
 
-    // 5. Test SourceHubAuth.get_policy()
-    let auth = SourceHubAuth::new(container.chain_config_builder())
+    // 5. Test VeraAuth.get_policy()
+    let auth = VeraAuth::new(container.chain_config_builder())
         .await
         .unwrap();
     let policy = auth
@@ -226,8 +228,8 @@ resources:
 #[tokio::test]
 #[serial_test::serial]
 async fn test_complex_policy_permissions() {
-    // 1. Spin up SourceHub container
-    let container = SourceHubTestContainer::new();
+    // 1. Spin up Vera container
+    let container = VeraTestContainer::new();
 
     let config = container.chain_config();
 
@@ -236,7 +238,7 @@ async fn test_complex_policy_permissions() {
 
     println!("Test signer address: {}", signer.address());
 
-    let client = SourceHubClient::with_signer(config.clone(), signer)
+    let client = VeraClient::with_signer(config.clone(), signer)
         .await
         .expect("Failed to create client with signer");
 
@@ -348,8 +350,8 @@ async fn test_complex_policy_permissions() {
     println!("Viewer relationship set! TX hash: {}", result.tx_hash);
     assert_eq!(result.code, 0);
 
-    // 7. Test permissions using SourceHubAuth
-    let auth = SourceHubAuth::new(container.chain_config_builder())
+    // 7. Test permissions using VeraAuth
+    let auth = VeraAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 
@@ -464,9 +466,9 @@ async fn test_complex_policy_permissions() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_valid_window_out_of_range() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
 
-    let auth = SourceHubAuth::new(container.chain_config_builder())
+    let auth = VeraAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 
@@ -494,7 +496,7 @@ async fn test_valid_window_out_of_range() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_valid_window_in_range() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
 
     let config = container.chain_config();
     let signer = common::blockchain::TxSigner::from_hex_key(
@@ -502,7 +504,7 @@ async fn test_valid_window_in_range() {
         config.clone(),
     )
     .expect("Failed to create signer");
-    let client = common::blockchain::SourceHubClient::with_signer(config.clone(), signer)
+    let client = common::blockchain::VeraClient::with_signer(config.clone(), signer)
         .await
         .expect("Failed to create client");
 
@@ -550,7 +552,7 @@ async fn test_valid_window_in_range() {
         .await
         .expect("Failed to set relationship");
 
-    let auth = SourceHubAuth::new(container.chain_config_builder())
+    let auth = VeraAuth::new(container.chain_config_builder())
         .await
         .unwrap();
 

@@ -29,8 +29,8 @@ use common::{
         acp::Object,
         events::{ReportAcceptedEvent, ReportEventSubscription},
         orbis::{generate_document_id, WhitelistTarget},
-        sign_node_message_with_hex_key, ChainConfig, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+        sign_node_message_with_hex_key, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+        TEST_ACCOUNT_PUBKEY_HEX,
     },
     IntegrationTestNetwork,
 };
@@ -540,7 +540,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -655,7 +655,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
 
     // Subscribe before stopping node3 to avoid missing the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -739,7 +739,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
 
     // Fresh subscription — the previous one was consumed by wait_for_report_accepted.
     println!("Subscribing to report events for Sign...");
-    let sign_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sign_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect sign report event subscription");
 
@@ -858,7 +858,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -972,7 +972,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     );
 
     println!("Submitting PRE unauthorized relay evidence against node1 through node3...");
-    let pre_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let pre_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect PRE unauthorized report event subscription");
     submit_unauthorized_relay_evidence(
@@ -1048,7 +1048,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     );
 
     println!("Submitting Sign unauthorized relay evidence against node2 through node1...");
-    let sign_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sign_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect Sign unauthorized report event subscription");
     submit_unauthorized_relay_evidence(
@@ -1097,9 +1097,9 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
 }
 
 /// Proves `unauthorized_request` reporting works identically whether the request's document
-/// came from the bulletin or was supplied inline — exercising, against a real SourceHub chain,
+/// came from the bulletin or was supplied inline — exercising, against a real Vera chain,
 /// both the `RelayRequestStatement.inline_document` hash-recompute in `registry.rs` and the
-/// matching SourceHub Go decoder change. Both sub-cases share one DKG/network spin-up.
+/// matching Vera Go decoder change. Both sub-cases share one DKG/network spin-up.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_chain_report() {
@@ -1160,7 +1160,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -1286,7 +1286,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     println!(
         "Submitting bulletin-sourced unauthorized relay evidence against node1 through node3..."
     );
-    let bulletin_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let bulletin_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect bulletin unauthorized report event subscription");
     submit_unauthorized_relay_evidence(
@@ -1409,7 +1409,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     println!(
         "Submitting inline-document unauthorized relay evidence against node1 through node3..."
     );
-    let inline_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let inline_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect inline unauthorized report event subscription");
     submit_unauthorized_relay_evidence(
@@ -1512,7 +1512,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -1686,7 +1686,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     );
     let mut invalid_proof_event = None;
     for attempt in 1..=2 {
-        let invalid_proof_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+        let invalid_proof_sub = ReportEventSubscription::connect(network.vera_rpc_url())
             .await
             .expect("connect invalid-proof report event subscription");
         let _plaintext = pre_with_retry(
@@ -1766,7 +1766,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     // sign request; FROST's threshold-sized signing set would deterministically
     // exclude node3.
     println!("Subscribing to report events for Sign...");
-    let sign_report_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sign_report_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect sign invalid-crypto report event subscription");
 
@@ -1917,7 +1917,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -2054,7 +2054,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         .expect("store corrupted ring share bundle");
     println!("node2 ring share corrupted.");
 
-    let report_sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let report_sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -2137,7 +2137,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
 }
 
 async fn wait_for_node_info_on_chain(
-    client: &SourceHubClient,
+    client: &VeraClient,
     node_key: &str,
     timeout: Duration,
     poll_interval: Duration,
@@ -2155,7 +2155,7 @@ async fn wait_for_node_info_on_chain(
     }
 }
 
-async fn create_policy_with_client(client: &SourceHubClient) -> String {
+async fn create_policy_with_client(client: &VeraClient) -> String {
     let ids_before: std::collections::HashSet<String> = client
         .acp_list_policy_ids()
         .await
@@ -2185,7 +2185,7 @@ async fn create_policy_with_client(client: &SourceHubClient) -> String {
 }
 
 async fn register_object_with_client(
-    client: &SourceHubClient,
+    client: &VeraClient,
     policy_id: &str,
     object_id: &str,
     resource: &str,
@@ -2493,7 +2493,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -2551,7 +2551,7 @@ async fn test_refresh_offline_triggers_on_chain_report() {
 
     // Subscribe before stopping node3 so we don't miss the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -2664,7 +2664,7 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -2722,7 +2722,7 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
 
     // Subscribe before stopping node1 so we don't miss the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -2835,7 +2835,7 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -2893,7 +2893,7 @@ async fn test_refresh_stall_offline_triggers_on_chain_report() {
 
     // Subscribe before stopping node3 so we don't miss the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -3046,7 +3046,7 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -3104,7 +3104,7 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
 
     // Subscribe before announcing the reshare so we don't miss the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -3245,7 +3245,7 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -3322,7 +3322,7 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
         "ring payload should contain finalized ring_pk"
     );
 
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -3479,7 +3479,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr, peer4_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -3540,7 +3540,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
 
     // Subscribe before announcing the pending committee so we don't miss the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -3716,7 +3716,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         ),
     ];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -3782,7 +3782,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     wait_for_ring_state_on_nodes(&dkg_node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
     ensure_ring_index_on_nodes(&dkg_node_endpoints, &ring_pk_hex, RING_ID).await;
 
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -3991,7 +3991,7 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
         ),
     ];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -4057,7 +4057,7 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
     wait_for_ring_state_on_nodes(&dkg_node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
     ensure_ring_index_on_nodes(&dkg_node_endpoints, &ring_pk_hex, RING_ID).await;
 
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 
@@ -4274,7 +4274,7 @@ async fn test_report_kick_promotes_backup_node() {
     let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
     let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -4399,7 +4399,7 @@ async fn test_report_kick_promotes_backup_node() {
 
     // Subscribe before stopping node3 to avoid missing the event.
     println!("Subscribing to report events...");
-    let sub = ReportEventSubscription::connect(network.sourcehub_rpc_url())
+    let sub = ReportEventSubscription::connect(network.vera_rpc_url())
         .await
         .expect("connect report event subscription");
 

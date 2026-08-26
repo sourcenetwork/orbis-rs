@@ -343,7 +343,7 @@ async fn report_or_relay_pss_offline_observations<D>(
 
 /// Ring, committee-route, and signing-scope context shared by every accused peer
 /// within one PSS offline-report event. Resolving this once per event (instead of
-/// once per missing peer) avoids redundant bulletin reads and SourceHub route
+/// once per missing peer) avoids redundant bulletin reads and Vera route
 /// resolutions when a stalled session has multiple silent dealers.
 struct PssOfflineReportContext {
     origin_protocol: &'static str,

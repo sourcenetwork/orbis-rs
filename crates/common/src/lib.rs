@@ -6,7 +6,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const DOCKER_COMPOSE_FILE: &str = "docker/docker-compose-sourcehub-test.yml";
+const DOCKER_COMPOSE_FILE: &str = "docker/docker-compose-vera-test.yml";
 const INTEGRATION_TEST_COMPOSE_FILE: &str = "docker/docker-compose-integration-test.yml";
 static NEXT_PROJECT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -113,16 +113,16 @@ fn stop_compose(compose_file: &str, project_name: &str) {
     }
 }
 
-pub struct SourceHubTestContainer {
+pub struct VeraTestContainer {
     compose_file: String,
     project_name: String,
     chain_config: ChainConfig,
 }
 
-impl SourceHubTestContainer {
+impl VeraTestContainer {
     pub fn new() -> Self {
         let compose_file = DOCKER_COMPOSE_FILE.to_string();
-        let project_name = unique_project_name("orbis-sourcehub");
+        let project_name = unique_project_name("orbis-vera");
 
         let status = compose_command(&compose_file, &project_name)
             .args(["up", "-d", "--build"])
@@ -132,7 +132,7 @@ impl SourceHubTestContainer {
         if !status.success() {
             report_compose_failure(&compose_file, &project_name);
             stop_compose(&compose_file, &project_name);
-            panic!("Failed to start sourcehub container");
+            panic!("Failed to start vera container");
         }
 
         let chain_config = (|| -> Result<ChainConfig, String> {
@@ -140,19 +140,19 @@ impl SourceHubTestContainer {
                 .rpc_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     26657,
                 )?)))
                 .rest_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     1317,
                 )?)))
                 .grpc_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     9090,
                 )?)))
                 .build())
@@ -160,7 +160,7 @@ impl SourceHubTestContainer {
         .unwrap_or_else(|error| {
             report_compose_failure(&compose_file, &project_name);
             stop_compose(&compose_file, &project_name);
-            panic!("Failed to discover SourceHub endpoints: {error}");
+            panic!("Failed to discover Vera endpoints: {error}");
         });
 
         let container = Self {
@@ -180,18 +180,18 @@ impl SourceHubTestContainer {
 
         for attempt in 1..=max_attempts {
             if self.is_healthy() {
-                println!("SourceHub is healthy after {} attempts", attempt);
+                println!("Vera is healthy after {} attempts", attempt);
                 return;
             }
             println!(
-                "Waiting for SourceHub to be healthy (attempt {}/{})",
+                "Waiting for Vera to be healthy (attempt {}/{})",
                 attempt, max_attempts
             );
             std::thread::sleep(delay);
         }
 
         panic!(
-            "SourceHub failed to become healthy after {} attempts",
+            "Vera failed to become healthy after {} attempts",
             max_attempts
         );
     }
@@ -246,18 +246,18 @@ impl SourceHubTestContainer {
     }
 }
 
-impl Default for SourceHubTestContainer {
+impl Default for VeraTestContainer {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for SourceHubTestContainer {
+impl Drop for VeraTestContainer {
     fn drop(&mut self) {
         if std::thread::panicking() {
             report_compose_failure(&self.compose_file, &self.project_name);
         }
-        println!("Stopping SourceHub test container...");
+        println!("Stopping Vera test container...");
         stop_compose(&self.compose_file, &self.project_name);
     }
 }
@@ -271,7 +271,7 @@ pub struct NodeInfo {
     pub public_address: String,
 }
 
-/// Integration test network that spins up sourcehub + orbis nodes via Docker Compose.
+/// Integration test network that spins up vera + orbis nodes via Docker Compose.
 ///
 /// The node image is built with the crypto implementation selected by the
 /// `ORBIS_INTEGRATION_CRYPTO` env var (e.g. `bls12-381` or `decaf377`). When that var is set,
@@ -287,7 +287,7 @@ pub struct IntegrationTestNetwork {
 }
 
 /// Builder for `IntegrationTestNetwork` that supports injecting arbitrary genesis module state
-/// into the SourceHub chain before it starts, bypassing keeper validation via `InitGenesis`.
+/// into the Vera chain before it starts, bypassing keeper validation via `InitGenesis`.
 pub struct IntegrationTestNetworkBuilder {
     genesis_patches: serde_json::Map<String, serde_json::Value>,
     production_node_build: bool,
@@ -340,12 +340,12 @@ impl IntegrationTestNetwork {
     }
 
     fn all_services_healthy(&self) -> bool {
-        let sourcehub_healthy = Command::new("curl")
-            .args(["-sf", &format!("{}/health", self.sourcehub_rpc_url())])
+        let vera_healthy = Command::new("curl")
+            .args(["-sf", &format!("{}/health", self.vera_rpc_url())])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        if !sourcehub_healthy {
+        if !vera_healthy {
             return false;
         }
 
@@ -375,15 +375,15 @@ impl IntegrationTestNetwork {
         self.node_endpoints.iter().map(String::as_str).collect()
     }
 
-    pub fn sourcehub_rpc_url(&self) -> &str {
+    pub fn vera_rpc_url(&self) -> &str {
         &self.chain_config.rpc_url
     }
 
-    pub fn sourcehub_api_url(&self) -> &str {
+    pub fn vera_api_url(&self) -> &str {
         &self.chain_config.rest_url
     }
 
-    pub fn sourcehub_grpc_url(&self) -> &str {
+    pub fn vera_grpc_url(&self) -> &str {
         &self.chain_config.grpc_url
     }
 
@@ -393,9 +393,9 @@ impl IntegrationTestNetwork {
 
     pub fn chain_config_builder(&self) -> ChainConfigBuilder {
         ChainConfigBuilder::default()
-            .rpc_url(Some(self.sourcehub_rpc_url().to_string()))
-            .rest_url(Some(self.sourcehub_api_url().to_string()))
-            .grpc_url(Some(self.sourcehub_grpc_url().to_string()))
+            .rpc_url(Some(self.vera_rpc_url().to_string()))
+            .rest_url(Some(self.vera_api_url().to_string()))
+            .grpc_url(Some(self.vera_grpc_url().to_string()))
     }
 
     /// Restart the Orbis node containers without rebuilding them or resetting
@@ -650,19 +650,19 @@ impl IntegrationTestNetworkBuilder {
                 .rpc_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     26657,
                 )?)))
                 .rest_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     1317,
                 )?)))
                 .grpc_url(Some(localhost_url(published_port(
                     &compose_file,
                     &project_name,
-                    "sourcehub",
+                    "vera",
                     9090,
                 )?)))
                 .build();

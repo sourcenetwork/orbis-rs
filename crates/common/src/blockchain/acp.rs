@@ -3,7 +3,7 @@
 //! This module provides types and methods for interacting with Vera's ACP module,
 //! which manages access control policies for applications.
 
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
@@ -418,12 +418,12 @@ pub struct RelationshipSelector {
 }
 
 /// Wildcard selector - matches anything.
-/// Proto: sourcenetwork.acp_core.WildcardSelector (empty message)
+/// Proto: veranetwork.acp_core.WildcardSelector (empty message)
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct WildcardSelector {}
 
 /// Object selector - uses oneof with object at tag 1.
-/// Proto: sourcenetwork.acp_core.ObjectSelector
+/// Proto: veranetwork.acp_core.ObjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct ObjectSelector {
     #[prost(oneof = "ObjectSelectorKind", tags = "1, 2")]
@@ -440,7 +440,7 @@ pub enum ObjectSelectorKind {
 }
 
 /// Relation selector - uses oneof with relation at tag 1.
-/// Proto: sourcenetwork.acp_core.RelationSelector
+/// Proto: veranetwork.acp_core.RelationSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct RelationSelector {
     #[prost(oneof = "RelationSelectorKind", tags = "1, 2")]
@@ -457,7 +457,7 @@ pub enum RelationSelectorKind {
 }
 
 /// Subject selector - uses oneof with subject at tag 1.
-/// Proto: sourcenetwork.acp_core.SubjectSelector
+/// Proto: veranetwork.acp_core.SubjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct SubjectSelector {
     #[prost(oneof = "SubjectSelectorKind", tags = "1, 2")]
@@ -507,7 +507,7 @@ pub struct RelationshipRecord {
 // Client Extension Methods
 // ============================================================================
 
-impl SourceHubClient {
+impl VeraClient {
     // ========================================================================
     // ACP Queries
     // ========================================================================
@@ -515,7 +515,7 @@ impl SourceHubClient {
     /// Query a policy by ID.
     pub async fn acp_query_policy(&self, policy_id: &str) -> Result<QueryPolicyResponse> {
         let url = format!(
-            "{}/sourcenetwork/vera/acp/policy/{}",
+            "{}/veranetwork/vera/acp/policy/{}",
             self.config().rest_url,
             policy_id
         );
@@ -524,10 +524,7 @@ impl SourceHubClient {
 
     /// List all policy IDs.
     pub async fn acp_list_policy_ids(&self) -> Result<QueryPolicyIdsResponse> {
-        let url = format!(
-            "{}/sourcenetwork/vera/acp/policy_ids",
-            self.config().rest_url
-        );
+        let url = format!("{}/veranetwork/vera/acp/policy_ids", self.config().rest_url);
         self.rest_get(&url).await
     }
 

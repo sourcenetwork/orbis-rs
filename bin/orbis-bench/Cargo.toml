@@ -8,7 +8,7 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 authn = { path = "../../crates/authn" }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["sourcehub"] }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera"] }
 bs58 = "0.5"
 clap = { version = "4.5", features = ["derive"] }
 cli-tool = { path = "../cli-tool", default-features = false }
@@ -21,8 +21,8 @@ hex = { workspace = true }
 network = { path = "../../crates/network", features = ["shaping"] }
 orbis-node = { path = "../orbis-node", default-features = false, features = [
     "redb",
-    "authz-sourcehub",
-    "bulletin-sourcehub",
+    "authz-vera",
+    "bulletin-vera",
     "iroh",
     "harness",
 ] }

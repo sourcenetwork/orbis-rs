@@ -14,7 +14,7 @@ use crate::sign::v0::helpers::{
 };
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::SigShareInner;
 use crypto::SignaturePoint;

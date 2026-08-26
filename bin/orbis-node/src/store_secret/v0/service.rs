@@ -95,7 +95,7 @@ where
         .map_err(|e| StoreSecretError::Unauthorized(format!("JWT validation failed: {}", e)))?;
         if token.subject_id.is_some() {
             return Err(StoreSecretError::Unauthorized(
-                "delegated actors must store documents through their SourceHub signer".to_string(),
+                "delegated actors must store documents through their Vera signer".to_string(),
             )
             .into());
         }

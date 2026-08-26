@@ -13,8 +13,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [features]
-default = ["sourcehub"]
-sourcehub = []
+default = ["vera"]
+vera = []
 test-helpers = []
 
 [dev-dependencies]

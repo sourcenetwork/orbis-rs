@@ -1,24 +1,24 @@
 //! Integration tests for the blockchain module.
 //!
-//! These tests require Docker to be running and will spin up a SourceHub container.
+//! These tests require Docker to be running and will spin up a Vera container.
 //! Run with: cargo test -p common --test blockchain_integration -- --nocapture
 
-use crate::blockchain::{ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY};
-use crate::SourceHubTestContainer;
+use crate::blockchain::{ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
+use crate::VeraTestContainer;
 use std::sync::Arc;
 
 /// Test that we can connect to the chain and query its status.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_client_connection() {
-    // Spin up SourceHub
-    let container = SourceHubTestContainer::new();
+    // Spin up Vera
+    let container = VeraTestContainer::new();
 
     // Create config for local container
     let config = container.chain_config();
 
     // Create client
-    let client = SourceHubClient::new(config)
+    let client = VeraClient::new(config)
         .await
         .expect("Failed to create client");
 
@@ -38,9 +38,9 @@ async fn test_client_connection() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_get_latest_height() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
-    let client = SourceHubClient::new(config)
+    let client = VeraClient::new(config)
         .await
         .expect("Failed to create client");
 
@@ -66,8 +66,8 @@ fn test_signer_creation() {
     let address = signer.address();
     println!("Signer address: {}", address);
 
-    // Address should be bech32 encoded with "source" prefix
-    assert!(address.starts_with("source1"));
+    // Address should be bech32 encoded with "vera" prefix
+    assert!(address.starts_with("vera1"));
 }
 
 /// Test ChainConfig builder.
@@ -106,14 +106,14 @@ fn test_fee_calculation() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_concurrent_nonce_management() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
     let client = Arc::new(
-        SourceHubClient::with_signer(config.clone(), signer)
+        VeraClient::with_signer(config.clone(), signer)
             .await
             .expect("Failed to create client with signer"),
     );
@@ -183,13 +183,13 @@ async fn test_concurrent_nonce_management() {
 async fn test_gas_simulation() {
     use crate::blockchain::bank;
 
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
 
-    let client = SourceHubClient::with_signer(config.clone(), signer)
+    let client = VeraClient::with_signer(config.clone(), signer)
         .await
         .expect("Failed to create client with signer");
 
@@ -256,7 +256,7 @@ async fn test_gas_simulation() {
 }
 
 /// Test that several protobuf messages are simulated, signed, and committed in
-/// one SourceHub transaction. The benchmark crate separately exercises bounded
+/// one Vera transaction. The benchmark crate separately exercises bounded
 /// batch bisection and bad-item isolation around this client method.
 #[tokio::test]
 #[serial_test::serial]
@@ -264,11 +264,11 @@ async fn test_multi_message_auto_gas_broadcast() {
     use crate::blockchain::bank;
     use prost::Message;
 
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
     let signer =
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("create funded signer");
-    let client = SourceHubClient::with_signer(config.clone(), signer)
+    let client = VeraClient::with_signer(config.clone(), signer)
         .await
         .expect("create signed client");
     let recipient = TxSigner::from_hex_key(
@@ -352,7 +352,7 @@ fn test_sign_tx_without_fee_granter_leaves_granter_empty() {
 }
 
 /// `with_fee_granter` must cause every subsequently signed transaction to
-/// name that address in `AuthInfo.fee.granter`, requesting SourceHub's
+/// name that address in `AuthInfo.fee.granter`, requesting Vera's
 /// x/feegrant module pay fees from the granter instead of the signer.
 #[test]
 fn test_sign_tx_with_fee_granter_sets_granter() {
@@ -375,7 +375,7 @@ fn test_sign_tx_with_fee_granter_sets_granter() {
 }
 
 /// A malformed `--fee-granter` value must be rejected up front rather than
-/// silently producing transactions SourceHub's ante handler will reject.
+/// silently producing transactions Vera's ante handler will reject.
 #[test]
 fn test_with_fee_granter_rejects_invalid_address() {
     let signer =

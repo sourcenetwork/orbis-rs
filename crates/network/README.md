@@ -83,7 +83,7 @@ same endpoint and router. It:
 - records Gossip bytes, messages, errors, and neighbor gauges.
 
 The application remains responsible for checking the authenticated endpoint
-against SourceHub `NodeInfo` and verifying the embedded origin signature on a
+against Vera `NodeInfo` and verifying the embedded origin signature on a
 relayed DKG contribution.
 
 ## Traits and Iroh implementations

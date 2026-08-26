@@ -1,4 +1,4 @@
-//! SourceHub blockchain client.
+//! Vera blockchain client.
 
 use crate::blockchain::{bank, BlockchainError, ChainConfig, Result, TxSigner};
 use base64::Engine;
@@ -105,8 +105,8 @@ fn decode_abci_data(raw: Vec<u8>) -> Vec<u8> {
     raw
 }
 
-/// Client for interacting with SourceHub.
-pub struct SourceHubClient {
+/// Client for interacting with Vera.
+pub struct VeraClient {
     config: ChainConfig,
     rpc_client: TendermintClient,
     http_client: HttpClient,
@@ -116,7 +116,7 @@ pub struct SourceHubClient {
     tx_lock: Mutex<()>,
 }
 
-impl SourceHubClient {
+impl VeraClient {
     /// Create a new client for queries only.
     pub async fn new(config: ChainConfig) -> Result<Self> {
         let rpc_url: HttpClientUrl = config
@@ -972,7 +972,7 @@ struct GasInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceHubClient, RPC_POOL_IDLE_TIMEOUT};
+    use super::{VeraClient, RPC_POOL_IDLE_TIMEOUT};
     use crate::blockchain::{ChainConfig, TxSigner, TEST_ACCOUNT_HEX_KEY};
     use serde_json::Value;
     use std::io;
@@ -1077,7 +1077,7 @@ mod tests {
         });
 
         let config = ChainConfig::builder().rpc_url(Some(rpc_url)).build();
-        let client = SourceHubClient::new(config).await.unwrap();
+        let client = VeraClient::new(config).await.unwrap();
 
         client.rpc_client.health().await.unwrap();
         let first_connection = request_connections_rx.recv().await.unwrap();
@@ -1104,7 +1104,7 @@ mod tests {
             .rpc_url(Some(endpoint.clone()))
             .rest_url(Some(endpoint))
             .build();
-        let mut client = SourceHubClient::new(config.clone()).await.unwrap();
+        let mut client = VeraClient::new(config.clone()).await.unwrap();
         client.signer = Some(TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).unwrap());
         let client = Arc::new(client);
         let tx_guard = client.tx_lock.lock().await;

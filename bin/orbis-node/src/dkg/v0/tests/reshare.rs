@@ -239,7 +239,7 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
 
 /// Reshare `SessionInit` must come from the canonical next-committee leader.
 ///
-/// This fixture deliberately sends a fully SourceHub-anchored initialization
+/// This fixture deliberately sends a fully Vera-anchored initialization
 /// from another authenticated next-committee receiver so the test reaches the
 /// leader check rather than failing an earlier committee or route check.
 #[tokio::test]
@@ -530,7 +530,7 @@ async fn test_reshare_session_init_blocks_concurrent_ceremony() {
     cleanup_db(&db_path);
 }
 
-/// A pure Dealer must retain its old share until SourceHub finalizes a
+/// A pure Dealer must retain its old share until Vera finalizes a
 /// committee that excludes it, then delete both the bundle and index entry.
 #[tokio::test]
 async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
@@ -609,7 +609,7 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
         .await
         .expect("phase4 should succeed for Dealer");
 
-    // Phase 4 only marks the dealer complete locally. Until SourceHub finalizes
+    // Phase 4 only marks the dealer complete locally. Until Vera finalizes
     // the exclusion, both the secret bundle and its index entry remain usable.
     assert!(
         RingShareBundle::load_by_ring_key(&app_state.local_storage, ring_pk).is_ok(),
@@ -666,7 +666,7 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
 }
 
 /// The PSS claim remains held after a pure Dealer finishes sending shares and
-/// is released only once SourceHub finalizes the committee transition.
+/// is released only once Vera finalizes the committee transition.
 #[tokio::test]
 async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
     let db_name = "test_dealer_phase4_finalized_pss";

@@ -367,13 +367,10 @@ fn render_report(
     );
     definition(
         &mut html,
-        "SourceHub image digest",
-        manifest
-            .sourcehub_image
-            .as_deref()
-            .unwrap_or("not recorded"),
+        "Vera image digest",
+        manifest.vera_image.as_deref().unwrap_or("not recorded"),
     );
-    definition(&mut html, "SourceHub ref", &manifest.sourcehub_ref);
+    definition(&mut html, "Vera ref", &manifest.vera_ref);
     definition(
         &mut html,
         "P2P messages (counter delta)",

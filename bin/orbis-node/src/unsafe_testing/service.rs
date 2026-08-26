@@ -591,7 +591,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(Status::failed_precondition)?;
         if !ring_payload_matches_ring_key(&request.ring_pk, &ring.ring_pk) {
             return Err(Status::failed_precondition(
-                "ring_pk does not match SourceHub state",
+                "ring_pk does not match Vera state",
             ));
         }
 

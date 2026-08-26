@@ -2,13 +2,13 @@
 //!
 //! Spawns a real orbis-node instance as a tokio task (not a process or
 //! container) against a caller-injected, shared mock bulletin instead of a
-//! real chain — no Docker, no SourceHub, no external network dependency.
+//! real chain — no Docker, no Vera, no external network dependency.
 //! Real Iroh P2P networking and the real DKG/PRE/SIGN protocol code run
 //! unmodified; only the chain/authz backends are swapped for in-memory mocks.
 //!
 //! Adapted from `tests::concurrent::setup_live_three_node_network`'s per-node
 //! setup, which this mirrors closely — see that function for the equivalent
-//! pattern against a real (Dockerized) SourceHub.
+//! pattern against a real (Dockerized) Vera.
 //!
 //! Not used by the production binary; opt in via the `harness` feature.
 

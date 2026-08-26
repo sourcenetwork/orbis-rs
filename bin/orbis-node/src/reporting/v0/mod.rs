@@ -20,7 +20,7 @@ use crate::reporting::v0::types::{
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::RingPayload;
 use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};

@@ -3,7 +3,7 @@
 //! This module provides types and methods for interacting with Vera's bulletin module,
 //! which manages namespaced message posting and retrieval.
 
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 
 pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
@@ -485,7 +485,7 @@ pub struct Collaborator {
 // Client Extension Methods
 // ============================================================================
 
-impl SourceHubClient {
+impl VeraClient {
     // ========================================================================
     // Bulletin Queries (ABCI/gRPC)
     // ========================================================================

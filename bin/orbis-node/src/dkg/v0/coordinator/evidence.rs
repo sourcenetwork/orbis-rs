@@ -1038,7 +1038,7 @@ where
 }
 
 /// Report a `Prepare` that is independently provable as invalid (noncanonical
-/// leader, or routes/digest contradicting SourceHub) before any session is
+/// leader, or routes/digest contradicting Vera) before any session is
 /// created for it. Best-effort and queue-only: unlike the other control
 /// evidence kinds, a pure pending-new reshare receiver that detects this
 /// (rather than a current-committee member) cannot relay it in this pass —

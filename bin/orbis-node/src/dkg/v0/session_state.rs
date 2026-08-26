@@ -1114,7 +1114,7 @@ pub struct SessionStateManager<D: Dkg> {
     offline_relay_receipts: TokioMutex<HashMap<AttemptKey, DkgOfflineRelayReceipt>>,
     /// Ceremony/subject claims made at terminal transport boundaries. This
     /// suppresses repeated work from later boundaries before a detached report
-    /// task is spawned; SourceHub session deduplication remains authoritative.
+    /// task is spawned; Vera session deduplication remains authoritative.
     offline_candidate_dedup: StdMutex<HashMap<(CeremonyId, String), Instant>>,
     /// Node-wide cap shared by inbound and outbound private DKG pair exchanges,
     /// including ceremonies for different rings. A resource limit on the DKG

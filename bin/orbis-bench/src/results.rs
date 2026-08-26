@@ -32,9 +32,9 @@ pub struct RunManifest {
     pub status: RunStatus,
     pub experiment: Experiment,
     pub host: HostMetadata,
-    pub sourcehub_ref: String,
+    pub vera_ref: String,
     pub node_image: Option<String>,
-    pub sourcehub_image: Option<String>,
+    pub vera_image: Option<String>,
     #[serde(default)]
     pub crypto_implementation: String,
     #[serde(default)]
@@ -589,7 +589,7 @@ mod tests {
             created_at_unix_ms: 1,
             completed_at_unix_ms: None,
             status: RunStatus::Interrupted,
-            sourcehub_ref: experiment.sourcehub_ref.clone(),
+            vera_ref: experiment.vera_ref.clone(),
             experiment,
             host: HostMetadata {
                 os: "test".into(),
@@ -604,7 +604,7 @@ mod tests {
                 docker_info: None,
             },
             node_image: None,
-            sourcehub_image: None,
+            vera_image: None,
             crypto_implementation: "bls12-381".into(),
             stack_projects: Vec::new(),
             profile_calibration: BTreeMap::new(),

@@ -8,7 +8,7 @@ networks:
       - { ring_size: 35, threshold: 25 }
 
 operations: [dkg, pre, sign]
-# pss_refresh is disabled here: SourceHub enforces a hard 86400s (24h)
+# pss_refresh is disabled here: Vera enforces a hard 86400s (24h)
 # minimum on every ring's pss_interval (creation and update alike), which is
 # now actually validated since rings are created via a live MsgCreateRing
 # transaction instead of being seeded directly into genesis. A short
@@ -43,19 +43,19 @@ timeouts:
 resources:
   cpus_per_node: null
   memory_per_node: null
-  # The SourceHub validator (replica index 0) is the only container that
+  # The Vera validator (replica index 0) is the only container that
   # proposes/executes blocks, so it's the one that bottlenecks under a burst
   # of near-simultaneous FinalizeRing transactions as all 50 nodes clear
   # Phase 4. Applied uniformly to the validator and its replicas (a cap just
   # bounds what a container *may* use, so capping replicas too is harmless).
   # This is a starting point, not a measured value — tune it against your
   # own host's total Docker capacity (`docker system info`).
-  cpus_per_sourcehub: 4.0
-  memory_per_sourcehub: 4g
+  cpus_per_vera: 4.0
+  memory_per_vera: 4g
 
-sourcehub_replicas: 7
+vera_replicas: 7
 setup_batch_size: 25
-# Retained for reference: SourceHub's 86400s floor (see the pss_refresh note
+# Retained for reference: Vera's 86400s floor (see the pss_refresh note
 # above) means this value has no observable effect on any operation actually
 # run here — restore it once refresh can be exercised again.
 pss_interval_secs: 15

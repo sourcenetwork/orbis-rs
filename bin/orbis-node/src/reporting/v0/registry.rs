@@ -41,7 +41,7 @@ use crate::sign::v0::helpers::{
 use crate::sign::v0::messages::REFRESH_HEALTH_CHECK_DOMAIN;
 use async_trait::async_trait;
 use authz::r#trait::Authz;
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
@@ -1442,7 +1442,7 @@ impl InvalidCryptoResponseHandler {
 
                 let noncanonical_leader =
                     prepare.canonical_leader_node_key() != Some(prepare.leader_node_key.as_str());
-                let routes_contradict_sourcehub = if noncanonical_leader {
+                let routes_contradict_vera = if noncanonical_leader {
                     false
                 } else {
                     // Reshare (`PendingNew` scope) always attributes the accused
@@ -1455,7 +1455,7 @@ impl InvalidCryptoResponseHandler {
                     // membership, and the new/next committee against the
                     // accused's own claimed scope. Refresh only ever has a
                     // current committee, so only that one applies.
-                    let current_contradicts = committee_routes_contradict_sourcehub(
+                    let current_contradicts = committee_routes_contradict_vera(
                         context,
                         &prepare.committees.current,
                         &ring.peer_node_keys,
@@ -1469,7 +1469,7 @@ impl InvalidCryptoResponseHandler {
                                         .to_string(),
                                 )
                             })?;
-                            committee_routes_contradict_sourcehub(
+                            committee_routes_contradict_vera(
                                 context,
                                 next,
                                 &accused_committee.peer_node_keys,
@@ -1480,7 +1480,7 @@ impl InvalidCryptoResponseHandler {
                         };
                     current_contradicts || next_contradicts
                 };
-                if !noncanonical_leader && !routes_contradict_sourcehub {
+                if !noncanonical_leader && !routes_contradict_vera {
                     return Err(ReportingError::Unauthorized(
                         "Prepare content does not prove a leader-prepare fault".to_string(),
                     ));
@@ -2511,11 +2511,11 @@ fn leader_deliveries_prove_equivocation(
 }
 
 /// Whether a claimed committee's node_keys/routes (from a signed Prepare)
-/// contradict SourceHub's own authoritative NodeInfo for the given expected
+/// contradict Vera's own authoritative NodeInfo for the given expected
 /// membership. Degrades to "no contradiction" if routes can't currently be
 /// resolved — an unrelated resolution hiccup should not manufacture a false
 /// attribution.
-async fn committee_routes_contradict_sourcehub(
+async fn committee_routes_contradict_vera(
     context: &ReportValidationContext,
     claimed: &transport::CommitteeConfig,
     expected_node_keys: &[String],

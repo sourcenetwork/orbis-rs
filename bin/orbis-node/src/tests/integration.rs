@@ -1,6 +1,6 @@
 //! Docker-based integration test: full DKG + PRE + SIGN flow.
 //!
-//! Spins up a full Docker Compose environment (SourceHub + 3 orbis-node containers)
+//! Spins up a full Docker Compose environment (Vera + 3 orbis-node containers)
 //! and exercises the complete DKG → StoreSecret → PRE workflow via CLI commands.
 //!
 //! Run with:
@@ -11,9 +11,7 @@ use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
 };
 use common::{
-    blockchain::{
-        orbis::WhitelistTarget, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
-    },
+    blockchain::{orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY},
     IntegrationTestNetwork,
 };
 use crypto::helpers::generate_keypair;
@@ -54,7 +52,7 @@ fn assert_policy_rejection(context: &str, error: &anyhow::Error) {
 /// Docker-based integration test: Run DKG and PRE using Docker Compose
 ///
 /// This test spins up a full integration environment with:
-/// - SourceHub chain
+/// - Vera chain
 /// - 3 Orbis nodes
 ///
 /// Then runs the full DKG -> PRE workflow via CLI commands.
@@ -168,7 +166,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // The ring is in genesis with pss_interval=5 (bypasses the 86400 minimum).
     // Nodes are whitelisted by ring_id rather than a policy_id, so no ACP ring
     // governance policy is needed for DKG authorization.
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -839,7 +837,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // ====================================================================
     // Step 5: PSS Reshare — update the existing ring bulletin post with a
-    // next committee.  SourceHub now supports in-place post updates, so the
+    // next committee.  Vera now supports in-place post updates, so the
     // ring_id stays stable while the payload first announces new_peer_node_keys
     // and then, after Phase 4, converges to peer_ids = new_peer_node_keys.
     // ====================================================================
@@ -1128,7 +1126,7 @@ async fn wait_for_ring_state_on_all_nodes(
 }
 
 async fn wait_for_node_info_on_chain(
-    controller_client: &SourceHubClient,
+    controller_client: &VeraClient,
     node_key: &str,
     timeout: Duration,
     poll_interval: Duration,

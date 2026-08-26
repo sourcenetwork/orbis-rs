@@ -1,4 +1,6 @@
-use super::{ring_to_bulletin_post, SourceHubBulletin};
+//! Tests for the Vera bulletin backend.
+
+use super::{ring_to_bulletin_post, VeraBulletin};
 use crate::r#trait::{
     Bulletin, BulletinKind, BulletinWriteKind, DemeritConfig, DocumentPayload, ReportingConfig,
     RingCancellationPayload, RingPayload, UpgradeInfo,
@@ -10,9 +12,9 @@ use common::{
             DemeritConfig as ChainDemeritConfig, ReportingConfig as ChainReportingConfig,
             Ring as ChainRing, UpgradeInfo as ChainUpgradeInfo,
         },
-        BlockchainError, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+        BlockchainError, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
     },
-    SourceHubTestContainer,
+    VeraTestContainer,
 };
 
 const ORBIS_RING_POLICY_YAML: &str = r#"
@@ -65,7 +67,7 @@ fn ring_relay_configuration_preserves_opt_in() {
     );
 }
 
-async fn create_orbis_ring_policy(client: &SourceHubClient) -> String {
+async fn create_orbis_ring_policy(client: &VeraClient) -> String {
     let ids_before: std::collections::HashSet<String> = client
         .acp_list_policy_ids()
         .await
@@ -104,7 +106,7 @@ async fn create_orbis_ring_policy(client: &SourceHubClient) -> String {
 
 #[test]
 fn test_name() {
-    assert_eq!(SourceHubBulletin::name(), "bulletin/sourcehub");
+    assert_eq!(VeraBulletin::name(), "bulletin/vera");
 }
 
 #[test]
@@ -171,7 +173,7 @@ fn ring_query_conversion_preserves_reporting_config() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_document() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
@@ -179,7 +181,7 @@ async fn test_bulletin_document() {
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+    let bulletin = VeraBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -247,7 +249,7 @@ async fn test_bulletin_document() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_ring() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
@@ -255,7 +257,7 @@ async fn test_bulletin_ring() {
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+    let bulletin = VeraBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -347,7 +349,7 @@ async fn test_bulletin_ring() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
@@ -355,7 +357,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
 
     let node_key = signer.public_key_hex();
 
-    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+    let bulletin = VeraBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -438,7 +440,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             .await
             .expect("fund backup account");
         let backup_key = signer.public_key_hex();
-        let backup_client = SourceHubClient::with_signer(config.clone(), signer)
+        let backup_client = VeraClient::with_signer(config.clone(), signer)
             .await
             .expect("backup client");
         backup_client
@@ -495,12 +497,12 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bulletin_cancel_pending_ring() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .expect("Failed to create signer");
     let node_key = signer.public_key_hex();
-    let bulletin = SourceHubBulletin::with_signer(container.chain_config_builder(), signer, None)
+    let bulletin = VeraBulletin::with_signer(container.chain_config_builder(), signer, None)
         .await
         .unwrap();
 
@@ -552,21 +554,21 @@ async fn test_bulletin_cancel_pending_ring() {
 #[tokio::test]
 #[serial_test::serial]
 async fn with_signer_tolerates_a_racing_duplicate_registration() {
-    let container = SourceHubTestContainer::new();
+    let container = VeraTestContainer::new();
     let config = container.chain_config();
 
     // Two independent signers and chain clients for the same underlying
     // account, exactly as two separate node processes (an old one still
     // finishing up and a freshly restarted one) would each construct their
-    // own `SourceHubClient` around the same persisted signing key.
+    // own `VeraClient` around the same persisted signing key.
     let signer_a =
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("construct signer a");
     let signer_b =
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone()).expect("construct signer b");
 
     let (result_a, result_b) = tokio::join!(
-        SourceHubBulletin::with_signer(container.chain_config_builder(), signer_a, None),
-        SourceHubBulletin::with_signer(container.chain_config_builder(), signer_b, None),
+        VeraBulletin::with_signer(container.chain_config_builder(), signer_a, None),
+        VeraBulletin::with_signer(container.chain_config_builder(), signer_b, None),
     );
 
     result_a.expect("first concurrent registration must succeed");

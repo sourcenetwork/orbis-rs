@@ -1,3 +1,5 @@
+//! Vera-backed authorization implementation.
+
 use crate::{
     error::{AuthZError, Result},
     r#trait::Authz,
@@ -5,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use common::blockchain::{
     acp::{AccessRequest, Actor, Object, Operation, Policy},
-    ChainConfigBuilder, SourceHubClient,
+    ChainConfigBuilder, VeraClient,
 };
 use serde::{Deserialize, Serialize};
 
@@ -73,17 +75,17 @@ impl AccessCheckRequest {
     }
 }
 
-pub struct SourceHubAuth {
-    pub chain_client: SourceHubClient,
+pub struct VeraAuth {
+    pub chain_client: VeraClient,
 }
 
 #[async_trait]
-impl Authz for SourceHubAuth {
+impl Authz for VeraAuth {
     async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
         self.verify_at(permission, subject, None).await
     }
 
-    /// For SourceHub the opaque anchor is a decimal block height.
+    /// For Vera the opaque anchor is a decimal block height.
     async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
         let height = parse_anchor_height(anchor)?;
         self.verify_at(permission, subject, Some(height)).await
@@ -107,7 +109,7 @@ impl Authz for SourceHubAuth {
     }
 }
 
-/// Parse a SourceHub opaque anchor (a decimal block height).
+/// Parse a Vera opaque anchor (a decimal block height).
 fn parse_anchor_height(anchor: &str) -> Result<u64> {
     let height = anchor.parse::<u64>().map_err(|e| {
         AuthZError::InvalidRequest(format!("invalid block-height anchor {anchor:?}: {e}"))
@@ -120,7 +122,7 @@ fn parse_anchor_height(anchor: &str) -> Result<u64> {
     Ok(height)
 }
 
-impl SourceHubAuth {
+impl VeraAuth {
     async fn verify_at(
         &self,
         permission: Vec<u8>,
@@ -175,14 +177,14 @@ impl SourceHubAuth {
     }
 }
 
-impl SourceHubAuth {
+impl VeraAuth {
     pub fn name() -> String {
-        "authz/sourcehub".to_string()
+        "authz/vera".to_string()
     }
 
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
-        Ok(SourceHubAuth {
-            chain_client: SourceHubClient::new(chain_config_builder.build())
+        Ok(VeraAuth {
+            chain_client: VeraClient::new(chain_config_builder.build())
                 .await
                 .map_err(|e| AuthZError::ChainError(e.to_string()))?,
         })

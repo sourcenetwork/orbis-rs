@@ -1,6 +1,6 @@
 # Orbis CLI Tool
 
-A command-line tool for interacting with an **Orbis** network. Intended primarily for **development and testing**, but can be pointed at any SourceHub chain and orbis node via the network flags below.
+A command-line tool for interacting with an **Orbis** network. Intended primarily for **development and testing**, but can be pointed at any Vera chain and orbis node via the network flags below.
 
 ## Building
 
@@ -22,11 +22,11 @@ Every subcommand shares one set of global flags (env var equivalents in parenthe
 | Flag | Env var | Default | Used by |
 |------|---------|---------|---------|
 | `-e, --endpoint <URL>` | `ORBIS_ENDPOINT` | `http://localhost:50051` | orbis node gRPC service |
-| `--chain-id <ID>` | `ORBIS_CHAIN_ID` | `sourcehub-localnet` | SourceHub chain ID |
+| `--chain-id <ID>` | `ORBIS_CHAIN_ID` | `vera-localnet` | Vera chain ID |
 | `--rpc-url <URL>` | `ORBIS_RPC_URL` | `http://localhost:26657` | Tendermint RPC |
 | `--rest-url <URL>` | `ORBIS_REST_URL` | `http://localhost:1317` | Cosmos REST API |
-| `--chain-grpc-url <URL>` | `ORBIS_CHAIN_GRPC_URL` | `http://localhost:9090` | SourceHub gRPC (distinct from `--endpoint`) |
-| `--account-prefix <PREFIX>` | `ORBIS_ACCOUNT_PREFIX` | `source` | Bech32 address prefix |
+| `--chain-grpc-url <URL>` | `ORBIS_CHAIN_GRPC_URL` | `http://localhost:9090` | Vera gRPC (distinct from `--endpoint`) |
+| `--account-prefix <PREFIX>` | `ORBIS_ACCOUNT_PREFIX` | `vera` | Bech32 address prefix |
 | `--signing-key <HEX>` | `ORBIS_SIGNING_KEY` | *(none)* | Signs any chain-writing command |
 
 `--signing-key`/`ORBIS_SIGNING_KEY` has **no default** and is required by any command that writes to chain (policy/object/relationship, bulletin namespace/collaborator, ring lifecycle commands, `fund`, `post-key-derivation`). Commands that only talk to the orbis node over gRPC, or that are purely local, don't need it.
@@ -35,7 +35,7 @@ Every subcommand shares one set of global flags (env var equivalents in parenthe
 
 ```bash
 cargo run -p cli-tool -- \
-  --chain-id sourcehub-testnet-1 \
+  --chain-id vera-testnet-1 \
   --rpc-url https://rpc.testnet.example \
   --rest-url https://rest.testnet.example \
   --chain-grpc-url https://grpc.testnet.example \
@@ -50,7 +50,7 @@ ORBIS_SIGNING_KEY=c4a48e2fce1481cd3294b4490f6678090ea98d3d0e5cd984558ab0968741b1
   cargo run -p cli-tool -- add-policy-to-chain
 ```
 
-That hex value is the well-known SourceHub localnet devnet key (mnemonic `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about`), pre-funded only in local Docker Compose setups. It is public and deterministic — **never fund it, or use it, on a real network.**
+That hex value is the well-known Vera localnet devnet key (mnemonic `abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about`), pre-funded only in local Docker Compose setups. It is public and deterministic — **never fund it, or use it, on a real network.**
 
 ## Secret input
 
@@ -71,7 +71,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 | `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry (create one with `create-ring`). |
 | `ring-state` | Query the local ring state (public polynomial + last PSS refresh timestamp). Requires `--ring-pk-hex`. |
 | `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
-| `derive-signer-did` | Derive the secp256k1 public key and `did:key` for `--signing-key`/`ORBIS_SIGNING_KEY`. Pure local computation, no network calls. This is the identity SourceHub resolves for ACP checks on signed transactions (e.g. `create-ring`'s `create_ring` permission) — use it to find out, ahead of time, which DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`) before such a transaction will be authorized. Prints `PUBLIC_KEY=` and `DID=`. |
+| `derive-signer-did` | Derive the secp256k1 public key and `did:key` for `--signing-key`/`ORBIS_SIGNING_KEY`. Pure local computation, no network calls. This is the identity Vera resolves for ACP checks on signed transactions (e.g. `create-ring`'s `create_ring` permission) — use it to find out, ahead of time, which DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`) before such a transaction will be authorized. Prints `PUBLIC_KEY=` and `DID=`. |
 | `get-latest-ring` | Fetch a ring from the orbis module by `--ring-id`. Prints `RING_ID=` and `RING_PK=`. |
 
 ### Secrets: encrypt, store, re-encrypt

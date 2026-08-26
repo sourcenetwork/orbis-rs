@@ -1118,9 +1118,9 @@ where
 // Chain client extension methods
 // ============================================================================
 
-use crate::blockchain::{BroadcastResult, SourceHubClient};
+use crate::blockchain::{BroadcastResult, VeraClient};
 
-impl SourceHubClient {
+impl VeraClient {
     pub async fn orbis_create_ring(
         &self,
         peer_node_keys: Vec<String>,

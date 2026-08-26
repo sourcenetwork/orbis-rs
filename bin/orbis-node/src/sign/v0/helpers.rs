@@ -19,7 +19,7 @@ use crate::sign::v0::{
 };
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
 };
@@ -188,7 +188,7 @@ pub fn refresh_health_check_peer_node_keys_sha256(peer_node_keys: &[String]) -> 
 
 /// Serialize the canonical post-refresh health-check statement.
 ///
-/// This is intentionally not SourceHub-compatible signing material. It is an
+/// This is intentionally not Vera-compatible signing material. It is an
 /// internal diagnostic domain so the recovered signature cannot be replayed as a
 /// reshare-finalization signature or any user-facing signing result.
 pub fn refresh_health_check_message(statement: &RefreshHealthCheckStatement) -> Result<Vec<u8>> {
@@ -1121,12 +1121,12 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
-    fn ring_reshare_update_message_matches_sourcehub_vector() {
+    fn ring_reshare_update_message_matches_vera_vector() {
         let bulletin = bulletin::dummy::DummyBulletin::default();
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
@@ -1152,7 +1152,7 @@ mod ring_reshare_update_tests {
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:

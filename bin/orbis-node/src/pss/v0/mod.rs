@@ -20,7 +20,7 @@
 //!
 //! Reshare: every current member may forward a pending reshare to the lowest
 //! canonical next-committee signing key. The receiver leader authenticates the
-//! forwarder, rereads SourceHub, and creates the attempt. There is
+//! forwarder, rereads Vera, and creates the attempt. There is
 //! intentionally no receiver-leader failover for reshare in protocol v0,
 //! because every next-committee receiver is required regardless of who
 //! triggers the attempt.

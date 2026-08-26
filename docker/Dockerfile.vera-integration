@@ -1,16 +1,16 @@
 FROM golang:1.26.2 AS builder
-# No literal default: falls back to the SOURCEHUB_REF file below (the same
-# single source of truth bin/orbis-bench/src/config.rs's DEFAULT_SOURCEHUB_REF
+# No literal default: falls back to the VERA_REF file below (the same
+# single source of truth bin/orbis-bench/src/config.rs's DEFAULT_VERA_REF
 # reads via include_str!) so every caller that doesn't pass --build-arg
-# SOURCEHUB_REF stays in sync with one file instead of a hardcoded default
+# VERA_REF stays in sync with one file instead of a hardcoded default
 # that could drift from it. Explicit --build-arg / compose `args:` overrides
-# (e.g. orbis-bench's per-experiment sourcehub_ref) still take precedence.
-ARG SOURCEHUB_REF
-COPY SOURCEHUB_REF /tmp/SOURCEHUB_REF
+# (e.g. orbis-bench's per-experiment vera_ref) still take precedence.
+ARG VERA_REF
+COPY VERA_REF /tmp/VERA_REF
 RUN git init /app \
     && cd /app \
     && git remote add origin https://github.com/sourcenetwork/vera.git \
-    && git fetch --depth 1 origin "${SOURCEHUB_REF:-$(cat /tmp/SOURCEHUB_REF)}" \
+    && git fetch --depth 1 origin "${VERA_REF:-$(cat /tmp/VERA_REF)}" \
     && git checkout --detach FETCH_HEAD
 WORKDIR /app
 RUN --mount=type=cache,target=/root/.cache \
@@ -20,6 +20,6 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/build/verad /usr/local/bin/verad
-RUN ln -s verad /usr/local/bin/sourcehubd
+RUN ln -s verad /usr/local/bin/verad
 RUN useradd --create-home --home-dir /home/node node
 USER node

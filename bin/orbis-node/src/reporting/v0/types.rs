@@ -1170,7 +1170,7 @@ impl ControlMessageArtifact {
 pub enum DkgControlMessageFaultKind {
     /// One signed `Prepare`, independently provable as invalid: sent by a
     /// noncanonical leader, or naming committee routes/digests that
-    /// contradict current SourceHub `NodeInfo`/ring state.
+    /// contradict current Vera `NodeInfo`/ring state.
     LeaderPrepareFault,
     /// Two conflicting signed acks (`Prepared`/`Activated`/`Begun`) from the
     /// same follower for the identical (ceremony, attempt, message_kind)
@@ -1473,7 +1473,7 @@ pub enum InvalidCryptoResponse {
         statement: Box<DkgLeaderEquivocationStatement>,
     },
     /// A direct-QUIC control-handshake fault: a noncanonical leader's
-    /// `Prepare`, a `Prepare` whose routes/digests contradict SourceHub, or
+    /// `Prepare`, a `Prepare` whose routes/digests contradict Vera, or
     /// a follower equivocating on a `Prepared`/`Activated`/`Begun` ack.
     DkgControlMessageFault {
         statement: Box<DkgControlMessageFaultStatement>,
@@ -2053,7 +2053,7 @@ mod tests {
         ReportEnvelope {
             domain: REPORT_DOMAIN.to_string(),
             report_type: NODE_OFFLINE_REPORT_TYPE.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2076,7 +2076,7 @@ mod tests {
     fn relay_request_statement() -> RelayRequestStatement {
         RelayRequestStatement {
             domain: RELAY_REQUEST_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2167,7 +2167,7 @@ mod tests {
     fn pre_statement() -> PreReencryptResponseStatement {
         PreReencryptResponseStatement {
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2192,7 +2192,7 @@ mod tests {
     fn dkg_commitment_statement() -> DkgCommitmentStatement {
         DkgCommitmentStatement {
             domain: DKG_COMMITMENT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2214,7 +2214,7 @@ mod tests {
     fn dkg_share_statement() -> DkgShareStatement {
         DkgShareStatement {
             domain: DKG_SHARE_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2279,7 +2279,7 @@ mod tests {
         let payload = InvalidCryptoResponse::Sign {
             statement: SignResponseStatement {
                 domain: SIGN_RESPONSE_DOMAIN.to_string(),
-                chain_id: "sourcehub-test".to_string(),
+                chain_id: "vera-test".to_string(),
                 ring_id: "ring-1".to_string(),
                 ring_pk: "aabb".to_string(),
                 ring_state_sha256: "11".repeat(32),
@@ -2414,7 +2414,7 @@ mod tests {
     fn invalid_crypto_response_dkg_public_origin_fault_payload_round_trips() {
         let statement = DkgPublicOriginFaultStatement {
             domain: DKG_PUBLIC_ORIGIN_FAULT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2453,7 +2453,7 @@ mod tests {
     fn invalid_crypto_response_dkg_leader_equivocation_payload_round_trips() {
         let statement = DkgLeaderEquivocationStatement {
             domain: DKG_LEADER_EQUIVOCATION_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2499,7 +2499,7 @@ mod tests {
         // evidence.
         let statement = DkgLeaderEquivocationStatement {
             domain: DKG_LEADER_BATCH_MISMATCH_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2539,7 +2539,7 @@ mod tests {
     fn invalid_crypto_response_dkg_leader_public_fault_payload_round_trips() {
         let statement = DkgLeaderPublicFaultStatement {
             domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2580,7 +2580,7 @@ mod tests {
         ] {
             let statement = DkgLeaderPublicFaultStatement {
                 domain: DKG_LEADER_PUBLIC_FAULT_DOMAIN.to_string(),
-                chain_id: "sourcehub-test".to_string(),
+                chain_id: "vera-test".to_string(),
                 ring_id: "ring-1".to_string(),
                 ring_pk: "aabb".to_string(),
                 ring_state_sha256: "11".repeat(32),
@@ -2614,7 +2614,7 @@ mod tests {
     fn invalid_crypto_response_dkg_control_message_fault_leader_prepare_payload_round_trips() {
         let statement = DkgControlMessageFaultStatement {
             domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2649,7 +2649,7 @@ mod tests {
     fn invalid_crypto_response_dkg_control_message_fault_ack_equivocation_payload_round_trips() {
         let statement = DkgControlMessageFaultStatement {
             domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
@@ -2689,7 +2689,7 @@ mod tests {
     {
         let statement = DkgControlMessageFaultStatement {
             domain: DKG_CONTROL_MESSAGE_FAULT_DOMAIN.to_string(),
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring-1".to_string(),
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),

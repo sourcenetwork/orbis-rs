@@ -8,7 +8,7 @@ use common::blockchain::{
     },
     bank::{Coin, MsgSend},
     orbis::{DemeritConfig, MsgUpdateNodePeerId, ReportingConfig},
-    SourceHubClient,
+    VeraClient,
 };
 use cosmrs::Any;
 use prost::Message;
@@ -70,7 +70,7 @@ pub struct BatchFailure {
 }
 
 pub async fn broadcast_bounded(
-    client: &SourceHubClient,
+    client: &VeraClient,
     messages: Vec<SetupMessage>,
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -139,7 +139,7 @@ where
 }
 
 pub async fn fund_nodes(
-    client: &SourceHubClient,
+    client: &VeraClient,
     nodes: &[NodeIdentity],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -169,7 +169,7 @@ pub async fn fund_nodes(
 }
 
 pub async fn update_peer_addresses(
-    client: &SourceHubClient,
+    client: &VeraClient,
     nodes: &[NodeIdentity],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -198,7 +198,7 @@ pub async fn update_peer_addresses(
 /// its ID, so unlike `fund_nodes`/`update_peer_addresses` these can't be
 /// folded into `broadcast_bounded`'s batching).
 pub async fn create_rings_on_chain<'a>(
-    client: &SourceHubClient,
+    client: &VeraClient,
     rings: impl Iterator<Item = &'a mut RingDefinition>,
     protocol_version: u64,
 ) -> Result<()> {
@@ -250,7 +250,7 @@ pub async fn create_rings_on_chain<'a>(
 /// already exist. Returns the chain-assigned policy ID, which is expected to
 /// equal `RING_GOVERNANCE_POLICY_ID` since this is always the first policy
 /// created on a fresh chain (see that constant's doc comment).
-pub async fn create_ring_governance_policy(client: &SourceHubClient) -> Result<String> {
+pub async fn create_ring_governance_policy(client: &VeraClient) -> Result<String> {
     let existing: HashSet<String> = client
         .acp_list_policy_ids()
         .await?
@@ -295,13 +295,13 @@ pub async fn create_ring_governance_policy(client: &SourceHubClient) -> Result<S
 /// (reshare, pss interval changes, etc.) are authorized. Does *not* register
 /// the ring as an ACP object — `MsgCreateRing`'s chain-side handler already
 /// does that itself as part of ring creation
-/// (`Keeper.registerRingACPObject` in SourceHub's `x/orbis/keeper/msg_server.go`);
+/// (`Keeper.registerRingACPObject` in Vera's `x/orbis/keeper/msg_server.go`);
 /// registering it again here fails with "object already registered". Rings
 /// must already exist on-chain (via `create_rings_on_chain`) and the
 /// governance policy must already exist (via
 /// `create_ring_governance_policy`) before calling this.
 pub async fn register_ring_governance(
-    client: &SourceHubClient,
+    client: &VeraClient,
     rings: &[RingDefinition],
     maximum_batch_size: usize,
 ) -> Result<BatchOutcome> {
@@ -389,7 +389,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sourcehub_did_matches_known_test_controller() {
+    fn vera_did_matches_known_test_controller() {
         let did = secp256k1_pubkey_to_did(
             "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62",
         )

@@ -18,8 +18,8 @@ backoff = { version = "0.4", features = ["tokio"] }
 tokio = { workspace = true }
 
 [features]
-default = ["sourcehub"]
-sourcehub = []
+default = ["vera"]
+vera = []
 dummy = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]

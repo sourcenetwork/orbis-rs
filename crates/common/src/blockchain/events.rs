@@ -1,6 +1,6 @@
 //! Chain event subscription utilities.
 //!
-//! Provides functions for subscribing to SourceHub chain events via
+//! Provides functions for subscribing to Vera chain events via
 //! CometBFT's WebSocket endpoint, replacing polling-based approaches.
 
 use crate::blockchain::{BlockchainError, Result};
