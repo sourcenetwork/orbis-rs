@@ -20,6 +20,5 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/build/verad /usr/local/bin/verad
-RUN ln -s verad /usr/local/bin/verad
 RUN useradd --create-home --home-dir /home/node node
 USER node
