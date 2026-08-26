@@ -12,7 +12,7 @@ use crate::{
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
-            ensure_node_info, CorsPolicy, LogLevel,
+            ensure_node_info, existing_peer_identity_matches, CorsPolicy, LogLevel,
         },
         test_helpers::{cleanup_db, test_db_path},
     },
@@ -365,6 +365,31 @@ async fn test_ensure_node_info_keeps_existing_whitelists() {
         node_info.whitelisted_ring_ids,
         existing.whitelisted_ring_ids
     );
+}
+
+#[test]
+fn test_existing_routed_peer_address_keeps_the_same_identity() {
+    let peer_id = "ab".repeat(32);
+    assert!(
+        existing_peer_identity_matches(&format!("{peer_id}@node-001:55316"), &peer_id)
+            .expect("valid routed peer address")
+    );
+    assert!(!existing_peer_identity_matches(
+        &format!("{}@node-001:55316", "cd".repeat(32)),
+        &peer_id
+    )
+    .expect("valid mismatched peer address"));
+}
+
+#[test]
+fn test_existing_peer_identity_rejects_invalid_expected_route() {
+    let peer_id = "ab".repeat(32);
+    let result = existing_peer_identity_matches(&peer_id, &format!("{peer_id}@invalid-route"));
+
+    assert!(matches!(
+        result,
+        Err(crate::error::PeerIdValidationError::InvalidSocketAddr(_))
+    ));
 }
 
 #[tokio::test]

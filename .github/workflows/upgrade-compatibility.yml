@@ -1,0 +1,79 @@
+name: Upgrade Compatibility
+
+on:
+  pull_request:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      from_ref:
+        description: Baseline git ref containing the upgrade-driver v1 contract
+        required: true
+        type: string
+      to_ref:
+        description: Target ref (defaults to the dispatched commit)
+        required: false
+        type: string
+      crypto:
+        description: Crypto implementation matrix
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - bls12-381
+          - decaf377
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-compatibility-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    name: ${{ matrix.crypto }} upgrade
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: ${{ fromJSON(github.event_name == 'pull_request' && '["bls12-381","decaf377"]' || inputs.crypto == 'both' && '["bls12-381","decaf377"]' || format('["{0}"]', inputs.crypto)) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.to_ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve baseline revision
+        id: baseline
+        env:
+          FROM_REF: ${{ inputs.from_ref }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${PR_BASE_SHA}" ]]; then
+            sha=$(git rev-parse --verify "${PR_BASE_SHA}^{commit}")
+          elif sha=$(git rev-parse --verify "${FROM_REF}^{commit}" 2>/dev/null); then
+            :
+          elif sha=$(git rev-parse --verify "origin/${FROM_REF}^{commit}" 2>/dev/null); then
+            :
+          else
+            echo "Unable to resolve baseline ref: ${FROM_REF}" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Run cross-commit upgrade gate
+        shell: bash
+        run: |
+          scripts/test-upgrade-unit.sh
+          scripts/test-upgrade.sh \
+            --from e800fb7460445638ad58407a2de1fbed1b177094 \
+            --to HEAD \
+            --crypto "${{ matrix.crypto }}" \
+            --output "upgrade-results/${{ matrix.crypto }}"
