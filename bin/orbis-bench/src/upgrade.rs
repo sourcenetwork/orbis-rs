@@ -346,13 +346,16 @@ pub async fn verify_upgrade_fixture(
         RESHARE_TIMEOUT,
     )
     .await?;
-    let departed_member = INITIAL_MEMBERS
+    let departed_members = INITIAL_MEMBERS
         .iter()
         .copied()
-        .find(|member| !RESHARED_MEMBERS.contains(member))
-        .context("reshare committee must remove one initial member")?;
+        .filter(|member| !RESHARED_MEMBERS.contains(member))
+        .collect::<Vec<_>>();
+    let [departed_member] = departed_members.as_slice() else {
+        bail!("reshare committee must remove exactly one initial member");
+    };
     wait_for_departed_share_deletion(
-        &endpoints[departed_member - 1],
+        &endpoints[*departed_member - 1],
         &manifest.ring.ring_pk,
         RESHARE_TIMEOUT,
     )
