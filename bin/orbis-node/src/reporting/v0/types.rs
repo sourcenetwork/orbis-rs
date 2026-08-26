@@ -2445,7 +2445,7 @@ mod tests {
         );
         assert_eq!(
             hex::encode(Sha256::digest(&encoded)),
-            "2b1a98fd49fa0f9fc0f43ae80108b180eab351d8643654f9b5f22a939552b248"
+            "fb23d5d30ac684a95151c669fa2257f00351ba11d963d84ab0b621145b223ef5"
         );
     }
 
@@ -2813,7 +2813,7 @@ mod tests {
     fn report_encoding_golden_vector() {
         assert_eq!(
             envelope().report_id(),
-            "80b0f43ae215dd88a6e635de00207cd549c2492bb2086b22ceceda73a4de65f3"
+            "954c67cd1885283a0d22a074b0b6db7eb412bad414d4fcfb5ff59cd1719e6dc0"
         );
     }
 }

@@ -70,7 +70,7 @@ struct NetworkArgs {
     #[arg(
         long,
         env = "ORBIS_ACCOUNT_PREFIX",
-        default_value = "source",
+        default_value = "vera",
         global = true
     )]
     account_prefix: String,

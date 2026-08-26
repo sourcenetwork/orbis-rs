@@ -1,6 +1,6 @@
 //! Docker-based integration test: cancel a permanently-stuck ring reshare.
 //!
-//! Spins up a full Docker Compose environment (VeraHub + 3 orbis-node containers),
+//! Spins up a full Docker Compose environment (Vera + 3 orbis-node containers),
 //! runs a real DKG, announces a reshare into a committee that can never complete
 //! (it includes a genesis-seeded but never-running node key), cancels it via the
 //! new `CancelRingReshareByAcp` chain message, and confirms the ring reverts to its

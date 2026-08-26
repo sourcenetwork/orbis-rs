@@ -1046,7 +1046,7 @@ async fn cancel_ring_reshare_by_acp_impl(
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
     let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create VeraHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_cancel_ring_reshare_by_acp(&ring_id)
         .await

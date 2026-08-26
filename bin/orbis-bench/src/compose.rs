@@ -161,7 +161,7 @@ exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.e
         "build": {
             "context": vera_context,
             "dockerfile": "Dockerfile.vera-integration",
-            "args": {"SOURCEHUB_REF": input.vera_ref},
+            "args": {"VERA_REF": input.vera_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
@@ -242,7 +242,7 @@ exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.e
         "build": {
             "context": vera_context,
             "dockerfile": "Dockerfile.vera-integration",
-            "args": {"SOURCEHUB_REF": input.vera_ref},
+            "args": {"VERA_REF": input.vera_ref},
         },
         "entrypoint": ["/bin/sh", "-c"],
         "command": [command],
