@@ -248,6 +248,28 @@ impl MsgStartRingReshareByAcp {
 pub struct MsgStartRingReshareByAcpResponse {}
 
 #[derive(Clone, Message)]
+pub struct MsgCancelRingReshareByAcp {
+    #[prost(string, tag = "1")]
+    pub creator: String,
+    #[prost(string, tag = "2")]
+    pub ring_id: String,
+}
+
+impl MsgCancelRingReshareByAcp {
+    pub const TYPE_URL: &'static str = "/sourcehub.orbis.MsgCancelRingReshareByAcp";
+
+    pub fn new(creator: &str, ring_id: &str) -> Self {
+        Self {
+            creator: creator.to_string(),
+            ring_id: ring_id.to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Message)]
+pub struct MsgCancelRingReshareByAcpResponse {}
+
+#[derive(Clone, Message)]
 pub struct MsgSetRingPssIntervalByAcp {
     #[prost(string, tag = "1")]
     pub creator: String,
@@ -1345,6 +1367,19 @@ impl SourceHubClient {
         );
         self.broadcast_proto_msg_with_gas(
             MsgStartRingReshareByAcp::TYPE_URL,
+            &msg,
+            self.config().gas_multiplier,
+        )
+        .await
+    }
+
+    pub async fn orbis_cancel_ring_reshare_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
+        let signer = self
+            .signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let msg = MsgCancelRingReshareByAcp::new(&signer.address(), ring_id);
+        self.broadcast_proto_msg_with_gas(
+            MsgCancelRingReshareByAcp::TYPE_URL,
             &msg,
             self.config().gas_multiplier,
         )

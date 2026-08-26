@@ -22,7 +22,10 @@ use crate::sign::v0::coordinator::verification::{
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::{Result, SignError};
-use crate::sign::v0::helpers::{serialize_commitments, validate_refresh_health_check_statement};
+use crate::sign::v0::helpers::{
+    serialize_commitments, validate_refresh_health_check_statement,
+    validate_ring_reshare_update_statement,
+};
 use crate::sign::v0::messages::{SignContext, SignMessage, SignRequest};
 use bulletin::r#trait::{BulletinKind, DocumentPayload, RingPayload};
 use crypto::r#trait::{
@@ -619,49 +622,105 @@ where
         //
         //    Loading from the same bundle snapshot eliminates both races: pub_poly,
         //    nonce generation, and signing all use the same PSS generation.
-        let (pub_poly, local_dist_key_share) =
-            if let SignContext::RefreshHealthCheck(ctx) = &context {
-                let (_, bundle) = validate_refresh_health_check_statement(
-                    &self.app_state.dkg_session_state,
-                    &ctx.statement,
-                    Some(&message),
-                )
-                .await?;
-                let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
-                    SignError::Deserialization(format!(
-                        "Failed to decode staged refresh public polynomial: {}",
-                        e
-                    ))
-                })?;
-                let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-                    SignError::Deserialization(format!(
-                        "Failed to deserialize staged refresh public polynomial: {}",
-                        e
-                    ))
-                })?;
-                let dks = if self_in_list {
-                    Some(DistKeyShare {
-                        pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
-                    })
-                } else {
-                    None
-                };
-                (pub_poly, dks)
+        let (pub_poly, local_dist_key_share) = if let SignContext::RefreshHealthCheck(ctx) =
+            &context
+        {
+            let (_, bundle) = validate_refresh_health_check_statement(
+                &self.app_state.dkg_session_state,
+                &ctx.statement,
+                Some(&message),
+            )
+            .await?;
+            let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+                SignError::Deserialization(format!(
+                    "Failed to decode staged refresh public polynomial: {}",
+                    e
+                ))
+            })?;
+            let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                SignError::Deserialization(format!(
+                    "Failed to deserialize staged refresh public polynomial: {}",
+                    e
+                ))
+            })?;
+            let dks = if self_in_list {
+                Some(DistKeyShare {
+                    pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                })
             } else {
-                let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
-                    &self.app_state.local_storage,
-                    &ring,
-                    self_in_list,
-                )
-                .map_err(SignError::Deserialization)?;
-                let dks = match bundle {
-                    Some(bundle) => Some(DistKeyShare {
-                        pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
-                    }),
-                    None => None,
-                };
-                (poly, dks)
+                None
             };
+            (pub_poly, dks)
+        } else if let SignContext::RingReshareUpdate(ctx) = &context {
+            // Node 1 signs its own RingReshareUpdate co-signature via this local
+            // path (never through handle_nonce_request/handle_sign_request), so
+            // it needs the exact same staged-vs-promoted resolution those remote
+            // handlers use — otherwise node 1 (self_in_list) signs against disk
+            // (the OLD, pre-reshare share/polynomial while still staged) while a
+            // remote co-signer signs against the staged NEW material, producing
+            // an aggregate signature that fails final verification.
+            let (_, staged_bundle) = validate_ring_reshare_update_statement(
+                &*self.app_state.bulletin,
+                &self.app_state.dkg_session_state,
+                &ctx.statement,
+                Some(&message),
+                false,
+            )
+            .await?;
+            match staged_bundle {
+                Some(bundle) => {
+                    let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to decode staged reshare public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                    let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+                        SignError::Deserialization(format!(
+                            "Failed to deserialize staged reshare public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                    let dks = if self_in_list {
+                        Some(DistKeyShare {
+                            pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                        })
+                    } else {
+                        None
+                    };
+                    (pub_poly, dks)
+                }
+                None => {
+                    let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+                        &self.app_state.local_storage,
+                        &ring,
+                        self_in_list,
+                    )
+                    .map_err(SignError::Deserialization)?;
+                    let dks = match bundle {
+                        Some(bundle) => Some(DistKeyShare {
+                            pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                        }),
+                        None => None,
+                    };
+                    (poly, dks)
+                }
+            }
+        } else {
+            let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
+                &self.app_state.local_storage,
+                &ring,
+                self_in_list,
+            )
+            .map_err(SignError::Deserialization)?;
+            let dks = match bundle {
+                Some(bundle) => Some(DistKeyShare {
+                    pri_share: bundle.pri_share().map_err(SignError::Deserialization)?,
+                }),
+                None => None,
+            };
+            (poly, dks)
+        };
 
         // Validate we have enough potential shares to meet threshold
         let potential_shares = if self_in_list {

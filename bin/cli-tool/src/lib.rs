@@ -7,7 +7,8 @@ mod commands;
 // Re-export the main CLI functions for integration testing
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_node_to_whitelist_with_config,
-    add_policy_to_chain, add_policy_to_chain_with_config, cancel_ring_upgrade_by_acp,
+    add_policy_to_chain, add_policy_to_chain_with_config, cancel_ring_reshare_by_acp,
+    cancel_ring_reshare_by_acp_with_config, cancel_ring_upgrade_by_acp,
     cancel_ring_upgrade_by_acp_with_config, create_bulletin_post, create_bulletin_post_with_config,
     create_ring, derive_signer_did, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre,
     do_sign, do_store_secret, fund, fund_with_signer, get_account_sequence,

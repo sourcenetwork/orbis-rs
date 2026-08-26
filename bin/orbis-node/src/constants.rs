@@ -185,10 +185,14 @@ pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 /// Maximum time a completed DKG session may remain in memory.
 ///
 /// Normal Fresh/Refresh cleanup is immediate. Reshare cleanup may wait up to
-/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (200 seconds) for bulletin confirmation,
-/// so five minutes leaves margin for that task while bounding leaks if explicit
-/// cleanup never runs.
-pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
+/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (360 seconds) for bulletin confirmation,
+/// so ten minutes leaves margin for that task while bounding leaks if explicit
+/// cleanup never runs. Also bounds how long a `reshare_signature_ready` marker
+/// (which can carry an unpromoted staged bundle) is retained — must stay
+/// comfortably above `RESHARE_BULLETIN_CONFIRM_TIMEOUT` so the generic TTL
+/// sweep never races ahead of that task's own, more informative promote/
+/// discard decision.
+pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(600);
 
 /// Cadence of the Fresh-DKG soft-stall scan. Matches `DKG_REPAIR_STALL_INTERVAL`
 /// so soft-stall detection is checked at least as often as repair itself runs.
@@ -503,10 +507,20 @@ pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500
 /// node-1 bulletin update to land before releasing its PSS claim.
 pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Maximum time to wait for bulletin confirmation before releasing the PSS claim
-/// unconditionally. Slightly exceeds RESHARE_SIGNATURE_MAX_ATTEMPTS ×
-/// SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s) to guarantee we outlast node 1.
-pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(200);
+/// Maximum time to wait for bulletin confirmation before discarding this
+/// node's staged reshare bundle (see `reshare/cleanup.rs`) and releasing the
+/// PSS claim unconditionally.
+///
+/// This is a comfortable multiple — not just a slim margin — of
+/// RESHARE_SIGNATURE_MAX_ATTEMPTS × SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s,
+/// node 1's worst-case finalize-signing retry budget): unlike before this
+/// timeout gated only cleanup-task bookkeeping, it now decides whether to
+/// promote a continuing node's locally-computed share to disk at all, so a
+/// legitimately slow-but-succeeding reshare must not lose that race. Must
+/// stay comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
+/// session (and its `reshare_signature_ready` marker) is otherwise aged out
+/// by independently.
+pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
 
 // ============================================================================
 // Nonce Serialization Constants (FROST)
