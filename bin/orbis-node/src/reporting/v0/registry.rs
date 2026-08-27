@@ -4689,6 +4689,91 @@ mod tests {
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
+    /// The mirror of the mismatch case: inline evidence that *does* hash to `object_id` passes
+    /// the hash gate, and its `document` is what `deserialize_secret` parses — so the refutation
+    /// proceeds into the crypto stage (and there fails on this fixture's deliberately-bogus
+    /// `rdr_pk`, not on the inline-document check). A full polynomial/proof fixture would be
+    /// needed to reach a verdict; that path is covered by
+    /// `pre/v0/coordinator/verification.rs`.
+    #[tokio::test]
+    async fn pre_proof_refutation_accepts_matching_inline_document() {
+        let db_name = "registry_pre_proof_inline_document_matches";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let base_context = validation_context(&app_state, 10);
+
+        let evidence = ReportedDocumentEvidence {
+            // A well-formed `Secret` JSON so `deserialize_secret` succeeds and execution reaches
+            // the crypto-input decode below.
+            document:
+                r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#
+                    .to_string(),
+            proof: String::new(),
+            policy_id: "policy".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+        };
+        let context = ReportValidationContext {
+            inline_document: Some(evidence.clone()),
+            ..base_context
+        };
+
+        let timestamp = Some(10);
+        let object_id = generate_document_id(
+            "ring",
+            &evidence.document,
+            &evidence.proof,
+            &evidence.policy_id,
+            &evidence.resource,
+            &evidence.permission,
+            evidence.tier.as_deref(),
+            timestamp,
+        );
+
+        let statement = PreReencryptResponseStatement {
+            domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            request_id: "pre-request-1".to_string(),
+            signed_at: 10,
+            responder_node_key: "accused".to_string(),
+            origin_protocol: "pre".to_string(),
+            object_id,
+            // Bogus on purpose: the refutation reaches the crypto-input decode and fails here,
+            // proving it got past the inline-document hash gate and `deserialize_secret`.
+            rdr_pk: vec![1],
+            derivation: None,
+            from_node_id: 2,
+            share: vec![2],
+            challenge: vec![3],
+            proof: vec![4],
+            crypto_backend: "elgamal/test".to_string(),
+            timestamp,
+            document_inline: true,
+        };
+
+        let error = require_pre_proof_verification_failure(&statement, &context)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !error.contains("does not match object_id")
+                && !error.contains("no inline document evidence was provided"),
+            "matching inline document evidence should pass the hash gate, got {error}"
+        );
+        assert!(
+            error.contains("reader public key"),
+            "refutation should reach the crypto-input stage, got {error}"
+        );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
     #[test]
     fn dkg_share_crypto_failure_is_required() {
         let bad = dkg_share_statement(true);
