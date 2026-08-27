@@ -26,7 +26,7 @@ Every subcommand shares one set of global flags (env var equivalents in parenthe
 | `--rpc-url <URL>` | `ORBIS_RPC_URL` | `http://localhost:26657` | Tendermint RPC |
 | `--rest-url <URL>` | `ORBIS_REST_URL` | `http://localhost:1317` | Cosmos REST API |
 | `--chain-grpc-url <URL>` | `ORBIS_CHAIN_GRPC_URL` | `http://localhost:9090` | Vera gRPC (distinct from `--endpoint`) |
-| `--account-prefix <PREFIX>` | `ORBIS_ACCOUNT_PREFIX` | `source` | Bech32 address prefix |
+| `--account-prefix <PREFIX>` | `ORBIS_ACCOUNT_PREFIX` | `vera` | Bech32 address prefix |
 | `--signing-key <HEX>` | `ORBIS_SIGNING_KEY` | *(none)* | Signs any chain-writing command |
 
 `--signing-key`/`ORBIS_SIGNING_KEY` has **no default** and is required by any command that writes to chain (policy/object/relationship, bulletin namespace/collaborator, ring lifecycle commands, `fund`, `post-key-derivation`). Commands that only talk to the orbis node over gRPC, or that are purely local, don't need it.

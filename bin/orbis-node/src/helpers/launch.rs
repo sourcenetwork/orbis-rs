@@ -956,13 +956,13 @@ mod tests {
             "--node-controller-key",
             "controller-key",
             "--fee-granter",
-            "source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
+            "vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
         ])
         .expect("parse arguments");
 
         assert_eq!(
             args.fee_granter.as_deref(),
-            Some("source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
+            Some("vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
         );
     }
 
