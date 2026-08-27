@@ -183,7 +183,7 @@ where
                         valid_window: ctx.valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
                         from_node_id,
-                        inline_document: document_evidence.clone(),
+                        document_inline: document_evidence.is_some(),
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
@@ -193,6 +193,7 @@ where
                                 statement.clone(),
                                 ctx.relay_signature.clone(),
                                 current_time,
+                                document_evidence.clone(),
                             )
                             .await;
                         }
@@ -283,7 +284,7 @@ where
             proof: proof_bytes.clone(),
             crypto_backend: T::name(),
             timestamp: document_payload.timestamp,
-            inline_document: document_evidence,
+            document_inline: document_evidence.is_some(),
         };
         let signing_key = self
             .app_state

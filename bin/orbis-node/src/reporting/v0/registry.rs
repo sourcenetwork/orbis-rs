@@ -24,8 +24,8 @@ use crate::reporting::v0::types::{
     DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind,
     DkgLeaderPublicFaultStatement, DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement,
     DkgShareStatement, EndpointSignedContribution, InvalidCryptoResponse, NodeOffline,
-    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, SignResponseStatement,
-    UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
+    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, ReportedDocumentEvidence,
+    SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
     DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_BATCH_MISMATCH_DOMAIN,
     DKG_LEADER_EQUIVOCATION_DOMAIN, DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN,
     DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
@@ -81,6 +81,12 @@ pub struct ReportValidationContext {
     pub routes: &'static network::ProtocolRoutes,
     pub now: u64,
     pub mode: ReportValidationMode,
+    /// Out-of-band inline-document evidence for a PRE report whose statement has `document_inline`
+    /// set — supplied by the reporter's own observation, or by `ReportSigningContext` when
+    /// validating as an independent co-signer. The PRE refutations
+    /// (`require_pre_proof_verification_failure`, `require_relayed_request_unauthorized`) re-bind
+    /// it to `object_id` before use. `None` for every bulletin-sourced report.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 pub struct ReportPreparationContext {
@@ -93,6 +99,10 @@ pub struct PreparedReport {
     pub envelope: ReportEnvelope,
     pub ring_config: RingConfig,
     pub signing_options: SigningOptions,
+    /// Out-of-band inline-document evidence to carry into `ReportSigningContext` (and this
+    /// reporter's own local validation). `None` for every report except a PRE one whose request
+    /// carried its document inline.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 #[async_trait]
@@ -221,6 +231,7 @@ impl ReportHandler for NodeOfflineHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            inline_document: None,
         })
     }
 
@@ -395,6 +406,7 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            inline_document: observation.inline_document,
         })
     }
 
@@ -2715,6 +2727,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             signing_options: self.signing_options(&envelope),
             envelope,
             ring_config,
+            inline_document: observation.inline_document,
         })
     }
 
@@ -2934,49 +2947,36 @@ async fn require_relayed_request_unauthorized(
 
     let access_request = match statement.origin_protocol.as_str() {
         "pre" => {
-            let (policy_id, resource, permission, tier, timestamp) = match &statement
-                .inline_document
-            {
-                Some(evidence) => {
-                    let expected_object_id = generate_document_id(
-                        &statement.ring_id,
-                        &evidence.document,
-                        &evidence.proof,
-                        &evidence.policy_id,
-                        &evidence.resource,
-                        &evidence.permission,
-                        evidence.tier.as_deref(),
-                        statement.timestamp,
-                    );
-                    if expected_object_id != statement.object_id {
-                        return Err(ReportingError::InvalidReport(
-                            "relay request inline_document does not match object_id".to_string(),
-                        ));
-                    }
-                    (
-                        evidence.policy_id.clone(),
-                        evidence.resource.clone(),
-                        evidence.permission.clone(),
-                        evidence.tier.clone(),
-                        statement.timestamp,
-                    )
-                }
-                None => {
-                    let document_post = context
-                        .bulletin
-                        .read(statement.object_id.clone(), BulletinKind::Document)
-                        .await
-                        .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-                    let document = DocumentPayload::try_from(document_post)
-                        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-                    (
-                        document.policy_id,
-                        document.resource,
-                        document.permission,
-                        document.tier,
-                        document.timestamp,
-                    )
-                }
+            let (policy_id, resource, permission, tier, timestamp) = if statement.document_inline {
+                let evidence = require_inline_document_evidence(
+                    context,
+                    &statement.ring_id,
+                    &statement.object_id,
+                    statement.timestamp,
+                )?;
+                (
+                    evidence.policy_id.clone(),
+                    evidence.resource.clone(),
+                    evidence.permission.clone(),
+                    evidence.tier.clone(),
+                    statement.timestamp,
+                )
+            } else {
+                reject_unexpected_inline_document_evidence(context)?;
+                let document_post = context
+                    .bulletin
+                    .read(statement.object_id.clone(), BulletinKind::Document)
+                    .await
+                    .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+                let document = DocumentPayload::try_from(document_post)
+                    .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+                (
+                    document.policy_id,
+                    document.resource,
+                    document.permission,
+                    document.tier,
+                    document.timestamp,
+                )
             };
             AccessCheckRequest::new(
                 policy_id,
@@ -3778,46 +3778,83 @@ fn require_dkg_share_verification_failure(statement: &DkgShareStatement) -> Resu
     Ok(())
 }
 
+/// Fetch the out-of-band inline-document evidence for a PRE report whose statement has
+/// `document_inline` set, and re-bind it to `object_id`. The evidence is supplied by whoever
+/// assembled the report (never signed by the accused — only `object_id` is), so a validator must
+/// confirm it hashes to the signed `object_id` before trusting any field of it. Errors if no
+/// evidence reached this validator or if it does not match.
+fn require_inline_document_evidence<'a>(
+    context: &'a ReportValidationContext,
+    ring_id: &str,
+    object_id: &str,
+    timestamp: Option<u64>,
+) -> Result<&'a ReportedDocumentEvidence> {
+    let evidence = context.inline_document.as_ref().ok_or_else(|| {
+        ReportingError::InvalidReport(
+            "statement marks the request inline but no inline document evidence was provided"
+                .to_string(),
+        )
+    })?;
+    let expected_object_id = generate_document_id(
+        ring_id,
+        &evidence.document,
+        &evidence.proof,
+        &evidence.policy_id,
+        &evidence.resource,
+        &evidence.permission,
+        evidence.tier.as_deref(),
+        timestamp,
+    );
+    if expected_object_id != object_id {
+        return Err(ReportingError::InvalidReport(
+            "inline document evidence does not match object_id".to_string(),
+        ));
+    }
+    Ok(evidence)
+}
+
+/// A non-inline PRE report must not carry inline-document evidence: its presence means the report
+/// was assembled inconsistently, or is an attempt to smuggle ACP inputs past the bulletin
+/// re-fetch.
+fn reject_unexpected_inline_document_evidence(context: &ReportValidationContext) -> Result<()> {
+    if context.inline_document.is_some() {
+        return Err(ReportingError::InvalidReport(
+            "statement does not mark the request inline but inline document evidence was provided"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 async fn require_pre_proof_verification_failure(
     statement: &crate::reporting::v0::types::PreReencryptResponseStatement,
     context: &ReportValidationContext,
 ) -> Result<()> {
-    let secret = match &statement.inline_document {
-        Some(evidence) => {
-            let expected_object_id = generate_document_id(
-                &statement.ring_id,
-                &evidence.document,
-                &evidence.proof,
-                &evidence.policy_id,
-                &evidence.resource,
-                &evidence.permission,
-                evidence.tier.as_deref(),
-                statement.timestamp,
-            );
-            if expected_object_id != statement.object_id {
-                return Err(ReportingError::InvalidReport(
-                    "PRE response inline_document does not match object_id".to_string(),
-                ));
-            }
-            deserialize_secret(&evidence.document)
-                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
+    let secret = if statement.document_inline {
+        let evidence = require_inline_document_evidence(
+            context,
+            &statement.ring_id,
+            &statement.object_id,
+            statement.timestamp,
+        )?;
+        deserialize_secret(&evidence.document)
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
+    } else {
+        reject_unexpected_inline_document_evidence(context)?;
+        let document_post = context
+            .bulletin
+            .read(statement.object_id.clone(), BulletinKind::Document)
+            .await
+            .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
+        let document = DocumentPayload::try_from(document_post)
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+        if document.ring_id != statement.ring_id {
+            return Err(ReportingError::Unauthorized(
+                "PRE response object is not bound to the report ring".to_string(),
+            ));
         }
-        None => {
-            let document_post = context
-                .bulletin
-                .read(statement.object_id.clone(), BulletinKind::Document)
-                .await
-                .map_err(|error| ReportingError::Bulletin(error.to_string()))?;
-            let document = DocumentPayload::try_from(document_post)
-                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-            if document.ring_id != statement.ring_id {
-                return Err(ReportingError::Unauthorized(
-                    "PRE response object is not bound to the report ring".to_string(),
-                ));
-            }
-            deserialize_secret(&document.document)
-                .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
-        }
+        deserialize_secret(&document.document)
+            .map_err(|error| ReportingError::InvalidReport(error.to_string()))?
     };
     let rdr_pk = GroupAffine::from_bytes(&statement.rdr_pk).map_err(|error| {
         ReportingError::InvalidReport(format!("failed to deserialize reader public key: {error}"))
@@ -3968,6 +4005,7 @@ mod tests {
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: 100,
+            inline_document: None,
             evidence: InvalidCryptoResponse::Pre {
                 statement: PreReencryptResponseStatement {
                     domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
@@ -3989,7 +4027,7 @@ mod tests {
                     proof: vec![4],
                     crypto_backend: "elgamal/test".to_string(),
                     timestamp: None,
-                    inline_document: None,
+                    document_inline: false,
                 },
                 response_signature: vec![5; 64],
             },
@@ -4002,6 +4040,7 @@ mod tests {
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: 100,
+            inline_document: None,
             evidence: InvalidCryptoResponse::Sign {
                 statement: SignResponseStatement {
                     domain: SIGN_RESPONSE_DOMAIN.to_string(),
@@ -4054,7 +4093,7 @@ mod tests {
             valid_window_start: Some(signed_at.saturating_sub(10)),
             valid_window_end: Some(signed_at + 10),
             timestamp: Some(signed_at),
-            inline_document: None,
+            document_inline: false,
         }
     }
 
@@ -4094,6 +4133,7 @@ mod tests {
             routes: &network::V0,
             now,
             mode: ReportValidationMode::ReporterObservation,
+            inline_document: None,
         }
     }
 
@@ -4166,6 +4206,7 @@ mod tests {
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
+            inline_document: None,
             evidence: InvalidCryptoResponse::DkgShare {
                 statement: Box::new(statement),
                 response_signature: vec![9; 64],
@@ -4464,9 +4505,21 @@ mod tests {
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
-    /// A self-verifying `inline_document` reaches the same "authorized" refutation as a
-    /// bulletin-sourced request — without ever posting the document to the bulletin. Proves the
-    /// hash recompute is what's gating the check, not a coincidental bulletin lookup.
+    fn matching_document_evidence() -> ReportedDocumentEvidence {
+        ReportedDocumentEvidence {
+            document: "{}".to_string(),
+            proof: String::new(),
+            policy_id: "policy".to_string(),
+            resource: "document".to_string(),
+            permission: "read".to_string(),
+            tier: Some("tier-a".to_string()),
+        }
+    }
+
+    /// The out-of-band inline-document evidence (in `ReportValidationContext.inline_document`,
+    /// never on chain) that hashes to the signed `object_id` reaches the same "authorized"
+    /// refutation as a bulletin-sourced request — without ever posting the document to the
+    /// bulletin. Proves the hash recompute is what's gating the check, not a bulletin lookup.
     #[tokio::test]
     async fn relayed_request_refutation_accepts_matching_inline_document() {
         let db_name = "registry_relay_request_inline_document_matches";
@@ -4475,20 +4528,14 @@ mod tests {
         let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
         let ring = ring_fixture(2);
         let bulletin = std::sync::Arc::new(DummyBulletin::default());
+        let evidence = matching_document_evidence();
         let base_context = validation_context(&app_state, 10);
         let context = ReportValidationContext {
             bulletin,
+            inline_document: Some(evidence.clone()),
             ..base_context
         };
 
-        let evidence = ReportedDocumentEvidence {
-            document: "{}".to_string(),
-            proof: String::new(),
-            policy_id: "policy".to_string(),
-            resource: "document".to_string(),
-            permission: "read".to_string(),
-            tier: Some("tier-a".to_string()),
-        };
         let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
         statement.origin_protocol = "pre".to_string();
         statement.timestamp = Some(10);
@@ -4502,7 +4549,7 @@ mod tests {
             evidence.tier.as_deref(),
             statement.timestamp,
         );
-        statement.inline_document = Some(evidence);
+        statement.document_inline = true;
 
         // DummyAuthZ always authorizes, so this must still hit the "authorized" refutation —
         // proving the request reached the real ACP check rather than failing earlier on a
@@ -4512,17 +4559,51 @@ mod tests {
             .unwrap_err();
         assert!(
             error.to_string().contains("relayed request was authorized"),
-            "matching inline_document should reach the ACP check, got {error}"
+            "matching inline document evidence should reach the ACP check, got {error}"
         );
 
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
-    /// `inline_document` whose fields don't hash to `object_id` must be rejected before any
+    /// Inline-document evidence whose fields don't hash to `object_id` must be rejected before any
     /// ACP/chain work — this is the confused-deputy check for report evidence.
     #[tokio::test]
     async fn relayed_request_refutation_rejects_mismatched_inline_document() {
         let db_name = "registry_relay_request_inline_document_mismatch";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let ring = ring_fixture(2);
+        let bulletin = std::sync::Arc::new(DummyBulletin::default());
+        let base_context = validation_context(&app_state, 10);
+        let context = ReportValidationContext {
+            bulletin,
+            inline_document: Some(matching_document_evidence()),
+            ..base_context
+        };
+
+        let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
+        statement.origin_protocol = "pre".to_string();
+        statement.timestamp = Some(10);
+        statement.object_id = "claimed-object-id".to_string();
+        statement.document_inline = true;
+
+        let error = require_relayed_request_unauthorized(&context, &statement, "0")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("does not match object_id"),
+            "mismatched inline document evidence should be rejected before the ACP check, got {error}"
+        );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+
+    /// A statement that marks the request inline but reaches a validator with no out-of-band
+    /// evidence is rejected — there is nothing to re-bind to `object_id` and no bulletin copy.
+    #[tokio::test]
+    async fn relayed_request_refutation_rejects_missing_inline_document_evidence() {
+        let db_name = "registry_relay_request_inline_document_missing";
         let db_path = crate::helpers::test_helpers::test_db_path(db_name);
         crate::helpers::test_helpers::cleanup_db(&db_path);
         let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
@@ -4537,28 +4618,22 @@ mod tests {
         let mut statement = relay_request_statement(&ring, context.bulletin.chain_id(), 10);
         statement.origin_protocol = "pre".to_string();
         statement.timestamp = Some(10);
-        statement.object_id = "claimed-object-id".to_string();
-        statement.inline_document = Some(ReportedDocumentEvidence {
-            document: "{}".to_string(),
-            proof: String::new(),
-            policy_id: "policy".to_string(),
-            resource: "document".to_string(),
-            permission: "read".to_string(),
-            tier: Some("tier-a".to_string()),
-        });
+        statement.document_inline = true;
 
         let error = require_relayed_request_unauthorized(&context, &statement, "0")
             .await
             .unwrap_err();
         assert!(
-            error.to_string().contains("does not match object_id"),
-            "mismatched inline_document should be rejected before the ACP check, got {error}"
+            error
+                .to_string()
+                .contains("no inline document evidence was provided"),
+            "missing inline document evidence should be rejected, got {error}"
         );
 
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
-    /// `require_pre_proof_verification_failure`'s `inline_document` hash check runs before any
+    /// `require_pre_proof_verification_failure`'s inline-document hash check runs before any
     /// crypto (rdr_pk/share/challenge/proof parsing, polynomial lookup) — a mismatch is rejected
     /// immediately, so this doesn't need a real proof/local_storage fixture to exercise it.
     #[tokio::test]
@@ -4567,7 +4642,18 @@ mod tests {
         let db_path = crate::helpers::test_helpers::test_db_path(db_name);
         crate::helpers::test_helpers::cleanup_db(&db_path);
         let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
-        let context = validation_context(&app_state, 10);
+        let base_context = validation_context(&app_state, 10);
+        let context = ReportValidationContext {
+            inline_document: Some(ReportedDocumentEvidence {
+                document: "{}".to_string(),
+                proof: String::new(),
+                policy_id: "policy".to_string(),
+                resource: "document".to_string(),
+                permission: "read".to_string(),
+                tier: None,
+            }),
+            ..base_context
+        };
 
         let statement = PreReencryptResponseStatement {
             domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
@@ -4589,14 +4675,7 @@ mod tests {
             proof: vec![4],
             crypto_backend: "elgamal/test".to_string(),
             timestamp: Some(10),
-            inline_document: Some(ReportedDocumentEvidence {
-                document: "{}".to_string(),
-                proof: String::new(),
-                policy_id: "policy".to_string(),
-                resource: "document".to_string(),
-                permission: "read".to_string(),
-                tier: None,
-            }),
+            document_inline: true,
         };
 
         let error = require_pre_proof_verification_failure(&statement, &context)
@@ -4604,7 +4683,7 @@ mod tests {
             .unwrap_err();
         assert!(
             error.to_string().contains("does not match object_id"),
-            "mismatched inline_document should be rejected before any crypto work, got {error}"
+            "mismatched inline document evidence should be rejected before any crypto work, got {error}"
         );
 
         crate::helpers::test_helpers::cleanup_db(&db_path);
@@ -4708,6 +4787,7 @@ mod tests {
                 routes: &network::V0,
                 now: envelope.observed_at,
                 mode: ReportValidationMode::ReporterObservation,
+                inline_document: None,
             },
         )
         .unwrap_err();
@@ -4772,6 +4852,7 @@ mod tests {
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
+            inline_document: None,
             evidence: InvalidCryptoResponse::DkgEquivocation {
                 commitment_a: Box::new(commitment_a.clone()),
                 commitment_b: Box::new(commitment_b),
@@ -4794,6 +4875,7 @@ mod tests {
             routes: &network::V0,
             now: envelope.observed_at,
             mode: ReportValidationMode::ReporterObservation,
+            inline_document: None,
         };
 
         // A well-bound commitment passes the shape check.
@@ -4877,6 +4959,7 @@ mod tests {
             accused_node_key: "accused".to_string(),
             accused_peer_id: "aa".repeat(32),
             observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
+            inline_document: None,
             evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
                 statement: Box::new(commitment.statement.clone()),
                 response_signature: commitment.signature.clone(),
@@ -4899,6 +4982,7 @@ mod tests {
             routes: &network::V0,
             now: envelope.observed_at,
             mode: ReportValidationMode::ReporterObservation,
+            inline_document: None,
         };
 
         // A well-formed pss_refresh commitment passes the shape check.

@@ -757,12 +757,13 @@ pub(crate) struct PreReportBinding {
     ring_pk: String,
     ring_state_sha256: String,
     /// The document's ACP timestamp (`DocumentPayload.timestamp`) — carried into every
-    /// `PreResponseReportContext` built from this binding so a self-verifying
-    /// `PreReencryptResponseStatement` can be built when `inline_document` is `Some`.
+    /// `PreResponseReportContext` built from this binding so `object_id` can be re-derived from
+    /// the inline-document evidence when `inline_document` is `Some`.
     timestamp: Option<u64>,
     /// Set when this request's document was supplied inline rather than read from the bulletin.
-    /// Copied into every `PreResponseReportContext` built from this binding, and from there into
-    /// the signed `PreReencryptResponseStatement` — see `ReportedDocumentEvidence`.
+    /// Copied into every `PreResponseReportContext` built from this binding, and from there onto
+    /// the report observation as out-of-band co-signer evidence (never into the signed statement,
+    /// which keeps only a `document_inline` bool) — see `ReportedDocumentEvidence`.
     inline_document: Option<ReportedDocumentEvidence>,
 }
 

@@ -130,8 +130,9 @@ message SubmitUnauthorizedRelayEvidenceRequest {
   bytes pre_reader_pk = 5;
   // When set (origin_protocol "pre" only), the target node treats the request's document as
   // supplied inline instead of resolving object_id via bulletin.read — mirrors
-  // StartPreRequest.document. Must match the document embedded in the relay statement's
-  // inline_document field for the resulting report to bind correctly.
+  // StartPreRequest.document. The relay statement must have document_inline set; the target node
+  // re-derives object_id from this document when it reports, and carries it to co-signers
+  // out-of-band (never on chain).
   optional orbis.v0.pre.InlineDocument inline_document = 6;
 }
 

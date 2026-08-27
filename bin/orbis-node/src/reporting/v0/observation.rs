@@ -2,8 +2,8 @@ use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
 use crate::reporting::v0::types::{
-    CommitteeScope, InvalidCryptoResponse, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    CommitteeScope, InvalidCryptoResponse, ReportedDocumentEvidence, UnauthorizedRequestPayload,
+    CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
     UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::sign::v0::error::SignError;
@@ -28,6 +28,10 @@ pub struct InvalidCryptoResponseObservation {
     pub accused_peer_id: String,
     pub observed_at: u64,
     pub evidence: InvalidCryptoResponse,
+    /// Out-of-band evidence for a PRE request whose document was supplied inline (the PRE
+    /// statement's `document_inline` is set). In-memory only — it rides to co-signers via
+    /// `ReportSigningContext`, never the threshold-signed envelope. `None` otherwise.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 /// A relayed Sign/PRE request whose ACP re-check failed on this node, attributing the relayer.
@@ -39,6 +43,11 @@ pub struct UnauthorizedRequestObservation {
     pub accused_peer_id: String,
     pub observed_at: u64,
     pub payload: UnauthorizedRequestPayload,
+    /// This responder's own view of the request's inline document, when the relayed PRE request
+    /// carried its document inline (`payload.statement.document_inline`). In-memory only — it
+    /// rides to co-signers via `ReportSigningContext`, never the threshold-signed envelope.
+    /// `None` for bulletin-sourced PRE requests and all Sign requests.
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 #[derive(Debug, Clone)]

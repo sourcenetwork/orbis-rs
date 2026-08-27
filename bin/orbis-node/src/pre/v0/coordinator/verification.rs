@@ -26,14 +26,16 @@ pub(crate) struct PreResponseReportContext {
     pub rdr_pk: Vec<u8>,
     pub derivation: Option<Vec<u8>>,
     /// The document's ACP timestamp (`DocumentPayload.timestamp`) — carried through to the
-    /// signed `PreReencryptResponseStatement` so `inline_document`, when present, can be
-    /// recomputed against `object_id` via `generate_document_id`.
+    /// signed `PreReencryptResponseStatement` so the inline-document evidence, when present, can
+    /// be recomputed against `object_id` via `generate_document_id`.
     pub timestamp: Option<u64>,
     /// Set when this request's document was supplied inline rather than read from the bulletin.
     /// `invalid_crypto_response` reports are normally verified by re-reading the document from
     /// the bulletin by `object_id` (`require_pre_proof_verification_failure`,
-    /// `reporting/v0/registry.rs`) — this carries the document instead, so the report is
-    /// self-verifying even though it was never posted there.
+    /// `reporting/v0/registry.rs`) — this carries the document instead (out-of-band via
+    /// `ReportSigningContext`, never the on-chain envelope) so the report is still verifiable
+    /// even though the document was never posted to the bulletin. The signed statement itself
+    /// keeps only the `document_inline` bool.
     pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
@@ -135,7 +137,7 @@ where
             proof: proof_bytes.clone(),
             crypto_backend: T::name(),
             timestamp: report_context.timestamp,
-            inline_document: report_context.inline_document.clone(),
+            document_inline: report_context.inline_document.is_some(),
         };
 
         if let Err(error) = verify_node_message(
@@ -272,6 +274,9 @@ where
                 statement,
                 response_signature,
             },
+            // Out-of-band for the co-signers when the request was inline; the ciphertext never
+            // enters the threshold-signed envelope.
+            inline_document: report_context.inline_document.clone(),
         }))
     }
 }
@@ -394,7 +399,7 @@ mod tests {
             proof: proof.clone(),
             crypto_backend: PreImpl::name(),
             timestamp: None,
-            inline_document: None,
+            document_inline: false,
         };
         let mut response_signature =
             sign_node_message_with_hex_key(&fixture.signing_key_hex, &statement.canonical_bytes())
@@ -565,9 +570,10 @@ mod tests {
 
     /// An inline-sourced request's document was never posted to the bulletin, so
     /// `require_pre_proof_verification_failure` (`reporting/v0/registry.rs`) can't re-read it —
-    /// instead the responder embeds the document directly (`inline_document`) so the report is
-    /// self-verifying. A bad proof from such a request must still produce a full report, with the
-    /// embedded evidence intact, exactly like a bulletin-sourced request would.
+    /// instead the responder marks the statement `document_inline` and the coordinator carries the
+    /// document out-of-band on the observation (`inline_document`) for the co-signers. A bad proof
+    /// from such a request must still produce a full report, with that out-of-band evidence
+    /// attached, exactly like a bulletin-sourced request would.
     #[test]
     fn invalid_pre_response_produces_a_self_verifying_report_when_document_is_inline() {
         let fixture = verify_fixture();
@@ -585,7 +591,7 @@ mod tests {
         context.inline_document = Some(evidence.clone());
 
         // Built by hand (not via `signed_response`) because the responder must sign over the
-        // same `timestamp`/`inline_document` the coordinator's `report_context` carries, for the
+        // same `timestamp`/`document_inline` the coordinator's `report_context` carries, for the
         // reconstructed statement inside `verify_peer_response` to match this signature.
         let signed_at = unix_now();
         let statement = PreReencryptResponseStatement {
@@ -608,7 +614,7 @@ mod tests {
             proof: fixture.invalid_proof.clone(),
             crypto_backend: PreImpl::name(),
             timestamp: Some(1_700_000_000),
-            inline_document: Some(evidence.clone()),
+            document_inline: true,
         };
         let response_signature =
             sign_node_message_with_hex_key(&fixture.signing_key_hex, &statement.canonical_bytes())
@@ -645,7 +651,10 @@ mod tests {
         else {
             panic!("PRE observation must carry PRE evidence");
         };
-        assert_eq!(reported.inline_document, Some(evidence));
+        // The signed statement only marks the request inline — the ciphertext is not in it.
+        assert!(reported.document_inline);
+        // The document rides out-of-band on the observation for the co-signers.
+        assert_eq!(observation.inline_document, Some(evidence));
         assert!(seen.contains(&fixture.from_node_id));
     }
 

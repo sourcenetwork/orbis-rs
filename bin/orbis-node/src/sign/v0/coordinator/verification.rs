@@ -199,6 +199,8 @@ where
                 statement,
                 response_signature,
             },
+            // Sign requests never carry an inline document.
+            inline_document: None,
         }))
     }
 

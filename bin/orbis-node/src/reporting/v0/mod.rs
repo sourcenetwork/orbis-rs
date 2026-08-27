@@ -88,13 +88,17 @@ where
 /// Build and queue an `unauthorized_request` report attributing the node that relayed a Sign/PRE
 /// request whose ACP re-check failed on this node. `statement` + `relay_signature` are the relayer's
 /// signed record of the request; `checked_at_anchor` is an opaque Authz anchor token whose format
-/// may vary by backend (not necessarily a block height).
+/// may vary by backend (not necessarily a block height). `inline_document` is this responder's own
+/// view of the request's document — `Some` only for a PRE request the relayer marked
+/// `document_inline` — carried out-of-band to co-signers, never into the on-chain envelope.
+#[allow(clippy::too_many_arguments)]
 pub async fn queue_unauthorized_request_report<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     statement: crate::reporting::v0::types::RelayRequestStatement,
     relay_signature: Vec<u8>,
     checked_at_anchor: String,
+    inline_document: Option<ReportedDocumentEvidence>,
 ) -> Result<()>
 where
     D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
@@ -134,6 +138,7 @@ where
             relay_signature,
             checked_at_anchor,
         },
+        inline_document,
     };
     queue_report::<D, S>(
         app_state,
@@ -165,11 +170,11 @@ pub struct RelayRequestBinding {
     pub valid_window: Option<ValidWindow>,
     pub timestamp: RelayRequestTimestampBinding,
     pub from_node_id: u32,
-    /// This node's own view of the request's inline document, if any — `Some` only when
-    /// `ctx.document` was used. The statement's `inline_document` must match exactly, in both
-    /// directions: a relayer attaching inline evidence to a bulletin-sourced request (or omitting
-    /// it for an inline-sourced one) is itself a binding mismatch.
-    pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Whether this node resolved the request's document inline (`ctx.document`) rather than from
+    /// the bulletin. The statement's `document_inline` must match in both directions: a relayer
+    /// claiming inline for a bulletin-sourced request (or the reverse) is itself a binding
+    /// mismatch.
+    pub document_inline: bool,
 }
 
 /// Ensure the signed relay statement is about the exact request that failed this
@@ -295,9 +300,9 @@ pub fn validate_relay_request_binding(
         ));
     }
 
-    if statement.inline_document != expected.inline_document {
+    if statement.document_inline != expected.document_inline {
         return Err(ReportingError::InvalidReport(
-            "relay request statement does not bind to failed request: inline_document mismatch"
+            "relay request statement does not bind to failed request: document_inline mismatch"
                 .to_string(),
         ));
     }
@@ -356,13 +361,17 @@ fn relay_binding_mismatch(
 /// Best-effort: verifies the relay statement is fresh and signed by the named relayer, captures the
 /// current ACP anchor, and queues an `unauthorized_request` report. Any failure here is logged and
 /// swallowed — the caller rejects the request regardless of whether a report is produced. Shared by
-/// the PRE and Sign responders.
+/// the PRE and Sign responders. `inline_document` is this responder's own view of the request's
+/// document, `Some` only when the relayed PRE request carried its document inline
+/// (`statement.document_inline`); it rides out-of-band to co-signers, never into the on-chain
+/// envelope. Always `None` for Sign.
 pub async fn report_unauthorized_relay<D, S>(
     app_state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     statement: RelayRequestStatement,
     relay_signature: Vec<u8>,
     now: u64,
+    inline_document: Option<ReportedDocumentEvidence>,
 ) where
     D: Dkg<ShareValue = ScalarField, PublicKey = GroupAffine> + Clone + Send + Sync + 'static,
     S: ThresholdSigner<
@@ -421,6 +430,7 @@ pub async fn report_unauthorized_relay<D, S>(
         statement,
         relay_signature,
         checked_at_anchor,
+        inline_document,
     )
     .await
     {
@@ -450,9 +460,10 @@ pub struct RelayStatementInputs {
     /// The timestamp the relayer used for its ACP check (PRE: document timestamp; Sign: now-or-none).
     pub acp_timestamp: Option<u64>,
     pub valid_window: Option<ValidWindow>,
-    /// Present only when the relayed request's document was supplied inline rather than read
-    /// from the bulletin — see `ReportedDocumentEvidence`.
-    pub inline_document: Option<ReportedDocumentEvidence>,
+    /// `true` when the relayed request's document was supplied inline rather than read from the
+    /// bulletin. The evidence itself is not signed into the statement — it travels out-of-band in
+    /// `ReportSigningContext` (see `ReportedDocumentEvidence`).
+    pub document_inline: bool,
 }
 
 /// Build and sign the relayer's `RelayRequestStatement` — its self-incriminating record that it
@@ -508,7 +519,7 @@ pub fn build_signed_relay_statement(
         valid_window_start,
         valid_window_end,
         timestamp: inputs.acp_timestamp,
-        inline_document: inputs.inline_document,
+        document_inline: inputs.document_inline,
     };
     let signature = sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
@@ -613,6 +624,7 @@ where
                 routes,
                 now,
                 mode: ReportValidationMode::ReporterObservation,
+                inline_document: prepared.inline_document.clone(),
             },
         )
         .await?;
@@ -648,6 +660,7 @@ where
             message,
             SignContext::Report(Box::new(ReportSigningContext {
                 envelope: prepared.envelope.clone(),
+                inline_document: prepared.inline_document.clone(),
             })),
             prepared.signing_options,
         )
@@ -702,6 +715,7 @@ where
                 mode: ReportValidationMode::IndependentSigner {
                     perform_health_probe,
                 },
+                inline_document: context.inline_document.clone(),
             },
         )
         .await?;

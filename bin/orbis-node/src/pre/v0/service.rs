@@ -272,12 +272,13 @@ where
             document_payload.ring_id.clone(),
             &ring_payload,
             document_payload.timestamp,
-            document_evidence.clone(),
+            document_evidence,
         );
         // The relayer signs a record that it forwarded this request (after passing its own ACP
         // check above), so a peer whose re-check fails can attribute it via `unauthorized_request`.
-        // `inline_document` (set above when this request's document was supplied inline) lets the
-        // report verifier recompute object_id instead of reading the document from the bulletin.
+        // `document_inline` (set above when this request's document was supplied inline) tells the
+        // report verifier to expect the document out-of-band rather than read it from the
+        // bulletin; the ciphertext itself is never signed into the statement.
         let (relay_statement, relay_signature) = build_signed_relay_statement(
             RelayStatementInputs {
                 ring: ring_payload.clone(),
@@ -292,7 +293,7 @@ where
                 user_signed_at: token.issued_time,
                 acp_timestamp: document_payload.timestamp,
                 valid_window: valid_window.clone(),
-                inline_document: document_evidence,
+                document_inline: is_inline,
             },
             &self.state.local_storage,
         )
