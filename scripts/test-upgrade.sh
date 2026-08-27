@@ -268,7 +268,7 @@ VERA_BUILD_OUTPUT="$OUTPUT/sourcehub-build"
 mkdir -p "$VERA_BUILD_OUTPUT"
 CURRENT_OUTPUT=$VERA_BUILD_OUTPUT
 run_phase build-sourcehub docker build \
-  --file "$FROM_CONTEXT/docker/Dockerfile.sourcehub-integration" \
+  --file "$FROM_CONTEXT/docker/Dockerfile.vera-integration" \
   --tag "$VERA_IMAGE" \
   --build-arg "VERA_REF=$VERA_REF" \
   "$FROM_CONTEXT/docker"
