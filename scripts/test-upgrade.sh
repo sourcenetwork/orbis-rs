@@ -241,10 +241,10 @@ require_contract() {
 require_contract "$FROM_CONTEXT" baseline
 require_contract "$TO_CONTEXT" target
 
-SOURCEHUB_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/SOURCEHUB_REF")
-[[ -n "$SOURCEHUB_REF" ]] || die "baseline docker/SOURCEHUB_REF is empty"
-SOURCEHUB_TAG_HASH=$(printf '%s' "$SOURCEHUB_REF" | shasum -a 256 | awk '{print $1}')
-SOURCEHUB_IMAGE="orbis-upgrade-sourcehub:${SOURCEHUB_TAG_HASH:0:12}"
+VERA_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/VERA_REF")
+[[ -n "$VERA_REF" ]] || die "baseline docker/VERA_REF is empty"
+VERA_TAG_HASH=$(printf '%s' "$VERA_REF" | shasum -a 256 | awk '{print $1}')
+VERA_IMAGE="orbis-upgrade-sourcehub:${VERA_TAG_HASH:0:12}"
 
 run_phase() {
   local label=$1
@@ -264,16 +264,16 @@ run_phase() {
   return "$status"
 }
 
-SOURCEHUB_BUILD_OUTPUT="$OUTPUT/sourcehub-build"
-mkdir -p "$SOURCEHUB_BUILD_OUTPUT"
-CURRENT_OUTPUT=$SOURCEHUB_BUILD_OUTPUT
+VERA_BUILD_OUTPUT="$OUTPUT/sourcehub-build"
+mkdir -p "$VERA_BUILD_OUTPUT"
+CURRENT_OUTPUT=$VERA_BUILD_OUTPUT
 run_phase build-sourcehub docker build \
-  --file "$FROM_CONTEXT/docker/Dockerfile.sourcehub-integration" \
-  --tag "$SOURCEHUB_IMAGE" \
-  --build-arg "SOURCEHUB_REF=$SOURCEHUB_REF" \
+  --file "$FROM_CONTEXT/docker/Dockerfile.vera-integration" \
+  --tag "$VERA_IMAGE" \
+  --build-arg "VERA_REF=$VERA_REF" \
   "$FROM_CONTEXT/docker"
-docker image inspect --format '{{.Id}}' "$SOURCEHUB_IMAGE" \
-  >"$SOURCEHUB_BUILD_OUTPUT/image-id.txt"
+docker image inspect --format '{{.Id}}' "$VERA_IMAGE" \
+  >"$VERA_BUILD_OUTPUT/image-id.txt"
 CURRENT_OUTPUT=
 
 if [[ "$CRYPTO" == both ]]; then
@@ -300,8 +300,8 @@ run_crypto_upgrade() {
     printf 'TO_SHA=%q\n' "$TO_SHA"
     printf 'TO_FINGERPRINT=%q\n' "$TO_FINGERPRINT"
     printf 'CRYPTO=%q\n' "$crypto"
-    printf 'SOURCEHUB_REF=%q\n' "$SOURCEHUB_REF"
-    printf 'SOURCEHUB_IMAGE=%q\n' "$SOURCEHUB_IMAGE"
+    printf 'VERA_REF=%q\n' "$VERA_REF"
+    printf 'VERA_IMAGE=%q\n' "$VERA_IMAGE"
     printf 'BASELINE_IMAGE=%q\n' "$from_image"
     printf 'TARGET_IMAGE=%q\n' "$to_image"
     printf 'COMPOSE_PROJECT=%q\n' "$CURRENT_PROJECT"
@@ -318,12 +318,12 @@ run_crypto_upgrade() {
     --build-arg "CRYPTO_FEATURE=$crypto" \
     "$TO_CONTEXT"
   {
-    printf 'SOURCEHUB_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$SOURCEHUB_IMAGE")"
+    printf 'VERA_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$VERA_IMAGE")"
     printf 'BASELINE_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$from_image")"
     printf 'TARGET_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$to_image")"
   } >>"$CURRENT_OUTPUT/resolved-refs.env"
 
-  export ORBIS_UPGRADE_SOURCEHUB_IMAGE=$SOURCEHUB_IMAGE
+  export ORBIS_UPGRADE_VERA_IMAGE=$VERA_IMAGE
   export ORBIS_UPGRADE_IMAGE=$from_image
   export ORBIS_UPGRADE_OUTPUT=$CURRENT_OUTPUT
   compose config >"$CURRENT_OUTPUT/compose-rendered-baseline.yaml"
@@ -333,7 +333,7 @@ run_crypto_upgrade() {
   local sourcehub_container
   sourcehub_container=$(compose ps --quiet sourcehub)
   [[ -n "$sourcehub_container" ]] || die "SourceHub container was not created"
-  printf 'SOURCEHUB_CONTAINER=%q\n' "$sourcehub_container" \
+  printf 'VERA_CONTAINER=%q\n' "$sourcehub_container" \
     >>"$CURRENT_OUTPUT/container-ids.env"
   local service
   for service in "${NODE_SERVICES[@]}"; do
@@ -344,7 +344,7 @@ run_crypto_upgrade() {
     --manifest /artifacts/fixture-v1.json \
     --baseline-sha "$FROM_SHA" \
     --crypto "$crypto" \
-    --sourcehub-ref "$SOURCEHUB_REF"
+    --sourcehub-ref "$VERA_REF"
 
   run_phase stop-baseline compose stop --timeout 30 "${NODE_SERVICES[@]}"
   assert_nodes_stopped_cleanly baseline
