@@ -1,6 +1,6 @@
 services:
   sourcehub:
-    image: "${ORBIS_UPGRADE_SOURCEHUB_IMAGE}"
+    image: "${ORBIS_UPGRADE_VERA_IMAGE}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
