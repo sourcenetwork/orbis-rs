@@ -18,7 +18,7 @@ use crate::setup::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use common::blockchain::{ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
 use crypto::helpers::generate_keypair;
 use crypto::{CryptoDeserialize, CryptoSerialize, ScalarField};
 use proto::info_service::{
@@ -533,13 +533,13 @@ async fn discover_identities(
         .collect()
 }
 
-async fn controller_client(config: ChainConfig) -> Result<SourceHubClient> {
+async fn controller_client(config: ChainConfig) -> Result<VeraClient> {
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())?;
-    Ok(SourceHubClient::with_signer(config, signer).await?)
+    Ok(VeraClient::with_signer(config, signer).await?)
 }
 
 async fn update_changed_peer_addresses(
-    controller: &SourceHubClient,
+    controller: &VeraClient,
     identities: &[NodeIdentity],
     maximum_batch_size: usize,
 ) -> Result<()> {
@@ -561,7 +561,7 @@ async fn update_changed_peer_addresses(
 }
 
 async fn wait_for_reshare(
-    controller: &SourceHubClient,
+    controller: &VeraClient,
     endpoints: &[NodeEndpoint],
     manifest: &UpgradeFixtureManifestV1,
     expected_node_keys: &[String],
