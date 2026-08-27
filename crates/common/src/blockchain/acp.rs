@@ -1,9 +1,9 @@
 //! Access Control Policy (ACP) module types and operations.
 //!
-//! This module provides types and methods for interacting with SourceHub's ACP module,
+//! This module provides types and methods for interacting with Vera's ACP module,
 //! which manages access control policies for applications.
 
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 /// Create a new access control policy.
-/// Proto field numbers match sourcehub/acp/tx.proto:
+/// Proto field numbers match vera/acp/tx.proto:
 /// - 1: creator (string)
 /// - 2: policy (string)
 /// - 3: marshal_type (PolicyMarshalingType enum)
@@ -31,7 +31,7 @@ pub struct MsgCreatePolicy {
 }
 
 impl MsgCreatePolicy {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgCreatePolicy";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgCreatePolicy";
 
     /// Create a new policy message with YAML format.
     pub fn new_yaml(creator: &str, policy: &str) -> Self {
@@ -53,7 +53,7 @@ impl MsgCreatePolicy {
 }
 
 /// Check access for a request and store the result on-chain.
-/// Proto field numbers match sourcehub/acp/tx.proto:
+/// Proto field numbers match vera/acp/tx.proto:
 /// - 1: creator (string)
 /// - 2: policy_id (string)
 /// - 3: access_request (AccessRequest)
@@ -71,11 +71,11 @@ pub struct MsgCheckAccess {
 }
 
 impl MsgCheckAccess {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgCheckAccess";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgCheckAccess";
 }
 
 /// Direct policy command message.
-/// Proto field numbers match sourcehub/acp/tx.proto:
+/// Proto field numbers match vera/acp/tx.proto:
 /// - 1: creator (string)
 /// - 2: policy_id (string)
 /// - 3: cmd (PolicyCmd)
@@ -93,7 +93,7 @@ pub struct MsgDirectPolicyCmd {
 }
 
 impl MsgDirectPolicyCmd {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgDirectPolicyCmd";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgDirectPolicyCmd";
 }
 
 // ============================================================================
@@ -191,7 +191,7 @@ pub enum SubjectKind {
 }
 
 /// Policy command (oneof in proto).
-/// Proto field numbers match sourcehub/acp/policy_cmd.proto:
+/// Proto field numbers match vera/acp/policy_cmd.proto:
 /// - 1: set_relationship_cmd
 /// - 2: delete_relationship_cmd
 /// - 3: register_object_cmd
@@ -381,7 +381,7 @@ pub struct OperationResult {
 // ============================================================================
 
 /// ABCI request for the VerifyAccessRequest query.
-/// Proto: sourcehub.acp.QueryVerifyAccessRequestRequest
+/// Proto: vera.acp.QueryVerifyAccessRequestRequest
 #[derive(Clone, Message)]
 pub struct QueryVerifyAccessRequestRequest {
     #[prost(string, tag = "1")]
@@ -391,7 +391,7 @@ pub struct QueryVerifyAccessRequestRequest {
 }
 
 /// ABCI response for the VerifyAccessRequest query.
-/// Proto: sourcehub.acp.QueryVerifyAccessRequestResponse
+/// Proto: vera.acp.QueryVerifyAccessRequestResponse
 #[derive(Clone, Message)]
 pub struct QueryVerifyAccessRequestResponse {
     #[prost(bool, tag = "1")]
@@ -403,7 +403,7 @@ pub struct QueryVerifyAccessRequestResponse {
 // ============================================================================
 
 /// Selector for filtering relationships.
-/// Proto field numbers match sourcehub/acp/query.proto
+/// Proto field numbers match vera/acp/query.proto
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct RelationshipSelector {
     #[prost(message, optional, tag = "1")]
@@ -474,7 +474,7 @@ pub enum SubjectSelectorKind {
 }
 
 /// gRPC request for FilterRelationships query.
-/// Proto: sourcehub.acp.QueryFilterRelationshipsRequest
+/// Proto: vera.acp.QueryFilterRelationshipsRequest
 #[derive(Clone, Message)]
 pub struct QueryFilterRelationshipsRequest {
     #[prost(string, tag = "1")]
@@ -484,7 +484,7 @@ pub struct QueryFilterRelationshipsRequest {
 }
 
 /// Response from filtering relationships (gRPC).
-/// Proto: sourcehub.acp.QueryFilterRelationshipsResponse
+/// Proto: vera.acp.QueryFilterRelationshipsResponse
 #[derive(Clone, Message)]
 pub struct QueryFilterRelationshipsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -492,7 +492,7 @@ pub struct QueryFilterRelationshipsResponse {
 }
 
 /// A relationship record stored on-chain.
-/// Proto: sourcehub.acp.RelationshipRecord
+/// Proto: vera.acp.RelationshipRecord
 #[derive(Clone, Message)]
 pub struct RelationshipRecord {
     #[prost(string, tag = "1")]
@@ -507,7 +507,7 @@ pub struct RelationshipRecord {
 // Client Extension Methods
 // ============================================================================
 
-impl SourceHubClient {
+impl VeraClient {
     // ========================================================================
     // ACP Queries
     // ========================================================================
@@ -515,7 +515,7 @@ impl SourceHubClient {
     /// Query a policy by ID.
     pub async fn acp_query_policy(&self, policy_id: &str) -> Result<QueryPolicyResponse> {
         let url = format!(
-            "{}/sourcenetwork/sourcehub/acp/policy/{}",
+            "{}/sourcenetwork/vera/acp/policy/{}",
             self.config().rest_url,
             policy_id
         );
@@ -525,13 +525,13 @@ impl SourceHubClient {
     /// List all policy IDs.
     pub async fn acp_list_policy_ids(&self) -> Result<QueryPolicyIdsResponse> {
         let url = format!(
-            "{}/sourcenetwork/sourcehub/acp/policy_ids",
+            "{}/sourcenetwork/vera/acp/policy_ids",
             self.config().rest_url
         );
         self.rest_get(&url).await
     }
 
-    /// Verify an access request via the SourceHub VerifyAccessRequest ABCI query.
+    /// Verify an access request via Vera's VerifyAccessRequest ABCI query.
     ///
     /// Sends the actor + permission directly to the chain; returns `true` if the
     /// actor holds the required permission on the object, `false` otherwise.
@@ -550,7 +550,7 @@ impl SourceHubClient {
 
         let response_bytes = self
             .abci_query(
-                "/sourcehub.acp.Query/VerifyAccessRequest",
+                "/vera.acp.Query/VerifyAccessRequest",
                 request_bytes,
                 height,
                 false,
@@ -586,7 +586,7 @@ impl SourceHubClient {
         let request_bytes = request.encode_to_vec();
 
         // Query path for gRPC-style ABCI query
-        let path = "/sourcehub.acp.Query/FilterRelationships";
+        let path = "/vera.acp.Query/FilterRelationships";
 
         // Execute ABCI query
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
@@ -601,7 +601,7 @@ impl SourceHubClient {
     }
 
     /// List all relationships for a given object, regardless of relation or subject.
-    /// Uses wildcard selectors for relation and subject to avoid nil-pointer panics in SourceHub.
+    /// Uses wildcard selectors for relation and subject to avoid nil-pointer panics in Vera.
     /// Useful for diagnostics: if this returns results but `acp_has_relationship` doesn't,
     /// the issue is with how the subject selector is encoded.
     pub async fn acp_list_all_relationships_for_object(

@@ -1,8 +1,8 @@
-//! In-process protocol tests with real SourceHub.
+//! In-process protocol tests with real Vera.
 //!
 //! Spins up three orbis nodes IN-PROCESS (no Docker node images) and runs full
-//! DKG/PRE/SIGN protocols against them via gRPC, while SourceHub runs in Docker
-//! (docker-compose-sourcehub-test.yml).
+//! DKG/PRE/SIGN protocols against them via gRPC, while Vera runs in Docker
+//! (docker-compose-vera-test.yml).
 //!
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
@@ -46,10 +46,10 @@ use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, Rin
 use bulletin::BulletinImpl;
 use common::{
     blockchain::{
-        events::ReportEventSubscription, sign_node_message_with_hex_key, ChainConfig,
-        SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+        events::ReportEventSubscription, sign_node_message_with_hex_key, ChainConfig, TxSigner,
+        VeraClient, TEST_ACCOUNT_HEX_KEY,
     },
-    SourceHubTestContainer,
+    VeraTestContainer,
 };
 use crypto::{
     helpers::generate_keypair,
@@ -95,7 +95,7 @@ impl Drop for LiveNodeHandle {
     }
 }
 
-/// Three in-process orbis nodes backed by a real SourceHub chain.
+/// Three in-process orbis nodes backed by a real Vera chain.
 struct LiveThreeNodeNetwork {
     alice: LiveNodeHandle,
     bob: LiveNodeHandle,
@@ -105,8 +105,8 @@ struct LiveThreeNodeNetwork {
     /// Compressed pubkeys of alice, bob, charlie (in that order).
     node_keys: Vec<String>,
     chain_config: ChainConfig,
-    /// Keeps the SourceHub Docker container alive via RAII.
-    _chain: SourceHubTestContainer,
+    /// Keeps the Vera Docker container alive via RAII.
+    _chain: VeraTestContainer,
 }
 
 /// Four in-process nodes: all four participate in DKG.
@@ -120,7 +120,7 @@ struct LiveFourNodeNetwork {
     /// Compressed pubkeys of alice, bob, charlie, non_participant (in that order).
     node_keys: Vec<String>,
     chain_config: ChainConfig,
-    _chain: SourceHubTestContainer,
+    _chain: VeraTestContainer,
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -167,7 +167,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     })
 }
 
-/// Start SourceHub (via Docker) and three in-process orbis nodes.
+/// Start Vera (via Docker) and three in-process orbis nodes.
 ///
 /// Each node gets:
 /// - A unique funded signing key (for bulletin posting)
@@ -178,7 +178,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
 ///
 /// Waits until all three gRPC servers are ready before returning.
 async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveThreeNodeNetwork {
-    let chain = SourceHubTestContainer::new();
+    let chain = VeraTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root()
         .expect("resolve project root")
@@ -213,14 +213,14 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
             .await
             .expect("fund node account via faucet");
 
-        // Real bulletin backed by SourceHub (uses the funded signer to post)
+        // Real bulletin backed by Vera (uses the funded signer to post)
         let bulletin: Arc<dyn Bulletin + Send + Sync> = Arc::new(
             BulletinImpl::with_signer(chain.chain_config_builder(), signer, Some(MIN_NODE_BALANCE))
                 .await
                 .expect("BulletinImpl with signer"),
         );
 
-        // Real authz backed by SourceHub
+        // Real authz backed by Vera
         let authz: Arc<dyn Authz> = Arc::new(
             AuthzImpl::new(chain.chain_config_builder())
                 .await
@@ -321,7 +321,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
 }
 
 async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFourNodeNetwork {
-    let chain = SourceHubTestContainer::new();
+    let chain = VeraTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root()
         .expect("resolve project root")
@@ -661,9 +661,9 @@ fn sorted_node_id(node_key: &str, peer_node_keys: &[String]) -> u32 {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_delegated_dkg_with_sourcehub_end_to_end() {
+async fn test_delegated_dkg_with_vera_end_to_end() {
     let relay = TestKeyPair::new();
-    let net = setup_live_three_node_network("delegated_dkg_sourcehub", 51120).await;
+    let net = setup_live_three_node_network("delegated_dkg_vera", 51120).await;
     let ring_id = create_ring_on_chain_with_trusted_relays(
         &net.chain_config,
         &net.node_keys,
@@ -776,8 +776,8 @@ async fn test_two_simultaneous_dkg_sessions() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_sourcehub_accepts_invalid_crypto_dkg_share_report_from_live_nodes() {
-    let net = setup_live_three_node_network("reporting_dkg_share_sourcehub", 51080).await;
+async fn test_vera_accepts_invalid_crypto_dkg_share_report_from_live_nodes() {
+    let net = setup_live_three_node_network("reporting_dkg_share_vera", 51080).await;
     let endpoint = net.alice.grpc_endpoint.clone();
 
     let (ring_pk_hex, ring_id) = setup_ring(
@@ -819,7 +819,7 @@ async fn test_sourcehub_accepts_invalid_crypto_dkg_share_report_from_live_nodes(
     let event = sub
         .wait_for_report_accepted(&ring_id, Duration::from_secs(120))
         .await
-        .expect("DKG-share invalid-crypto report should be accepted on SourceHub");
+        .expect("DKG-share invalid-crypto report should be accepted on Vera");
 
     assert_eq!(event.report_type, "invalid_crypto_response");
     assert_eq!(event.accused_node_key, accused_node_key);
@@ -832,7 +832,7 @@ async fn test_sourcehub_accepts_invalid_crypto_dkg_share_report_from_live_nodes(
         event.reporter_node_key
     );
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),

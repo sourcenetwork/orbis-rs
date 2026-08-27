@@ -213,7 +213,7 @@ pub struct Args {
     ///
     /// Not persisted: like the other chain connection flags, this must be
     /// passed on every invocation. The signing key is the only thing this
-    /// node persists to disk; the fee grant itself lives in SourceHub's
+    /// node persists to disk; the fee grant itself lives in Vera's
     /// chain state, not here.
     #[arg(long)]
     pub fee_granter: Option<String>,
@@ -238,7 +238,7 @@ pub struct Args {
     /// Only safe when every peer has an authoritative AND directly
     /// UDP-reachable route with no NAT/firewall in the path (e.g. a generated
     /// Docker network). Do not enable in production unless you have verified
-    /// every committee member is directly reachable without relay — SourceHub
+    /// every committee member is directly reachable without relay — Vera
     /// supplying an address does not guarantee that address is dialable.
     #[arg(long, default_value_t = false)]
     pub network_private_routes_only: bool,
@@ -751,7 +751,7 @@ pub fn create_and_store_node_key(
 /// Retrieve the node signing key from storage and create a TxSigner.
 ///
 /// This function loads the stored secp256k1 signing key and returns a TxSigner
-/// that can be used with `SourceHubBulletin::with_signer`.
+/// that can be used with `VeraBulletin::with_signer`.
 ///
 /// # Arguments
 /// * `local_storage` - The local storage implementation to read from
@@ -942,11 +942,11 @@ mod tests {
             "--node-controller-key",
             "controller-key",
             "--chain-id",
-            "sourcehub-dev",
+            "vera-dev",
         ])
         .expect("parse arguments");
 
-        assert_eq!(args.chain_id.as_deref(), Some("sourcehub-dev"));
+        assert_eq!(args.chain_id.as_deref(), Some("vera-dev"));
     }
 
     #[test]
@@ -956,13 +956,13 @@ mod tests {
             "--node-controller-key",
             "controller-key",
             "--fee-granter",
-            "source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
+            "vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
         ])
         .expect("parse arguments");
 
         assert_eq!(
             args.fee_granter.as_deref(),
-            Some("source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
+            Some("vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
         );
     }
 

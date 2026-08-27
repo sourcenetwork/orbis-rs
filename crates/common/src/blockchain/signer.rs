@@ -57,8 +57,8 @@ impl TxSigner {
     /// When set, signed transactions request that `granter` pays fees via an
     /// existing on-chain fee grant instead of debiting this signer's own
     /// balance (Cosmos SDK `x/feegrant`). The grant must already exist on
-    /// chain (e.g. via `sourcehubd tx feegrant grant`) or transactions will
-    /// be rejected by SourceHub's ante handler.
+    /// chain (e.g. via `verad tx feegrant grant`) or transactions will
+    /// be rejected by Vera's ante handler.
     pub fn with_fee_granter(mut self, granter: &str) -> Result<Self> {
         let granter = granter
             .parse::<AccountId>()
@@ -271,7 +271,7 @@ mod tests {
         let address = signer.address();
 
         // Address should be bech32 encoded with the configured prefix
-        assert!(address.starts_with("source1"));
+        assert!(address.starts_with("vera1"));
         println!("Test address: {}", address);
     }
 
@@ -314,7 +314,7 @@ mod tests {
         let signer = TxSigner::new(&key_bytes, config).unwrap();
         let address = signer.address();
 
-        assert!(address.starts_with("source1"));
+        assert!(address.starts_with("vera1"));
     }
 
     #[test]

@@ -75,7 +75,7 @@ where
         // is just a "someone kick this off" trigger, not an authorization
         // decision — anyone can already reach it by running their own node.
         // Every committee member independently re-validates the ring against
-        // SourceHub before joining the ceremony (`validate_fresh_init`), which
+        // Vera before joining the ceremony (`validate_fresh_init`), which
         // is the actual authorization boundary.
         //
         // Validates that the ring's effective protocol version matches this service (v0).

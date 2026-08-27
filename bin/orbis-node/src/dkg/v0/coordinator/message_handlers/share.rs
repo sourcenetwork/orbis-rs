@@ -45,7 +45,7 @@ where
 ///
 /// The private pair transport uses this before emitting its digest ACK. Phase
 /// advancement is deliberately separate because the final share can enter
-/// phase 4 and wait on SourceHub; transport acknowledgement must only cover
+/// phase 4 and wait on Vera; transport acknowledgement must only cover
 /// crypto validation and local state acceptance, not the rest of the ceremony.
 pub(crate) async fn accept_share_message<D>(
     coord: &DkgCoordinator<D>,

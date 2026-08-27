@@ -15,7 +15,7 @@ use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use authn::PreClaims;
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use crypto::r#trait::{
     DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,

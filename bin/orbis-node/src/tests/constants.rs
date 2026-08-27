@@ -28,7 +28,7 @@ pub const OFFLINE_NODE_PEER_ID: &str =
     "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
 
 /// Deterministic ACP policy ID for ORBIS_RING_POLICY_YAML created as the first policy
-/// (counter=0) on a fresh SourceHub chain. Computed via acp_core@v0.8.1 id_transformer.go.
+/// (counter=0) on a fresh Vera chain. Computed via acp_core@v0.8.1 id_transformer.go.
 pub const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
 

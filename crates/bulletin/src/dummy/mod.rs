@@ -105,7 +105,7 @@ impl Bulletin for DummyBulletin {
     }
 
     fn chain_id(&self) -> String {
-        "sourcehub-localnet".to_string()
+        "vera-localnet".to_string()
     }
 
     fn ring_reshare_finalize_sign_bytes(

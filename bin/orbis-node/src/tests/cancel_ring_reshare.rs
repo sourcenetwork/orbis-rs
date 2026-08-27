@@ -1,6 +1,6 @@
 //! Docker-based integration test: cancel a permanently-stuck ring reshare.
 //!
-//! Spins up a full Docker Compose environment (SourceHub + 3 orbis-node containers),
+//! Spins up a full Docker Compose environment (Vera + 3 orbis-node containers),
 //! runs a real DKG, announces a reshare into a committee that can never complete
 //! (it includes a genesis-seeded but never-running node key), cancels it via the
 //! new `CancelRingReshareByAcp` chain message, and confirms the ring reverts to its
@@ -12,7 +12,7 @@
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::{
     blockchain::{
-        orbis::WhitelistTarget, ChainConfig, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+        orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
         TEST_ACCOUNT_PUBKEY_HEX,
     },
     IntegrationTestNetwork,
@@ -35,7 +35,7 @@ fn sorted_node_keys(node_keys: &[String]) -> Vec<String> {
 }
 
 async fn wait_for_node_info_on_chain(
-    controller_client: &SourceHubClient,
+    controller_client: &VeraClient,
     node_key: &str,
     timeout: Duration,
     poll_interval: Duration,
@@ -184,7 +184,7 @@ async fn test_cancel_stuck_reshare_reverts_ring_and_preserves_signing() {
         ),
     ];
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),

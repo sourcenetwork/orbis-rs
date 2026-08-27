@@ -38,7 +38,7 @@ use crate::helpers::test_helpers::{
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::{RingPolyState, RingShareBundle};
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::UpgradeInfo;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;

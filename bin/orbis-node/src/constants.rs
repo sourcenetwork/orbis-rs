@@ -242,7 +242,7 @@ pub const DKG_FAILED_SESSION_RECORD_TTL: Duration = Duration::from_secs(10 * 60)
 /// Maximum retries for both halves of `post_and_verify_fresh_ring_finalization`:
 /// reposting a `FinalizeRing` transaction whose confirmation is missing on-chain,
 /// and retrying a failed `ring_finalization_status` query. Shared between the two
-/// because both represent the same underlying condition (SourceHub is not yet
+/// because both represent the same underlying condition (Vera is not yet
 /// reflecting this node's confirmation) and should give up after comparable effort.
 pub const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
 

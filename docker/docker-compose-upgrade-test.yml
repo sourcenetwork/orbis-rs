@@ -1,26 +1,26 @@
 services:
   sourcehub:
-    image: "${ORBIS_UPGRADE_SOURCEHUB_IMAGE}"
+    image: "${ORBIS_UPGRADE_VERA_IMAGE}"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
         set -eu
-        rm -rf /home/node/.sourcehub/*
-        sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
-        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
-        exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+        rm -rf /home/node/.vera/*
+        verad init local-node --chain-id vera-localnet --home /home/node/.vera
+        verad keys add validator --keyring-backend test --home /home/node/.vera
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
+        verad genesis collect-gentxs --home /home/node/.vera
+        exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:
       - "127.0.0.1::26657"
       - "127.0.0.1::1317"
       - "127.0.0.1::9090"
     networks: [orbis-upgrade]
     healthcheck:
-      test: ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"]
+      test: ["CMD", "verad", "status", "--home", "/home/node/.vera"]
       interval: 5s
       timeout: 5s
       retries: 60

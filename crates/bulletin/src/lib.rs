@@ -2,18 +2,18 @@ pub mod error;
 pub mod r#trait;
 pub use r#trait::{BulletinKind, BulletinWriteKind};
 
-#[cfg(feature = "sourcehub")]
-pub mod sourcehub;
+#[cfg(feature = "vera")]
+pub mod vera;
 
 // Export dummy for testing anyways
 pub mod dummy;
 
 // Enforce mutual exclusivity - only one backend can be selected
-#[cfg(all(feature = "sourcehub", feature = "dummy"))]
-compile_error!("Features 'sourcehub' and 'dummy' are mutually exclusive. Use --no-default-features to disable the default backend.");
+#[cfg(all(feature = "vera", feature = "dummy"))]
+compile_error!("Features 'vera' and 'dummy' are mutually exclusive. Use --no-default-features to disable the default backend.");
 
 // Export the selected implementation
 #[cfg(feature = "dummy")]
 pub use dummy::DummyBulletin as BulletinImpl;
-#[cfg(feature = "sourcehub")]
-pub use sourcehub::SourceHubBulletin as BulletinImpl;
+#[cfg(feature = "vera")]
+pub use vera::VeraBulletin as BulletinImpl;

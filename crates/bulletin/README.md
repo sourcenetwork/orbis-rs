@@ -2,7 +2,7 @@
 
 A small async abstraction over typed Orbis bulletin objects: **read** rings by authoritative id, and **post** fresh ring finalizations, node info, encrypted document handles, and key-derivation records.
 
-The default backend is SourceHub `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
+The default backend is Vera `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
 ## `Bulletin` trait
 
@@ -28,37 +28,37 @@ Shared **value types** (JSON serde):
 
 | Feature | Default | `BulletinImpl` |
 |---------|---------|----------------|
-| `sourcehub` | **yes** | [`SourceHubBulletin`](src/sourcehub/mod.rs) |
+| `vera` | **yes** | [`VeraBulletin`](src/vera/mod.rs) |
 | `dummy` | no | [`DummyBulletin`](src/dummy/mod.rs) |
 
-**`sourcehub` and `dummy` are mutually exclusive** (only one can be enabled). Default builds use SourceHub.
+**`vera` and `dummy` are mutually exclusive** (only one can be enabled). Default builds use Vera.
 
-The **`dummy`** module is **always compiled** (in-memory store, useful in unit tests). The **`dummy`** *feature* only switches **`BulletinImpl`** to `DummyBulletin` and must not be combined with `sourcehub`:
+The **`dummy`** module is **always compiled** (in-memory store, useful in unit tests). The **`dummy`** *feature* only switches **`BulletinImpl`** to `DummyBulletin` and must not be combined with `vera`:
 
 ```bash
 cargo build -p bulletin --no-default-features --features dummy
 ```
 
-## SourceHub implementation
+## Vera implementation
 
-**`SourceHubBulletin`** wraps [`SourceHubClient`](../common) from the workspace `common` crate.
+**`VeraBulletin`** wraps [`VeraClient`](../common) from the workspace `common` crate.
 
 - **`post`** — routes to fresh `FinalizeRing`, `StoreDocument`, `StoreKeyDerivation`, or `CreateNodeInfo`, returning the chain id for the written object.
 - **`read`** — routes to typed `x/orbis` queries by object id.
-- Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from SourceHub `CreateRing` and pass that id through DKG.
+- Ring creation is intentionally outside this abstraction; callers receive a `ring_id` from Vera `CreateRing` and pass that id through DKG.
 
 Construction:
 
-- **`SourceHubBulletin::new(ChainConfigBuilder)`** — Read-focused client.
-- **`SourceHubBulletin::with_signer(..., balance_check_amount)`** — Client with **`TxSigner`**; optionally waits (exponential backoff) until the account balance ≥ threshold, then performs a minimal **self-transfer** to register the account on-chain.
+- **`VeraBulletin::new(ChainConfigBuilder)`** — Read-focused client.
+- **`VeraBulletin::with_signer(..., balance_check_amount)`** — Client with **`TxSigner`**; optionally waits (exponential backoff) until the account balance ≥ threshold, then performs a minimal **self-transfer** to register the account on-chain.
 
-Diagnostics name: **`"bulletin/sourcehub"`**.
+Diagnostics name: **`"bulletin/vera"`**.
 
-Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) may require **Docker** (SourceHub stack), similar to other `common`-based tests.
+Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) may require **Docker** (Vera stack), similar to other `common`-based tests.
 
 ## Dummy implementation
 
-**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Document and key-derivation writes return the same typed ids as SourceHub.
+**`DummyBulletin`** keeps typed objects in a process-local **`HashMap`**, keyed by object id. Document and key-derivation writes return the same typed ids as Vera.
 
 Extras for tests: **`set_post`**, **`set_ring`**, **`set_node_info`**, **`get_posts`**, and **`finalization_count`**. `DummyBulletin::post` rejects `NodeInfo` because the dummy backend has no signer to derive the node key.
 
@@ -73,11 +73,11 @@ Diagnostics name: **`"bulletin/dummy"`**.
 - **`async-trait`**, **`serde`** / **`serde_json`**
 - **`sha2`**, **`hex`** — canonical ring hash helpers
 - **`backoff`** — balance retries in `with_signer`
-- **`common`** — SourceHub chain client
+- **`common`** — Vera chain client
 
 ## Spec notes
 
-The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is SourceHub; other bulletin backends can be added if they honor the same typed-object contract expectations and deterministic ids where applicable. Filling out the spec is a TODO.
+The repo includes a short intent doc [`bulletin_spec.md`](bulletin_spec.md): first implementation is Vera; other bulletin backends can be added if they honor the same typed-object contract expectations and deterministic ids where applicable. Filling out the spec is a TODO.
 
 ## Tests
 

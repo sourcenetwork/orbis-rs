@@ -1,10 +1,10 @@
 //! In-process DKG execution backend: real `orbis-node` instances running as
 //! tokio tasks in this process, talking real Iroh P2P over loopback, backed
-//! by a shared in-memory [`DummyBulletin`] instead of a Dockerized SourceHub.
+//! by a shared in-memory [`DummyBulletin`] instead of a Dockerized Vera.
 //!
 //! No Docker, no blockchain, no external network dependency — this exists to
 //! measure orbis's own DKG/PRE/SIGN protocol and P2P networking behavior
-//! without infrastructure flakiness (SourceHub RPC hiccups, Iroh relay
+//! without infrastructure flakiness (Vera RPC hiccups, Iroh relay
 //! reachability, Docker host contention) obscuring the result. See
 //! `runner.rs`'s `run_stack_in_process` for the trial loops that drive this
 //! network; the results/report/manifest pipeline (`results.rs`/`report.rs`)
@@ -27,7 +27,7 @@
 //! for SIGN, a `KeyDerivation` record — the latter posted directly to the
 //! shared bulletin by [`HarnessNetwork::post_key_derivation`] below, since
 //! `cli_tool::post_key_derivation_with_config` unconditionally builds a real
-//! `SourceHubBulletin` client and can't be reused here.
+//! `VeraBulletin` client and can't be reused here.
 
 use crate::protocol::{DirectClients, NodeEndpoint};
 use anyhow::{Context, Result};
@@ -159,7 +159,7 @@ impl HarnessNetwork {
     /// the in-process equivalent of a live `MsgCreateRing`. `members` are
     /// 1-based indices into this network, matching `NodeEndpoint::index`.
     /// `pss_interval_secs` is the ring's own due-for-refresh interval
-    /// (`RingPayload.pss_interval`) — unlike Docker's SourceHub-backed
+    /// (`RingPayload.pss_interval`) — unlike Docker's Vera-backed
     /// rings, `DummyBulletin` enforces no floor on this, so callers are free
     /// to use a short interval for PSS refresh trials.
     pub fn seed_pending_ring(
@@ -196,7 +196,7 @@ impl HarnessNetwork {
     /// record directly to the shared bulletin via the same `Bulletin::post`
     /// path a real node's `StoreSecretService`/key-derivation handler uses —
     /// no chain client involved, unlike the Docker-only cli-tool function
-    /// (which unconditionally builds a `SourceHubBulletin`). Returns
+    /// (which unconditionally builds a `VeraBulletin`). Returns
     /// `(derivation_id, derived_public_key_hex)`.
     pub async fn post_key_derivation(
         &self,

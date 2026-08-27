@@ -30,11 +30,11 @@ struct NetworkArgs {
     )]
     endpoint: String,
 
-    /// Chain ID of the target SourceHub network
+    /// Chain ID of the target Vera network
     #[arg(
         long,
         env = "ORBIS_CHAIN_ID",
-        default_value = "sourcehub-localnet",
+        default_value = "vera-localnet",
         global = true
     )]
     chain_id: String,
@@ -70,7 +70,7 @@ struct NetworkArgs {
     #[arg(
         long,
         env = "ORBIS_ACCOUNT_PREFIX",
-        default_value = "source",
+        default_value = "vera",
         global = true
     )]
     account_prefix: String,
@@ -98,7 +98,7 @@ impl NetworkArgs {
         self.signing_key.clone().ok_or_else(|| {
             anyhow::anyhow!(
                 "No signing key configured. Pass --signing-key <hex> or set ORBIS_SIGNING_KEY.\n\
-                 For local devnet testing only, you may use the well-known SourceHub localnet \
+                 For local devnet testing only, you may use the well-known Vera localnet \
                  test key documented in README.md — never use it against a real network."
             )
         })
@@ -224,7 +224,7 @@ pub enum SubCommands {
     /// Generate a reader keypair for PRE decryption
     GenerateReaderKey,
     /// Derive the secp256k1 public key and did:key for --signing-key. Pure local
-    /// computation, no network calls. SourceHub resolves ACP actor identity for
+    /// computation, no network calls. Vera resolves ACP actor identity for
     /// signed transactions (e.g. create-ring's `create_ring` permission check)
     /// from this same derivation -- use this to find out, ahead of time, which
     /// DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`)
@@ -264,7 +264,7 @@ pub enum SubCommands {
         )]
         reader_did_pk: Option<String>,
         /// Grant this relation to the DID derived from a secp256k1 public key
-        /// instead of --reader-did-pk -- matches the identity SourceHub resolves
+        /// instead of --reader-did-pk -- matches the identity Vera resolves
         /// for ACP checks on signed transactions (see `derive-signer-did`).
         #[clap(long, conflicts_with = "reader_did_pk")]
         actor_pubkey: Option<String>,
@@ -552,7 +552,7 @@ fn require_reader_did_pk(reader_did_pk: Option<String>) -> Result<String> {
 
 /// Resolve the DID to grant a relationship to: either the Ed25519 DID derived
 /// from --reader-did-pk's seed, or the secp256k1 DID derived from
-/// --actor-pubkey (matching SourceHub's ACP actor identity for signed
+/// --actor-pubkey (matching Vera's ACP actor identity for signed
 /// transactions -- see `derive-signer-did`). Clap's `conflicts_with` already
 /// rejects both being given; this handles neither being given.
 fn resolve_relationship_actor_did(

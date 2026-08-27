@@ -37,10 +37,9 @@ use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
 use common::{
     blockchain::{
-        events::ReportEventSubscription, ChainConfig, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
+        events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
     },
-    SourceHubTestContainer,
+    VeraTestContainer,
 };
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -96,8 +95,8 @@ struct FaultableThreeNodeNetwork {
     /// Compressed pubkeys of alice, bob, charlie (in that order).
     node_keys: Vec<String>,
     chain_config: ChainConfig,
-    /// Keeps the SourceHub Docker container alive via RAII.
-    _chain: SourceHubTestContainer,
+    /// Keeps the Vera Docker container alive via RAII.
+    _chain: VeraTestContainer,
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -140,7 +139,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     })
 }
 
-/// Start SourceHub (via Docker) and three in-process orbis nodes, each wrapped
+/// Start Vera (via Docker) and three in-process orbis nodes, each wrapped
 /// with a `FaultNetwork` for test-time network partition simulation.
 async fn setup_fault_three_node_network(
     db_prefix: &str,
@@ -160,7 +159,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
     base_port: u16,
     reshare_interval_secs: u64,
 ) -> FaultableThreeNodeNetwork {
-    let chain = SourceHubTestContainer::new();
+    let chain = VeraTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
 
@@ -1106,7 +1105,7 @@ async fn test_reshare_private_pair_terminal_stall_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),
@@ -1268,7 +1267,7 @@ async fn test_reshare_missing_topology_ack_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),

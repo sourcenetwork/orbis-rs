@@ -2037,7 +2037,7 @@ fn validate_reshare_next_transport_committee(
             .any(|node_key| !expected_routes.contains_key(node_key.as_str()))
     {
         return Err(DkgError::InvalidState(
-            "resolved SourceHub routes do not cover the reshare next committee".into(),
+            "resolved Vera routes do not cover the reshare next committee".into(),
         ));
     }
     if let Err(detail) =
@@ -2048,7 +2048,7 @@ fn validate_reshare_next_transport_committee(
         // `report_leader_prepare_fault_best_effort` call — no separate
         // reporting needed here.
         return Err(DkgError::Unauthorized(format!(
-            "Reshare next transport routes do not match resolved SourceHub NodeInfo routes: {detail}"
+            "Reshare next transport routes do not match resolved Vera NodeInfo routes: {detail}"
         )));
     }
     Ok(())
@@ -4130,7 +4130,7 @@ fn pending_reshare_parameters(
 ) -> Result<(Vec<String>, u32)> {
     if !ring_payload_matches_ring_key(expected_ring_pk, &ring.ring_pk) {
         return Err(DkgError::InvalidState(
-            "reshare ring public key differs from SourceHub state".into(),
+            "reshare ring public key differs from Vera state".into(),
         ));
     }
     let next_keys = ring
@@ -4140,7 +4140,7 @@ fn pending_reshare_parameters(
     let next_threshold = ring.new_threshold.unwrap_or(ring.threshold);
     if next_keys == ring.peer_node_keys && next_threshold == ring.threshold {
         return Err(DkgError::InvalidState(
-            "SourceHub ring has no pending reshare transition".into(),
+            "Vera ring has no pending reshare transition".into(),
         ));
     }
     Ok((next_keys, next_threshold))
@@ -4148,7 +4148,7 @@ fn pending_reshare_parameters(
 
 /// Observe a pending transition as a current member and route it to the
 /// canonical next-committee leader. Any current member may forward; the next
-/// leader independently authenticates the sender and SourceHub state.
+/// leader independently authenticates the sender and Vera state.
 pub(crate) async fn start_reshare<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -4295,7 +4295,7 @@ where
     Ok(())
 }
 
-/// Coordinate the pending SourceHub transition as the canonical next-committee
+/// Coordinate the pending Vera transition as the canonical next-committee
 /// receiver. Only this function creates an attempt ID.
 async fn coordinate_reshare<D>(
     state: Arc<AppState<D>>,
@@ -4416,7 +4416,7 @@ where
         .map_err(DkgError::ProtocolError)?;
     if !ring_payload_matches_ring_key(expected_ring_pk, &ring.ring_pk) {
         return Err(DkgError::InvalidState(
-            "refresh ring public key differs from SourceHub state".into(),
+            "refresh ring public key differs from Vera state".into(),
         ));
     }
     let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
@@ -4446,7 +4446,7 @@ where
     {
         crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
         return Err(DkgError::Unauthorized(
-            "StartRefresh sender does not match the requester SourceHub route".into(),
+            "StartRefresh sender does not match the requester Vera route".into(),
         ));
     }
     Ok(())
@@ -4470,7 +4470,7 @@ where
         .map_err(DkgError::ProtocolError)?;
     if !ring_payload_matches_ring_key(&ring_pk, &ring.ring_pk) {
         return Err(DkgError::InvalidState(
-            "refresh ring public key differs from SourceHub state".into(),
+            "refresh ring public key differs from Vera state".into(),
         ));
     }
     let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
@@ -4524,7 +4524,7 @@ where
         &bundle.public_polynomial,
     )?;
     let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
-    // The scheduler's first due check precedes an asynchronous SourceHub read.
+    // The scheduler's first due check precedes an asynchronous Vera read.
     // A previous refresh can complete during that read and advance `last_pss`.
     // Re-read under the start singleflight before creating an attempt so each
     // completion cannot produce a guaranteed-too-early follow-up attempt.
@@ -5772,7 +5772,7 @@ where
     }
 
     // A lost Prepared response may cause the leader to retry the exact request.
-    // Check this cheap, session-local fast path before paying for SourceHub
+    // Check this cheap, session-local fast path before paying for Vera
     // reshare route resolution or session-init validation below: both make
     // live chain reads, and retries must stay cheap or preparation cannot
     // tolerate the network hiccups it exists to survive. `transport_configuration`
@@ -5837,7 +5837,7 @@ where
     // retried Prepare; doing so emits neighbor churn across the whole
     // transient mesh. This second check catches the case where session_init
     // ran concurrently (e.g. two in-flight retries) and the transport got
-    // configured by the other task while this one was awaiting SourceHub.
+    // configured by the other task while this one was awaiting Vera.
     if let Some((ceremony_id, attempt_id, config_digest)) = state
         .dkg_session_state
         .transport_configuration(&prepare.ceremony_id.0)
@@ -8032,7 +8032,7 @@ where
         })?;
     if !peer_matches_route(&verified.origin, &expected_peer) {
         return Err(DkgError::Unauthorized(
-            "public contribution endpoint identity does not match SourceHub NodeInfo".into(),
+            "public contribution endpoint identity does not match Vera NodeInfo".into(),
         ));
     }
     let (kind, active_dealers) = state
@@ -11171,7 +11171,7 @@ where
         .ok_or_else(|| DkgError::Unauthorized("private share sender is not in committee".into()))?;
     if !peer_matches_route(sender, &expected_sender) {
         return Err(DkgError::Unauthorized(
-            "private share sender does not match SourceHub NodeInfo".into(),
+            "private share sender does not match Vera NodeInfo".into(),
         ));
     }
     let expected_id = transport::derive_private_message_id(
@@ -11980,7 +11980,7 @@ mod stability_tests {
         let error = pending_reshare_parameters(&pending_reshare_ring(), "stale-ring-key")
             .expect_err("a stale scheduler observation must not start reshare");
         assert!(matches!(error, DkgError::InvalidState(_)));
-        assert!(error.to_string().contains("differs from SourceHub state"));
+        assert!(error.to_string().contains("differs from Vera state"));
     }
 
     #[test]
@@ -12011,7 +12011,7 @@ mod stability_tests {
     fn valid_next_transport_committee() -> CommitteeConfig {
         let resolved = resolved_next_routes();
         CommitteeConfig {
-            // Transport order need not match SourceHub order, but each route
+            // Transport order need not match Vera order, but each route
             // must remain bound to its node key.
             node_keys: vec!["next-a".to_string(), "next-b".to_string()],
             peer_routes: vec![resolved[1].peer_id.clone(), resolved[0].peer_id.clone()],
@@ -12207,7 +12207,7 @@ mod stability_tests {
             validate_reshare_next_transport_committee(&altered, &expected_keys, 2, &resolved)
                 .expect_err("an altered direct address must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
-        assert!(error.to_string().contains("SourceHub NodeInfo routes"));
+        assert!(error.to_string().contains("Vera NodeInfo routes"));
 
         let mut swapped = valid_next_transport_committee();
         swapped.peer_routes.swap(0, 1);
@@ -12215,7 +12215,7 @@ mod stability_tests {
             validate_reshare_next_transport_committee(&swapped, &expected_keys, 2, &resolved)
                 .expect_err("a route set bound to the wrong node keys must be rejected");
         assert!(matches!(error, DkgError::Unauthorized(_)));
-        assert!(error.to_string().contains("SourceHub NodeInfo routes"));
+        assert!(error.to_string().contains("Vera NodeInfo routes"));
     }
 
     #[test]
@@ -15130,7 +15130,7 @@ mod stability_tests {
         let resolved =
             resolve_node_routes(&state.bulletin, std::slice::from_ref(&node_key.to_string()))
                 .await
-                .expect("resolve self SourceHub route");
+                .expect("resolve self Vera route");
         let peer_ids = peer_ids_from_routes(&resolved);
         let assignments = canonical_node_id_assignments_from_node_keys(std::slice::from_ref(
             &node_key.to_string(),
@@ -15187,14 +15187,14 @@ mod stability_tests {
 
     /// Regression test for a fix to `prepare_participant`: a retried `Prepare`
     /// for an already-configured attempt must return the cached `Prepared`
-    /// response *without* re-running `handle_session_init`'s live SourceHub
-    /// validation. Proven here by corrupting the SourceHub ring's threshold
+    /// response *without* re-running `handle_session_init`'s live Vera
+    /// validation. Proven here by corrupting the Vera ring's threshold
     /// between the first and second call — if the retry re-validated against
-    /// SourceHub (the bug this guards against), it would fail on the
+    /// Vera (the bug this guards against), it would fail on the
     /// now-mismatched threshold instead of taking the fast idempotent path.
     #[tokio::test]
-    async fn retried_prepare_skips_sourcehub_revalidation_when_already_configured() {
-        let db_name = "retried_prepare_skips_sourcehub_revalidation";
+    async fn retried_prepare_skips_vera_revalidation_when_already_configured() {
+        let db_name = "retried_prepare_skips_vera_revalidation";
         let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
         let node_key = app_state.node_key.clone();
@@ -15227,7 +15227,7 @@ mod stability_tests {
             .await
             .expect(
                 "retried Prepare must take the already-configured fast path, \
-                 not re-validate against the now-broken SourceHub ring",
+                 not re-validate against the now-broken Vera ring",
             ) {
             DkgControlMessage::Prepared {
                 ceremony_id: got_ceremony,
@@ -15246,10 +15246,10 @@ mod stability_tests {
     /// A `Prepare` that conflicts with an already-configured attempt (same
     /// session, different ceremony/attempt/config digest) must still be
     /// rejected on retry, even though the rejection is now also detected
-    /// before the expensive SourceHub revalidation.
+    /// before the expensive Vera revalidation.
     #[tokio::test]
-    async fn conflicting_prepare_is_rejected_without_sourcehub_revalidation() {
-        let db_name = "conflicting_prepare_is_rejected_without_sourcehub_revalidation";
+    async fn conflicting_prepare_is_rejected_without_vera_revalidation() {
+        let db_name = "conflicting_prepare_is_rejected_without_vera_revalidation";
         let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
         let app_state = create_test_app_state_with_bulletin(true, bulletin.clone(), db_name).await;
         let node_key = app_state.node_key.clone();

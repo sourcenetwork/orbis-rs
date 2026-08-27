@@ -227,7 +227,7 @@ async fn test_store_secret_rejects_delegated_actor() {
 
     let status = result.expect_err("delegated StoreSecret must fail");
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
-    assert!(status.message().contains("SourceHub signer"));
+    assert!(status.message().contains("Vera signer"));
     cleanup_db(&db_path);
 }
 

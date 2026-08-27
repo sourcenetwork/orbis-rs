@@ -2,10 +2,10 @@
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test \
-//!     test_stale_pending_dkg_is_cancelled_on_sourcehub -- --nocapture
+//!     test_stale_pending_dkg_is_cancelled_on_vera -- --nocapture
 
 use crate::ring_state::RingIndexEntry;
-use common::{blockchain::SourceHubClient, IntegrationTestNetwork};
+use common::{blockchain::VeraClient, IntegrationTestNetwork};
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
@@ -19,7 +19,7 @@ use super::constants::{reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_stale_pending_dkg_is_cancelled_on_sourcehub() {
+async fn test_stale_pending_dkg_is_cancelled_on_vera() {
     let network = IntegrationTestNetwork::builder()
         .with_module_genesis(
             "orbis",
@@ -99,9 +99,7 @@ async fn test_stale_pending_dkg_is_cancelled_on_sourcehub() {
         );
     }
 
-    let chain_client = SourceHubClient::new(chain_config)
-        .await
-        .expect("SourceHub client");
+    let chain_client = VeraClient::new(chain_config).await.expect("Vera client");
     let initial_ring = chain_client
         .orbis_read_ring(RING_ID)
         .await

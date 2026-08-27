@@ -111,7 +111,7 @@ where
             report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
         }
         return Err(DkgError::Unauthorized(format!(
-            "Refresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+            "Refresh current-committee transport routes do not match Vera NodeInfo: {detail}"
         )));
     }
     let route_peer_ids = peer_ids_from_routes(&routes);
@@ -258,7 +258,7 @@ where
             report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
         }
         return Err(DkgError::Unauthorized(format!(
-            "Reshare old current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+            "Reshare old current-committee transport routes do not match Vera NodeInfo: {detail}"
         )));
     }
     let old_route_peer_ids = peer_ids_from_routes(&old_routes);
@@ -376,7 +376,7 @@ where
         // faults are not reportable"). Unlike Refresh/Reshare, this failure
         // can only ever be a local rejection, never attributed on-chain.
         DkgError::Unauthorized(format!(
-            "Fresh current-committee transport routes do not match SourceHub NodeInfo: {detail}"
+            "Fresh current-committee transport routes do not match Vera NodeInfo: {detail}"
         ))
     })?;
     let route_peer_ids = peer_ids_from_routes(&routes);

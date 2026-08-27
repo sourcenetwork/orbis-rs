@@ -1,5 +1,5 @@
 # Docker Compose for integration tests
-# Spins up sourcehub chain + 3 orbis nodes with proper dependencies and healthchecks
+# Spins up vera chain + 3 orbis nodes with proper dependencies and healthchecks
 #
 # To test a specific crypto implementation, set ORBIS_INTEGRATION_CRYPTO before
 # bringing the stack up (and use --build so images are built with that feature):
@@ -10,35 +10,35 @@
 # fixtures only. Production deployments should inject secrets from a secret
 # manager or read-only mounted files; see bin/orbis-node/README.md.
 services:
-  sourcehub:
-    image: orbis-sourcehub-integration
+  vera:
+    image: orbis-vera-integration
     build:
       context: .
-      dockerfile: Dockerfile.sourcehub-integration
+      dockerfile: Dockerfile.vera-integration
     entrypoint: ["/bin/sh", "-c"]
     volumes:
       - ${GENESIS_PATCH_FILE:-/dev/null}:/tmp/genesis-patch.json:ro
     command:
       - |
-        rm -rf /home/node/.sourcehub/*
-        sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
-        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
+        rm -rf /home/node/.vera/*
+        verad init local-node --chain-id vera-localnet --home /home/node/.vera
+        verad keys add validator --keyring-backend test --home /home/node/.vera
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
+        verad genesis collect-gentxs --home /home/node/.vera
         if [ -s /tmp/genesis-patch.json ]; then
           if jq --argjson patch "$$(cat /tmp/genesis-patch.json)" '.app_state *= $$patch' \
-            /home/node/.sourcehub/config/genesis.json > /tmp/patched-genesis.json; then
-            mv /tmp/patched-genesis.json /home/node/.sourcehub/config/genesis.json
+            /home/node/.vera/config/genesis.json > /tmp/patched-genesis.json; then
+            mv /tmp/patched-genesis.json /home/node/.vera/config/genesis.json
             echo "Applied genesis patch"
           else
             echo "Invalid GENESIS_PATCH_FILE mounted at /tmp/genesis-patch.json; failed to parse or merge genesis patch" >&2
             exit 1
           fi
         fi
-        exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+        exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:
       - "127.0.0.1::26657" # RPC
       - "127.0.0.1::26656" # P2P
@@ -47,7 +47,7 @@ services:
     networks:
       - orbis-integration-network
     healthcheck:
-      test: ["CMD", "sourcehubd", "status", "--home", "/home/node/.sourcehub"]
+      test: ["CMD", "verad", "status", "--home", "/home/node/.vera"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -66,14 +66,14 @@ services:
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001
       - RUST_LOG=debug
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      sourcehub:
+      vera:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -95,14 +95,14 @@ services:
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000002
       - RUST_LOG=debug
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      sourcehub:
+      vera:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -124,14 +124,14 @@ services:
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000003
       - RUST_LOG=debug
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      sourcehub:
+      vera:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
@@ -154,14 +154,14 @@ services:
       - ORBIS_SECRET_KEY=testsecret4testsecret4
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
       - RUST_LOG=debug
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
     networks:
       - orbis-integration-network
     depends_on:
-      sourcehub:
+      vera:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]

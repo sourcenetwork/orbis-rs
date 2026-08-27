@@ -35,9 +35,9 @@ Orbis enables secure, distributed encryption where:
 orbis-rs/
 ├── crates/
 │   ├── authn/          # JWT + did:key verification
-│   ├── authz/          # Policy checks (SourceHub ACP)
-│   ├── bulletin/       # Bulletin board (SourceHub)
-│   ├── common/       # SourceHub chain client + Docker test harnesses
+│   ├── authz/          # Policy checks (Vera ACP)
+│   ├── bulletin/       # Bulletin board (Vera)
+│   ├── common/       # Vera chain client + Docker test harnesses
 │   ├── crypto/       # DKG, PRE, threshold signing
 │   ├── local-storage/# Encrypted key-value storage
 │   ├── network/      # QUIC / iroh P2P abstraction
@@ -70,7 +70,7 @@ flowchart TB
     n1 <--> n3
   end
 
-  subgraph chain[SourceHub chain]
+  subgraph chain[Vera chain]
     bb[(Bulletin board)]
     acp[(Policies / ACP)]
   end
@@ -120,7 +120,7 @@ flowchart TB
   ct --> proto
 ```
 
-**`common`** is the SourceHub / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs decaf377) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
+**`common`** is the Vera / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs decaf377) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
 
 ## Crates
 
@@ -162,7 +162,7 @@ Encrypted local key-value storage for persisting node secrets.
 
 ### [`common`](crates/common/)
 
-SourceHub blockchain client (**`SourceHubClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
+Vera blockchain client (**`VeraClient`**, **`ChainConfig`**, **`TxSigner`**), ACP/bulletin helpers, and Docker-based test containers. See [`crates/common/README.md`](crates/common/README.md).
 
 ### [`proto`](crates/proto/)
 
@@ -201,9 +201,9 @@ cargo build --no-default-features --features=<alternative>
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
 | `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
 | `crypto` | `decaf377` | `DKG, PRE, SIGN` |  Decaf377 curve | No |
-| `authz` | `sourcehub` | `SourceHubAuth` | SourceHub authorization | Yes |
+| `authz` | `vera` | `VeraAuth` | Vera authorization | Yes |
 | `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
-| `bulletin` | `sourcehub` | `SourceHubBulletin` | Bulletin board backends | Yes |
+| `bulletin` | `vera` | `VeraBulletin` | Bulletin board backends | Yes |
 | `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
 
 ### Example: Switching Storage Backend
@@ -467,8 +467,8 @@ To load these dashboards into a Grafana instance that doesn't support file-based
 - Only public keys and metadata appear in trace output
 - Local storage uses AES-256-GCM with Argon2 key derivation
 - All share transmissions include nonces and session IDs to prevent replay attacks
-- Nodes **fully trust their configured SourceHub endpoints** (no light-client
-  verification of chain reads) — production nodes must run their own SourceHub
+- Nodes **fully trust their configured Vera endpoints** (no light-client
+  verification of chain reads) — production nodes must run their own Vera
   full node; see [Chain endpoint trust](bin/orbis-node/README.md#chain-endpoint-trust-hard-requirement)
 
 ## License

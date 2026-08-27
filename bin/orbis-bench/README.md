@@ -50,7 +50,7 @@ cargo run -p orbis-bench -- report bench-results/<run-dir>
 
 ## In-process backend (no Docker, no chain)
 
-For DKG/PRE/SIGN measurements, `backend: in-process` runs every node as a real `orbis-node` instance inside the `orbis-bench` process itself — real Iroh P2P over loopback, real protocol code, but backed by a shared in-memory mock bulletin instead of a Dockerized SourceHub. There are no containers, no chain, and no external network dependency, so a run can't fail on SourceHub RPC hiccups, Iroh relay reachability, or Docker host contention — only on orbis's own protocol and networking code. The trade-off is realism: it measures orbis in isolation, not the full containerized/chain-backed deployment.
+For DKG/PRE/SIGN measurements, `backend: in-process` runs every node as a real `orbis-node` instance inside the `orbis-bench` process itself — real Iroh P2P over loopback, real protocol code, but backed by a shared in-memory mock bulletin instead of a Dockerized Vera. There are no containers, no chain, and no external network dependency, so a run can't fail on Vera RPC hiccups, Iroh relay reachability, or Docker host contention — only on orbis's own protocol and networking code. The trade-off is realism: it measures orbis in isolation, not the full containerized/chain-backed deployment.
 
 ```console
 cargo run -p orbis-bench -- plan --config bin/orbis-bench/examples/inprocess-50-node.yaml
@@ -72,26 +72,26 @@ cargo run -p orbis-bench -- doctor
 cargo run -p orbis-bench -- doctor --runtime-image orbis-bench-node:bls12-381
 ```
 
-The benchmark node image is [Dockerfile.node](./Dockerfile.node). It uses the production features `redb`, `authz-sourcehub`, `bulletin-sourcehub`, and `iroh`, plus the selected crypto implementation. It adds only `iproute2` and basic health-check utilities to the runtime layer.
+The benchmark node image is [Dockerfile.node](./Dockerfile.node). It uses the production features `redb`, `authz-vera`, `bulletin-vera`, and `iroh`, plus the selected crypto implementation. It adds only `iproute2` and basic health-check utilities to the runtime layer.
 
 ## Lifecycle
 
 Each network-size/profile batch gets a unique Compose project, volumes, bridge network, host ports, labels, resolved Compose file, and genesis patch.
 
-1. Nodes start against an ephemeral SourceHub chain. The production bootstrap Info service exposes their generated signing account and node key while they wait for funding.
-2. The nodes stop without deleting their volumes. The tool deterministically assigns memberships and fresh ring IDs from the run seed, writes all rings into genesis, and recreates SourceHub.
+1. Nodes start against an ephemeral Vera chain. The production bootstrap Info service exposes their generated signing account and node key while they wait for funding.
+2. The nodes stop without deleting their volumes. The tool deterministically assigns memberships and fresh ring IDs from the run seed, writes all rings into genesis, and recreates Vera.
 3. Bounded multi-message transactions fund accounts, then the same volumes restart. The tool discovers routable Iroh addresses, updates NodeInfo, registers ring ACP objects, and grants committee operator relationships. Oversized or invalid transaction batches are bisected until the bad item is isolated.
-4. LAN and WAN use fresh stacks. WAN grants `NET_ADMIN` only to node services and applies `tc netem` only to IPv4 UDP egress, covering Iroh/QUIC while leaving SourceHub TCP and host gRPC traffic unshaped. Applied qdisc output and a UDP calibration probe are recorded.
+4. LAN and WAN use fresh stacks. WAN grants `NET_ADMIN` only to node services and applies `tc netem` only to IPv4 UDP egress, covering Iroh/QUIC while leaving Vera TCP and host gRPC traffic unshaped. Applied qdisc output and a UDP calibration probe are recorded.
 
 Capacity planning conservatively partitions stacks before any node could manage more than `MAX_LOCAL_RINGS_PER_NODE` (256). Cases and committee memberships are shuffled deterministically and initiators rotate from the recorded seed.
 
 ## Measurements
 
-- Fresh DKG records request acknowledgement separately. Primary latency ends only after SourceHub finalization and matching local ring state on every committee node.
+- Fresh DKG records request acknowledgement separately. Primary latency ends only after Vera finalization and matching local ring state on every committee node.
 - PRE records server RPC, local decrypt, and total client-visible time and rejects a trial unless plaintext matches.
 - SIGN records server RPC and client verification separately. Serial and load responses are verified against the derived public key.
 - PSS refresh uses the production scheduler and a short genesis-only interval on a dedicated ring. It requires `last_pss` and every local polynomial to advance while the ring public key remains unchanged. Scheduler delay and ceremony time are recorded separately.
-- PSS reshare is opt-in through `operations: [pss_reshare]` and requires an explicit `reshare_overlap`. Every attempt uses a fresh ring, triggers the transition through SourceHub, and succeeds only when the ring public key is unchanged, SourceHub has finalized the requested committee and threshold, all next-committee nodes expose matching local state, and overlapping members advance `last_pss`. The 50-node acceptance example uses old/new committees of 34, overlap 18, and threshold 23.
+- PSS reshare is opt-in through `operations: [pss_reshare]` and requires an explicit `reshare_overlap`. Every attempt uses a fresh ring, triggers the transition through Vera, and succeeds only when the ring public key is unchanged, Vera has finalized the requested committee and threshold, all next-committee nodes expose matching local state, and overlapping members advance `last_pss`. The 50-node acceptance example uses old/new committees of 34, overlap 18, and threshold 23.
 - PRE/SIGN load is closed-loop at the configured concurrency levels after a distinct warm-up window.
 
 Metrics are scraped around trials and stored as exact deltas. Docker CPU, memory, network/block I/O, PIDs, restart state, and OOM state are sampled once per second.
@@ -103,7 +103,7 @@ The example uses a 15-second PSS interval. The production scheduler has a 10-sec
 Every run directory contains:
 
 - `report.html` — self-contained offline HTML with inline SVG charts;
-- `manifest.json` — resolved experiment, commit/dirty state, host and Docker allocation, image digests, SourceHub ref, calibration, crypto, and seed;
+- `manifest.json` — resolved experiment, commit/dirty state, host and Docker allocation, image digests, Vera ref, calibration, crypto, and seed;
 - `trials.jsonl` — append-only and synced after every attempt for crash-safe resume;
 - `setup-failures.jsonl` — setup failures classified separately from protocol trials;
 - `summary.csv` and `resource-samples.csv`;
@@ -118,7 +118,7 @@ While a run is in progress, or after `--keep-network` preserves a failed stack, 
 
 ```console
 docker compose -f bench-results/<run-dir>/stacks/<stack-name>/compose.yaml logs -f
-docker compose -f bench-results/<run-dir>/stacks/<stack-name>/compose.yaml logs -f sourcehub-001 node-013
+docker compose -f bench-results/<run-dir>/stacks/<stack-name>/compose.yaml logs -f vera-001 node-013
 ```
 
 Every container also carries `dev.orbis.bench.run`, `dev.orbis.bench.stack`, `dev.orbis.bench.role`, and `dev.orbis.bench.node-index` labels, so you can find or follow one without knowing the exact Compose file path:

@@ -1,3 +1,5 @@
+//! Vera-backed bulletin implementation.
+
 use crate::{
     error::{BulletinError, Result},
     r#trait::{
@@ -10,18 +12,18 @@ use crate::{
 use async_trait::async_trait;
 use common::blockchain::{
     orbis::{self, generate_document_id, generate_key_derivation_id, SubmitReportRequest},
-    BlockchainError, ChainConfigBuilder, SourceHubClient, TxSigner,
+    BlockchainError, ChainConfigBuilder, TxSigner, VeraClient,
 };
 
 #[cfg(test)]
 mod tests;
 
-pub struct SourceHubBulletin {
-    pub chain_client: SourceHubClient,
+pub struct VeraBulletin {
+    pub chain_client: VeraClient,
 }
 
 #[async_trait]
-impl Bulletin for SourceHubBulletin {
+impl Bulletin for VeraBulletin {
     async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
         match kind {
             BulletinWriteKind::Finalize => {
@@ -249,14 +251,14 @@ impl Bulletin for SourceHubBulletin {
     }
 }
 
-impl SourceHubBulletin {
+impl VeraBulletin {
     pub fn name() -> String {
-        "bulletin/sourcehub".to_string()
+        "bulletin/vera".to_string()
     }
 
     pub async fn new(chain_config_builder: ChainConfigBuilder) -> Result<Self> {
-        Ok(SourceHubBulletin {
-            chain_client: SourceHubClient::new(chain_config_builder.build())
+        Ok(VeraBulletin {
+            chain_client: VeraClient::new(chain_config_builder.build())
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         })
@@ -274,8 +276,8 @@ impl SourceHubBulletin {
             .map(|gp| gp.denom)
             .unwrap_or_else(|| "uopen".to_string());
 
-        let client = SourceHubBulletin {
-            chain_client: SourceHubClient::with_signer(chain_config_builder.build(), signer)
+        let client = VeraBulletin {
+            chain_client: VeraClient::with_signer(chain_config_builder.build(), signer)
                 .await
                 .map_err(|e| BulletinError::ChainError(e.to_string()))?,
         };

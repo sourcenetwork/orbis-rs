@@ -2,6 +2,6 @@ target/
 .git/
 .github/
 docker/*
-!docker/SOURCEHUB_REF
+!docker/VERA_REF
 *.md
 .env

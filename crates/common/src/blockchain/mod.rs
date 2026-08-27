@@ -1,8 +1,8 @@
-//! Blockchain client module for interacting with SourceHub (Cosmos SDK / Tendermint chain).
+//! Blockchain client module for interacting with Vera (Cosmos SDK / Tendermint chain).
 //!
 //! This module provides:
 //! - `ChainConfig` - Configuration for connecting to the chain
-//! - `SourceHubClient` - Client for queries and transaction broadcasting
+//! - `VeraClient` - Client for queries and transaction broadcasting
 //! - `TxSigner` - Transaction signing using secp256k1
 //! - `acp` - Access Control Policy module types and operations
 //! - `bulletin` - Bulletin board module types and operations
@@ -17,7 +17,7 @@ pub mod events;
 pub mod orbis;
 mod signer;
 
-pub use client::{AccountInfo, BroadcastResult, SourceHubClient};
+pub use client::{AccountInfo, BroadcastResult, VeraClient};
 pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use error::{BlockchainError, Result};
 pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
@@ -25,7 +25,7 @@ pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
 #[cfg(test)]
 pub mod tests;
 
-// Known test key for the "test" account created in docker-compose-sourcehub-test.yml
+// Known test key for the "test" account created in docker-compose-vera-test.yml
 /// This corresponds to the mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 /// with Cosmos HD path m/44'/118'/0'/0/0
 pub const TEST_ACCOUNT_HEX_KEY: &str =

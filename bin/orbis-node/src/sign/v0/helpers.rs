@@ -19,7 +19,7 @@ use crate::sign::v0::{
 };
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
 };
@@ -188,7 +188,7 @@ pub fn refresh_health_check_peer_node_keys_sha256(peer_node_keys: &[String]) -> 
 
 /// Serialize the canonical post-refresh health-check statement.
 ///
-/// This is intentionally not SourceHub-compatible signing material. It is an
+/// This is intentionally not Vera-compatible signing material. It is an
 /// internal diagnostic domain so the recovered signature cannot be replayed as a
 /// reshare-finalization signature or any user-facing signing result.
 pub fn refresh_health_check_message(statement: &RefreshHealthCheckStatement) -> Result<Vec<u8>> {
@@ -1121,12 +1121,12 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
-    fn ring_reshare_update_message_matches_sourcehub_vector() {
+    fn ring_reshare_update_message_matches_vera_vector() {
         let bulletin = bulletin::dummy::DummyBulletin::default();
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
@@ -1142,7 +1142,7 @@ mod ring_reshare_update_tests {
 
         assert_eq!(
             hex::encode(sign_bytes),
-            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a65120e736f757263656875622d746573741a0a72696e67312d706f737422606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335312a20b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44322011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
+            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a651209766572612d746573741a0a72696e67312d706f737422606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335312a20b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44322011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
         );
     }
 
@@ -1152,7 +1152,7 @@ mod ring_reshare_update_tests {
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
