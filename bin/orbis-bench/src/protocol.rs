@@ -571,7 +571,7 @@ mod tests {
                 grpc_url: "http://127.0.0.1:1".into(),
                 metrics_url: "http://127.0.0.1:2/metrics".into(),
             },
-            public_address: "vera1...".into(),
+            public_address: "source1...".into(),
             peer_id: "peer".into(),
             p2p_address: "abcdef@0.0.0.0:4242".into(),
             node_key: "key".into(),

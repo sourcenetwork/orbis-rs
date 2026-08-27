@@ -35,7 +35,7 @@ pub struct ChainConfig {
     /// gRPC URL (e.g., "http://localhost:9090")
     pub grpc_url: String,
 
-    /// Account address prefix (e.g., "vera")
+    /// Account address prefix (e.g., "source")
     pub account_prefix: String,
 
     /// Default gas limit for transactions
@@ -61,7 +61,7 @@ impl ChainConfig {
             rpc_url: "http://localhost:26657".to_string(),
             rest_url: "http://localhost:1317".to_string(),
             grpc_url: "http://localhost:9090".to_string(),
-            account_prefix: "vera".to_string(),
+            account_prefix: "source".to_string(),
             default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
             gas_multiplier: 1.2,
