@@ -418,12 +418,12 @@ pub struct RelationshipSelector {
 }
 
 /// Wildcard selector - matches anything.
-/// Proto: veranetwork.acp_core.WildcardSelector (empty message)
+/// Proto: sourcenetwork.acp_core.WildcardSelector (empty message)
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct WildcardSelector {}
 
 /// Object selector - uses oneof with object at tag 1.
-/// Proto: veranetwork.acp_core.ObjectSelector
+/// Proto: sourcenetwork.acp_core.ObjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct ObjectSelector {
     #[prost(oneof = "ObjectSelectorKind", tags = "1, 2")]
@@ -440,7 +440,7 @@ pub enum ObjectSelectorKind {
 }
 
 /// Relation selector - uses oneof with relation at tag 1.
-/// Proto: veranetwork.acp_core.RelationSelector
+/// Proto: sourcenetwork.acp_core.RelationSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct RelationSelector {
     #[prost(oneof = "RelationSelectorKind", tags = "1, 2")]
@@ -457,7 +457,7 @@ pub enum RelationSelectorKind {
 }
 
 /// Subject selector - uses oneof with subject at tag 1.
-/// Proto: veranetwork.acp_core.SubjectSelector
+/// Proto: sourcenetwork.acp_core.SubjectSelector
 #[derive(Clone, Serialize, Deserialize, Message)]
 pub struct SubjectSelector {
     #[prost(oneof = "SubjectSelectorKind", tags = "1, 2")]
@@ -515,7 +515,7 @@ impl VeraClient {
     /// Query a policy by ID.
     pub async fn acp_query_policy(&self, policy_id: &str) -> Result<QueryPolicyResponse> {
         let url = format!(
-            "{}/veranetwork/vera/acp/policy/{}",
+            "{}/sourcenetwork/vera/acp/policy/{}",
             self.config().rest_url,
             policy_id
         );
@@ -524,7 +524,10 @@ impl VeraClient {
 
     /// List all policy IDs.
     pub async fn acp_list_policy_ids(&self) -> Result<QueryPolicyIdsResponse> {
-        let url = format!("{}/veranetwork/vera/acp/policy_ids", self.config().rest_url);
+        let url = format!(
+            "{}/sourcenetwork/vera/acp/policy_ids",
+            self.config().rest_url
+        );
         self.rest_get(&url).await
     }
 
