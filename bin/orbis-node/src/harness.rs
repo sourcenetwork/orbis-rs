@@ -199,6 +199,9 @@ pub async fn spawn_harness_node(
         node_whitelisted_ring_ids: vec![],
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
+        network_max_concurrent_ingress_work: constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        network_max_ingress_events_per_peer_per_second:
+            constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`

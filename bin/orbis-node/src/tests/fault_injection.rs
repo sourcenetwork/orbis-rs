@@ -19,7 +19,9 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
-        MIN_NODE_BALANCE, PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        MIN_NODE_BALANCE, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND, PEER_RESPONSE_TIMEOUT,
+        PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
@@ -260,6 +262,9 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 node_whitelisted_ring_ids: vec![],
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+                network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+                network_max_ingress_events_per_peer_per_second:
+                    NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
             },
             cors_policy: CorsPolicy::Disabled,
             node_key,

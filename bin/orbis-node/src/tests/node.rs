@@ -6,7 +6,8 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_MESSAGE_BYTES, MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES,
-        MAX_STORE_SECRET_REQUEST_BYTES,
+        MAX_STORE_SECRET_REQUEST_BYTES, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
@@ -120,6 +121,9 @@ async fn make_test_node_config(
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+            network_max_ingress_events_per_peer_per_second:
+                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
         },
         cors_policy: CorsPolicy::Disabled,
         node_key: "test-node-key".to_string(),
@@ -185,6 +189,9 @@ fn node_info_test_args(
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+        network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        network_max_ingress_events_per_peer_per_second:
+            NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     }
 }
 
@@ -850,6 +857,9 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+            network_max_ingress_events_per_peer_per_second:
+                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
         },
         cors_policy,
         node_key: "test-node-key".to_string(),
