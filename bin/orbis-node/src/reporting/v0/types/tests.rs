@@ -1,4 +1,5 @@
 use super::*;
+use crate::dkg::v0::messages::SignedDkgCommitment;
 use bulletin::r#trait::UpgradeInfo;
 
 fn envelope() -> ReportEnvelope {
