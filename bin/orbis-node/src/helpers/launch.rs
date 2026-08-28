@@ -39,6 +39,20 @@ fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
     Ok(parsed)
 }
 
+/// Parse a `usize` CLI option that must be at least 1. The network ingress
+/// budgets reject a zero limit at build time (`Semaphore::new(0)` would stall
+/// every inbound work item); rejecting it here turns that into a clear parse
+/// error instead of a startup failure.
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed: usize = value
+        .parse()
+        .map_err(|_| format!("invalid value {value:?}: not a non-negative integer"))?;
+    if parsed == 0 {
+        return Err(format!("invalid value {value:?}: must be at least 1"));
+    }
+    Ok(parsed)
+}
+
 /// Parse and normalize a serialized browser origin for `--cors-allow-origin`.
 ///
 /// An origin contains only a scheme, host, and optional port. Paths, queries,
@@ -273,7 +287,8 @@ pub struct Args {
     /// work. Must be at least 1.
     #[arg(
         long,
-        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        value_parser = parse_positive_usize
     )]
     pub network_max_concurrent_ingress_work: usize,
     /// Maximum inbound P2P work items accepted from one immediate peer per
@@ -282,7 +297,8 @@ pub struct Args {
     /// be at least 1.
     #[arg(
         long,
-        default_value_t = crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND
+        default_value_t = crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        value_parser = parse_positive_usize
     )]
     pub network_max_ingress_events_per_peer_per_second: usize,
 }
