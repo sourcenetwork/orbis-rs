@@ -1084,7 +1084,21 @@ maximum.
 
 | Area | File |
 | --- | --- |
-| Start forwarding, prepare barrier, Gossip listener, repair, public relay, private exchange | [`v0/network.rs`](v0/network.rs) |
+| DKG transport, split by plane/phase | [`v0/network/`](v0/network/) — see the submodule map at the top of [`v0/network/mod.rs`](v0/network/mod.rs) |
+| — inbound control dispatch (`DkgControlHandler`, per-message `on_*` handlers) | [`v0/network/control_handler.rs`](v0/network/control_handler.rs) |
+| — outbound control request/retry/classification | [`v0/network/control_client.rs`](v0/network/control_client.rs) |
+| — start forwarding + ceremony coordination + reshare route validation | [`v0/network/ceremony_start.rs`](v0/network/ceremony_start.rs) |
+| — prepare/topology/activate/begin barrier | [`v0/network/prepare.rs`](v0/network/prepare.rs), [`v0/network/prepare_participant.rs`](v0/network/prepare_participant.rs) |
+| — transient-topic listener + neighbor tracking | [`v0/network/gossip_listener.rs`](v0/network/gossip_listener.rs) |
+| — canonical public-batch assembly + fault-evidence types | [`v0/network/public_batch.rs`](v0/network/public_batch.rs) |
+| — direct-QUIC public-phase repair | [`v0/network/public_repair.rs`](v0/network/public_repair.rs) |
+| — verify/record/preflight/dispatch one public contribution | [`v0/network/public_contribution.rs`](v0/network/public_contribution.rs) |
+| — leader batch publication + refresh-result barrier + origin submission | [`v0/network/public_publish.rs`](v0/network/public_publish.rs) |
+| — best-effort fault-report wrappers | [`v0/network/fault_report.rs`](v0/network/fault_report.rs) |
+| — outbound fault-evidence senders | [`v0/network/evidence_relay.rs`](v0/network/evidence_relay.rs) |
+| — PSS offline attribution | [`v0/network/pss_offline.rs`](v0/network/pss_offline.rs) |
+| — private pair exchange (`DkgPrivateHandler`) | [`v0/network/private.rs`](v0/network/private.rs) |
+| — shared route/participant/digest helpers | [`v0/network/common.rs`](v0/network/common.rs) |
 | Type-safe control/public/private messages and ID derivations | [`v0/transport.rs`](v0/transport.rs) |
 | Attempt state, acknowledgement sets, exact retained bytes, cleanup | [`v0/session_state.rs`](v0/session_state.rs) |
 | ALPN descriptors | [`../../../../crates/network/src/protocol.rs`](../../../../crates/network/src/protocol.rs) |
@@ -1108,8 +1122,9 @@ maximum.
 
 ### Reshare state machine
 
-Reshare transport orchestration lives in [`v0/network.rs`](v0/network.rs),
-while weighted aggregation, selector logic, Vera finalization, and
+Reshare transport orchestration lives in [`v0/network/`](v0/network/)
+(mainly `ceremony_start.rs`, `prepare.rs`, `public_repair.rs`, and
+`private.rs`), while weighted aggregation, selector logic, Vera finalization, and
 role-specific completion live in
 [`v0/coordinator/reshare`](v0/coordinator/reshare). Reshare commitments and the
 selector-signed participant set use the public plane; shares, credentials, and
