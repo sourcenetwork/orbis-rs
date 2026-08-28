@@ -92,8 +92,15 @@ impl NodeOffline {
 
 /// The document fields needed to independently re-derive `object_id` via
 /// `generate_document_id`, so a co-signer can verify a report's evidence is genuinely bound to
-/// `object_id` without reading it from the bulletin. Populated only for requests whose document
-/// was supplied inline (never posted to the bulletin) — see `PreRequestContext::document`.
+/// `object_id` without reading it from the bulletin — and, for the PRE proof refutation, to
+/// recover `enc_cmt` via `deserialize_secret`. Populated only for requests whose document was
+/// supplied inline (never posted to the bulletin) — see `PreRequestContext::document`.
+///
+/// This is **never** part of any canonical (threshold-signed, on-chain) encoding: the ciphertext
+/// would otherwise be persisted on chain for no functional reason (the chain discards it). It
+/// travels to co-signers out-of-band in [`ReportSigningContext`] instead; the signed statement
+/// keeps only `object_id` (already a SHA-256 commitment to every field here) plus a
+/// `document_inline` bool.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportedDocumentEvidence {
     pub document: String,
@@ -102,50 +109,6 @@ pub struct ReportedDocumentEvidence {
     pub resource: String,
     pub permission: String,
     pub tier: Option<String>,
-}
-
-impl ReportedDocumentEvidence {
-    fn write_canonical(&self, out: &mut Vec<u8>) {
-        write_string(out, &self.document);
-        write_string(out, &self.proof);
-        write_string(out, &self.policy_id);
-        write_string(out, &self.resource);
-        write_string(out, &self.permission);
-        write_optional_string(out, self.tier.as_deref());
-    }
-
-    fn read_canonical(decoder: &mut Decoder<'_>) -> Result<Self> {
-        Ok(Self {
-            document: decoder.read_string("inline_document_document")?,
-            proof: decoder.read_string("inline_document_proof")?,
-            policy_id: decoder.read_string("inline_document_policy_id")?,
-            resource: decoder.read_string("inline_document_resource")?,
-            permission: decoder.read_string("inline_document_permission")?,
-            tier: decoder.read_optional_string("inline_document_tier")?,
-        })
-    }
-}
-
-fn write_optional_document_evidence(out: &mut Vec<u8>, value: Option<&ReportedDocumentEvidence>) {
-    match value {
-        Some(evidence) => {
-            out.push(1);
-            evidence.write_canonical(out);
-        }
-        None => out.push(0),
-    }
-}
-
-fn read_optional_document_evidence(
-    decoder: &mut Decoder<'_>,
-) -> Result<Option<ReportedDocumentEvidence>> {
-    match decoder.read_u8("inline_document_present")? {
-        0 => Ok(None),
-        1 => ReportedDocumentEvidence::read_canonical(decoder).map(Some),
-        value => Err(ReportingError::InvalidReport(format!(
-            "invalid optional inline_document tag {value}"
-        ))),
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,12 +135,14 @@ pub struct PreReencryptResponseStatement {
     pub proof: Vec<u8>,
     pub crypto_backend: String,
     /// The document's ACP timestamp (`DocumentPayload.timestamp`). Not needed for the crypto
-    /// re-verification itself — carried so `inline_document`, when present, can be recomputed
-    /// against `object_id` via `generate_document_id`.
+    /// re-verification itself — carried so the out-of-band [`ReportedDocumentEvidence`], when
+    /// `document_inline` is set, can be recomputed against `object_id` via `generate_document_id`.
     pub timestamp: Option<u64>,
-    /// Present only when the request's document was supplied inline rather than read from the
-    /// bulletin — see [`ReportedDocumentEvidence`].
-    pub inline_document: Option<ReportedDocumentEvidence>,
+    /// `true` when the request's document was supplied inline rather than read from the bulletin.
+    /// The evidence itself is not here (see [`ReportedDocumentEvidence`]) — this only tells a
+    /// validator to expect it out-of-band in [`ReportSigningContext`] and to skip the bulletin
+    /// read.
+    pub document_inline: bool,
 }
 
 impl PreReencryptResponseStatement {
@@ -204,7 +169,7 @@ impl PreReencryptResponseStatement {
         write_bytes(&mut out, &self.proof);
         write_string(&mut out, &self.crypto_backend);
         write_optional_u64(&mut out, self.timestamp);
-        write_optional_document_evidence(&mut out, self.inline_document.as_ref());
+        write_bool(&mut out, self.document_inline);
         out
     }
 
@@ -229,7 +194,7 @@ impl PreReencryptResponseStatement {
         let proof = decoder.read_bytes("proof")?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
-        let inline_document = read_optional_document_evidence(&mut decoder)?;
+        let document_inline = decoder.read_bool("document_inline")?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -251,7 +216,7 @@ impl PreReencryptResponseStatement {
             proof,
             crypto_backend,
             timestamp,
-            inline_document,
+            document_inline,
         })
     }
 }
@@ -357,13 +322,13 @@ impl SignResponseStatement {
 
 /// A relaying node's signed record of a Sign/PRE request it forwarded to a peer. If the peer's
 /// ACP re-check fails, this statement is the on-chain-verifiable evidence attributing the relayer.
-/// The document-derived ACP inputs (policy_id, resource, permission, tier) are normally NOT
-/// carried — they are re-fetched from the bulletin during the refutation, so the statement stays
-/// lean and the re-check reproducible. `inline_document` is the one exception: for a PRE request
-/// whose document was supplied inline (never posted to the bulletin), there is nothing to
-/// re-fetch, so the relayer embeds the document instead — see [`ReportedDocumentEvidence`].
-/// `valid_window_*` and `timestamp` are the relayer's own ACP-check inputs (both window bounds
-/// present-or-both-absent), used verbatim so the refutation is deterministic.
+/// The document-derived ACP inputs (policy_id, resource, permission, tier) are NOT carried — for a
+/// bulletin-sourced request they are re-fetched from the bulletin during the refutation; for an
+/// inline-sourced request (`document_inline`) they come from the out-of-band
+/// [`ReportedDocumentEvidence`] in [`ReportSigningContext`], re-bound to `object_id`. Either way
+/// the statement stays lean and the re-check reproducible. `valid_window_*` and `timestamp` are
+/// the relayer's own ACP-check inputs (both window bounds present-or-both-absent), used verbatim
+/// so the refutation is deterministic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayRequestStatement {
     pub domain: String,
@@ -392,9 +357,11 @@ pub struct RelayRequestStatement {
     pub valid_window_start: Option<u64>,
     pub valid_window_end: Option<u64>,
     pub timestamp: Option<u64>,
-    /// Present only when the relayed request's document was supplied inline rather than read
-    /// from the bulletin — see [`ReportedDocumentEvidence`].
-    pub inline_document: Option<ReportedDocumentEvidence>,
+    /// `true` when the relayed request's document was supplied inline rather than read from the
+    /// bulletin. The evidence itself is not here — it travels out-of-band in
+    /// [`ReportSigningContext`]; this only tells a validator to expect it and to skip the
+    /// bulletin read.
+    pub document_inline: bool,
 }
 
 impl RelayRequestStatement {
@@ -421,7 +388,7 @@ impl RelayRequestStatement {
         write_optional_u64(&mut out, self.valid_window_start);
         write_optional_u64(&mut out, self.valid_window_end);
         write_optional_u64(&mut out, self.timestamp);
-        write_optional_document_evidence(&mut out, self.inline_document.as_ref());
+        write_bool(&mut out, self.document_inline);
         out
     }
 
@@ -448,7 +415,7 @@ impl RelayRequestStatement {
         let valid_window_start = decoder.read_optional_u64("valid_window_start")?;
         let valid_window_end = decoder.read_optional_u64("valid_window_end")?;
         let timestamp = decoder.read_optional_u64("timestamp")?;
-        let inline_document = read_optional_document_evidence(&mut decoder)?;
+        let document_inline = decoder.read_bool("document_inline")?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -470,7 +437,7 @@ impl RelayRequestStatement {
             valid_window_start,
             valid_window_end,
             timestamp,
-            inline_document,
+            document_inline,
         })
     }
 }
@@ -1804,6 +1771,13 @@ impl ReportEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportSigningContext {
     pub envelope: ReportEnvelope,
+    /// Out-of-band evidence for a report whose PRE request carried its document inline (the
+    /// statement's `document_inline` is set). Carried here rather than in the threshold-signed,
+    /// on-chain envelope so the document ciphertext is never persisted on chain — co-signers use
+    /// it to re-derive `object_id` and recover `enc_cmt`, then discard it. `None` for every
+    /// bulletin-sourced report.
+    #[serde(default)]
+    pub inline_document: Option<ReportedDocumentEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1957,6 +1931,16 @@ impl<'a> Decoder<'a> {
         Ok(value)
     }
 
+    fn read_bool(&mut self, label: &str) -> Result<bool> {
+        match self.read_u8(label)? {
+            0 => Ok(false),
+            1 => Ok(true),
+            value => Err(ReportingError::InvalidReport(format!(
+                "invalid bool {label} tag {value}"
+            ))),
+        }
+    }
+
     fn read_u32(&mut self, label: &str) -> Result<u32> {
         let end = self.cursor.saturating_add(4);
         let bytes = self
@@ -2008,16 +1992,6 @@ impl<'a> Decoder<'a> {
         match self.read_u8(&format!("{label}_present"))? {
             0 => Ok(None),
             1 => self.read_bytes(label).map(Some),
-            value => Err(ReportingError::InvalidReport(format!(
-                "invalid optional {label} tag {value}"
-            ))),
-        }
-    }
-
-    fn read_optional_string(&mut self, label: &str) -> Result<Option<String>> {
-        match self.read_u8(&format!("{label}_present"))? {
-            0 => Ok(None),
-            1 => self.read_string(label).map(Some),
             value => Err(ReportingError::InvalidReport(format!(
                 "invalid optional {label} tag {value}"
             ))),
@@ -2094,18 +2068,7 @@ mod tests {
             valid_window_start: Some(1_699_999_000),
             valid_window_end: Some(1_700_001_000),
             timestamp: Some(1_700_000_000),
-            inline_document: None,
-        }
-    }
-
-    fn document_evidence() -> ReportedDocumentEvidence {
-        ReportedDocumentEvidence {
-            document: "ciphertext-blob".to_string(),
-            proof: "proof-blob".to_string(),
-            policy_id: "policy-1".to_string(),
-            resource: "document".to_string(),
-            permission: "read".to_string(),
-            tier: Some("gold".to_string()),
+            document_inline: false,
         }
     }
 
@@ -2119,12 +2082,18 @@ mod tests {
     }
 
     #[test]
-    fn relay_request_statement_with_inline_document_round_trips() {
+    fn relay_request_statement_with_document_inline_round_trips() {
         let mut statement = relay_request_statement();
-        statement.inline_document = Some(document_evidence());
+        statement.document_inline = true;
         assert_eq!(
             RelayRequestStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
             statement
+        );
+        // The inline document's ciphertext never reaches the wire: flipping the marker only
+        // changes the one bool byte, never appends evidence.
+        assert_eq!(
+            statement.canonical_bytes().len(),
+            relay_request_statement().canonical_bytes().len()
         );
     }
 
@@ -2185,7 +2154,7 @@ mod tests {
             proof: vec![11, 12],
             crypto_backend: "elgamal/test".to_string(),
             timestamp: Some(1_700_000_000),
-            inline_document: None,
+            document_inline: false,
         }
     }
 
@@ -2251,13 +2220,18 @@ mod tests {
     }
 
     #[test]
-    fn pre_response_statement_with_inline_document_round_trips() {
+    fn pre_response_statement_with_document_inline_round_trips() {
         let mut statement = pre_statement();
-        statement.inline_document = Some(document_evidence());
+        statement.document_inline = true;
         assert_eq!(
             PreReencryptResponseStatement::from_canonical_bytes(&statement.canonical_bytes())
                 .unwrap(),
             statement
+        );
+        // The inline document's ciphertext never reaches the wire.
+        assert_eq!(
+            statement.canonical_bytes().len(),
+            pre_statement().canonical_bytes().len()
         );
     }
 

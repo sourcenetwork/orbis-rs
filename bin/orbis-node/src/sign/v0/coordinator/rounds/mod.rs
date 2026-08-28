@@ -165,6 +165,7 @@ mod tests {
     fn report_sign_context_has_no_reporting_scope() {
         let ctx = SignContext::Report(Box::new(ReportSigningContext {
             envelope: stub_envelope(),
+            inline_document: None,
         }));
         assert!(
             sign_reporting_scopes(&ctx).is_none(),

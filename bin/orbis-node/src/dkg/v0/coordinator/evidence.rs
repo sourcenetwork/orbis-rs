@@ -1148,6 +1148,7 @@ pub(crate) async fn report_leader_prepare_fault_best_effort<D>(
         accused_node_key: prepare.leader_node_key.clone(),
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgControlMessageFault {
             statement: Box::new(statement),
         },
@@ -1398,6 +1399,7 @@ where
         accused_node_key,
         accused_peer_id: accused_info.peer_id,
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(evidence.statement),
             response_signature: evidence.signature,
@@ -1437,6 +1439,7 @@ where
         accused_node_key,
         accused_peer_id: accused_info.peer_id,
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
             statement: Box::new(commitment.statement),
             response_signature: commitment.signature,
@@ -1542,6 +1545,7 @@ where
         accused_node_key,
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgPublicOriginFault {
             statement: Box::new(statement),
         },
@@ -1697,6 +1701,7 @@ where
         accused_node_key: canonical_leader,
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgLeaderEquivocation {
             statement: Box::new(statement),
         },
@@ -1811,6 +1816,7 @@ where
         accused_node_key: canonical_leader,
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgLeaderBatchMismatch {
             statement: Box::new(statement),
         },
@@ -1972,6 +1978,7 @@ where
         accused_node_key: canonical_leader,
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgLeaderPublicFault {
             statement: Box::new(statement),
         },
@@ -2154,6 +2161,7 @@ where
         accused_node_key,
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgControlMessageFault {
             statement: Box::new(statement),
         },
@@ -2197,6 +2205,7 @@ where
         accused_node_key,
         accused_peer_id: accused_info.peer_id,
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgEquivocation {
             commitment_a: Box::new(commitment_a),
             commitment_b: Box::new(commitment_b),

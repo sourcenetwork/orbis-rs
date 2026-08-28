@@ -308,7 +308,7 @@ where
                                 valid_window: valid_window.clone(),
                                 timestamp: RelayRequestTimestampBinding::SignPolicy,
                                 from_node_id,
-                                inline_document: None,
+                                document_inline: false,
                             };
                             match validate_relay_request_binding(statement, binding) {
                                 Ok(()) => {
@@ -318,6 +318,7 @@ where
                                         statement.clone(),
                                         ctx.relay_signature.clone(),
                                         current_time,
+                                        None,
                                     )
                                     .await;
                                 }
@@ -594,7 +595,7 @@ where
                         valid_window: valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::SignPolicy,
                         from_node_id,
-                        inline_document: None,
+                        document_inline: false,
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
@@ -604,6 +605,7 @@ where
                                 statement.clone(),
                                 ctx.relay_signature.clone(),
                                 current_time,
+                                None,
                             )
                             .await;
                         }

@@ -18,8 +18,8 @@ use crate::helpers::test_helpers::{
 };
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgShareStatement,
-    RelayRequestStatement, ReportedDocumentEvidence, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN,
-    RELAY_REQUEST_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
+    RelayRequestStatement, DKG_COMMITMENT_DOMAIN, DKG_SHARE_DOMAIN, RELAY_REQUEST_DOMAIN,
+    UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::JwtSigner;
@@ -968,7 +968,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         NODE1_SIGNING_KEY_HEX,
         &pre_object_id,
         &pre_jwt_signer.did_uri,
-        None,
+        false,
     );
 
     println!("Submitting PRE unauthorized relay evidence against node1 through node3...");
@@ -1044,7 +1044,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         NODE2_SIGNING_KEY_HEX,
         &derivation_id,
         &sign_jwt_signer.did_uri,
-        None,
+        false,
     );
 
     println!("Submitting Sign unauthorized relay evidence against node2 through node1...");
@@ -1097,9 +1097,12 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
 }
 
 /// Proves `unauthorized_request` reporting works identically whether the request's document
-/// came from the bulletin or was supplied inline — exercising, against a real Vera chain,
-/// both the `RelayRequestStatement.inline_document` hash-recompute in `registry.rs` and the
-/// matching Vera Go decoder change. Both sub-cases share one DKG/network spin-up.
+/// came from the bulletin or was supplied inline. For the inline sub-case the ciphertext is
+/// never signed into the statement nor put on chain — only the `document_inline` bool is —
+/// and the reporting node re-derives `object_id` from the document it was forwarded. The
+/// inline report being accepted on-chain is what proves the Vera Go decoder parses the new
+/// wire shape (a `document_inline` bool where the evidence blob used to be). Both sub-cases
+/// share one DKG/network spin-up.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_chain_report() {
@@ -1280,7 +1283,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         NODE1_SIGNING_KEY_HEX,
         &bulletin_object_id,
         &bulletin_jwt_signer.did_uri,
-        None,
+        false,
     );
 
     println!(
@@ -1374,14 +1377,6 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         "inline actor must not have a reader relationship"
     );
 
-    let inline_evidence = ReportedDocumentEvidence {
-        document: inline_document_str.clone(),
-        proof: inline_proof_str.clone(),
-        policy_id: policy_id.clone(),
-        resource: resource.clone(),
-        permission: permission.clone(),
-        tier: None,
-    };
     let (inline_statement, inline_signature) = signed_unauthorized_relay_statement(
         &chain_config,
         &ring,
@@ -1390,7 +1385,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         NODE1_SIGNING_KEY_HEX,
         &inline_object_id,
         &inline_jwt_signer.did_uri,
-        Some(inline_evidence),
+        true,
     );
     let inline_proto_document = InlineDocument {
         ring_id: RING_ID.to_string(),
@@ -2234,7 +2229,7 @@ fn signed_unauthorized_relay_statement(
     accused_signing_key_hex: &str,
     object_id: &str,
     actor_id: &str,
-    inline_document: Option<ReportedDocumentEvidence>,
+    document_inline: bool,
 ) -> (RelayRequestStatement, Vec<u8>) {
     let signed_at = current_unix_time_secs();
     let statement = RelayRequestStatement {
@@ -2257,7 +2252,7 @@ fn signed_unauthorized_relay_statement(
         valid_window_start: None,
         valid_window_end: None,
         timestamp: None,
-        inline_document,
+        document_inline,
     };
     let signature =
         sign_node_message_with_hex_key(accused_signing_key_hex, &statement.canonical_bytes())

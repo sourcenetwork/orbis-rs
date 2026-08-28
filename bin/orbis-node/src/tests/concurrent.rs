@@ -638,6 +638,7 @@ fn signed_bad_refresh_dkg_share_observation(
         accused_node_key,
         accused_peer_id,
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature,
