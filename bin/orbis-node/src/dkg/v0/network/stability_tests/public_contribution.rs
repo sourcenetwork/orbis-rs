@@ -139,6 +139,10 @@ async fn recording_a_stale_public_contribution_is_not_equivocation() {
     );
 }
 
+// =========================================================================
+// verify_signed_contribution — per-phase/scope authorization matrix
+// =========================================================================
+
 #[tokio::test]
 async fn verify_signed_contribution_rejects_reshare_commitment_from_non_dealer() {
     let origin = ParticipantRef::current(1);

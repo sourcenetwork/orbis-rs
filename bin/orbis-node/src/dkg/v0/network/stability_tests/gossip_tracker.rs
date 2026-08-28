@@ -114,7 +114,3 @@ fn gossip_neighbor_tracker_reset_after_rejoin_returns_to_initial_state() {
     assert!(!tracker.neighbor_down(&tracker_peer(3), Instant::now()));
     assert!(!tracker.is_isolated());
 }
-
-// =========================================================================
-// verify_signed_contribution — per-phase/scope authorization matrix
-// =========================================================================
