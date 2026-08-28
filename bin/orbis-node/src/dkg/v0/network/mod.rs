@@ -123,8 +123,7 @@ pub use control_handler::DkgControlHandler;
 pub use private::DkgPrivateHandler;
 
 pub(crate) use ceremony_start::{
-    coordinate_refresh_as_claimed_leader, start_refresh, start_reshare, RefreshStartOutcome,
-    ReshareStartOutcome,
+    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
 pub(crate) use evidence_relay::{
     relay_control_message_fault_evidence, relay_invalid_commitment_evidence,
