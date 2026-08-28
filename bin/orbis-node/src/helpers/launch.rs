@@ -266,6 +266,25 @@ pub struct Args {
         default_value_t = crate::constants::GRPC_MAX_CONCURRENT_STREAMS
     )]
     pub grpc_max_concurrent_streams: u32,
+    /// Maximum concurrently executing inbound P2P application work items.
+    /// Direct QUIC streams and authenticated Gossip frames share this
+    /// node-wide budget; excess work is dropped before protocol
+    /// deserialization. Raise this on a node provisioned to take on more
+    /// work. Must be at least 1.
+    #[arg(
+        long,
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK
+    )]
+    pub network_max_concurrent_ingress_work: usize,
+    /// Maximum inbound P2P work items accepted from one immediate peer per
+    /// second. Direct streams and Gossip frames count against the same peer
+    /// budget. Raise this on a node provisioned to take on more work. Must
+    /// be at least 1.
+    #[arg(
+        long,
+        default_value_t = crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND
+    )]
+    pub network_max_ingress_events_per_peer_per_second: usize,
 }
 
 /// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.

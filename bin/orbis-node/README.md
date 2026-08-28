@@ -49,6 +49,8 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--loki-url`** — optional Loki log shipping.
 - **`--runtime-base-path`** — base directory for runtime files. The database is stored as `<PATH>/dbs/orbis.<backend>` (`orbis.redb` with the default backend), and the node public key is written to `<PATH>/public_key.txt`.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
+- **`--network-max-concurrent-ingress-work`** — node-wide cap on concurrently executing inbound P2P work items shared by direct QUIC streams and Gossip frames (default `1024`). Raise on a node provisioned to take on more work; minimum `1`.
+- **`--network-max-ingress-events-per-peer-per-second`** — per-immediate-peer cap on inbound P2P work items per second, across direct streams and Gossip frames (default `512`). Raise on a node provisioned to take on more work; minimum `1`.
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
