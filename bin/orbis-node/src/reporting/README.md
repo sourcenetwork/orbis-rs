@@ -261,7 +261,7 @@ The current evidence kinds are:
   (`orbis-dkg-leader-batch-mismatch-v1`) and evidence-kind tag — the fault
   predicate differs from `dkg_leader_equivocation` (shared origin across
   different coordinates, rather than identical coordinate with different
-  content). Detected locally by `network.rs`'s `claim_origins`, called from
+  content). Detected locally by `network/public_batch.rs`'s `claim_origins`, called from
   both `insert_manifest` and `insert_chunk` (`PublicBatchAssembler`) — a
   origin-tracking check `insert_manifest` had no equivalent of before this
   kind existed. Independent verification re-checks both endpoint signatures
@@ -451,7 +451,7 @@ control-message field.
     fault`'s `config_digest` recheck) and independently re-derives the
     size claim from the artifact's own raw byte length rather than trusting
     the reporter's characterization. `MAX_PUBLIC_REPAIR_PAGE_BYTES` moved
-    from `network.rs` to `transport.rs` (now `pub`) so both the sender and
+    from `network/` to `transport.rs` (now `pub`) so both the sender and
     the registry can share one definition. The page-building sizing loop
     reserves a small fixed margin (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_
     BYTES`) below the true limit, since it sizes candidates *before* the real
@@ -873,7 +873,7 @@ directly. `report_health_checks_total{status}` covers `node_offline`'s
 independent health-probe outcomes, separate from the funnel above.
 
 `pss_offline_observations_total{stage, outcome}` (`dkg/v0/coordinator/
-reporting.rs`, `dkg/v0/network.rs`) sits upstream of the funnel above — it
+reporting.rs`, `dkg/v0/network/`) sits upstream of the funnel above — it
 covers the terminal PSS peer-liveness detection pipeline that eventually
 calls `queue_report`, one counter per bounded transport stage. `stage` is
 `PssOfflineStage::as_metric_label()` (`start_forward`, `prepare`,
