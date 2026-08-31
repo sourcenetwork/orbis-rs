@@ -98,6 +98,12 @@ Operational rules:
   Never use a third-party or public RPC endpoint for a production ring node.
 - If the chain node is not on localhost, protect the path to it (TLS and/or a
   private network); the RPC connection is the root of trust for this node.
+  This is **enforced**: `--chain-rpc` / `--chain-rest` are rejected at startup
+  if they are plaintext `http://` to a host that is not loopback, RFC-1918 /
+  unique-local / link-local / CGNAT, a single-label container/service name, or
+  a `*.internal` / `*.local` / `*.lan` / `*.home.arpa` name. Use `https://`, a
+  local/private endpoint, or — only if the endpoint is reached over a private
+  network you control — `--allow-insecure-rpc` (env `ORBIS_ALLOW_INSECURE_RPC`).
 - The `ring_state_sha256` bound into signed reporting statements limits
   *silent* divergence between honest nodes (statements built from different
   ring states will not co-sign), but it does not protect a node whose own RPC

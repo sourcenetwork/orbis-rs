@@ -213,6 +213,14 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// Accept a plaintext `http://` chain RPC/REST endpoint whose host is not
+    /// loopback or on a private network. The node trusts RPC/REST responses
+    /// (authorization decisions, bulletin records) as-is, so a plaintext
+    /// channel to an untrusted host is a security risk — prefer an `https://`
+    /// endpoint or a locally reachable chain node. Only set this when the
+    /// endpoint is in fact reached over a network you control (VPN/overlay).
+    #[arg(long, default_value_t = false)]
+    pub allow_insecure_rpc: bool,
     /// Chain ID used when signing transactions
     #[arg(long)]
     pub chain_id: Option<String>,

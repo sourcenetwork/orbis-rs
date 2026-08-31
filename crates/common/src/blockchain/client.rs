@@ -119,6 +119,12 @@ pub struct VeraClient {
 impl VeraClient {
     /// Create a new client for queries only.
     pub async fn new(config: ChainConfig) -> Result<Self> {
+        // Refuse a plaintext chain endpoint on an untrusted host: RPC/REST
+        // responses (ACP verdicts, bulletin records) are trusted as-is, so a
+        // tamperable channel to a host outside the operator's control is an
+        // authorization risk. Override with `allow_insecure_rpc`.
+        config.validate_endpoints()?;
+
         let rpc_url: HttpClientUrl = config
             .rpc_url
             .as_str()

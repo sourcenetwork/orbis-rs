@@ -81,6 +81,13 @@ struct NetworkArgs {
     /// never use it against a real network.
     #[arg(long, env = "ORBIS_SIGNING_KEY", global = true, hide_env_values = true)]
     signing_key: Option<String>,
+
+    /// Accept a plaintext `http://` chain RPC/REST endpoint on a non-local,
+    /// non-private host. Chain responses are trusted as-is, so prefer an
+    /// `https://` endpoint. Only set this when the endpoint is reached over a
+    /// network you control.
+    #[arg(long, env = "ORBIS_ALLOW_INSECURE_RPC", global = true)]
+    allow_insecure_rpc: bool,
 }
 
 impl NetworkArgs {
@@ -91,6 +98,7 @@ impl NetworkArgs {
             .rest_url(Some(self.rest_url.clone()))
             .grpc_url(Some(self.chain_grpc_url.clone()))
             .account_prefix(Some(self.account_prefix.clone()))
+            .allow_insecure_rpc(Some(self.allow_insecure_rpc))
             .build()
     }
 

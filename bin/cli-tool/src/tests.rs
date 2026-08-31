@@ -12,6 +12,7 @@ fn test_network_args() -> NetworkArgs {
         chain_grpc_url: "http://grpc.example".to_string(),
         account_prefix: "prefix".to_string(),
         signing_key: None,
+        allow_insecure_rpc: false,
     }
 }
 
