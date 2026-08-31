@@ -247,6 +247,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 bulletin_grpc: None,
                 chain_rest: None,
                 chain_rpc: None,
+                allow_insecure_rpc: false,
                 chain_id: None,
                 denom: None,
                 fee_granter: None,

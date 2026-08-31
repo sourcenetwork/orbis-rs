@@ -184,6 +184,7 @@ pub async fn spawn_harness_node(
         bulletin_grpc: None,
         chain_rpc: None,
         chain_rest: None,
+        allow_insecure_rpc: false,
         chain_id: None,
         denom: None,
         fee_granter: None,

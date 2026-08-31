@@ -203,7 +203,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
             .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier);
+            .gas_multiplier(args.chain_gas_multiplier)
+            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
 
         let authz: Arc<dyn Authz> = Arc::new(
             AuthzImpl::new(authz_chain_config)
@@ -217,7 +218,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
             .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier);
+            .gas_multiplier(args.chain_gas_multiplier)
+            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
         let chain_config = bulletin_chain_config.clone().build();
         let signer =
             create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
@@ -264,6 +266,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .rest_url(args.chain_rest.clone())
                     .grpc_url(args.bulletin_grpc.clone())
                     .gas_multiplier(args.chain_gas_multiplier)
+                    .allow_insecure_rpc(Some(args.allow_insecure_rpc))
                     .build();
                 cli_tool::fund(signer.address(), fund_config)
                     .await

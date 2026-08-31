@@ -604,6 +604,7 @@ fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
         .default_gas_limit(Some(config.default_gas_limit))
         .gas_price(Some(config.gas_price.clone()))
         .gas_multiplier(Some(config.gas_multiplier))
+        .allow_insecure_rpc(Some(config.allow_insecure_rpc))
 }
 
 async fn add_policy_to_chain_impl(config: ChainConfig, signing_key_hex: &str) -> Result<String> {
