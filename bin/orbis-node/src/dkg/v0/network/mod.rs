@@ -123,9 +123,12 @@ pub use control_handler::DkgControlHandler;
 pub use private::DkgPrivateHandler;
 
 pub(crate) use ceremony_start::{
-    coordinate_refresh_as_claimed_leader, start_refresh, start_reshare, RefreshStartOutcome,
-    ReshareStartOutcome,
+    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
+// Only `unsafe_testing` drives the leader broadcast path directly; gating the
+// re-export keeps it out of non-`unsafe-testing` builds without an unused import.
+#[cfg(feature = "unsafe-testing")]
+pub(crate) use ceremony_start::coordinate_refresh_as_claimed_leader;
 pub(crate) use evidence_relay::{
     relay_control_message_fault_evidence, relay_invalid_commitment_evidence,
     relay_invalid_share_evidence, relay_leader_batch_mismatch_evidence,
