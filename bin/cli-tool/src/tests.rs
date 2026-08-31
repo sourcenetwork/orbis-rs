@@ -24,6 +24,12 @@ fn chain_config_maps_each_field_to_the_matching_chain_config_field() {
     assert_eq!(config.rest_url, "http://rest.example");
     assert_eq!(config.grpc_url, "http://grpc.example");
     assert_eq!(config.account_prefix, "prefix");
+    assert!(!config.allow_insecure_rpc);
+
+    // The override threads through in both directions.
+    let mut args = test_network_args();
+    args.allow_insecure_rpc = true;
+    assert!(args.chain_config().allow_insecure_rpc);
 }
 
 #[test]

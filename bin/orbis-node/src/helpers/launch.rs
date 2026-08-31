@@ -219,7 +219,7 @@ pub struct Args {
     /// channel to an untrusted host is a security risk — prefer an `https://`
     /// endpoint or a locally reachable chain node. Only set this when the
     /// endpoint is in fact reached over a network you control (VPN/overlay).
-    #[arg(long, default_value_t = false)]
+    #[arg(long, env = "ORBIS_ALLOW_INSECURE_RPC", default_value_t = false)]
     pub allow_insecure_rpc: bool,
     /// Chain ID used when signing transactions
     #[arg(long)]
