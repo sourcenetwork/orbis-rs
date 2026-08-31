@@ -97,6 +97,12 @@ impl JwtSigner {
             .map_err(|e| AuthNError::JwtError(format!("System clock before Unix epoch: {}", e)))
     }
 
+    /// A random 128-bit token id, hex-encoded (32 chars). Every issued token gets
+    /// a fresh one so a verifier can enforce single use.
+    fn generate_jwt_id() -> String {
+        format!("{:032x}", rand::random::<u128>())
+    }
+
     pub(crate) fn sign_bearer_token<T>(&self, token: &BearerToken<T>) -> Result<String>
     where
         T: Serialize,
@@ -147,6 +153,7 @@ impl JwtSigner {
             issued_time,
             expiration_time,
             not_before: None,
+            jwt_id: Self::generate_jwt_id(),
             claims,
         };
         self.sign_bearer_token(&token)
@@ -172,6 +179,7 @@ impl JwtSigner {
             issued_time,
             expiration_time,
             not_before: None,
+            jwt_id: Self::generate_jwt_id(),
             claims,
         })
     }

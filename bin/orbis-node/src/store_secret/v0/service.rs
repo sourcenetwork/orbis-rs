@@ -105,6 +105,13 @@ where
         // 2. Validate JWT claims match request
         validate_store_secret_claims(&token, &req)?;
 
+        // Reject a JWT this node has already accepted (single use).
+        self.state
+            .jti_guard
+            .check_and_record(&token.jwt_id, token.expiration_time, "store_secret")
+            .await
+            .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
+
         tracing::info!(
             ring_id = %req.ring_id,
             issuer = %token.issuer_id,
