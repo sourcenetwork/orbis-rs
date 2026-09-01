@@ -51,6 +51,9 @@ services:
     command: ["node", "--index", "1"]
     environment:
       RUST_LOG: info
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
+      ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
       ORBIS_PASSWORD: orbis-upgrade-storage-001
     volumes:
       - node-001-db:/data/dbs
@@ -60,6 +63,8 @@ services:
     command: ["node", "--index", "2"]
     environment:
       RUST_LOG: info
+      ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
+      ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
       ORBIS_PASSWORD: orbis-upgrade-storage-002
     volumes:
       - node-002-db:/data/dbs
@@ -69,6 +74,8 @@ services:
     command: ["node", "--index", "3"]
     environment:
       RUST_LOG: info
+      ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
+      ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
       ORBIS_PASSWORD: orbis-upgrade-storage-003
     volumes:
       - node-003-db:/data/dbs
@@ -78,6 +85,8 @@ services:
     command: ["node", "--index", "4"]
     environment:
       RUST_LOG: info
+      ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
+      ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
       ORBIS_PASSWORD: orbis-upgrade-storage-004
     volumes:
       - node-004-db:/data/dbs

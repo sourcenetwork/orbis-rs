@@ -707,8 +707,25 @@ pub async fn write_ring_to_bulletin(
 }
 
 pub fn test_db_path(name: &str) -> String {
+    use_fast_test_kdf();
     let project_root = project_root::get_project_root().unwrap();
     format!("{}/test_dbs/{}.redb", project_root.display(), name)
+}
+
+/// Drop the Argon2 KDF cost for local storage to a trivial value for the test
+/// suite (many `LocalStorageImpl::new` calls). Idempotent; a value the caller set
+/// in the environment is left alone. Reached via `test_db_path`, which nearly
+/// every storage-using test calls right before opening a database.
+pub fn use_fast_test_kdf() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB").is_none() {
+            std::env::set_var("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB", "8");
+        }
+        if std::env::var_os("ORBIS_LOCAL_STORAGE_KDF_T_COST").is_none() {
+            std::env::set_var("ORBIS_LOCAL_STORAGE_KDF_T_COST", "1");
+        }
+    });
 }
 
 /// Clean up a test database file

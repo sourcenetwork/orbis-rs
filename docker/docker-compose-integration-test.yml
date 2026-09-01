@@ -66,6 +66,10 @@ services:
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001
       - RUST_LOG=debug
+      # Trivial Argon2id KDF cost so node startup isn't a ~256 MiB derivation; a
+      # local-test fixture like the fixed password/keys above.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
@@ -95,6 +99,10 @@ services:
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000002
       - RUST_LOG=debug
+      # Trivial Argon2id KDF cost so node startup isn't a ~256 MiB derivation; a
+      # local-test fixture like the fixed password/keys above.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
@@ -124,6 +132,10 @@ services:
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000003
       - RUST_LOG=debug
+      # Trivial Argon2id KDF cost so node startup isn't a ~256 MiB derivation; a
+      # local-test fixture like the fixed password/keys above.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"
@@ -154,6 +166,10 @@ services:
       - ORBIS_SECRET_KEY=testsecret4testsecret4
       - ORBIS_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000004
       - RUST_LOG=debug
+      # Trivial Argon2id KDF cost so node startup isn't a ~256 MiB derivation; a
+      # local-test fixture like the fixed password/keys above.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "127.0.0.1::50051"

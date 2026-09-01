@@ -1,5 +1,5 @@
 use crate::{
-    common::{decrypt_value, derive_cipher, encrypt_value},
+    common::{decrypt_value, derive_cipher, encrypt_value, key_commitment, StoredKdfParams},
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
@@ -13,18 +13,25 @@ use zeroize::Zeroizing;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("orbis_local");
 
-// Internal keys for password verification (prefixed with __internal__ to avoid collisions)
+// Internal keys (prefixed with __internal__ to avoid collisions with serialized
+// `LocalStorageKeys`). Salt, KDF parameters, and key commitment are not secret
+// and are stored in the clear; the password check is encrypted+AAD-bound.
 const INTERNAL_SALT_KEY: &[u8] = b"__internal__salt";
+const INTERNAL_KDF_PARAMS_KEY: &[u8] = b"__internal__kdf_params";
+const INTERNAL_KEY_COMMITMENT_KEY: &[u8] = b"__internal__key_commitment";
 const INTERNAL_PASSWORD_CHECK_KEY: &[u8] = b"__internal__password_check";
 const PASSWORD_CHECK_VALUE: &[u8] = b"password_check_ok";
+
+/// Domain separator prefixing every AAD built by this backend.
+const AAD_DOMAIN: &[u8] = b"orbis-local-storage-aad-v1";
 
 const NAME: &str = "local-storage/redb";
 
 #[derive(Clone)]
 pub struct RedbStorage {
     pub store: Arc<Database>,
-    pub cipher: Aes256Gcm,
-    pub salt: Option<Vec<u8>>,
+    cipher: Aes256Gcm,
+    salt: Option<Vec<u8>>,
 }
 
 #[cfg(test)]
@@ -41,26 +48,55 @@ impl LocalStorage for RedbStorage {
         let existing_salt = raw_get(&db, INTERNAL_SALT_KEY)?;
 
         let (cipher, salt_bytes) = if let Some(stored_salt) = existing_salt {
-            // Existing database - verify password
-            let cipher = derive_cipher(&password, &stored_salt)?;
+            // Existing database — re-derive with the *persisted* KDF parameters
+            // (a changed default / env override must not silently produce a
+            // different key), then check the key commitment before anything else
+            // so "wrong password" and "salt/commitment tampered" are
+            // distinguishable from a value that merely fails to decrypt.
+            let kdf_params = StoredKdfParams::from_bytes(
+                &raw_get(&db, INTERNAL_KDF_PARAMS_KEY)?.ok_or(LocalStorageError::CorruptData)?,
+            )?;
+            let (cipher, key) = derive_cipher(&password, &stored_salt, &kdf_params)?;
+
+            let stored_commitment =
+                raw_get(&db, INTERNAL_KEY_COMMITMENT_KEY)?.ok_or(LocalStorageError::CorruptData)?;
+            if stored_commitment.len() != 32 || key_commitment(&key)[..] != stored_commitment[..] {
+                return Err(LocalStorageError::KeyCommitmentMismatch);
+            }
+
+            // Independent AEAD round-trip check (belt-and-suspenders behind the
+            // commitment): proves the derived cipher actually decrypts.
             let encrypted_check =
                 raw_get(&db, INTERNAL_PASSWORD_CHECK_KEY)?.ok_or(LocalStorageError::CorruptData)?;
-            let decrypted = decrypt_value(&cipher, &encrypted_check)
-                .map_err(|_| LocalStorageError::InvalidPassword)?;
-
+            let decrypted = decrypt_value(
+                &cipher,
+                &internal_aad(INTERNAL_PASSWORD_CHECK_KEY),
+                &encrypted_check,
+            )
+            .map_err(|_| LocalStorageError::InvalidPassword)?;
             if decrypted != PASSWORD_CHECK_VALUE {
                 return Err(LocalStorageError::InvalidPassword);
             }
+
             (cipher, stored_salt)
         } else {
-            // New database - generate salt and store password check
+            // New database — KDF parameters come from the default / env override
+            // and are persisted so every later open uses these exact values.
             let salt = SaltString::generate(&mut OsRng);
             let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-            let cipher = derive_cipher(&password, &salt_bytes)?;
-            let encrypted_check = encrypt_value(&cipher, PASSWORD_CHECK_VALUE)?;
+            let kdf_params = StoredKdfParams::for_new_db();
+            let (cipher, key) = derive_cipher(&password, &salt_bytes, &kdf_params)?;
 
             raw_set(&db, INTERNAL_SALT_KEY, &salt_bytes)?;
+            raw_set(&db, INTERNAL_KDF_PARAMS_KEY, &kdf_params.to_bytes())?;
+            raw_set(&db, INTERNAL_KEY_COMMITMENT_KEY, &key_commitment(&key))?;
+            let encrypted_check = encrypt_value(
+                &cipher,
+                &internal_aad(INTERNAL_PASSWORD_CHECK_KEY),
+                PASSWORD_CHECK_VALUE,
+            )?;
             raw_set(&db, INTERNAL_PASSWORD_CHECK_KEY, &encrypted_check)?;
+
             (cipher, salt_bytes)
         };
 
@@ -91,15 +127,53 @@ impl LocalStorage for RedbStorage {
     }
 
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        self.get(key)?
-            .map(|stored| decrypt_value(&self.cipher, &stored).map(Zeroizing::new))
-            .transpose()
+        let key_bytes = serialize_key(&key)?;
+        let Some(stored) = raw_get(&self.store, &key_bytes)? else {
+            return Ok(None);
+        };
+
+        let aad = slot_aad(&key_bytes);
+        decrypt_value(&self.cipher, &aad, &stored)
+            .map(Zeroizing::new)
+            .map(Some)
+            .map_err(|_| LocalStorageError::IntegrityCheckFailed)
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
-        let encrypted = encrypt_value(&self.cipher, &value)?;
-        self.set(key, encrypted)
+        let key_bytes = serialize_key(&key)?;
+        let value_blob = encrypt_value(&self.cipher, &slot_aad(&key_bytes), &value)?;
+        raw_set(&self.store, &key_bytes, &value_blob)
     }
+}
+
+/// AAD binding a stored value to its slot. Stops a ciphertext from one slot being
+/// substituted into another within the same database — e.g. a `RingKey(A)` share
+/// dropped into `RingKey(B)`'s slot, or a share blob dropped into the
+/// `NodeSigningKey` slot — which the shared key alone would not catch.
+///
+/// Cross-*database* isolation comes for free from the random per-database salt
+/// (a shared password still yields different keys). Rollback of a slot to an
+/// earlier value of its own is *not* detected — see SEC-04 in
+/// `docs/security-review-findings.md` for why that was deliberately left out.
+///
+/// `AAD_DOMAIN` is fixed-length so `key_bytes` (a `bincode`-encoded
+/// `LocalStorageKeys`) needs no length prefix to be unambiguous.
+fn slot_aad(key_bytes: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(AAD_DOMAIN.len() + key_bytes.len());
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(key_bytes);
+    aad
+}
+
+/// AAD for the backend's own encrypted internal slots. The `internal:` prefix
+/// keeps these distinct from data-slot AAD (a `bincode`-encoded `LocalStorageKeys`
+/// starts with a little-endian variant index, never ASCII).
+fn internal_aad(internal_key: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(AAD_DOMAIN.len() + 9 + internal_key.len());
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(b"internal:");
+    aad.extend_from_slice(internal_key);
+    aad
 }
 
 /// Create parent directories as needed and open (or create) the redb database.

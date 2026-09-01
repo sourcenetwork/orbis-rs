@@ -46,6 +46,9 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50051:50051"
@@ -73,6 +76,9 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50052:50051"
@@ -100,6 +106,9 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
     command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--loki-url", "http://loki:3100", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50053:50051"
