@@ -105,12 +105,11 @@ where
         // 2. Validate JWT claims match request
         validate_store_secret_claims(&token, &req)?;
 
-        // Reject a JWT this node has already accepted (single use).
-        self.state
-            .jti_guard
-            .check_and_record(&token.jwt_id, token.expiration_time, "store_secret")
-            .await
-            .map_err(|e| StoreSecretError::Unauthorized(e.to_string()))?;
+        // No `jti` single-use guard here (unlike start_pre / start_sign): storing
+        // a secret is idempotent by design — the bulletin dedups by `object_id`,
+        // so re-submitting the same document (including a client retry with the
+        // same token) is a no-op that returns the same id. A replay carries no
+        // authorization-sensitive effect, unlike a re-encryption or a signature.
 
         tracing::info!(
             ring_id = %req.ring_id,
