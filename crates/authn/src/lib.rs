@@ -35,6 +35,13 @@ pub struct BearerToken<T = ()> {
     /// Not-before timestamp (Unix epoch seconds); token is invalid before this time
     #[serde(rename = "nbf", skip_serializing_if = "Option::is_none")]
     pub not_before: Option<u64>,
+    /// Unique token id. A random 128-bit value emitted by [`jwt_builder::JwtSigner`];
+    /// lets a verifier enforce single use (reject a token it has already accepted).
+    /// `resolve_jwt_did` only parses it through — replay enforcement is the caller's
+    /// (see `orbis-node`'s `JtiReplayGuard`). Empty means a token minted before this
+    /// field existed.
+    #[serde(rename = "jti", default, skip_serializing_if = "String::is_empty")]
+    pub jwt_id: String,
     /// Custom claims specific to the endpoint
     #[serde(flatten)]
     pub claims: T,

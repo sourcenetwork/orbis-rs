@@ -43,6 +43,7 @@ fn test_resolve_jwt_did_with_pre_claims() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -72,6 +73,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
     let token = BearerToken {
         issuer_id: did_uri.clone(),
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -98,6 +100,7 @@ fn test_resolve_jwt_did_expired() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -126,6 +129,7 @@ fn test_resolve_jwt_did_future_issued_time() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -154,6 +158,7 @@ fn test_resolve_jwt_did_accepts_future_issued_time_with_clock_skew() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: current_time + TEST_CLOCK_SKEW_LEEWAY,
         expiration_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1000,
         not_before: None,
@@ -181,6 +186,7 @@ fn test_resolve_jwt_did_rejects_future_issued_time_beyond_clock_skew() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1,
         expiration_time: current_time + TEST_CLOCK_SKEW_LEEWAY + 1000,
         not_before: None,
@@ -216,6 +222,7 @@ fn test_token_lifetime_at_limit() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time,
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME,
@@ -249,6 +256,7 @@ fn test_token_lifetime_one_second_over_limit() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time,
         not_before: None,
         expiration_time: issued_time + TEST_MAX_LIFETIME + 1,
@@ -284,6 +292,7 @@ fn test_token_lifetime_far_future() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time,
         not_before: None,
         expiration_time: issued_time + (365 * 24 * 60 * 60 * 10), // 10 years
@@ -316,6 +325,7 @@ fn test_resolve_jwt_did_invalid_signature() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: None,
@@ -344,6 +354,7 @@ fn test_nbf_in_future_rejected() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: Some(1500),
@@ -372,6 +383,7 @@ fn test_nbf_in_past_accepted() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 2000,
         not_before: Some(950),
@@ -394,6 +406,7 @@ fn test_nbf_within_clock_skew_accepted() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 900,
         expiration_time: 3000,
         not_before: Some(current_time + TEST_CLOCK_SKEW_LEEWAY),
@@ -422,6 +435,7 @@ fn test_expiration_within_clock_skew_accepted() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 1000,
         expiration_time,
         not_before: None,
@@ -450,6 +464,7 @@ fn test_expiration_at_clock_skew_boundary_rejected() {
     let token = BearerToken {
         issuer_id: did_uri,
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 1000,
         expiration_time,
         not_before: None,
@@ -524,6 +539,7 @@ fn direct_token_uses_issuer_as_actor() {
     let token = BearerToken {
         issuer_id: "did:key:direct".to_string(),
         subject_id: None,
+        jwt_id: String::new(),
         issued_time: 1,
         expiration_time: 2,
         not_before: None,
@@ -567,6 +583,7 @@ fn untrusted_issuer_cannot_delegate_actor() {
     let token = BearerToken {
         issuer_id: "did:key:untrusted".to_string(),
         subject_id: Some("did:opk:user".to_string()),
+        jwt_id: String::new(),
         issued_time: 1,
         expiration_time: 2,
         not_before: None,
@@ -595,6 +612,7 @@ fn trusted_relay_cannot_delegate_invalid_actor() {
         let token = BearerToken {
             issuer_id: relay.clone(),
             subject_id: Some(actor.to_string()),
+            jwt_id: String::new(),
             issued_time: 1,
             expiration_time: 2,
             not_before: None,

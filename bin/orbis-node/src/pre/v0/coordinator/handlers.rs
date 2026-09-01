@@ -121,6 +121,19 @@ where
             &ctx.salt,
         )?;
 
+        // Reject a forwarded JWT this node has already accepted. A responder sees
+        // the client token exactly once per PRE, so a duplicate means the leader
+        // (or a ring insider) replayed a captured `ReencryptRequest`.
+        self.app_state
+            .jti_guard
+            .check_and_record(
+                &token.jwt_id,
+                token.expiration_time,
+                "pre_reencrypt_request",
+            )
+            .await
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+
         // When the caller supplied the document inline (ctx.document), it's used directly and
         // independently re-verified against object_id here — this node does not trust that the
         // relay/leader already checked it. Otherwise this reads from the bulletin exactly as

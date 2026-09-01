@@ -295,6 +295,17 @@ lazy_static! {
     .expect("failed to register store_secret_request_duration_seconds");
 
     // ============================================================================
+    // Authentication Metrics
+    // ============================================================================
+
+    pub static ref JWT_REPLAY_REJECTED_TOTAL: CounterVec = register_counter_vec!(
+        "jwt_replay_rejected_total",
+        "Total number of requests rejected because their JWT id was already used or missing",
+        &["reason", "site"]
+    )
+    .expect("failed to register jwt_replay_rejected_total");
+
+    // ============================================================================
     // Build Info Metric
     // ============================================================================
 
@@ -342,6 +353,7 @@ pub fn init() {
     lazy_static::initialize(&REFRESH_ACTIVE_SESSIONS);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&JWT_REPLAY_REJECTED_TOTAL);
     lazy_static::initialize(&ORBIS_BUILD_INFO);
 }
 
@@ -667,6 +679,15 @@ pub fn record_dkg_transport_message(plane: &str, message: &str, direction: &str)
 /// Record sign state abandoned (expired nonce or stale response entry)
 pub fn record_sign_state_abandoned() {
     SIGN_ABANDONED_STATES_TOTAL.inc();
+}
+
+/// One request rejected by the JWT single-use guard. `reason` is `already_used`
+/// or `missing_jti`; `site` names the entry point (e.g. `start_pre`,
+/// `sign_nonce_request`).
+pub fn record_jwt_replay_rejected(reason: &str, site: &str) {
+    JWT_REPLAY_REJECTED_TOTAL
+        .with_label_values(&[reason, site])
+        .inc();
 }
 
 /// Record Reshare session started

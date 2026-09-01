@@ -155,6 +155,13 @@ where
             &req.salt,
         )?;
 
+        // Reject a JWT this node has already accepted (single use).
+        self.state
+            .jti_guard
+            .check_and_record(&token.jwt_id, token.expiration_time, "start_pre")
+            .await
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+
         // Resolve document and ring payloads. When the caller supplied `document` inline, it's
         // used directly instead of being read from the bulletin (validated against `object_id`
         // inside); otherwise this reads the document from the bulletin exactly as before.
