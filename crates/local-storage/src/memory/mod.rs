@@ -1,5 +1,5 @@
 use crate::{
-    common::{decrypt_value, derive_cipher, encrypt_value},
+    common::{decrypt_value, derive_cipher, encrypt_value, StoredKdfParams},
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
@@ -32,7 +32,9 @@ impl LocalStorage for MemoryStorage {
     fn new(password: String, _db_path: String) -> Result<Self> {
         let salt = SaltString::generate(&mut OsRng);
         let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-        let (cipher, _key) = derive_cipher(&password, &salt_bytes)?;
+        // In-memory store is recreated every `new`, so there is nothing to
+        // persist — always derive with fresh (default / env) parameters.
+        let (cipher, _key) = derive_cipher(&password, &salt_bytes, &StoredKdfParams::for_new_db())?;
 
         Ok(Self {
             store: Arc::new(RwLock::new(HashMap::new())),

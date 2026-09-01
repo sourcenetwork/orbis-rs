@@ -1,4 +1,8 @@
-use super::{raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KEY_COMMITMENT_KEY};
+use super::{
+    raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KDF_PARAMS_KEY,
+    INTERNAL_KEY_COMMITMENT_KEY,
+};
+use crate::common::StoredKdfParams;
 use crate::error::LocalStorageError;
 use crate::r#trait::{LocalStorage, LocalStorageKeys};
 use crate::tests::{
@@ -87,10 +91,12 @@ fn rejects_cross_slot_substitution() {
     cleanup_db(&path);
 }
 
-/// A ciphertext from another database (same password, same slot key — e.g. two
-/// committee members) cannot be substituted: the per-database id is in the AAD.
+/// Two databases created with the same password still isolate: each generates a
+/// random salt, so their derived keys differ and a blob copied from one does not
+/// authenticate in the other. (This is the per-database salt doing the work, not
+/// the slot AAD.)
 #[test]
-fn rejects_cross_database_substitution() {
+fn cross_database_blobs_do_not_authenticate() {
     let path1 = test_db_path("sec04_xdb_1");
     let path2 = test_db_path("sec04_xdb_2");
     cleanup_db(&path1);
@@ -118,6 +124,35 @@ fn rejects_cross_database_substitution() {
     cleanup_db(&path2);
 }
 
+/// The KDF parameters a database was created with are persisted, so reopening
+/// re-derives the same key even if the default / env override would now differ.
+#[test]
+fn kdf_params_are_persisted_and_reused_on_reopen() {
+    let path = test_db_path("sec04_kdf_persist");
+    cleanup_db(&path);
+
+    {
+        RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    }
+
+    let raw = raw_get(
+        &::redb::Database::create(&path).unwrap(),
+        INTERNAL_KDF_PARAMS_KEY,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        StoredKdfParams::from_bytes(&raw).unwrap(),
+        StoredKdfParams::for_new_db(),
+        "creation parameters must be written to disk"
+    );
+
+    // Reopen re-derives from the persisted parameters — succeeds.
+    RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+
+    cleanup_db(&path);
+}
+
 /// Tampering the stored key commitment makes the database refuse to open.
 #[test]
 fn rejects_tampered_key_commitment() {
@@ -143,8 +178,8 @@ fn rejects_tampered_key_commitment() {
 /// Repeated writes to one slot keep working and read back the latest value.
 /// (Note: this deliberately does *not* check that an old ciphertext restored
 /// over a newer one is rejected — SEC-04 scoped rollback detection out. A
-/// value's AAD only binds it to its database and slot, not to when it was
-/// written, so a slot can still be rolled back to an earlier value of its own.)
+/// value's AAD binds it to its slot, not to when it was written, so a slot can
+/// still be rolled back to an earlier value of its own.)
 #[test]
 fn repeated_writes_still_read_latest() {
     let path = test_db_path("sec04_repeat");

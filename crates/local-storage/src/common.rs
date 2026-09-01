@@ -13,30 +13,90 @@ use zeroize::Zeroizing;
 /// tampered" without revealing the key.
 const KEY_COMMIT_DOMAIN: &[u8] = b"orbis-local-storage-key-commit-v1";
 
-/// Argon2id memory / iteration cost. Strong by default (256 MiB, t=3) — this is
-/// derived once per process at storage open. Overridable via
-/// `ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB` / `ORBIS_LOCAL_STORAGE_KDF_T_COST` so the
-/// test suites (many `RedbStorage::new` calls) are not each forced through a
-/// hundreds-of-millisecond derivation; unit tests in this crate default weak.
-fn kdf_params() -> Result<Params> {
-    fn env_u32(name: &str) -> Option<u32> {
-        std::env::var(name)
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .filter(|v| *v > 0)
+/// The Argon2id cost parameters a database was created with.
+///
+/// Persisted (plaintext, not secret) alongside the salt so that reopening a
+/// database always re-derives its key with the *same* parameters. A change to
+/// the compiled-in default or the environment override would otherwise silently
+/// produce a different key and fail the key-commitment check on the next open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoredKdfParams {
+    pub m_cost_kib: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    /// `argon2::Version` in numeric form (`0x13` == 19).
+    pub version: u32,
+}
+
+impl StoredKdfParams {
+    pub const SERIALIZED_LEN: usize = 16;
+
+    /// Parameters for a **new** database: strong by default (256 MiB, t=3);
+    /// weak for this crate's own unit tests (`cfg!(test)`); overridable via
+    /// `ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB` / `ORBIS_LOCAL_STORAGE_KDF_T_COST`
+    /// so test suites with many `RedbStorage::new` calls aren't each forced
+    /// through a hundreds-of-millisecond derivation. Existing databases ignore
+    /// this and use their persisted values.
+    pub fn for_new_db() -> Self {
+        fn env_u32(name: &str) -> Option<u32> {
+            std::env::var(name)
+                .ok()
+                .and_then(|v| v.parse::<u32>().ok())
+                .filter(|v| *v > 0)
+        }
+        let (default_m, default_t) = if cfg!(test) { (8, 1) } else { (262_144, 3) };
+        Self {
+            m_cost_kib: env_u32("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB").unwrap_or(default_m),
+            t_cost: env_u32("ORBIS_LOCAL_STORAGE_KDF_T_COST").unwrap_or(default_t),
+            p_cost: 1,
+            version: u32::from(Version::V0x13),
+        }
     }
-    let (default_m, default_t) = if cfg!(test) { (8, 1) } else { (262_144, 3) };
-    let m_cost = env_u32("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB").unwrap_or(default_m);
-    let t_cost = env_u32("ORBIS_LOCAL_STORAGE_KDF_T_COST").unwrap_or(default_t);
-    Params::new(m_cost, t_cost, 1, Some(32))
-        .map_err(|e| LocalStorageError::KeyDerivationError(e.to_string()))
+
+    pub fn to_bytes(self) -> [u8; Self::SERIALIZED_LEN] {
+        let mut out = [0u8; Self::SERIALIZED_LEN];
+        out[0..4].copy_from_slice(&self.m_cost_kib.to_le_bytes());
+        out[4..8].copy_from_slice(&self.t_cost.to_le_bytes());
+        out[8..12].copy_from_slice(&self.p_cost.to_le_bytes());
+        out[12..16].copy_from_slice(&self.version.to_le_bytes());
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != Self::SERIALIZED_LEN {
+            return Err(LocalStorageError::CorruptData);
+        }
+        let u32_at = |i: usize| {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&bytes[i..i + 4]);
+            u32::from_le_bytes(b)
+        };
+        Ok(Self {
+            m_cost_kib: u32_at(0),
+            t_cost: u32_at(4),
+            p_cost: u32_at(8),
+            version: u32_at(12),
+        })
+    }
+
+    fn argon2(&self) -> Result<Argon2<'static>> {
+        let version = Version::try_from(self.version).map_err(|e| {
+            LocalStorageError::KeyDerivationError(format!(
+                "unsupported Argon2 version {}: {}",
+                self.version, e
+            ))
+        })?;
+        let params = Params::new(self.m_cost_kib, self.t_cost, self.p_cost, Some(32))
+            .map_err(|e| LocalStorageError::KeyDerivationError(e.to_string()))?;
+        Ok(Argon2::new(Algorithm::Argon2id, version, params))
+    }
 }
 
 /// Encrypt `value` under `cipher` with `aad` bound into the AES-256-GCM tag.
 ///
 /// Layout: `nonce(12) || ciphertext || tag(16)`. `aad` is authenticated but not
 /// stored — the reader recomputes it, so a ciphertext only decrypts in the exact
-/// context (slot id, database id) it was written in.
+/// context (slot id) it was written in.
 pub fn encrypt_value(cipher: &Aes256Gcm, aad: &[u8], value: &[u8]) -> Result<Vec<u8>> {
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
@@ -73,11 +133,15 @@ pub fn decrypt_value(cipher: &Aes256Gcm, aad: &[u8], encrypted: &[u8]) -> Result
         .map_err(|_| LocalStorageError::DecryptionError)
 }
 
-/// Derive the 32-byte AES key and its GCM cipher from `password` and `salt`
-/// using Argon2id. Returns the raw key too so the caller can store / verify the
-/// key commitment.
-pub fn derive_cipher(password: &str, salt: &[u8]) -> Result<(Aes256Gcm, Zeroizing<[u8; 32]>)> {
-    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, kdf_params()?);
+/// Derive the 32-byte AES key and its GCM cipher from `password`, `salt`, and
+/// `params` using Argon2id. Returns the raw key too so the caller can store /
+/// verify the key commitment.
+pub fn derive_cipher(
+    password: &str,
+    salt: &[u8],
+    params: &StoredKdfParams,
+) -> Result<(Aes256Gcm, Zeroizing<[u8; 32]>)> {
+    let argon2 = params.argon2()?;
 
     let mut key_bytes = Zeroizing::new([0u8; 32]);
     argon2
@@ -98,11 +162,33 @@ pub fn key_commitment(key: &[u8; 32]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Generate a random 32-byte per-database identifier. Mixed into every value's
-/// AAD so a ciphertext from one database (e.g. another committee member's, under
-/// a shared password) cannot be substituted into this one. Not secret.
-pub fn generate_db_id() -> [u8; 32] {
-    let mut id = [0u8; 32];
-    OsRng.fill_bytes(&mut id);
-    id
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stored_kdf_params_round_trip() {
+        let params = StoredKdfParams {
+            m_cost_kib: 262_144,
+            t_cost: 3,
+            p_cost: 1,
+            version: u32::from(Version::V0x13),
+        };
+        let bytes = params.to_bytes();
+        assert_eq!(bytes.len(), StoredKdfParams::SERIALIZED_LEN);
+        assert_eq!(StoredKdfParams::from_bytes(&bytes).unwrap(), params);
+        assert!(matches!(
+            StoredKdfParams::from_bytes(&bytes[..15]),
+            Err(LocalStorageError::CorruptData)
+        ));
+    }
+
+    #[test]
+    fn stored_kdf_params_argon2_rejects_unknown_version() {
+        let bad = StoredKdfParams {
+            version: 999,
+            ..StoredKdfParams::for_new_db()
+        };
+        assert!(bad.argon2().is_err());
+    }
 }
