@@ -121,12 +121,18 @@ where
             .expect("Failed to create database");
     }
 
-    // Try to reopen with wrong password - should fail
+    // Try to reopen with wrong password - should fail. A wrong password yields a
+    // key that does not match the stored commitment, which is reported as
+    // `KeyCommitmentMismatch` (the same signal as a tampered salt/commitment);
+    // `InvalidPassword` remains for the independent password-check round-trip.
     let result = constructor("wrong_password".to_string(), path.to_string());
     assert!(result.is_err(), "Should have failed with wrong password");
     assert!(
-        matches!(result.unwrap_err(), LocalStorageError::InvalidPassword),
-        "Expected InvalidPassword error"
+        matches!(
+            result.unwrap_err(),
+            LocalStorageError::InvalidPassword | LocalStorageError::KeyCommitmentMismatch
+        ),
+        "Expected an authentication-failure error"
     );
 }
 

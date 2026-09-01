@@ -1,5 +1,5 @@
 use crate::{
-    common::{decrypt_value, derive_cipher, encrypt_value},
+    common::{decrypt_value, derive_cipher, encrypt_value, generate_db_id, key_commitment},
     error::{LocalStorageError, Result},
     r#trait::{LocalStorage, LocalStorageKeys},
 };
@@ -13,18 +13,26 @@ use zeroize::Zeroizing;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("orbis_local");
 
-// Internal keys for password verification (prefixed with __internal__ to avoid collisions)
+// Internal keys (prefixed with __internal__ to avoid collisions with serialized
+// `LocalStorageKeys`). Salt, db id, and key commitment are not secret and are
+// stored in the clear; the password check is encrypted+AAD-bound.
 const INTERNAL_SALT_KEY: &[u8] = b"__internal__salt";
+const INTERNAL_DB_ID_KEY: &[u8] = b"__internal__db_id";
+const INTERNAL_KEY_COMMITMENT_KEY: &[u8] = b"__internal__key_commitment";
 const INTERNAL_PASSWORD_CHECK_KEY: &[u8] = b"__internal__password_check";
 const PASSWORD_CHECK_VALUE: &[u8] = b"password_check_ok";
+
+/// Domain separator prefixing every AAD built by this backend.
+const AAD_DOMAIN: &[u8] = b"orbis-local-storage-aad-v1";
 
 const NAME: &str = "local-storage/redb";
 
 #[derive(Clone)]
 pub struct RedbStorage {
     pub store: Arc<Database>,
-    pub cipher: Aes256Gcm,
-    pub salt: Option<Vec<u8>>,
+    cipher: Aes256Gcm,
+    db_id: [u8; 32],
+    salt: Option<Vec<u8>>,
 }
 
 #[cfg(test)]
@@ -40,33 +48,59 @@ impl LocalStorage for RedbStorage {
 
         let existing_salt = raw_get(&db, INTERNAL_SALT_KEY)?;
 
-        let (cipher, salt_bytes) = if let Some(stored_salt) = existing_salt {
-            // Existing database - verify password
-            let cipher = derive_cipher(&password, &stored_salt)?;
+        let (cipher, db_id, salt_bytes) = if let Some(stored_salt) = existing_salt {
+            // Existing database — derive, then check the key commitment before
+            // anything else so "wrong password" and "salt/commitment tampered"
+            // are distinguishable from a value that merely fails to decrypt.
+            let (cipher, key) = derive_cipher(&password, &stored_salt)?;
+
+            let stored_commitment =
+                raw_get(&db, INTERNAL_KEY_COMMITMENT_KEY)?.ok_or(LocalStorageError::CorruptData)?;
+            if stored_commitment.len() != 32 || key_commitment(&key)[..] != stored_commitment[..] {
+                return Err(LocalStorageError::KeyCommitmentMismatch);
+            }
+
+            let db_id = load_db_id(&db)?;
+
+            // Independent AEAD round-trip check (belt-and-suspenders behind the
+            // commitment): proves the derived cipher actually decrypts.
             let encrypted_check =
                 raw_get(&db, INTERNAL_PASSWORD_CHECK_KEY)?.ok_or(LocalStorageError::CorruptData)?;
-            let decrypted = decrypt_value(&cipher, &encrypted_check)
-                .map_err(|_| LocalStorageError::InvalidPassword)?;
-
+            let decrypted = decrypt_value(
+                &cipher,
+                &internal_aad(&db_id, INTERNAL_PASSWORD_CHECK_KEY),
+                &encrypted_check,
+            )
+            .map_err(|_| LocalStorageError::InvalidPassword)?;
             if decrypted != PASSWORD_CHECK_VALUE {
                 return Err(LocalStorageError::InvalidPassword);
             }
-            (cipher, stored_salt)
+
+            (cipher, db_id, stored_salt)
         } else {
-            // New database - generate salt and store password check
+            // New database.
             let salt = SaltString::generate(&mut OsRng);
             let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-            let cipher = derive_cipher(&password, &salt_bytes)?;
-            let encrypted_check = encrypt_value(&cipher, PASSWORD_CHECK_VALUE)?;
+            let (cipher, key) = derive_cipher(&password, &salt_bytes)?;
+            let db_id = generate_db_id();
 
             raw_set(&db, INTERNAL_SALT_KEY, &salt_bytes)?;
+            raw_set(&db, INTERNAL_DB_ID_KEY, &db_id)?;
+            raw_set(&db, INTERNAL_KEY_COMMITMENT_KEY, &key_commitment(&key))?;
+            let encrypted_check = encrypt_value(
+                &cipher,
+                &internal_aad(&db_id, INTERNAL_PASSWORD_CHECK_KEY),
+                PASSWORD_CHECK_VALUE,
+            )?;
             raw_set(&db, INTERNAL_PASSWORD_CHECK_KEY, &encrypted_check)?;
-            (cipher, salt_bytes)
+
+            (cipher, db_id, salt_bytes)
         };
 
         Ok(Self {
             store: db.into(),
             cipher,
+            db_id,
             salt: Some(salt_bytes),
         })
     }
@@ -91,15 +125,51 @@ impl LocalStorage for RedbStorage {
     }
 
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
-        self.get(key)?
-            .map(|stored| decrypt_value(&self.cipher, &stored).map(Zeroizing::new))
-            .transpose()
+        let key_bytes = serialize_key(&key)?;
+        let Some(stored) = raw_get(&self.store, &key_bytes)? else {
+            return Ok(None);
+        };
+
+        let aad = slot_aad(&self.db_id, &key_bytes);
+        decrypt_value(&self.cipher, &aad, &stored)
+            .map(Zeroizing::new)
+            .map(Some)
+            .map_err(|_| LocalStorageError::IntegrityCheckFailed)
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
-        let encrypted = encrypt_value(&self.cipher, &value)?;
-        self.set(key, encrypted)
+        let key_bytes = serialize_key(&key)?;
+        let value_blob = encrypt_value(&self.cipher, &slot_aad(&self.db_id, &key_bytes), &value)?;
+        raw_set(&self.store, &key_bytes, &value_blob)
     }
+}
+
+/// AAD binding a stored value to (this database, this slot). Stops a ciphertext
+/// from another slot or another database (e.g. a committee member's, under a
+/// shared password) from being substituted in; it does not detect a slot being
+/// rolled back to an earlier value of its own — see SEC-04 in
+/// `docs/security-review-findings.md` for why that was deliberately left out.
+fn slot_aad(db_id: &[u8; 32], key_bytes: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(AAD_DOMAIN.len() + 32 + key_bytes.len());
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(db_id);
+    aad.extend_from_slice(key_bytes);
+    aad
+}
+
+/// AAD for the backend's own encrypted internal slots.
+fn internal_aad(db_id: &[u8; 32], internal_key: &[u8]) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(AAD_DOMAIN.len() + 9 + 32 + internal_key.len());
+    aad.extend_from_slice(AAD_DOMAIN);
+    aad.extend_from_slice(b"internal:");
+    aad.extend_from_slice(db_id);
+    aad.extend_from_slice(internal_key);
+    aad
+}
+
+fn load_db_id(db: &Database) -> Result<[u8; 32]> {
+    let raw = raw_get(db, INTERNAL_DB_ID_KEY)?.ok_or(LocalStorageError::CorruptData)?;
+    raw.try_into().map_err(|_| LocalStorageError::CorruptData)
 }
 
 /// Create parent directories as needed and open (or create) the redb database.
@@ -188,6 +258,7 @@ impl std::fmt::Debug for RedbStorage {
         f.debug_struct("RedbStorage")
             .field("store", &"<Database>")
             .field("cipher", &"<Aes256Gcm>")
+            .field("db_id", &"<redacted>")
             .field("salt", &self.salt.as_ref().map(|_| "<redacted>"))
             .finish()
     }

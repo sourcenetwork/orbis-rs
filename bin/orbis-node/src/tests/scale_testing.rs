@@ -53,6 +53,7 @@ const BASE_PORT: u16 = 56_000;
 #[tokio::test]
 #[serial_test::serial(scale_test)]
 async fn test_scale_dkg_pre_sign() {
+    crate::helpers::test_helpers::use_fast_test_kdf();
     let bulletin = Arc::new(DummyBulletin::default());
     let runtime_base_path = std::env::temp_dir().join("orbis-node-scale-test");
     let _ = std::fs::remove_dir_all(&runtime_base_path);

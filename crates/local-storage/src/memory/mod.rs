@@ -32,7 +32,7 @@ impl LocalStorage for MemoryStorage {
     fn new(password: String, _db_path: String) -> Result<Self> {
         let salt = SaltString::generate(&mut OsRng);
         let salt_bytes = salt.as_salt().as_str().as_bytes().to_vec();
-        let cipher = derive_cipher(&password, &salt_bytes)?;
+        let (cipher, _key) = derive_cipher(&password, &salt_bytes)?;
 
         Ok(Self {
             store: Arc::new(RwLock::new(HashMap::new())),
@@ -74,14 +74,17 @@ impl LocalStorage for MemoryStorage {
             .map_err(|e| LocalStorageError::PoisonError(e.to_string()))?;
         Ok(store.contains_key(&key))
     }
+    // The in-memory backend is testing-only and never persisted, so there is no
+    // at-rest tamper / rollback surface: it encrypts with an empty AAD rather
+    // than the redb backend's slot/epoch binding.
     fn get_encrypted(&self, key: LocalStorageKeys) -> Result<Option<Zeroizing<Vec<u8>>>> {
         self.get(key)?
-            .map(|stored| decrypt_value(&self.cipher, &stored).map(Zeroizing::new))
+            .map(|stored| decrypt_value(&self.cipher, &[], &stored).map(Zeroizing::new))
             .transpose()
     }
 
     fn set_encrypted(&self, key: LocalStorageKeys, value: Zeroizing<Vec<u8>>) -> Result<()> {
-        let encrypted = encrypt_value(&self.cipher, &value)?;
+        let encrypted = encrypt_value(&self.cipher, &[], &value)?;
         self.set(key, encrypted)
     }
 }
