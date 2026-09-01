@@ -43,6 +43,19 @@ pub const MAX_JWT_BYTES: usize = 16 * 1024;
 /// envelope. Larger data-carrying endpoints define their own request caps.
 pub const MAX_SMALL_GRPC_REQUEST_BYTES: usize = MAX_JWT_BYTES;
 
+/// Maximum number of accepted JWT ids retained by [`crate::helpers::jti_replay::JtiReplayGuard`]
+/// for single-use enforcement.
+///
+/// Each entry is a 32-char hex id plus an expiry `Instant` (~90 bytes). A token
+/// is retained only until its own `exp` (bounded by [`MAX_TOKEN_LIFETIME_SECS`]),
+/// then swept. At the 1-hour lifetime `JwtSigner` actually issues, sustained
+/// request rates stay well under this bound; past it the oldest entries are
+/// evicted (a replay that old is at the edge of its own validity anyway).
+pub const MAX_JTI_ENTRIES: usize = 1_000_000;
+
+/// Interval between sweeps of expired JWT ids from the replay guard.
+pub const JTI_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
 // ============================================================================
 // StoreSecret Constants
 // ============================================================================

@@ -1302,6 +1302,58 @@ async fn test_start_pre_fails_wrong_signature() {
     cleanup_db(&db_path);
 }
 
+/// A JWT is single use: the second `start_pre` with the same token is rejected
+/// by the `jti` guard even though the first attempt failed later in the flow.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_start_pre_rejects_a_replayed_jwt() {
+    let db_name = "test_start_pre_rejects_a_replayed_jwt";
+    let db_path = test_db_path(db_name);
+    let app_state = create_test_app_state_default(db_name).await;
+    let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
+
+    let rdr_pk = b"reader-pk".to_vec();
+    let object_id = "replayed-object".to_string();
+    let token = TestKeyPair::new()
+        .create_pre_jwt(rdr_pk.clone(), &object_id, None, None)
+        .expect("create PRE JWT");
+
+    let make_request = || StartPreRequest {
+        rdr_pk: rdr_pk.clone(),
+        object_id: object_id.clone(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        document: None,
+    };
+
+    // First call: JWT and claims are valid, so the jti is recorded before the
+    // flow fails later (no such document). That failure is not a replay rejection.
+    let first = service
+        .start_pre(create_authenticated_request(make_request(), &token).unwrap())
+        .await
+        .expect_err("no such document in the bulletin");
+    assert!(
+        !first.message().contains("already been used"),
+        "first use must not be treated as a replay: {}",
+        first.message()
+    );
+
+    // Same token again: rejected by the single-use guard.
+    let second = service
+        .start_pre(create_authenticated_request(make_request(), &token).unwrap())
+        .await
+        .expect_err("a replayed JWT must be rejected");
+    assert_eq!(second.code(), tonic::Code::Unauthenticated);
+    assert!(
+        second.message().contains("already been used"),
+        "replay must be rejected by the jti guard: {}",
+        second.message()
+    );
+
+    cleanup_db(&db_path);
+}
+
 /// Test that PRE fails when wrong derivation is used for decryption
 ///
 /// This test verifies that if Alice encrypts with derivation D1, and Bob tries
