@@ -59,6 +59,17 @@ impl std::fmt::Display for ReplayError {
     }
 }
 
+/// How a `jti` was recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// Recorded with room to spare.
+    Recorded,
+    /// Recorded only after evicting the oldest (still-unexpired) entry because the
+    /// map was at [`MAX_JTI_ENTRIES`]. The evicted id is replayable until its own
+    /// token expires — the caller warns.
+    RecordedAfterEvicting,
+}
+
 /// Records accepted JWT ids and rejects reuse. One per node, held in `AppState`.
 pub struct JtiReplayGuard {
     /// `jti` -> the instant the entry may be swept (token `exp` + clock skew).
@@ -114,11 +125,24 @@ impl JtiReplayGuard {
         let deadline = now + Self::retention(token_exp_unix);
         let mut map = self.seen.write().await;
         Self::sweep_expired(&mut map, now);
-        if let Err(error) = Self::try_record(&mut map, jti, deadline, now) {
-            metrics::record_jwt_replay_rejected(error.reason(), site);
-            return Err(error);
+        match Self::try_record(&mut map, jti, deadline, now) {
+            Err(error) => {
+                metrics::record_jwt_replay_rejected(error.reason(), site);
+                Err(error)
+            }
+            Ok(Outcome::Recorded) => Ok(()),
+            Ok(Outcome::RecordedAfterEvicting) => {
+                // The map hit MAX_JTI_ENTRIES and an unexpired id was dropped to
+                // make room — that id is now replayable until its own token
+                // expires. Raise the cap, shard, or investigate the token rate.
+                tracing::warn!(
+                    site = %site,
+                    capacity = MAX_JTI_ENTRIES,
+                    "JtiReplayGuard at capacity: evicted a still-valid token id to record a new one"
+                );
+                Ok(())
+            }
         }
-        Ok(())
     }
 
     /// How long a `jti` stays on record: `exp - now`, clamped to the max token
@@ -143,11 +167,12 @@ impl JtiReplayGuard {
         jti: &str,
         deadline: Instant,
         now: Instant,
-    ) -> Result<(), ReplayError> {
+    ) -> Result<Outcome, ReplayError> {
         Self::sweep_expired(map, now);
         if map.contains_key(jti) {
             return Err(ReplayError::AlreadyUsed);
         }
+        let mut outcome = Outcome::Recorded;
         if map.len() >= MAX_JTI_ENTRIES {
             if let Some(oldest) = map
                 .iter()
@@ -155,10 +180,11 @@ impl JtiReplayGuard {
                 .map(|(key, _)| key.clone())
             {
                 map.remove(&oldest);
+                outcome = Outcome::RecordedAfterEvicting;
             }
         }
         map.insert(jti.to_string(), deadline);
-        Ok(())
+        Ok(outcome)
     }
 
     fn sweep_expired(map: &mut HashMap<String, Instant>, now: Instant) {
@@ -187,7 +213,7 @@ mod tests {
 
         assert_eq!(
             JtiReplayGuard::try_record(&mut m, "abc", deadline, now),
-            Ok(())
+            Ok(Outcome::Recorded)
         );
         assert_eq!(
             JtiReplayGuard::try_record(&mut m, "abc", deadline, now),
@@ -240,7 +266,10 @@ mod tests {
         assert_eq!(m.len(), MAX_JTI_ENTRIES);
 
         let deadline = now + Duration::from_secs(3600 + MAX_JTI_ENTRIES as u64);
-        JtiReplayGuard::try_record(&mut m, "newcomer", deadline, now).unwrap();
+        assert_eq!(
+            JtiReplayGuard::try_record(&mut m, "newcomer", deadline, now),
+            Ok(Outcome::RecordedAfterEvicting)
+        );
 
         assert_eq!(m.len(), MAX_JTI_ENTRIES);
         assert!(
