@@ -1,0 +1,29 @@
+name: Go Protobuf
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main", "develop" ]
+
+permissions:
+  contents: read
+
+jobs:
+  generated-code:
+    name: Generated Go code is up to date
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+        cache-dependency-path: go.sum
+    - name: Generate Go protobufs
+      run: go tool buf generate
+    - name: Check generated Go protobufs
+      run: |
+        git add --intent-to-add gen/go
+        git diff --exit-code -- gen/go
