@@ -1,0 +1,74 @@
+# cargo-nextest configuration.  https://nexte.st/docs/configuration/
+#
+# Run: cargo nextest run                 (local, `default` profile)
+#      cargo nextest run --profile ci    (CI: retries + slow-test kill + junit)
+
+[profile.default]
+# Non-serial tests parallelise across the machine; the `serial` test-group
+# (below) is what keeps the `#[serial]`-marked tests one-at-a-time, since
+# serial_test's runtime lock does nothing under nextest's process-per-test model.
+fail-fast = false
+
+[profile.ci]
+fail-fast = false
+# Retry a failed test once — masks the known transient P2P races (iroh magicsock
+# discovery, chain-nonce timing) without hiding a real regression, which fails
+# both attempts.
+retries = { count = 1, backoff = "fixed", delay = "10s" }
+# Safety net for a genuinely wedged test (e.g. the scale-test magicsock
+# deadlock that used to let a run sit for hours): warn at 2 min, kill at 30 min.
+# Deliberately generous — cold Docker integration tests legitimately take 15-25
+# min because `docker compose up --build` recompiles the node. Tighten once the
+# CI timing breakdown (I1) and pre-built-image work (T5) land.
+slow-timeout = { period = "120s", terminate-after = 15 }
+failure-output = "immediate-final"
+final-status-level = "flaky"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# Serial groups
+# ---------------------------------------------------------------------------
+# `max-threads = 1` ⇒ at most one test from the group runs at a time (tests
+# outside the group still run at full concurrency alongside it — same as
+# `cargo test` today). Covers everything the suite marks `#[serial]`:
+# fixed gRPC ports, a shared iroh magicsock, a shared Docker compose project,
+# and live-chain nonce sequences.  TODO(T16): audit `#[serial]` usage and shrink.
+
+[test-groups]
+serial = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'package(orbis-node) & test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/)'
+test-group = 'serial'
+
+[[profile.default.overrides]]
+filter = 'package(network) & test(/^iroh::tests::/)'
+test-group = 'serial'
+
+[[profile.default.overrides]]
+filter = '(package(authz) | package(bulletin)) & test(/^vera::tests::/)'
+test-group = 'serial'
+
+[[profile.default.overrides]]
+filter = 'package(test-support)'
+test-group = 'serial'
+
+# The `ci` profile inherits `default`'s overrides, but test-group overrides are
+# not merged across profiles — repeat them so `--profile ci` serialises too.
+[[profile.ci.overrides]]
+filter = 'package(orbis-node) & test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/)'
+test-group = 'serial'
+
+[[profile.ci.overrides]]
+filter = 'package(network) & test(/^iroh::tests::/)'
+test-group = 'serial'
+
+[[profile.ci.overrides]]
+filter = '(package(authz) | package(bulletin)) & test(/^vera::tests::/)'
+test-group = 'serial'
+
+[[profile.ci.overrides]]
+filter = 'package(test-support)'
+test-group = 'serial'

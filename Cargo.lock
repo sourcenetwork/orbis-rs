@@ -1006,7 +1006,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serial_test",
  "tendermint",
  "tendermint-rpc",
  "thiserror 1.0.69",

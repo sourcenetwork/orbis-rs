@@ -40,21 +40,24 @@ use bulletin::{
     r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
     BulletinImpl,
 };
+#[cfg(feature = "integration-test")]
 use cli_tool;
 #[cfg(feature = "integration-test")]
-use common::blockchain::TEST_ACCOUNT_HEX_KEY;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, TxSigner, VeraClient,
+    VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
+use common::blockchain::{ChainConfig, ChainConfigBuilder, TxSigner};
 use hex;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
 };
 use network::{NetworkImpl, Router};
+#[cfg(feature = "integration-test")]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
+#[cfg(feature = "integration-test")]
 use tokio::time::Duration;
 use zeroize::Zeroizing;
 

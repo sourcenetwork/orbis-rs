@@ -94,9 +94,15 @@ jobs:
         key: ${{ matrix.crypto }}
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
     - name: Run tests (${{ matrix.crypto }})
       # Docker integration tests build node images for this crypto; the harness
       # no longer auto-detects it from compile features (see test-support).
+      # No doctests in this workspace (all fences are ```ignore), so nextest
+      # covers everything `cargo test` did.
       env:
         ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
-      run: cargo test ${{ matrix.cargo_flags }} --verbose
+      run: cargo nextest run --profile ci ${{ matrix.cargo_flags }}
