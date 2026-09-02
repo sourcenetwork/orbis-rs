@@ -15,12 +15,11 @@ fail-fast = false
 # discovery, chain-nonce timing) without hiding a real regression, which fails
 # both attempts.
 retries = { count = 1, backoff = "fixed", delay = "10s" }
-# Safety net for a genuinely wedged test (e.g. the scale-test magicsock
-# deadlock that used to let a run sit for hours): warn at 2 min, kill at 30 min.
-# Deliberately generous — cold Docker integration tests legitimately take 15-25
-# min because `docker compose up --build` recompiles the node. Tighten once the
-# CI timing breakdown (I1) and pre-built-image work (T5) land.
-slow-timeout = { period = "120s", terminate-after = 15 }
+# Safety net for a wedged test. Observed max for a real test on CI is ~275s
+# (a `reporting::*` Docker scenario); the scale test is ~50s. Warn at 2 min,
+# kill at 12 min (~2.5x headroom). With T5's pre-built image the Docker tests
+# no longer recompile the node, so the old 30 min ceiling was far too loose.
+slow-timeout = { period = "120s", terminate-after = 6 }
 failure-output = "immediate-final"
 final-status-level = "flaky"
 
