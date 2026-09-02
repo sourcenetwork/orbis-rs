@@ -11,9 +11,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::constants::reporting_genesis_json;
-use common::IntegrationTestNetwork;
 use crypto::helpers::generate_keypair;
 use crypto::CryptoSerialize;
+use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration};
 
 const RING_ID: &str = "upgrade-v0-ring";

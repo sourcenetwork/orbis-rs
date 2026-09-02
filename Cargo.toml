@@ -8,10 +8,11 @@ members = [
     "crates/local-storage",
     "bin/cli-tool",
     "bin/orbis-bench",
-    "crates/authn", 
-    "crates/authz", 
-    "crates/common", 
+    "crates/authn",
+    "crates/authz",
+    "crates/common",
     "crates/bulletin",
+    "crates/test-support",
 ]
 
 [workspace.lints.clippy]

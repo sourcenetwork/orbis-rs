@@ -6,6 +6,7 @@ use crate::app_state::AppState;
 
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 
+#[cfg(feature = "integration-test")]
 pub const ORBIS_RING_POLICY_YAML: &str = r#"
 name: orbis ring policy
 resources:
@@ -751,6 +752,7 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
         .unwrap_or_default()
 }
 
+#[cfg(feature = "integration-test")]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
         .await
@@ -790,6 +792,7 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 ///     // Nodes are now ready...
 /// }
 /// ```
+#[cfg(feature = "integration-test")]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],
     max_attempts: u32,
@@ -840,6 +843,7 @@ pub async fn wait_for_nodes_ready(
 /// Compute the did:key DID for a secp256k1 compressed public key (hex-encoded).
 /// Format: `did:key:z{base58btc([0xe7, 0x01] + pubkey_bytes)}`
 /// Matches Vera `x/acp/did/types.go` `DIDFromPubKey` for secp256k1 keys.
+#[cfg(feature = "integration-test")]
 fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
     let pubkey_bytes = hex::decode(compressed_pubkey_hex).expect("invalid compressed pubkey hex");
     let mut prefixed = vec![0xe7u8, 0x01u8]; // varint(231) = secp256k1-pub multicodec
@@ -847,6 +851,7 @@ fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
     format!("did:key:z{}", bs58::encode(&prefixed).into_string())
 }
 
+#[cfg(feature = "integration-test")]
 pub async fn create_ring_governance_with_ring(
     client: &VeraClient,
     ring_id: &str,
@@ -1017,6 +1022,7 @@ pub async fn create_ring_on_chain_with_trusted_relays(
 
 /// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
 /// Panics on timeout.
+#[cfg(feature = "integration-test")]
 pub async fn wait_for_ring_finalized(
     chain_config: &ChainConfig,
     ring_id: &str,

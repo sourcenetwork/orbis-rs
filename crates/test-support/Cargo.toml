@@ -1,0 +1,25 @@
+[package]
+name = "test-support"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+# Docker Compose integration-test harness (Vera chain + orbis-node containers).
+# Consumed only as a `[dev-dependencies]` entry; never in a production build.
+
+[dependencies]
+common = { path = "../common" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+# `tests/blockchain_vera.rs` — live-chain tests for common's VeraClient/TxSigner.
+tokio = { workspace = true }
+serial_test = "3.2.0"
+cosmrs = { workspace = true }
+prost = { workspace = true }
+
+[lints]
+workspace = true

@@ -5,17 +5,15 @@ use crate::r#trait::{
     Bulletin, BulletinKind, BulletinWriteKind, DemeritConfig, DocumentPayload, ReportingConfig,
     RingCancellationPayload, RingPayload, UpgradeInfo,
 };
-use common::{
-    blockchain::{
-        acp::Object,
-        orbis::{
-            DemeritConfig as ChainDemeritConfig, ReportingConfig as ChainReportingConfig,
-            Ring as ChainRing, UpgradeInfo as ChainUpgradeInfo,
-        },
-        BlockchainError, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+use common::blockchain::{
+    acp::Object,
+    orbis::{
+        DemeritConfig as ChainDemeritConfig, ReportingConfig as ChainReportingConfig,
+        Ring as ChainRing, UpgradeInfo as ChainUpgradeInfo,
     },
-    VeraTestContainer,
+    BlockchainError, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
+use test_support::VeraTestContainer;
 
 const ORBIS_RING_POLICY_YAML: &str = r#"
 name: orbis ring policy

@@ -7,8 +7,8 @@ use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use common::VeraTestContainer;
 use did_key::{generate, Ed25519KeyPair, Fingerprint};
+use test_support::VeraTestContainer;
 
 #[test]
 fn test_name() {

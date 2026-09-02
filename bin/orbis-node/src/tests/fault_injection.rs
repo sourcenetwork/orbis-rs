@@ -37,11 +37,8 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
-use common::{
-    blockchain::{
-        events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-    },
-    VeraTestContainer,
+use common::blockchain::{
+    events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -53,6 +50,7 @@ use proto::{
     v0::store_secret::store_secret_service_server::StoreSecretServiceServer,
 };
 use std::sync::Arc;
+use test_support::VeraTestContainer;
 use tokio::time::Duration;
 
 const MAX_TEST_CONTROL_MESSAGE_BYTES: usize = 2 * 1024 * 1024;

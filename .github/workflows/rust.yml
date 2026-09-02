@@ -95,4 +95,8 @@ jobs:
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Run tests (${{ matrix.crypto }})
+      # Docker integration tests build node images for this crypto; the harness
+      # no longer auto-detects it from compile features (see test-support).
+      env:
+        ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
       run: cargo test ${{ matrix.cargo_flags }} --verbose
