@@ -19,6 +19,14 @@ members = [
 too_many_arguments = "allow"
 type_complexity = "allow"
 
+# `dev` (and, by inheritance, `test`) — drop full debuginfo. `line-tables-only`
+# keeps function names + file:line in backtraces (and in test-failure panics),
+# but skips the per-type/per-local DWARF that dominates compile + link time for a
+# tree this size (iroh, tonic, arkworks). For step-debugging with locals, build
+# with `RUSTFLAGS="-C debuginfo=2"` or a local `[profile.dev]` override.
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.package]
 version = "0.0.1"
 edition = "2021"

@@ -16,6 +16,9 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Incremental compilation has no upside on ephemeral CI runners (the cache we
+  # restore doesn't carry target/debug/incremental) and adds codegen overhead.
+  CARGO_INCREMENTAL: "0"
   # `local-storage` derives its at-rest key with Argon2id at ~256 MiB / t=3 by
   # default (see StoredKdfParams::for_new_db). The test suite makes ~150
   # LocalStorageImpl::new calls, so run it with trivial KDF cost. The released
@@ -48,6 +51,9 @@ jobs:
 
   clippy:
     runs-on: ubuntu-latest
+    # lld cuts link time on a tree this size; only affects Linux CI.
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
       fail-fast: false
       matrix:
@@ -66,14 +72,16 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         key: ${{ matrix.crypto }}
-    - name: Install protoc
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Clippy (${{ matrix.crypto }})
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
   build:
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
       fail-fast: false
       matrix:
@@ -92,8 +100,8 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
         key: ${{ matrix.crypto }}
-    - name: Install protoc
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Install cargo-nextest
       uses: taiki-e/install-action@v2
       with:
