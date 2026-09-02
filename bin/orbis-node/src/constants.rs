@@ -43,6 +43,19 @@ pub const MAX_JWT_BYTES: usize = 16 * 1024;
 /// envelope. Larger data-carrying endpoints define their own request caps.
 pub const MAX_SMALL_GRPC_REQUEST_BYTES: usize = MAX_JWT_BYTES;
 
+/// Maximum number of accepted JWT ids retained by [`crate::helpers::jti_replay::JtiReplayGuard`]
+/// for single-use enforcement.
+///
+/// Each entry is a 32-char hex id plus an expiry `Instant` (~90 bytes). A token
+/// is retained only until its own `exp` (bounded by [`MAX_TOKEN_LIFETIME_SECS`]),
+/// then swept. At the 1-hour lifetime `JwtSigner` actually issues, sustained
+/// request rates stay well under this bound; past it the oldest entries are
+/// evicted (a replay that old is at the edge of its own validity anyway).
+pub const MAX_JTI_ENTRIES: usize = 1_000_000;
+
+/// Interval between sweeps of expired JWT ids from the replay guard.
+pub const JTI_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+
 // ============================================================================
 // StoreSecret Constants
 // ============================================================================
@@ -53,6 +66,18 @@ pub const MAX_SMALL_GRPC_REQUEST_BYTES: usize = MAX_JWT_BYTES;
 /// relay bound simple while preventing oversized encrypted documents, proofs,
 /// and metadata from reaching hashing, parsing, or bulletin posting work.
 pub const MAX_STORE_SECRET_REQUEST_BYTES: usize = 256 * 1024;
+
+// ============================================================================
+// PRE Constants
+// ============================================================================
+
+/// Maximum protobuf-encoded byte length for a StartPre request.
+///
+/// StartPreRequest's optional `document` field carries the same shape of payload
+/// (encrypted document, proof, policy fields) as StoreSecretRequest when the caller
+/// supplies the document inline instead of posting it to the bulletin first, so this
+/// matches `MAX_STORE_SECRET_REQUEST_BYTES`.
+pub const MAX_PRE_REQUEST_BYTES: usize = MAX_STORE_SECRET_REQUEST_BYTES;
 
 // ============================================================================
 // Cryptographic Constants
@@ -173,10 +198,14 @@ pub const DKG_PRIVATE_EXCHANGE_CONCURRENCY: usize = 4;
 /// Maximum time a completed DKG session may remain in memory.
 ///
 /// Normal Fresh/Refresh cleanup is immediate. Reshare cleanup may wait up to
-/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (200 seconds) for bulletin confirmation,
-/// so five minutes leaves margin for that task while bounding leaks if explicit
-/// cleanup never runs.
-pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(300);
+/// `RESHARE_BULLETIN_CONFIRM_TIMEOUT` (360 seconds) for bulletin confirmation,
+/// so ten minutes leaves margin for that task while bounding leaks if explicit
+/// cleanup never runs. Also bounds how long a `reshare_signature_ready` marker
+/// (which can carry an unpromoted staged bundle) is retained — must stay
+/// comfortably above `RESHARE_BULLETIN_CONFIRM_TIMEOUT` so the generic TTL
+/// sweep never races ahead of that task's own, more informative promote/
+/// discard decision.
+pub const DKG_COMPLETED_SESSION_TTL: Duration = Duration::from_secs(600);
 
 /// Cadence of the Fresh-DKG soft-stall scan. Matches `DKG_REPAIR_STALL_INTERVAL`
 /// so soft-stall detection is checked at least as often as repair itself runs.
@@ -226,7 +255,7 @@ pub const DKG_FAILED_SESSION_RECORD_TTL: Duration = Duration::from_secs(10 * 60)
 /// Maximum retries for both halves of `post_and_verify_fresh_ring_finalization`:
 /// reposting a `FinalizeRing` transaction whose confirmation is missing on-chain,
 /// and retrying a failed `ring_finalization_status` query. Shared between the two
-/// because both represent the same underlying condition (SourceHub is not yet
+/// because both represent the same underlying condition (Vera is not yet
 /// reflecting this node's confirmation) and should give up after comparable effort.
 pub const FINALIZATION_PERSISTENCE_RETRY_LIMIT: usize = 8;
 
@@ -491,10 +520,20 @@ pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500
 /// node-1 bulletin update to land before releasing its PSS claim.
 pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// Maximum time to wait for bulletin confirmation before releasing the PSS claim
-/// unconditionally. Slightly exceeds RESHARE_SIGNATURE_MAX_ATTEMPTS ×
-/// SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s) to guarantee we outlast node 1.
-pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(200);
+/// Maximum time to wait for bulletin confirmation before discarding this
+/// node's staged reshare bundle (see `reshare/cleanup.rs`) and releasing the
+/// PSS claim unconditionally.
+///
+/// This is a comfortable multiple — not just a slim margin — of
+/// RESHARE_SIGNATURE_MAX_ATTEMPTS × SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s,
+/// node 1's worst-case finalize-signing retry budget): unlike before this
+/// timeout gated only cleanup-task bookkeeping, it now decides whether to
+/// promote a continuing node's locally-computed share to disk at all, so a
+/// legitimately slow-but-succeeding reshare must not lose that race. Must
+/// stay comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
+/// session (and its `reshare_signature_ready` marker) is otherwise aged out
+/// by independently.
+pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
 
 // ============================================================================
 // Nonce Serialization Constants (FROST)

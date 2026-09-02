@@ -2,13 +2,13 @@
 //!
 //! Spawns a real orbis-node instance as a tokio task (not a process or
 //! container) against a caller-injected, shared mock bulletin instead of a
-//! real chain — no Docker, no SourceHub, no external network dependency.
+//! real chain — no Docker, no Vera, no external network dependency.
 //! Real Iroh P2P networking and the real DKG/PRE/SIGN protocol code run
 //! unmodified; only the chain/authz backends are swapped for in-memory mocks.
 //!
 //! Adapted from `tests::concurrent::setup_live_three_node_network`'s per-node
 //! setup, which this mirrors closely — see that function for the equivalent
-//! pattern against a real (Dockerized) SourceHub.
+//! pattern against a real (Dockerized) Vera.
 //!
 //! Not used by the production binary; opt in via the `harness` feature.
 
@@ -184,6 +184,7 @@ pub async fn spawn_harness_node(
         bulletin_grpc: None,
         chain_rpc: None,
         chain_rest: None,
+        allow_insecure_rpc: false,
         chain_id: None,
         denom: None,
         fee_granter: None,
@@ -199,6 +200,9 @@ pub async fn spawn_harness_node(
         node_whitelisted_ring_ids: vec![],
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
+        network_max_concurrent_ingress_work: constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        network_max_ingress_events_per_peer_per_second:
+            constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`
@@ -257,7 +261,7 @@ pub async fn spawn_harness_node(
             )
             .add_service(
                 PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                    .max_decoding_message_size(constants::MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)

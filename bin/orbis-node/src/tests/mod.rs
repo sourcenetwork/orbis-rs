@@ -1,4 +1,6 @@
 #[cfg(feature = "integration-test")]
+mod cancel_ring_reshare;
+#[cfg(feature = "integration-test")]
 mod concurrent;
 mod constants;
 #[cfg(all(feature = "fault-injection", feature = "integration-test"))]

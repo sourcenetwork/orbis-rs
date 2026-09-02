@@ -176,7 +176,7 @@ async fn test_refresh_all_rings_bulletin_miss_does_not_propagate() {
     cleanup_db(&db_path);
 }
 
-/// When SourceHub has finalized a committee that excludes this node, the PSS
+/// When Vera has finalized a committee that excludes this node, the PSS
 /// scan must securely remove the stale bundle and ring-index entry.
 #[tokio::test]
 async fn test_refresh_ring_reconciles_finalized_removed_member() {
@@ -205,7 +205,7 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
 
-    // Confirm our SourceHub signing identity is absent from the finalized
+    // Confirm our Vera signing identity is absent from the finalized
     // committee, then seed stale secret material left by an offline rotation.
     assert!(
         !ring_payload

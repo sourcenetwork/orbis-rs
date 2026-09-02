@@ -4,7 +4,7 @@
 //! protocol communication between nodes over the network.
 
 use crate::reporting::v0::types::{RelayRequestStatement, ReportSigningContext};
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
 use serde::{Deserialize, Serialize};
@@ -41,13 +41,13 @@ pub struct RingReshareUpdateStatement {
     pub domain: String,
     /// DKG/PSS reshare session that produced the new shares.
     pub session_id: u128,
-    /// SourceHub chain ID that will verify the signature.
+    /// Vera chain ID that will verify the signature.
     pub chain_id: String,
     /// Hex-encoded ring public key. Reshare preserves this key.
     pub ring_pk: String,
     /// Ring ID of the ring being updated.
     pub ring_id: String,
-    /// SHA-256 hex of the current ring state (proto-encoded for SourceHub).
+    /// SHA-256 hex of the current ring state (proto-encoded for Vera).
     pub current_ring_sha256: String,
     /// SHA-256 hex of the finalized ring state after reshare.
     pub finalized_ring_sha256: String,

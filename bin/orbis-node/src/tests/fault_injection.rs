@@ -17,9 +17,11 @@ use crate::sign::v0::service::SignServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_REQUEST_BYTES,
-        MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES, MIN_NODE_BALANCE,
-        PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
+        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+        MIN_NODE_BALANCE, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND, PEER_RESPONSE_TIMEOUT,
+        PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
@@ -37,10 +39,9 @@ use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
 use bulletin::BulletinImpl;
 use common::{
     blockchain::{
-        events::ReportEventSubscription, ChainConfig, SourceHubClient, TxSigner,
-        TEST_ACCOUNT_HEX_KEY,
+        events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
     },
-    SourceHubTestContainer,
+    VeraTestContainer,
 };
 use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -96,8 +97,8 @@ struct FaultableThreeNodeNetwork {
     /// Compressed pubkeys of alice, bob, charlie (in that order).
     node_keys: Vec<String>,
     chain_config: ChainConfig,
-    /// Keeps the SourceHub Docker container alive via RAII.
-    _chain: SourceHubTestContainer,
+    /// Keeps the Vera Docker container alive via RAII.
+    _chain: VeraTestContainer,
 }
 
 /// Build and spawn a gRPC server from an `InitializedNode`.
@@ -120,8 +121,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
             )
             .add_service(
-                PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+                PreServiceServer::new(pre_service).max_decoding_message_size(MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)
@@ -141,7 +141,7 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     })
 }
 
-/// Start SourceHub (via Docker) and three in-process orbis nodes, each wrapped
+/// Start Vera (via Docker) and three in-process orbis nodes, each wrapped
 /// with a `FaultNetwork` for test-time network partition simulation.
 async fn setup_fault_three_node_network(
     db_prefix: &str,
@@ -161,7 +161,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
     base_port: u16,
     reshare_interval_secs: u64,
 ) -> FaultableThreeNodeNetwork {
-    let chain = SourceHubTestContainer::new();
+    let chain = VeraTestContainer::new();
     let chain_config = chain.chain_config();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
 
@@ -247,6 +247,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 bulletin_grpc: None,
                 chain_rest: None,
                 chain_rpc: None,
+                allow_insecure_rpc: false,
                 chain_id: None,
                 denom: None,
                 fee_granter: None,
@@ -262,6 +263,9 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 node_whitelisted_ring_ids: vec![],
                 grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
                 grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+                network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+                network_max_ingress_events_per_peer_per_second:
+                    NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
             },
             cors_policy: CorsPolicy::Disabled,
             node_key,
@@ -1107,7 +1111,7 @@ async fn test_reshare_private_pair_terminal_stall_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),
@@ -1269,7 +1273,7 @@ async fn test_reshare_missing_topology_ack_triggers_on_chain_report() {
         "the accused node should not be its own reporter"
     );
 
-    let controller_client = SourceHubClient::with_signer(
+    let controller_client = VeraClient::with_signer(
         net.chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, net.chain_config.clone())
             .expect("test account signer"),

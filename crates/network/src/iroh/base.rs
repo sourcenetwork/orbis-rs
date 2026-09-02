@@ -140,7 +140,7 @@ impl IrohNetworkBuilder {
     /// This does more than skip peer *discovery* — `RelayMode::Disabled` also
     /// removes Iroh's relay-assisted NAT traversal and the relayed fallback
     /// data path used when a direct UDP connection can never be established.
-    /// Knowing a peer's address (e.g. from SourceHub `NodeInfo`) is not the
+    /// Knowing a peer's address (e.g. from Vera `NodeInfo`) is not the
     /// same as that address being directly dialable: orbis-node publishes its
     /// own local bind socket with no public-IP/NAT detection, so on any
     /// topology where direct reachability isn't already guaranteed out of

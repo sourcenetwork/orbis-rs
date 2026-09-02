@@ -19,7 +19,7 @@ use crate::sign::v0::{
 };
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
-use authz::sourcehub::{AccessCheckRequest, ValidWindow};
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
 };
@@ -188,7 +188,7 @@ pub fn refresh_health_check_peer_node_keys_sha256(peer_node_keys: &[String]) -> 
 
 /// Serialize the canonical post-refresh health-check statement.
 ///
-/// This is intentionally not SourceHub-compatible signing material. It is an
+/// This is intentionally not Vera-compatible signing material. It is an
 /// internal diagnostic domain so the recovered signature cannot be replayed as a
 /// reshare-finalization signature or any user-facing signing result.
 pub fn refresh_health_check_message(statement: &RefreshHealthCheckStatement) -> Result<Vec<u8>> {
@@ -221,13 +221,20 @@ pub fn refresh_health_check_context_key(statement: &RefreshHealthCheckStatement)
 /// This keeps the relay node untrusted: responders only sign when the statement
 /// binds the bulletin's current payload to the exact final `RingPayload` implied
 /// by the announced reshare.
+///
+/// Returns `(ring_pk_hex, staged_bundle)`. `staged_bundle` is `Some` when this
+/// node's readiness marker still holds its staged (not-yet-persisted) share —
+/// callers must sign with it rather than reading disk, since disk still holds
+/// the pre-reshare share until chain confirmation promotes it. `None` means the
+/// marker has already been promoted (or was created via the bundle-less
+/// test-only `mark_reshare_signature_ready`), so disk is safe to read.
 pub async fn validate_ring_reshare_update_statement(
     bulletin: &(dyn Bulletin + Send + Sync),
     dkg_session_state: &SessionStateManager<impl Dkg + 'static>,
     statement: &RingReshareUpdateStatement,
     expected_message: Option<&[u8]>,
     enforce_protocol: bool,
-) -> Result<String> {
+) -> Result<(String, Option<RingShareBundle>)> {
     if statement.domain != RING_RESHARE_UPDATE_DOMAIN {
         return Err(SignError::Unauthorized(format!(
             "Invalid ring reshare update domain '{}'",
@@ -317,8 +324,8 @@ pub async fn validate_ring_reshare_update_statement(
     // bulletin pre/post-state this statement attests to, which already binds
     // it to one ceremony result independent of the (possibly stale) attempt
     // ID; see `ReshareSignatureReadyKey`'s docs.
-    if !dkg_session_state
-        .is_reshare_signature_ready_for_update(
+    let Some(staged_bundle) = dkg_session_state
+        .reshare_signature_ready_material(
             &statement_storage_key,
             statement.session_id,
             &statement.ring_id,
@@ -326,11 +333,11 @@ pub async fn validate_ring_reshare_update_statement(
             &statement.finalized_ring_sha256,
         )
         .await
-    {
+    else {
         return Err(SignError::ReshareInProgress);
-    }
+    };
 
-    Ok(statement.ring_pk.clone())
+    Ok((statement.ring_pk.clone(), staged_bundle))
 }
 
 /// Validate a PSS refresh health-check statement before signing it.
@@ -974,12 +981,62 @@ mod ring_reshare_update_tests {
         let (bulletin, state, statement, ready_key) = fixture(None, None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk =
+        let (ring_pk, _bundle) =
             validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
                 .await
                 .expect("ready marker should authorize validation with current payload fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
+    }
+
+    /// Proves the exact mechanism `sign/v0/coordinator/handlers.rs` relies on
+    /// for both signing rounds: a still-staged (not yet chain-confirmed)
+    /// reshare bundle is what gets signed with, not disk — and once promoted,
+    /// the signal correctly flips to "read disk" for a later/retried request.
+    #[tokio::test]
+    async fn validate_returns_staged_bundle_until_promoted() {
+        use crate::ring_state::RingShareBundle;
+        use zeroize::Zeroizing;
+
+        let (bulletin, state, statement, ready_key) = fixture(None, None).await;
+        let attempt = crate::dkg::v0::transport::AttemptKey::new(
+            crate::dkg::v0::transport::CeremonyId(ready_key.session_id),
+            ready_key.attempt_id,
+        );
+        let staged = RingShareBundle {
+            share_bytes: Zeroizing::new(vec![9, 9, 9]),
+            public_polynomial: "staged-poly".to_string(),
+            last_pss: 42,
+        };
+        assert!(
+            state
+                .mark_reshare_signature_ready_for_attempt(
+                    attempt,
+                    ready_key.clone(),
+                    staged.clone()
+                )
+                .await,
+            "staging against a live attempt must succeed"
+        );
+
+        let (_ring_pk, bundle) =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("staged marker should authorize validation");
+        let bundle = bundle.expect("an unpromoted marker must return its staged bundle");
+        assert_eq!(bundle.public_polynomial, "staged-poly");
+        assert_eq!(*bundle.share_bytes, vec![9, 9, 9]);
+
+        state.mark_reshare_promoted(&ready_key).await;
+
+        let (_ring_pk, bundle_after_promotion) =
+            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
+                .await
+                .expect("a promoted marker must still authorize a late/retried request");
+        assert!(
+            bundle_after_promotion.is_none(),
+            "a promoted marker must signal disk fallback, not the (now stale) staged bytes"
+        );
     }
 
     #[tokio::test]
@@ -1006,7 +1063,7 @@ mod ring_reshare_update_tests {
         .await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk =
+        let (ring_pk, _bundle) =
             validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
                 .await
                 .expect("ready marker should authorize validation");
@@ -1042,7 +1099,7 @@ mod ring_reshare_update_tests {
             fixture(Some(vec!["new-a".to_string(), "new-b".to_string()]), None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk =
+        let (ring_pk, _bundle) =
             validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
                 .await
                 .expect("committee-only reshare should use current threshold fallback");
@@ -1055,7 +1112,7 @@ mod ring_reshare_update_tests {
         let (bulletin, state, statement, ready_key) = fixture(None, Some(1)).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let ring_pk =
+        let (ring_pk, _bundle) =
             validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
                 .await
                 .expect("threshold-only reshare should use current committee fallback");
@@ -1064,12 +1121,12 @@ mod ring_reshare_update_tests {
     }
 
     #[test]
-    fn ring_reshare_update_message_matches_sourcehub_vector() {
+    fn ring_reshare_update_message_matches_vera_vector() {
         let bulletin = bulletin::dummy::DummyBulletin::default();
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:
@@ -1085,7 +1142,7 @@ mod ring_reshare_update_tests {
 
         assert_eq!(
             hex::encode(sign_bytes),
-            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a65120e736f757263656875622d746573741a0a72696e67312d706f737422606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335312a20b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44322011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
+            "0a1b6f726269732d72696e672d726573686172652d66696e616c697a651209766572612d746573741a0a72696e67312d706f737422606232633035633130353964616461653332613730393261343332333937373739366335323166613565323431656537666533343238336233353935393335623262383066616431333565336639316266373330373338323031373836396335312a20b6684a86125e08eb7cba4298c336ea98ea674a62de3714e76bcd2135a7526b44322011683bb4da93f949f0a1803cc062f1d7933d1fa2ec201f2ab6867058708df9c1"
         );
     }
 
@@ -1095,7 +1152,7 @@ mod ring_reshare_update_tests {
         let statement = RingReshareUpdateStatement {
             domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
             session_id: 77,
-            chain_id: "sourcehub-test".to_string(),
+            chain_id: "vera-test".to_string(),
             ring_id: "ring1-post".to_string(),
             ring_pk: "b2c05c1059dadae32a7092a4323977796c521fa5e241ee7fe34283b3595935b2b80fad135e3f91bf7307382017869c51".to_string(),
             current_ring_sha256:

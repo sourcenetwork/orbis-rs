@@ -36,7 +36,7 @@ committee membership from its own chain state, re-runs the same validation
 the reporter ran) before contributing a signature share — a relay only ever
 forwards raw evidence for someone else to independently check, never a
 pre-verified conclusion. That's what stops a single malicious or buggy node
-from getting another node demerited on its word alone. SourceHub's role at
+from getting another node demerited on its word alone. Vera's role at
 the end is correspondingly narrow: it doesn't re-determine truth (that
 already happened at the committee-signing step) — it checks the threshold
 signature, checks shape/policy/scope rules, applies demerits, dedupes, and
@@ -71,7 +71,7 @@ flowchart TD
     K -- "invalid_crypto_response" --> O
     O --> P["Recover threshold signature"]
     P --> Q["Pass SignedReport to sink::submit"]
-    Q --> R["Submit signed artifact to SourceHub via bulletin.submit_report"]
+    Q --> R["Submit signed artifact to Vera via bulletin.submit_report"]
 ```
 
 ## `node_offline` flow
@@ -261,7 +261,7 @@ The current evidence kinds are:
   (`orbis-dkg-leader-batch-mismatch-v1`) and evidence-kind tag — the fault
   predicate differs from `dkg_leader_equivocation` (shared origin across
   different coordinates, rather than identical coordinate with different
-  content). Detected locally by `network.rs`'s `claim_origins`, called from
+  content). Detected locally by `network/public_batch.rs`'s `claim_origins`, called from
   both `insert_manifest` and `insert_chunk` (`PublicBatchAssembler`) — a
   origin-tracking check `insert_manifest` had no equivalent of before this
   kind existed. Independent verification re-checks both endpoint signatures
@@ -329,7 +329,7 @@ include `signed_at` is what proves it's authentic — so registry validation
 only adds a self-consistency check (`statement.signed_at` matches the
 artifact(s)' `signed_at`, and for `oversized_repair_page`, that the decoded
 `PublicPhaseResponse`'s embedded `report_signature.signed_at` also agrees).
-SourceHub's decoder reads the new wire field to stay positionally aligned
+Vera's decoder reads the new wire field to stay positionally aligned
 but still never verifies the signature itself, matching every other
 control-message field.
 - `dkg_control_message_fault`: a node-key-signed direct-QUIC control-handshake
@@ -379,7 +379,7 @@ control-message field.
   (domain `orbis-dkg-control-message-fault-v1`):
   - `leader_prepare_fault`: one signed `Prepare`, independently provable as
     invalid because it names a noncanonical leader, or because self-consistent
-    committee routes it claims contradict current SourceHub `NodeInfo`/ring
+    committee routes it claims contradict current Vera `NodeInfo`/ring
     state. Reported at whichever point the specific, unambiguous failure is
     first detected — `prepare_participant` itself catches the noncanonical-
     leader case and (Reshare only) the new/next-committee route mismatch
@@ -451,7 +451,7 @@ control-message field.
     fault`'s `config_digest` recheck) and independently re-derives the
     size claim from the artifact's own raw byte length rather than trusting
     the reporter's characterization. `MAX_PUBLIC_REPAIR_PAGE_BYTES` moved
-    from `network.rs` to `transport.rs` (now `pub`) so both the sender and
+    from `network/` to `transport.rs` (now `pub`) so both the sender and
     the registry can share one definition. The page-building sizing loop
     reserves a small fixed margin (`PUBLIC_REPAIR_PAGE_SIGNATURE_OVERHEAD_
     BYTES`) below the true limit, since it sizes candidates *before* the real
@@ -597,11 +597,11 @@ Before anyone signs, the report handler should verify:
 This means `t=1` rings cannot report faults, and `t=n` rings cannot report one
 offline member using the existing threshold.
 
-### sourcehub chain-side gates
+### vera chain-side gates
 
 Independently, before accepting `MsgSubmitReport` and applying demerits, the
 chain re-checks most of the same invariants plus its own replay protection
-(see [Chain-side acceptance](#chain-side-acceptance-sourcehub) below):
+(see [Chain-side acceptance](#chain-side-acceptance-vera) below):
 
 - envelope shape and validity-window checks;
 - `report.chain_id` matches the running chain;
@@ -658,12 +658,12 @@ report.
 
 ## Report sink
 
-`sink::submit` forwards the completed `SignedReport` to SourceHub by calling
+`sink::submit` forwards the completed `SignedReport` to Vera by calling
 `bulletin.submit_report`. The canonical encoding is defined on the Rust side;
-SourceHub mirrors the decoder and golden vectors rather than introducing a
+Vera mirrors the decoder and golden vectors rather than introducing a
 competing encoding.
 
-## Chain-side acceptance (sourcehub)
+## Chain-side acceptance (vera)
 
 `MsgSubmitReport` is handled by `x/orbis/keeper/SubmitReport`, which delegates to
 `validateSubmittedReport` (`x/orbis/keeper/report.go`) before applying any state
@@ -805,7 +805,7 @@ report envelopes, health probing, threshold-signing policy, or chain delivery.
 
 To add another invalid-crypto evidence kind under the existing report type,
 extend `InvalidCryptoResponse`, add statement shape/signature/anti-framing
-validation in the handler, update SourceHub's decoder, and add matching golden
+validation in the handler, update Vera's decoder, and add matching golden
 vectors on both sides.
 
 ## Metrics
@@ -873,7 +873,7 @@ directly. `report_health_checks_total{status}` covers `node_offline`'s
 independent health-probe outcomes, separate from the funnel above.
 
 `pss_offline_observations_total{stage, outcome}` (`dkg/v0/coordinator/
-reporting.rs`, `dkg/v0/network.rs`) sits upstream of the funnel above — it
+reporting.rs`, `dkg/v0/network/`) sits upstream of the funnel above — it
 covers the terminal PSS peer-liveness detection pipeline that eventually
 calls `queue_report`, one counter per bounded transport stage. `stage` is
 `PssOfflineStage::as_metric_label()` (`start_forward`, `prepare`,
@@ -909,6 +909,6 @@ Each report type should have coverage for:
 - below-threshold validation producing no signed report;
 - final signature verification under the ring key for both BLS and FROST builds.
 - invalid-crypto evidence kind decoding, statement binding, signature checks,
-  anti-framing re-verification, and SourceHub golden vectors;
+  anti-framing re-verification, and Vera golden vectors;
 - DKG refresh direct reporting and reshare relay from pending-new receivers to
   current committee signers.

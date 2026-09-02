@@ -35,7 +35,7 @@ pub trait CryptoDeserialize: Sized {
 }
 
 /// A share distributed by one participant to another
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DistributedShare<ShareValue: Zeroize> {
     pub from_id: u32,
     pub to_id: u32,
@@ -50,8 +50,22 @@ impl<ShareValue: Zeroize> Drop for DistributedShare<ShareValue> {
     }
 }
 
+// Manual impl (rather than derive) so the secret `value` field can never be printed,
+// including by types that embed a ShareValue whose own Debug impl prints its bytes.
+impl<ShareValue: Zeroize> Debug for DistributedShare<ShareValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DistributedShare")
+            .field("from_id", &self.from_id)
+            .field("to_id", &self.to_id)
+            .field("value", &"[REDACTED]")
+            .field("nonce", &self.nonce)
+            .field("session_id", &self.session_id)
+            .finish()
+    }
+}
+
 /// Private share containing an index and a scalar value
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PriShare<ShareValue: Zeroize> {
     pub i: u32,
     pub v: ShareValue,
@@ -60,6 +74,16 @@ pub struct PriShare<ShareValue: Zeroize> {
 impl<ShareValue: Zeroize> Drop for PriShare<ShareValue> {
     fn drop(&mut self) {
         self.v.zeroize();
+    }
+}
+
+// Manual impl (rather than derive) so the secret scalar `v` can never be printed.
+impl<ShareValue: Zeroize> Debug for PriShare<ShareValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PriShare")
+            .field("i", &self.i)
+            .field("v", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -73,7 +97,7 @@ pub struct PubShare<PublicKey> {
 pub type SigShare<G> = PubShare<G>;
 
 /// Distributed key share
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DistKeyShare<ShareValue: Zeroize> {
     pub pri_share: PriShare<ShareValue>,
 }
@@ -81,6 +105,16 @@ pub struct DistKeyShare<ShareValue: Zeroize> {
 impl<ShareValue: Zeroize> Drop for DistKeyShare<ShareValue> {
     fn drop(&mut self) {
         self.pri_share.v.zeroize();
+    }
+}
+
+// Manual impl (rather than derive) for clarity: relies on PriShare's own redacting
+// Debug impl, so the secret scalar can never be printed.
+impl<ShareValue: Zeroize> Debug for DistKeyShare<ShareValue> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DistKeyShare")
+            .field("pri_share", &self.pri_share)
+            .finish()
     }
 }
 

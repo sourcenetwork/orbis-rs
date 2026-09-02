@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
-use common::blockchain::SourceHubClient;
+use common::blockchain::VeraClient;
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, GroupAffine, PreImpl, ScalarField, SignImpl};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, PatchedKeyPair};
@@ -278,7 +278,7 @@ impl DirectClients {
 
     pub async fn wait_ring_finalized_everywhere(
         &self,
-        sourcehub: &SourceHubClient,
+        vera: &VeraClient,
         ring_id: &str,
         members: &[usize],
         deadline: Duration,
@@ -288,12 +288,12 @@ impl DirectClients {
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now);
             loop {
-                let ring = match crate::runner::read_ring_with_retry(sourcehub, ring_id).await {
+                let ring = match crate::runner::read_ring_with_retry(vera, ring_id).await {
                     Ok(ring) => ring,
                     Err(error) => {
                         if last_progress.elapsed() >= Duration::from_secs(10) {
                             eprintln!(
-                                "ring {ring_id}: SourceHub read failed, retrying until timeout: {error:#}"
+                                "ring {ring_id}: Vera read failed, retrying until timeout: {error:#}"
                             );
                             last_progress = Instant::now();
                         }
@@ -333,7 +333,7 @@ impl DirectClients {
                         }
                     }
                 } else if last_progress.elapsed() >= Duration::from_secs(10) {
-                    eprintln!("ring {ring_id}: waiting for SourceHub finalization");
+                    eprintln!("ring {ring_id}: waiting for Vera finalization");
                     last_progress = Instant::now();
                 }
                 sleep(Duration::from_millis(500)).await;
@@ -462,6 +462,7 @@ pub async fn pre_call(
             derivation: fixture.derivation.clone(),
             salt: fixture.salt.clone(),
             valid_window: None,
+            document: None,
         },
         &token,
     )?;
@@ -570,7 +571,7 @@ mod tests {
                 grpc_url: "http://127.0.0.1:1".into(),
                 metrics_url: "http://127.0.0.1:2/metrics".into(),
             },
-            public_address: "source1...".into(),
+            public_address: "vera1...".into(),
             peer_id: "peer".into(),
             p2p_address: "abcdef@0.0.0.0:4242".into(),
             node_key: "key".into(),

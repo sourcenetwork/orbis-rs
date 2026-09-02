@@ -10,10 +10,12 @@ use crate::dkg::v0::transport::{
     derive_private_message_id, encode, AttemptKey, DkgPrivateMessage, DkgPublicPayload,
     ParticipantRef,
 };
+use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
 use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 use super::reshare::selection::record_and_ack_valid_reshare_share;
 use super::state_machine::{self, DkgCommand, DkgEvent, SessionSnapshot};

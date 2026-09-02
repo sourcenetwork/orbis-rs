@@ -44,7 +44,7 @@ use cli_tool;
 use common::blockchain::TEST_ACCOUNT_HEX_KEY;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
-    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner,
+    ChainConfig, ChainConfigBuilder, TxSigner, VeraClient,
 };
 use hex;
 use local_storage::{
@@ -707,8 +707,25 @@ pub async fn write_ring_to_bulletin(
 }
 
 pub fn test_db_path(name: &str) -> String {
+    use_fast_test_kdf();
     let project_root = project_root::get_project_root().unwrap();
     format!("{}/test_dbs/{}.redb", project_root.display(), name)
+}
+
+/// Drop the Argon2 KDF cost for local storage to a trivial value for the test
+/// suite (many `LocalStorageImpl::new` calls). Idempotent; a value the caller set
+/// in the environment is left alone. Reached via `test_db_path`, which nearly
+/// every storage-using test calls right before opening a database.
+pub fn use_fast_test_kdf() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB").is_none() {
+            std::env::set_var("ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB", "8");
+        }
+        if std::env::var_os("ORBIS_LOCAL_STORAGE_KDF_T_COST").is_none() {
+            std::env::set_var("ORBIS_LOCAL_STORAGE_KDF_T_COST", "1");
+        }
+    });
 }
 
 /// Clean up a test database file
@@ -822,7 +839,7 @@ pub async fn wait_for_nodes_ready(
 /// also uses that client for subsequent transactions.
 /// Compute the did:key DID for a secp256k1 compressed public key (hex-encoded).
 /// Format: `did:key:z{base58btc([0xe7, 0x01] + pubkey_bytes)}`
-/// Matches SourceHub `x/acp/did/types.go` `DIDFromPubKey` for secp256k1 keys.
+/// Matches Vera `x/acp/did/types.go` `DIDFromPubKey` for secp256k1 keys.
 fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
     let pubkey_bytes = hex::decode(compressed_pubkey_hex).expect("invalid compressed pubkey hex");
     let mut prefixed = vec![0xe7u8, 0x01u8]; // varint(231) = secp256k1-pub multicodec
@@ -831,7 +848,7 @@ fn secp256k1_pubkey_to_did(compressed_pubkey_hex: &str) -> String {
 }
 
 pub async fn create_ring_governance_with_ring(
-    client: &SourceHubClient,
+    client: &VeraClient,
     ring_id: &str,
     operator_pubkeys: &[&str],
 ) -> String {
@@ -881,8 +898,8 @@ pub async fn create_ring_governance_with_ring(
         .expect("register ring object");
 
     // Grant each node's DID the `operator` relation so MsgFinalizeRing passes the
-    // SourceHub ACP update_ring permission check (nodes sign with secp256k1 keys,
-    // and SourceHub derives did:key from the on-chain pubkey for the permission lookup).
+    // Vera ACP update_ring permission check (nodes sign with secp256k1 keys,
+    // and Vera derives did:key from the on-chain pubkey for the permission lookup).
     for pubkey_hex in operator_pubkeys {
         let node_did = secp256k1_pubkey_to_did(pubkey_hex);
         client
@@ -910,7 +927,7 @@ pub async fn create_ring_governance_with_ring(
 /// own policy ID as a `ring_policy` ACP object, and return the policy ID.
 #[cfg(feature = "integration-test")]
 pub async fn create_orbis_ring_policy(chain_config: &ChainConfig) -> String {
-    let client = SourceHubClient::with_signer(
+    let client = VeraClient::with_signer(
         chain_config.clone(),
         TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
             .expect("test account signer"),
@@ -983,29 +1000,19 @@ pub async fn create_ring_on_chain_with_trusted_relays(
     nonce: Option<&str>,
     trusted_auth_relay_dids: Vec<String>,
 ) -> String {
-    let client = SourceHubClient::with_signer(
+    cli_tool::create_ring(
+        node_keys.to_vec(),
+        threshold,
+        86400,
+        policy_id.to_string(),
+        nonce.map(String::from),
+        network::V0.version,
+        trusted_auth_relay_dids,
         chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
+        TEST_ACCOUNT_HEX_KEY,
     )
     .await
-    .expect("chain client for ring creation");
-
-    let (_, ring_id) = client
-        .orbis_create_ring_get_id(
-            node_keys.to_vec(),
-            threshold,
-            86400,
-            policy_id,
-            nonce.map(String::from),
-            network::V0.version,
-            None,
-            (!trusted_auth_relay_dids.is_empty()).then_some(trusted_auth_relay_dids),
-        )
-        .await
-        .expect("create ring on-chain");
-
-    ring_id
+    .expect("create ring on-chain")
 }
 
 /// Poll the chain until the ring is finalized (ring_pk != "") or the timeout expires.
@@ -1015,7 +1022,7 @@ pub async fn wait_for_ring_finalized(
     ring_id: &str,
     timeout: Duration,
 ) -> String {
-    let client = SourceHubClient::new(chain_config.clone())
+    let client = VeraClient::new(chain_config.clone())
         .await
         .expect("chain client for ring polling");
 

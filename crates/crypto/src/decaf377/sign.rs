@@ -22,8 +22,9 @@ use crate::r#trait::{
 use ark_ff::{One, Zero};
 use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
+use zeroize::Zeroize;
 
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 
@@ -32,6 +33,10 @@ const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
 
 /// Domain separation tag for signing metadata encoding.
 const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-metadata-v1";
+
+/// Domain separation tags for RFC 9591 §4.1 hedged FROST nonce derivation.
+const FROST_HIDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-decaf377-hiding-nonce-v1";
+const FROST_BINDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-decaf377-binding-nonce-v1";
 
 // ============================================================================
 // FROST Types
@@ -108,7 +113,6 @@ impl CryptoDeserialize for FrostNonceCommitment {
 }
 
 /// Secret nonce state held between Round 1 and Round 2
-#[derive(Debug)]
 pub struct FrostSigningState {
     pub hiding_nonce: Fr,  // d_i (secret)
     pub binding_nonce: Fr, // e_i (secret)
@@ -120,6 +124,18 @@ impl Drop for FrostSigningState {
         use zeroize::Zeroize;
         self.hiding_nonce.zeroize();
         self.binding_nonce.zeroize();
+    }
+}
+
+// Manual impl (rather than derive) so the secret `hiding_nonce`/`binding_nonce`
+// scalars can never be printed.
+impl std::fmt::Debug for FrostSigningState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrostSigningState")
+            .field("hiding_nonce", &"[REDACTED]")
+            .field("binding_nonce", &"[REDACTED]")
+            .field("participant_index", &self.participant_index)
+            .finish()
     }
 }
 
@@ -269,14 +285,36 @@ fn aggregate_pk_from_pub_poly(pub_poly: &PubPoly) -> Element {
     pub_poly.eval(0)
 }
 
-/// Generate a random non-zero scalar
-fn random_nonzero_scalar() -> Fr {
-    loop {
-        let s = Fr::rand(&mut OsRng);
-        if !s.is_zero() {
-            return s;
+/// Hedged FROST nonce (RFC 9591 §4.1): `Fr::reduce(H(domain || random(32) || secret))`.
+///
+/// The fresh 32 random bytes keep nonces unpredictable when the RNG is healthy;
+/// folding in the signer's secret share means that even a degraded or repeating
+/// `OsRng` cannot on its own produce the same `(d, e)` pair twice and leak the
+/// share. Non-zero is enforced by re-drawing (probability of a hit is ~2^-251).
+fn hedged_nonce(domain: &[u8], secret: &Fr) -> Result<Fr> {
+    let mut secret_bytes = Vec::with_capacity(FR_COMPRESSED_SIZE);
+    secret
+        .serialize_compressed(&mut secret_bytes)
+        .map_err(|_| CryptoError::SigningError("failed to serialize signing share".to_string()))?;
+
+    let nonce = loop {
+        let mut random_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut random_bytes);
+
+        let mut hasher = Sha512::new();
+        hasher.update(domain);
+        hasher.update(random_bytes);
+        hasher.update(&secret_bytes);
+        let candidate = Fr::from_le_bytes_mod_order(&hasher.finalize());
+
+        random_bytes.zeroize();
+        if !candidate.is_zero() {
+            break candidate;
         }
-    }
+    };
+
+    secret_bytes.zeroize();
+    Ok(nonce)
 }
 
 // ============================================================================
@@ -314,8 +352,12 @@ impl ThresholdSigner for ThresholdDecafSigner {
         &self,
         dist_key_share: &Self::DistKeyShare,
     ) -> Result<(Self::NonceCommitment, Self::SigningState)> {
-        let d = random_nonzero_scalar();
-        let e = random_nonzero_scalar();
+        // RFC 9591 §4.1 hedged derivation: bind the hiding/binding nonces to the
+        // signer's secret share as well as fresh RNG output, so a degraded
+        // `OsRng` cannot by itself cause the nonce reuse that leaks the share.
+        let secret = dist_key_share.pri_share.v;
+        let d = hedged_nonce(FROST_HIDING_NONCE_DOMAIN, &secret)?;
+        let e = hedged_nonce(FROST_BINDING_NONCE_DOMAIN, &secret)?;
 
         let commitment = FrostNonceCommitment {
             hiding: Element::GENERATOR * d,

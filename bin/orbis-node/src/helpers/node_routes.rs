@@ -61,7 +61,7 @@ pub fn peer_ids_from_routes(routes: &[NodeRoute]) -> Vec<String> {
 }
 
 /// Validate the exact `node_key -> peer route` bindings supplied on the wire
-/// against routes independently resolved from SourceHub `NodeInfo` records.
+/// against routes independently resolved from Vera `NodeInfo` records.
 /// Vector ordering may differ, but a route may not be reassigned to another
 /// node key and the full authoritative route (including direct addresses) must
 /// match.
@@ -85,7 +85,7 @@ pub fn validate_node_route_bindings(
             .is_some()
         {
             return Err(format!(
-                "resolved SourceHub routes contain duplicate node key {}",
+                "resolved Vera routes contain duplicate node key {}",
                 route.node_key
             ));
         }
@@ -105,7 +105,7 @@ pub fn validate_node_route_bindings(
         };
         if peer_route != expected_route {
             return Err(format!(
-                "supplied transport route for node key {node_key} does not match SourceHub NodeInfo"
+                "supplied transport route for node key {node_key} does not match Vera NodeInfo"
             ));
         }
     }

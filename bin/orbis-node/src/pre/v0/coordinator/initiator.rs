@@ -14,7 +14,7 @@ use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
 use crate::reporting::v0::queue_report;
-use crate::reporting::v0::types::ring_state_sha256;
+use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
@@ -756,6 +756,15 @@ pub(crate) struct PreReportBinding {
     ring_id: String,
     ring_pk: String,
     ring_state_sha256: String,
+    /// The document's ACP timestamp (`DocumentPayload.timestamp`) — carried into every
+    /// `PreResponseReportContext` built from this binding so `object_id` can be re-derived from
+    /// the inline-document evidence when `inline_document` is `Some`.
+    timestamp: Option<u64>,
+    /// Set when this request's document was supplied inline rather than read from the bulletin.
+    /// Copied into every `PreResponseReportContext` built from this binding, and from there onto
+    /// the report observation as out-of-band co-signer evidence (never into the signed statement,
+    /// which keeps only a `document_inline` bool) — see `ReportedDocumentEvidence`.
+    inline_document: Option<ReportedDocumentEvidence>,
 }
 
 impl PreReportBinding {
@@ -764,24 +773,38 @@ impl PreReportBinding {
         ring_id: String,
         ring_pk: String,
         ring_state_sha256: String,
+        timestamp: Option<u64>,
+        inline_document: Option<ReportedDocumentEvidence>,
     ) -> Self {
         Self {
             chain_id,
             ring_id,
             ring_pk,
             ring_state_sha256,
+            timestamp,
+            inline_document,
         }
     }
 
     /// Build the binding from the ring payload the caller already fetched.
     /// `ring_id` is the document's ring id (the value responders bind into
-    /// their signed response statements).
-    pub(crate) fn from_ring(chain_id: String, ring_id: String, ring_payload: &RingPayload) -> Self {
+    /// their signed response statements). `inline_document` should be `Some`
+    /// when the request's document was supplied inline rather than read from
+    /// the bulletin.
+    pub(crate) fn from_ring(
+        chain_id: String,
+        ring_id: String,
+        ring_payload: &RingPayload,
+        timestamp: Option<u64>,
+        inline_document: Option<ReportedDocumentEvidence>,
+    ) -> Self {
         Self::new(
             chain_id,
             ring_id,
             ring_payload.ring_pk.clone(),
             ring_state_sha256(ring_payload),
+            timestamp,
+            inline_document,
         )
     }
 
@@ -808,6 +831,8 @@ impl PreReportBinding {
             object_id: object_id.to_string(),
             rdr_pk,
             derivation,
+            timestamp: self.timestamp,
+            inline_document: self.inline_document.clone(),
         }
     }
 }

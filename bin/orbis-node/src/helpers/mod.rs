@@ -1,6 +1,8 @@
 pub mod auth;
 pub mod create_routers;
+pub mod encrypted_document;
 pub mod identity;
+pub mod jti_replay;
 pub mod launch;
 pub mod node_routes;
 pub mod protocol_handler;

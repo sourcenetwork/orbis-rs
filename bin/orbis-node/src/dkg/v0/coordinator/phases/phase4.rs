@@ -141,7 +141,10 @@ where
         )));
     }
 
-    let adds_new_local_ring = is_fresh || is_reshare_receiver;
+    // Reshare no longer writes a bundle to disk at this point (it's staged in
+    // memory and only promoted after chain confirmation, see below), so there's
+    // never anything on disk to roll back if its RingIndexEntry write fails.
+    let adds_new_local_ring = is_fresh;
     if is_fresh {
         ring_storage::preflight_new_ring_capacity(&coord.app_state, &storage_key).await?;
     }
@@ -175,6 +178,7 @@ where
         DkgError::Serialization(format!("Failed to serialize aggregate public key: {}", e))
     })?;
 
+    let mut reshare_staged_bundle: Option<RingShareBundle> = None;
     let refresh_candidate = if matches!(kind, SessionKind::Refresh { .. }) {
         let staged_bundle = build_refresh_ring_bundle(
             &coord.app_state.local_storage,
@@ -263,7 +267,26 @@ where
         );
         refresh_health_check::apply_pending_result_if_present(coord, attempt).await?;
         Some(candidate)
+    } else if matches!(kind, SessionKind::Reshare { .. }) {
+        // Reshare: stage the newly computed share in memory rather than writing
+        // it to disk immediately. For a continuing (DealerReceiver) node, disk
+        // still holds the OLD, chain-recognized share; overwriting it now —
+        // before the chain has confirmed this reshare — would silently strand
+        // this node on unrecognized key material if the finalize never lands
+        // (leader crash, partition, or a future cancel). The staged bundle is
+        // only written to disk once `wait_for_reshare_bulletin_finalized`
+        // observes chain confirmation; see `reshare/cleanup.rs`.
+        reshare_staged_bundle = Some(RingShareBundle {
+            share_bytes: Zeroizing::new(final_share_bytes.clone()),
+            public_polynomial: hex::encode(&pub_poly_bytes),
+            last_pss: now_secs,
+        });
+        None
     } else {
+        // Fresh DKG only, now: no old material at risk for a brand-new ring, so
+        // persisting immediately is fine and intentional (see the fresh_ring_id
+        // comment below about orphaned-but-harmless local state).
+        //
         // Confirm the attempt is still live before doing the write, but don't
         // hold the session-state lock across it: `persist_ring_bundle` is a
         // synchronous encrypted-storage write, and `with_attempt_state` holds
@@ -392,7 +415,9 @@ where
 
     // For Reshare: node 1 of the NEW committee posts the updated RingPayload with the
     // new peer_ids and new threshold. The ring_pk remains the same (same secret).
-    reshare::bulletin_update::update_bulletin_if_selector(
+    // Every non-Dealer node (not just node 1) gets back what it needs to later
+    // promote or discard its own staged bundle once chain confirmation lands.
+    let reshare_readiness = reshare::bulletin_update::update_bulletin_if_selector(
         coord,
         attempt,
         &kind,
@@ -402,6 +427,7 @@ where
         &pub_poly_bytes,
         reshare_new_peer_node_keys.as_deref(),
         reshare_bulletin_post_id.as_deref(),
+        reshare_staged_bundle,
     )
     .await?;
 
@@ -417,8 +443,20 @@ where
     // claim and removes the session. Node 1 already posted the update so its
     // first poll succeeds immediately; non-node-1 nodes wait for node 1 to post.
     // This single path prevents the PSS scheduler from re-triggering a duplicate
-    // reshare on any node while node 1 is still signing.
+    // reshare on any node while node 1 is still signing. It's also where each
+    // node's own staged bundle gets promoted to disk (or discarded) — see
+    // `reshare/cleanup.rs`.
     if matches!(kind, SessionKind::Reshare { .. }) {
+        // dkg_role is Receiver or DealerReceiver here (Dealer already
+        // returned at the top of this function), so update_bulletin_if_selector
+        // always computes readiness info for a non-Dealer Reshare kind.
+        let info = reshare_readiness.ok_or_else(|| {
+            DkgError::InvalidState(
+                "Reshare: non-Dealer node completed Phase 4 without readiness info from \
+                 update_bulletin_if_selector"
+                    .to_string(),
+            )
+        })?;
         let ring_key = kind.ring_key().map(|k| k.to_string());
         let bulletin_post_id = reshare_bulletin_post_id.clone();
         reshare::cleanup::spawn_bulletin_finalized_cleanup(
@@ -426,7 +464,7 @@ where
             ring_key,
             attempt,
             bulletin_post_id,
-            false,
+            reshare::cleanup::ReshareCleanupOutcome::ContinuingCommittee(info),
         );
         return Ok(());
     }

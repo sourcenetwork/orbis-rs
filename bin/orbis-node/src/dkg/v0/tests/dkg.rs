@@ -1182,7 +1182,7 @@ async fn test_fresh_session_init_publishes_complete_state() {
 }
 
 #[tokio::test]
-async fn test_fresh_session_init_rejects_swapped_sourcehub_route_bindings() {
+async fn test_fresh_session_init_rejects_swapped_vera_route_bindings() {
     let db_name = "test_fresh_session_init_rejects_swapped_routes";
     let db_path = test_db_path(db_name);
     let bulletin = Arc::new(DummyBulletin::new().await.expect("DummyBulletin::new"));
@@ -1253,10 +1253,10 @@ async fn test_fresh_session_init_rejects_swapped_sourcehub_route_bindings() {
 
     let error = invoke_session_init(&coordinator, session_init, &sender)
         .await
-        .expect_err("swapped SourceHub route bindings must be rejected");
+        .expect_err("swapped Vera route bindings must be rejected");
 
     assert!(matches!(error, DkgError::Unauthorized(_)));
-    assert!(error.to_string().contains("SourceHub NodeInfo"));
+    assert!(error.to_string().contains("Vera NodeInfo"));
     assert!(
         !app_state
             .dkg_session_state

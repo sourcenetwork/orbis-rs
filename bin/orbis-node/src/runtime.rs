@@ -180,9 +180,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .secret_key(secret_key)
             .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
             .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
-            .max_concurrent_ingress_work(constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK)
+            .max_concurrent_ingress_work(args.network_max_concurrent_ingress_work)
             .max_ingress_events_per_peer_per_second(
-                constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+                args.network_max_ingress_events_per_peer_per_second,
             );
         if args.network_private_routes_only {
             tracing::info!(
@@ -203,7 +203,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
             .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier);
+            .gas_multiplier(args.chain_gas_multiplier)
+            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
 
         let authz: Arc<dyn Authz> = Arc::new(
             AuthzImpl::new(authz_chain_config)
@@ -217,7 +218,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
             .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier);
+            .gas_multiplier(args.chain_gas_multiplier)
+            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
         let chain_config = bulletin_chain_config.clone().build();
         let signer =
             create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
@@ -264,6 +266,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                     .rest_url(args.chain_rest.clone())
                     .grpc_url(args.bulletin_grpc.clone())
                     .gas_multiplier(args.chain_gas_multiplier)
+                    .allow_insecure_rpc(Some(args.allow_insecure_rpc))
                     .build();
                 cli_tool::fund(signer.address(), fund_config)
                     .await
@@ -614,7 +617,7 @@ async fn run_server(
                     )
                     .add_service(
                         PreServiceServer::new(pre_service)
-                            .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
+                            .max_decoding_message_size(constants::MAX_PRE_REQUEST_BYTES),
                     )
                     .add_service(
                         StoreSecretServiceServer::new(store_secret_service)

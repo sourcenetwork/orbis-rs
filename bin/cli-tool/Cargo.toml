@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-clap = { version = "4.4.18", features = ["derive"] }
+clap = { version = "4.4.18", features = ["derive", "env"] }
 tokio = { workspace = true }
 tonic = { workspace = true }
 proto = { path = "../../crates/proto" }
@@ -17,12 +17,14 @@ crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
 common = { path = "../../crates/common" }
-bulletin = { path = "../../crates/bulletin", default-features = false, features = ["sourcehub"] }
+bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera"] }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 did-key = { workspace = true }
 sha2 = { workspace = true }
+rpassword = "7.3"
+bs58 = "0.5"
 
 [features]
 default = ["bls12-381"]

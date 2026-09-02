@@ -56,11 +56,11 @@ where
         ring_key,
         attempt,
         bulletin_post_id,
-        true,
+        super::reshare::cleanup::ReshareCleanupOutcome::DepartingDealer,
     );
     tracing::info!(
         session_id = session_id,
-        "Reshare Dealer: share distribution complete; retaining old material until SourceHub finalization"
+        "Reshare Dealer: share distribution complete; retaining old material until Vera finalization"
     );
 
     Ok(())
@@ -251,7 +251,7 @@ async fn post_and_verify_fresh_ring_finalization(
                         return Err(error);
                     }
                     return Err(DkgError::Bulletin(format!(
-                        "SourceHub did not persist this node's FinalizeRing confirmation for ring {ring_id} after {persistence_retries} retries"
+                        "Vera did not persist this node's FinalizeRing confirmation for ring {ring_id} after {persistence_retries} retries"
                     )));
                 }
 

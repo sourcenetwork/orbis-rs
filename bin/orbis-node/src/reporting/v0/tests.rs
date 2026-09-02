@@ -38,7 +38,7 @@ use crate::helpers::test_helpers::{
     setup_three_node_network_with_sign, test_db_path, TestKeyPair, TEST_FRESH_DKG_RING_ID,
 };
 use crate::ring_state::{RingPolyState, RingShareBundle};
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::UpgradeInfo;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
 use common::blockchain::sign_node_message_with_hex_key;
@@ -120,6 +120,7 @@ fn relay_binding_statement(
         valid_window_start,
         valid_window_end,
         timestamp,
+        document_inline: false,
     }
 }
 
@@ -142,6 +143,7 @@ fn relay_binding(
         valid_window,
         timestamp,
         from_node_id: RELAY_BINDING_FROM_NODE_ID,
+        document_inline: false,
     }
 }
 
@@ -166,6 +168,66 @@ fn relay_request_binding_accepts_valid_pre_statement() {
         ),
     )
     .unwrap();
+}
+
+#[test]
+fn relay_request_binding_accepts_matching_document_inline_marker() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+    let mut statement = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    statement.document_inline = true;
+    let mut expected = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    expected.document_inline = true;
+
+    validate_relay_request_binding(&statement, expected).unwrap();
+}
+
+#[test]
+fn relay_request_binding_rejects_document_inline_marker_mismatch() {
+    let ring = relay_binding_ring();
+    let window = relay_binding_window();
+
+    // Statement marks the request inline but this node resolved the document from the bulletin.
+    let mut statement_inline = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    statement_inline.document_inline = true;
+    let expected_bulletin = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    assert!(validate_relay_request_binding(&statement_inline, expected_bulletin).is_err());
+
+    // The reverse: this node resolved the document inline, but the statement does not say so.
+    let statement_bulletin = relay_binding_statement(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        Some(RELAY_BINDING_PRE_TIMESTAMP),
+    );
+    let mut expected_inline = relay_binding(
+        &ring,
+        "pre",
+        Some(window.clone()),
+        RelayRequestTimestampBinding::Exact(Some(RELAY_BINDING_PRE_TIMESTAMP)),
+    );
+    expected_inline.document_inline = true;
+    assert!(validate_relay_request_binding(&statement_bulletin, expected_inline).is_err());
 }
 
 #[test]
@@ -320,6 +382,7 @@ async fn relay_statement_builder_rejects_relayer_key_outside_ring() {
             user_signed_at: RELAY_BINDING_USER_SIGNED_AT,
             acp_timestamp: Some(RELAY_BINDING_PRE_TIMESTAMP),
             valid_window: None,
+            document_inline: false,
         },
         &app_state.local_storage,
     )
@@ -2501,6 +2564,8 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         challenge: challenge_bytes,
         proof: proof_bytes,
         crypto_backend: PreImpl::name(),
+        timestamp: None,
+        document_inline: false,
     };
     let signing_key = network
         .charlie
@@ -2519,6 +2584,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         accused_node_key: accused_node_key.clone(),
         accused_peer_id: accused_peer_id.clone(),
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::Pre {
             statement,
             response_signature,
@@ -2692,6 +2758,7 @@ async fn threshold_signs_invalid_crypto_sign_report_without_accused_node() {
         accused_node_key: accused_node_key.clone(),
         accused_peer_id: accused_peer_id.clone(),
         observed_at,
+        inline_document: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,
@@ -2864,6 +2931,7 @@ async fn co_signers_refuse_invalid_crypto_sign_report_when_share_verifies() {
         accused_node_key,
         accused_peer_id,
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
+        inline_document: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,

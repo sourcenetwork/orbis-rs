@@ -1,0 +1,29 @@
+services:
+  vera:
+    image: orbis-vera-integration
+    build:
+      context: .
+      dockerfile: Dockerfile.vera-integration
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        rm -rf /home/node/.vera/*
+        verad init local-node --chain-id vera-localnet --home /home/node/.vera
+        verad keys add validator --keyring-backend test --home /home/node/.vera
+        # Add a test account with known mnemonic for integration testing
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
+        verad genesis collect-gentxs --home /home/node/.vera
+        exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+    ports:
+      - "127.0.0.1::26657" # RPC
+      - "127.0.0.1::1317"  # API
+      - "127.0.0.1::9090"  # gRPC
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:26657/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s

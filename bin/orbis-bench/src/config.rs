@@ -9,13 +9,13 @@ pub const MAX_LOCAL_RINGS_PER_NODE: usize = 256;
 /// Mirrors the production scheduler's early-due grace window. Benchmark PSS
 /// intervals must exceed it so due-to-start and ceremony time remain separable.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
-/// SourceHub commit every example config, `Experiment::single`/sweep-built
-/// experiment, and (via `docker/Dockerfile.sourcehub-integration`'s own
+/// Vera commit every example config, `Experiment::single`/sweep-built
+/// experiment, and (via `docker/Dockerfile.vera-integration`'s own
 /// fallback read of the same file) every raw `docker-compose-*.yml` that
-/// doesn't pass `SOURCEHUB_REF` explicitly all pin by default. Single source
-/// of truth across both Rust and Docker — bump `docker/SOURCEHUB_REF` to
+/// doesn't pass `VERA_REF` explicitly all pin by default. Single source
+/// of truth across both Rust and Docker — bump `docker/VERA_REF` to
 /// move every default-using caller at once instead of hunting down each copy.
-pub const DEFAULT_SOURCEHUB_REF: &str = include_str!("../../../docker/SOURCEHUB_REF");
+pub const DEFAULT_VERA_REF: &str = include_str!("../../../docker/VERA_REF");
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -76,21 +76,21 @@ pub enum NetworkProfileKind {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExecutionBackend {
-    /// Docker Compose: SourceHub + N `orbis-node` containers. Supports every
+    /// Docker Compose: Vera + N `orbis-node` containers. Supports every
     /// operation and network profile.
     #[default]
     Docker,
     /// Real `orbis-node` instances as tokio tasks in this process, over real
     /// loopback Iroh P2P, backed by a shared in-memory mock bulletin instead
-    /// of SourceHub. No Docker, no chain, no external network dependency —
+    /// of Vera. No Docker, no chain, no external network dependency —
     /// trades chain/container realism for immunity to infrastructure
     /// flakiness unrelated to orbis's own protocol correctness. v1 supports
     /// `dkg`, `pre`, `sign`, and `pss_refresh` operations (no `pss_reshare`
     /// yet; see `Experiment::validate`). WAN profiles are supported,
     /// approximated in software (`network::ShapedNetwork`) instead of
-    /// Docker's per-container `tc netem`. Unlike Docker's SourceHub-backed
+    /// Docker's per-container `tc netem`. Unlike Docker's Vera-backed
     /// rings, `DummyBulletin` enforces no floor on `pss_interval_secs`, so
-    /// `pss_refresh` isn't limited to SourceHub's 86400s minimum here.
+    /// `pss_refresh` isn't limited to Vera's 86400s minimum here.
     InProcess,
 }
 
@@ -188,14 +188,14 @@ impl Default for TimeoutConfig {
 pub struct ResourceLimits {
     pub cpus_per_node: Option<f64>,
     pub memory_per_node: Option<String>,
-    /// Applied to every SourceHub container (the validator and any
+    /// Applied to every Vera container (the validator and any
     /// replicas). Only the validator (replica index 0) proposes and
     /// executes blocks, so it is the one actually bottlenecked by DKG
     /// finalization traffic — but capping replicas the same way is harmless
     /// (a cap just bounds what a container *may* use) and keeps this
     /// consistent with `cpus_per_node`/`memory_per_node`'s single shared value.
-    pub cpus_per_sourcehub: Option<f64>,
-    pub memory_per_sourcehub: Option<String>,
+    pub cpus_per_vera: Option<f64>,
+    pub memory_per_vera: Option<String>,
 }
 
 fn default_schema_version() -> u32 {
@@ -216,10 +216,10 @@ fn default_seed() -> u64 {
 fn default_output_dir() -> PathBuf {
     PathBuf::from("bench-results")
 }
-fn default_sourcehub_ref() -> String {
-    DEFAULT_SOURCEHUB_REF.to_string()
+fn default_vera_ref() -> String {
+    DEFAULT_VERA_REF.to_string()
 }
-fn default_sourcehub_replicas() -> usize {
+fn default_vera_replicas() -> usize {
     1
 }
 fn default_batch_size() -> usize {
@@ -259,14 +259,14 @@ pub struct Experiment {
     pub resources: ResourceLimits,
     #[serde(default = "default_output_dir")]
     pub output_dir: PathBuf,
-    #[serde(default = "default_sourcehub_ref")]
-    pub sourcehub_ref: String,
-    /// Number of SourceHub Docker services to run. Index 0 is the sole
+    #[serde(default = "default_vera_ref")]
+    pub vera_ref: String,
+    /// Number of Vera Docker services to run. Index 0 is the sole
     /// validator (genesis init + gentx); the rest are non-validating full
     /// nodes that sync via P2P and independently serve REST/RPC reads and tx
     /// relay, spreading load that would otherwise hit one REST server.
-    #[serde(default = "default_sourcehub_replicas")]
-    pub sourcehub_replicas: usize,
+    #[serde(default = "default_vera_replicas")]
+    pub vera_replicas: usize,
     #[serde(default = "default_batch_size")]
     pub setup_batch_size: usize,
     #[serde(default = "default_pss_interval")]
@@ -316,8 +316,8 @@ impl Experiment {
             timeouts: TimeoutConfig::default(),
             resources: ResourceLimits::default(),
             output_dir: default_output_dir(),
-            sourcehub_ref: default_sourcehub_ref(),
-            sourcehub_replicas: default_sourcehub_replicas(),
+            vera_ref: default_vera_ref(),
+            vera_replicas: default_vera_replicas(),
             setup_batch_size: default_batch_size(),
             pss_interval_secs: default_pss_interval(),
             pss_poll_interval_secs: default_pss_poll_interval(),
@@ -359,8 +359,8 @@ impl Experiment {
         if self.setup_batch_size == 0 {
             bail!("setup_batch_size must be at least 1");
         }
-        if self.sourcehub_replicas == 0 {
-            bail!("sourcehub_replicas must be at least 1");
+        if self.vera_replicas == 0 {
+            bail!("vera_replicas must be at least 1");
         }
         if self.load.measure_secs == 0 {
             bail!("load.measure_secs must be at least 1");
@@ -450,10 +450,10 @@ impl Experiment {
             if group.cases.is_empty() {
                 bail!("network group {group_index} has no ring cases");
             }
-            if self.sourcehub_replicas > group.network_size {
+            if self.vera_replicas > group.network_size {
                 bail!(
-                    "sourcehub_replicas {} cannot exceed network_size {} for network group {group_index}",
-                    self.sourcehub_replicas,
+                    "vera_replicas {} cannot exceed network_size {} for network group {group_index}",
+                    self.vera_replicas,
                     group.network_size
                 );
             }

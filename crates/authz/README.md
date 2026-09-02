@@ -2,7 +2,7 @@
 
 Async **authorization** behind a small trait: given opaque **`permission`** bytes and a **`subject`** (caller identity string), decide whether access is allowed.
 
-The default implementation talks to **SourceHub** over the shared **`common`** blockchain client and evaluates **ACP** (access-control policy) membership. A **dummy** allow-all backend exists only for tests.
+The default implementation talks to **Vera** over the shared **`common`** blockchain client and evaluates **ACP** (access-control policy) membership. A **dummy** allow-all backend exists only for tests.
 
 ## `Authz` trait
 
@@ -15,13 +15,13 @@ pub trait Authz: Send + Sync {
 }
 ```
 
-Callers serialize their intent into **`permission`**; the implementation defines the encoding. For SourceHub, that encoding is JSON for [`AccessCheckRequest`](src/sourcehub/mod.rs).
+Callers serialize their intent into **`permission`**; the implementation defines the encoding. For Vera, that encoding is JSON for [`AccessCheckRequest`](src/vera/mod.rs).
 
 ## Feature flags
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
-| `sourcehub` | **yes** | [`SourceHubAuth`](src/sourcehub/mod.rs) and re-export **`AuthzImpl`** = `SourceHubAuth`. |
+| `vera` | **yes** | [`VeraAuth`](src/vera/mod.rs) and re-export **`AuthzImpl`** = `VeraAuth`. |
 | `test-helpers` | no | [`dummy::DummyAuthZ`](src/dummy/mod.rs) — always returns **`true`**; **not for production**. |
 
 Disable defaults only if you wire another `Authz` implementation at the application layer:
@@ -30,9 +30,9 @@ Disable defaults only if you wire another `Authz` implementation at the applicat
 cargo build -p authz --no-default-features
 ```
 
-## SourceHub implementation (`feature = "sourcehub"`)
+## Vera implementation (`feature = "vera"`)
 
-**`SourceHubAuth`** holds a [`SourceHubClient`](../common) (from the workspace `common` crate) and implements **`check`** by:
+**`VeraAuth`** holds a [`VeraClient`](../common) (from the workspace `common` crate) and implements **`check`** by:
 
 1. Deserializing **`permission`** as JSON **`AccessCheckRequest`** (`policy_id`, `resource`, `object_id`, `permission`, optional `tier`, `timestamp`, optional **`ValidWindow`**).
 2. Optionally enforcing a **validity window**: if both **`valid_window`** and **`timestamp`** are set, the timestamp must lie in `[start, end]`; if only one of them is set, **`check`** returns **`InvalidRequest`**.
@@ -40,11 +40,11 @@ cargo build -p authz --no-default-features
 
 Helper **`get_policy`** loads a policy record by id (for inspection or tooling).
 
-Construction: **`SourceHubAuth::new(ChainConfigBuilder)`** — async, connects the client.
+Construction: **`VeraAuth::new(ChainConfigBuilder)`** — async, connects the client.
 
-**Name string** (for logging / diagnostics): **`"authz/sourcehub"`**.
+**Name string** (for logging / diagnostics): **`"authz/vera"`**.
 
-Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) use Docker (**SourceHub** test container); they are serial to avoid port conflicts.
+Integration tests in [`src/vera/tests.rs`](src/vera/tests.rs) use Docker (**Vera** test container); they are serial to avoid port conflicts.
 
 ## Dummy implementation (`feature = "test-helpers"`)
 
@@ -58,7 +58,7 @@ Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) use Dock
 
 - **`async-trait`**, **`serde`** / **`serde_json`**
 - **`thiserror`**
-- **`common`** (workspace) — chain config, **`SourceHubClient`**, ACP types
+- **`common`** (workspace) — chain config, **`VeraClient`**, ACP types
 
 ## Tests
 
@@ -66,17 +66,17 @@ Integration tests in [`src/sourcehub/tests.rs`](src/sourcehub/tests.rs) use Dock
 # Unit tests that do not need Docker
 cargo test -p authz
 
-# Default feature includes sourcehub; Docker-backed tests run with `cargo test` if present
+# Default feature includes vera; Docker-backed tests run with `cargo test` if present
 ```
 
-SourceHub integration tests require a running **Docker** environment as used by **`SourceHubTestContainer`** in the `common` crate.
+Vera integration tests require a running **Docker** environment as used by **`VeraTestContainer`** in the `common` crate.
 
 ## Re-exports
 
-With **`sourcehub`** enabled, the crate root re-exports:
+With **`vera`** enabled, the crate root re-exports:
 
 ```rust
-pub use sourcehub::SourceHubAuth as AuthzImpl;
+pub use vera::VeraAuth as AuthzImpl;
 ```
 
 Application code can depend on **`authz::AuthzImpl`** when building the node with default features.

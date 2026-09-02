@@ -251,7 +251,7 @@ where
             context,
         } = req;
         // Auth check first — fail fast before burning a nonce.
-        let mut refresh_candidate_bundle: Option<RingShareBundle> = None;
+        let mut staged_sign_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
             SignContext::Policy(ctx) => {
                 let (token_string, derivation_id, valid_window) =
@@ -269,6 +269,15 @@ where
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
                 validate_sign_claims(&token, derivation_id, None)?;
+                // Reject a forwarded JWT this node has already accepted. A responder
+                // sees the client token once here in FROST Round 1; Round 2
+                // (`handle_sign_request`) is covered by the single-use nonce, not
+                // this guard. A duplicate here means a replayed `NonceRequest`.
+                self.app_state
+                    .jti_guard
+                    .check_and_record(&token.jwt_id, token.expiration_time, "sign_nonce_request")
+                    .await
+                    .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -308,6 +317,7 @@ where
                                 valid_window: valid_window.clone(),
                                 timestamp: RelayRequestTimestampBinding::SignPolicy,
                                 from_node_id,
+                                document_inline: false,
                             };
                             match validate_relay_request_binding(statement, binding) {
                                 Ok(()) => {
@@ -317,6 +327,7 @@ where
                                         statement.clone(),
                                         ctx.relay_signature.clone(),
                                         current_time,
+                                        None,
                                     )
                                     .await;
                                 }
@@ -336,16 +347,18 @@ where
             }
             // The ready marker proves this signing round belongs to an already accepted
             // reshare session, which is allowed to finish across an activation boundary.
-            SignContext::RingReshareUpdate(ctx) => Some(
-                validate_ring_reshare_update_statement(
+            SignContext::RingReshareUpdate(ctx) => {
+                let (ring_pk_hex, bundle) = validate_ring_reshare_update_statement(
                     &*self.app_state.bulletin,
                     &self.app_state.dkg_session_state,
                     &ctx.statement,
                     None,
                     false,
                 )
-                .await?,
-            ),
+                .await?;
+                staged_sign_bundle = bundle;
+                Some(ring_pk_hex)
+            }
             SignContext::RefreshHealthCheck(ctx) => {
                 let (ring_pk_hex, bundle) = validate_refresh_health_check_statement(
                     &self.app_state.dkg_session_state,
@@ -353,7 +366,7 @@ where
                     None,
                 )
                 .await?;
-                refresh_candidate_bundle = Some(bundle);
+                staged_sign_bundle = Some(bundle);
                 Some(ring_pk_hex)
             }
             SignContext::Bulletin { object_id } => {
@@ -417,12 +430,9 @@ where
         } else {
             client_ring_pk
         };
-        let dist_key_share = if let Some(bundle) = refresh_candidate_bundle {
+        let dist_key_share = if let Some(bundle) = staged_sign_bundle {
             let pri_share = bundle.pri_share().map_err(|e| {
-                SignError::Deserialization(format!(
-                    "Failed to deserialize staged refresh share: {}",
-                    e
-                ))
+                SignError::Deserialization(format!("Failed to deserialize staged share: {}", e))
             })?;
             DistKeyShare { pri_share }
         } else {
@@ -594,6 +604,7 @@ where
                         valid_window: valid_window.clone(),
                         timestamp: RelayRequestTimestampBinding::SignPolicy,
                         from_node_id,
+                        document_inline: false,
                     };
                     match validate_relay_request_binding(statement, binding) {
                         Ok(()) => {
@@ -603,6 +614,7 @@ where
                                 statement.clone(),
                                 ctx.relay_signature.clone(),
                                 current_time,
+                                None,
                             )
                             .await;
                         }
@@ -642,7 +654,7 @@ where
         message: &[u8],
         ctx: &RingReshareUpdateContext,
     ) -> Result<SignRequestAuthorization> {
-        let ring_pk_hex = validate_ring_reshare_update_statement(
+        let (ring_pk_hex, _staged_bundle) = validate_ring_reshare_update_statement(
             &*self.app_state.bulletin,
             &self.app_state.dkg_session_state,
             &ctx.statement,
@@ -830,6 +842,28 @@ where
                 )
                 .await?;
                 bundle
+            }
+            // Reshare's staged bundle isn't written to disk until chain
+            // confirmation promotes it (see `reshare/cleanup.rs`), so a
+            // co-signer must sign with its own staged material here too —
+            // not just in Round 1's nonce request — falling back to disk
+            // only once its own readiness marker has been promoted.
+            SignContext::RingReshareUpdate(ctx) => {
+                let (_, staged_bundle) = validate_ring_reshare_update_statement(
+                    &*self.app_state.bulletin,
+                    &self.app_state.dkg_session_state,
+                    &ctx.statement,
+                    Some(&message),
+                    false,
+                )
+                .await?;
+                match staged_bundle {
+                    Some(bundle) => bundle,
+                    None => RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
+                        .map_err(|e| {
+                            SignError::Storage(format!("Failed to load share bundle: {}", e))
+                        })?,
+                }
             }
             _ => RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
                 .map_err(|e| SignError::Storage(format!("Failed to load share bundle: {}", e)))?,

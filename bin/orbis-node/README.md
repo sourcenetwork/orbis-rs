@@ -1,6 +1,6 @@
 # Orbis node
 
-The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for operators and clients, runs **iroh QUIC** for MPC traffic with peers, and connects to **SourceHub** for authorization and the bulletin board.
+The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for operators and clients, runs **iroh QUIC** for MPC traffic with peers, and connects to **Vera** for authorization and the bulletin board.
 
 ## Responsibilities
 
@@ -33,8 +33,8 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | `decaf377` | no | Decaf377 / FROST path — mutually exclusive with `bls12-381` |
 | `redb` | yes | Persistent local storage (`local-storage/redb`) |
 | `memory` | no | In-memory local storage (`local-storage/memory`) |
-| `authz-sourcehub` | yes | `authz/sourcehub` |
-| `bulletin-sourcehub` | yes | `bulletin/sourcehub` |
+| `authz-vera` | yes | `authz/vera` |
+| `bulletin-vera` | yes | `bulletin/vera` |
 | `iroh` | yes | `network/iroh` |
 | `integration-test` | no | `cli-tool` + test-only chain funding |
 | `fault-injection` | no | `network/fault-injection` for partition tests |
@@ -49,6 +49,8 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--loki-url`** — optional Loki log shipping.
 - **`--runtime-base-path`** — base directory for runtime files. The database is stored as `<PATH>/dbs/orbis.<backend>` (`orbis.redb` with the default backend), and the node public key is written to `<PATH>/public_key.txt`.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
+- **`--network-max-concurrent-ingress-work`** — node-wide cap on concurrently executing inbound P2P work items shared by direct QUIC streams and Gossip frames (default `1024`). Raise on a node provisioned to take on more work; minimum `1` (a value below `1` is rejected during argument parsing).
+- **`--network-max-ingress-events-per-peer-per-second`** — per-immediate-peer cap on inbound P2P work items per second, across direct streams and Gossip frames (default `512`). Raise on a node provisioned to take on more work; minimum `1` (a value below `1` is rejected during argument parsing).
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
@@ -80,7 +82,7 @@ storage and the node network identity key. Treat both as production secrets.
 
 ## Chain endpoint trust (hard requirement)
 
-The node **fully trusts** the SourceHub endpoints it is configured with
+The node **fully trusts** the Vera endpoints it is configured with
 (`--chain-rpc`, `--chain-rest`, `--bulletin-grpc`, `--authz-grpc`). Bulletin
 reads are plain RPC responses — there is **no light-client or Merkle-proof
 verification**. Everything security-critical flows from those reads: ring
@@ -91,11 +93,17 @@ this node.
 
 Operational rules:
 
-- **Run your own SourceHub full node** and point every chain endpoint flag at
+- **Run your own Vera full node** and point every chain endpoint flag at
   it — colocated on the same host or on an operator-controlled network path.
   Never use a third-party or public RPC endpoint for a production ring node.
 - If the chain node is not on localhost, protect the path to it (TLS and/or a
   private network); the RPC connection is the root of trust for this node.
+  This is **enforced**: `--chain-rpc` / `--chain-rest` are rejected at startup
+  if they are plaintext `http://` to a host that is not loopback, RFC-1918 /
+  unique-local / link-local / CGNAT, a single-label container/service name, or
+  a `*.internal` / `*.local` / `*.lan` / `*.home.arpa` name. Use `https://`, a
+  local/private endpoint, or — only if the endpoint is reached over a private
+  network you control — `--allow-insecure-rpc` (env `ORBIS_ALLOW_INSECURE_RPC`).
 - The `ring_state_sha256` bound into signed reporting statements limits
   *silent* divergence between honest nodes (statements built from different
   ring states will not co-sign), but it does not protect a node whose own RPC
@@ -107,14 +115,14 @@ Operational rules:
 Direct client JWTs continue to use their issuer DID as the actor. A ring may
 list trusted Ed25519 `did:key` issuers in `trusted_auth_relay_dids`; those relays
 may sign a JWT with the user DID as `sub`. Every committee node reads the same
-list from SourceHub before accepting delegation.
+list from Vera before accepting delegation.
 
 A trusted relay can assert any actor DID, so its signing key is a privileged
 credential. Declare relays when creating the ring and revoke compromised or
 retired relays through the ring's ACP-governed removal transaction. `StoreSecret`
 rejects delegated JWTs because its
-SourceHub transaction is signed by the Orbis node; delegated callers must store
-the document through a SourceHub signer that preserves their actor identity.
+Vera transaction is signed by the Orbis node; delegated callers must store
+the document through a Vera signer that preserves their actor identity.
 
 ## In-repo docs
 
@@ -158,7 +166,7 @@ cargo run -p orbis-node --release -- --cors-permissive
 ```
 
 These options are local, per-node launch settings. They are not persisted or
-recorded in SourceHub, so every committee operator chooses and supplies their
+recorded in Vera, so every committee operator chooses and supplies their
 own policy on each launch. CORS is enforced by browsers only; it is not
 authentication and does not prevent native clients from calling the node's
 network-accessible RPCs. Keep endpoint authentication and network controls in

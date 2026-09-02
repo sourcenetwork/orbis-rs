@@ -1,6 +1,7 @@
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::dkg::v0::transport::{CeremonyConfig, MessageId};
+use crate::helpers::jti_replay::JtiReplayGuard;
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -292,7 +293,7 @@ pub struct AppState<D>
 where
     D: Dkg + Clone + 'static,
 {
-    /// Public key for this node's SourceHub signing key.
+    /// Public key for this node's Vera signing key.
     pub node_key: String,
     /// Network for node-to-node communication
     pub network: Arc<dyn Network>,
@@ -317,6 +318,10 @@ where
     pub peer_connection_pool: Arc<PeerConnectionPool>,
     /// Independent MPC fault-reporting subsystem: state, registry, and sink.
     pub reporting_state: Arc<ReportingState>,
+    /// Single-use enforcement for client JWTs (rejects a `jti` this node already
+    /// accepted). Checked at `start_pre` / `start_sign` / `store_secret` and at the
+    /// PRE / Sign-Round-1 responder handlers.
+    pub jti_guard: Arc<JtiReplayGuard>,
 }
 
 impl<D> AppState<D>
@@ -342,6 +347,7 @@ where
             ring_index_lock: Arc::new(Mutex::new(())),
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
             reporting_state: Arc::new(ReportingState::new()),
+            jti_guard: Arc::new(JtiReplayGuard::new()),
         }
     }
 }

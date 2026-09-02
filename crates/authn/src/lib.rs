@@ -35,6 +35,13 @@ pub struct BearerToken<T = ()> {
     /// Not-before timestamp (Unix epoch seconds); token is invalid before this time
     #[serde(rename = "nbf", skip_serializing_if = "Option::is_none")]
     pub not_before: Option<u64>,
+    /// Unique token id. A random 128-bit value emitted by [`jwt_builder::JwtSigner`];
+    /// lets a verifier enforce single use (reject a token it has already accepted).
+    /// `resolve_jwt_did` only parses it through — replay enforcement is the caller's
+    /// (see `orbis-node`'s `JtiReplayGuard`). Empty means a token minted before this
+    /// field existed.
+    #[serde(rename = "jti", default, skip_serializing_if = "String::is_empty")]
+    pub jwt_id: String,
     /// Custom claims specific to the endpoint
     #[serde(flatten)]
     pub claims: T,
@@ -216,9 +223,30 @@ where
 
     let claims = unverified.claims;
 
+    // Only the did:key method is accepted. `resolve` would also take other DID
+    // methods the did-key crate understands; pin it to the one whose key
+    // material we know how to verify a JWT signature against.
+    if !claims.issuer_id.starts_with("did:key:") {
+        return Err(AuthNError::DidError(
+            "issuer DID must use the did:key method".to_string(),
+        ));
+    }
+
     // Resolve the DID to get the public key
     let key = resolve(&claims.issuer_id)
         .map_err(|_| AuthNError::DidError("Error resolving did_uri".to_string()))?;
+
+    // The 32-byte length check below also matches X25519 (and other 32-byte key
+    // types); require the resolved verification method to actually be Ed25519.
+    let is_ed25519 = key
+        .get_verification_methods(CONFIG_LD_PUBLIC, &claims.issuer_id)
+        .first()
+        .is_some_and(|method| method.key_type == "Ed25519VerificationKey2018");
+    if !is_ed25519 {
+        return Err(AuthNError::DidError(
+            "issuer DID must contain an Ed25519 public key".to_string(),
+        ));
+    }
 
     // Extract the public key bytes from the resolved DID key
     let public_key_bytes = key.public_key_bytes();

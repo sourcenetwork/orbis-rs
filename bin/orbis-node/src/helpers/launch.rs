@@ -2,6 +2,7 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
+use crate::helpers::identity::{extract_node_part, validate_peer_id};
 use bulletin::{
     error::BulletinError,
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
@@ -34,6 +35,20 @@ fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
         return Err(format!(
             "invalid gas multiplier {value:?}: must be a finite number that is at least 1.0"
         ));
+    }
+    Ok(parsed)
+}
+
+/// Parse a `usize` CLI option that must be at least 1. The network ingress
+/// budgets reject a zero limit at build time (`Semaphore::new(0)` would stall
+/// every inbound work item); rejecting it here turns that into a clear parse
+/// error instead of a startup failure.
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed: usize = value
+        .parse()
+        .map_err(|_| format!("invalid value {value:?}: not a non-negative integer"))?;
+    if parsed == 0 {
+        return Err(format!("invalid value {value:?}: must be at least 1"));
     }
     Ok(parsed)
 }
@@ -198,6 +213,14 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// Accept a plaintext `http://` chain RPC/REST endpoint whose host is not
+    /// loopback or on a private network. The node trusts RPC/REST responses
+    /// (authorization decisions, bulletin records) as-is, so a plaintext
+    /// channel to an untrusted host is a security risk — prefer an `https://`
+    /// endpoint or a locally reachable chain node. Only set this when the
+    /// endpoint is in fact reached over a network you control (VPN/overlay).
+    #[arg(long, env = "ORBIS_ALLOW_INSECURE_RPC", default_value_t = false)]
+    pub allow_insecure_rpc: bool,
     /// Chain ID used when signing transactions
     #[arg(long)]
     pub chain_id: Option<String>,
@@ -212,7 +235,7 @@ pub struct Args {
     ///
     /// Not persisted: like the other chain connection flags, this must be
     /// passed on every invocation. The signing key is the only thing this
-    /// node persists to disk; the fee grant itself lives in SourceHub's
+    /// node persists to disk; the fee grant itself lives in Vera's
     /// chain state, not here.
     #[arg(long)]
     pub fee_granter: Option<String>,
@@ -237,7 +260,7 @@ pub struct Args {
     /// Only safe when every peer has an authoritative AND directly
     /// UDP-reachable route with no NAT/firewall in the path (e.g. a generated
     /// Docker network). Do not enable in production unless you have verified
-    /// every committee member is directly reachable without relay — SourceHub
+    /// every committee member is directly reachable without relay — Vera
     /// supplying an address does not guarantee that address is dialable.
     #[arg(long, default_value_t = false)]
     pub network_private_routes_only: bool,
@@ -265,6 +288,27 @@ pub struct Args {
         default_value_t = crate::constants::GRPC_MAX_CONCURRENT_STREAMS
     )]
     pub grpc_max_concurrent_streams: u32,
+    /// Maximum concurrently executing inbound P2P application work items.
+    /// Direct QUIC streams and authenticated Gossip frames share this
+    /// node-wide budget; excess work is dropped before protocol
+    /// deserialization. Raise this on a node provisioned to take on more
+    /// work. Must be at least 1.
+    #[arg(
+        long,
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        value_parser = parse_positive_usize
+    )]
+    pub network_max_concurrent_ingress_work: usize,
+    /// Maximum inbound P2P work items accepted from one immediate peer per
+    /// second. Direct streams and Gossip frames count against the same peer
+    /// budget. Raise this on a node provisioned to take on more work. Must
+    /// be at least 1.
+    #[arg(
+        long,
+        default_value_t = crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        value_parser = parse_positive_usize
+    )]
+    pub network_max_ingress_events_per_peer_per_second: usize,
 }
 
 /// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.
@@ -298,7 +342,14 @@ pub async fn ensure_node_info(
     };
 
     if let Some(existing) = existing {
-        if existing.peer_id != peer_id {
+        let identity_matches = existing_peer_identity_matches(&existing.peer_id, &peer_id)
+            .map_err(|error| {
+                format!(
+                    "existing node info for node_key {} has invalid peer_id {}: {}",
+                    node_key, existing.peer_id, error
+                )
+            })?;
+        if !identity_matches {
             return Err(format!(
                 "existing node info for node_key {} has peer_id {}, expected {}",
                 node_key, existing.peer_id, peer_id
@@ -347,6 +398,16 @@ pub async fn ensure_node_info(
         "Created node info"
     );
     Ok(())
+}
+
+pub(crate) fn existing_peer_identity_matches(
+    existing_peer_id: &str,
+    expected_peer_id: &str,
+) -> Result<bool, crate::error::PeerIdValidationError> {
+    validate_peer_id(existing_peer_id)?;
+    validate_peer_id(expected_peer_id)?;
+    Ok(extract_node_part(existing_peer_id)
+        .eq_ignore_ascii_case(&extract_node_part(expected_peer_id)))
 }
 
 pub fn build_node_info_from_args(peer_id: String, controller_key: &str, args: &Args) -> NodeInfo {
@@ -733,7 +794,7 @@ pub fn create_and_store_node_key(
 /// Retrieve the node signing key from storage and create a TxSigner.
 ///
 /// This function loads the stored secp256k1 signing key and returns a TxSigner
-/// that can be used with `SourceHubBulletin::with_signer`.
+/// that can be used with `VeraBulletin::with_signer`.
 ///
 /// # Arguments
 /// * `local_storage` - The local storage implementation to read from
@@ -924,11 +985,11 @@ mod tests {
             "--node-controller-key",
             "controller-key",
             "--chain-id",
-            "sourcehub-dev",
+            "vera-dev",
         ])
         .expect("parse arguments");
 
-        assert_eq!(args.chain_id.as_deref(), Some("sourcehub-dev"));
+        assert_eq!(args.chain_id.as_deref(), Some("vera-dev"));
     }
 
     #[test]
@@ -938,13 +999,13 @@ mod tests {
             "--node-controller-key",
             "controller-key",
             "--fee-granter",
-            "source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
+            "vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
         ])
         .expect("parse arguments");
 
         assert_eq!(
             args.fee_granter.as_deref(),
-            Some("source12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
+            Some("vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
         );
     }
 

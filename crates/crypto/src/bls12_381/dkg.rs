@@ -3,7 +3,7 @@ use ark_ec::Group;
 use ark_ff::{Field, One, Zero};
 use ark_std::UniformRand;
 use rand_core::{OsRng, RngCore};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::common::{PolynomialCommitment, PubPoly};
 use crate::{
@@ -14,11 +14,8 @@ use crate::{
     },
 };
 
-/// Maximum number of nonces to store per node to prevent memory exhaustion
-const MAX_NONCES_PER_NODE: usize = 1000;
-
 /// Complete DKG state for a single node
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DKGNode {
     pub id: u32,
     pub threshold: usize,
@@ -58,11 +55,41 @@ pub struct DKGNode {
     // Session ID for this DKG run (prevents replay attacks)
     pub session_id: u128,
 
-    // Track received nonces to prevent replay (HashSet for O(1) lookup)
-    received_nonces: HashMap<u32, HashSet<[u8; 16]>>, // from_id -> set of nonces
-
     // Track complaints about malicious nodes
     complaints: HashMap<u32, Vec<u32>>, // complainer_id -> list of accused_ids
+}
+
+// Manual impl (rather than derive) so the secret `polynomial_coeffs` and
+// `received_shares` scalars can never be printed.
+impl std::fmt::Debug for DKGNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DKGNode")
+            .field("id", &self.id)
+            .field("threshold", &self.threshold)
+            .field("total_nodes", &self.total_nodes)
+            .field("role", &self.role)
+            .field("effective_total_nodes", &self.effective_total_nodes)
+            .field("effective_threshold", &self.effective_threshold)
+            .field("effective_receive_id", &self.effective_receive_id)
+            .field("polynomial_coeffs", &"[REDACTED]")
+            .field("commitment", &self.commitment)
+            .field(
+                "received_shares",
+                &self
+                    .received_shares
+                    .keys()
+                    .map(|from_id| (*from_id, "[REDACTED]"))
+                    .collect::<HashMap<_, _>>(),
+            )
+            .field("received_commitments", &self.received_commitments)
+            .field(
+                "selected_reshare_participants",
+                &self.selected_reshare_participants,
+            )
+            .field("session_id", &self.session_id)
+            .field("complaints", &self.complaints)
+            .finish()
+    }
 }
 
 impl Dkg for DKGNode {
@@ -125,7 +152,6 @@ impl Dkg for DKGNode {
             received_commitments: HashMap::new(),
             selected_reshare_participants: None,
             session_id,
-            received_nonces: HashMap::new(),
             complaints: HashMap::new(),
         }))
     }
@@ -302,20 +328,9 @@ impl Dkg for DKGNode {
             ));
         }
 
-        // Replay protection: check nonce
-        let nonces = self.received_nonces.entry(share.from_id).or_default();
-
-        if nonces.len() >= MAX_NONCES_PER_NODE {
-            return Err(CryptoError::DKGError(
-                "Nonce limit exceeded - possible DoS attack".to_string(),
-            ));
-        }
-
-        if nonces.contains(&share.nonce) {
-            return Err(CryptoError::DKGError(
-                "Duplicate nonce detected - possible replay attack".to_string(),
-            ));
-        }
+        // No separate share-nonce replay check: the "one accepted share per
+        // sender per session" guard above already rejects any second share from
+        // a given sender before it could reach here.
 
         // Get the commitment from the sender
         let commitment = self
@@ -335,7 +350,6 @@ impl Dkg for DKGNode {
             ));
         }
 
-        nonces.insert(share.nonce);
         self.received_shares.insert(share.from_id, share.value);
 
         Ok(())

@@ -4,14 +4,16 @@ use crate::helpers::test_helpers::TEST_FRESH_DKG_RING_ID;
 use crate::{
     complete_initialization_or_shutdown,
     constants::{
-        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_SIGN_MESSAGE_BYTES,
-        MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
+        GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
+        MAX_SIGN_MESSAGE_BYTES, MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES,
+        MAX_STORE_SECRET_REQUEST_BYTES, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
-            ensure_node_info, CorsPolicy, LogLevel,
+            ensure_node_info, existing_peer_identity_matches, CorsPolicy, LogLevel,
         },
         test_helpers::{cleanup_db, test_db_path},
     },
@@ -104,6 +106,7 @@ async fn make_test_node_config(
             bulletin_grpc: None,
             chain_rest: None,
             chain_rpc: None,
+            allow_insecure_rpc: false,
             chain_id: None,
             denom: None,
             fee_granter: None,
@@ -119,6 +122,9 @@ async fn make_test_node_config(
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+            network_max_ingress_events_per_peer_per_second:
+                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
         },
         cors_policy: CorsPolicy::Disabled,
         node_key: "test-node-key".to_string(),
@@ -169,6 +175,7 @@ fn node_info_test_args(
         bulletin_grpc: None,
         chain_rest: None,
         chain_rpc: None,
+        allow_insecure_rpc: false,
         chain_id: None,
         denom: None,
         fee_granter: None,
@@ -184,6 +191,9 @@ fn node_info_test_args(
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+        network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        network_max_ingress_events_per_peer_per_second:
+            NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
     }
 }
 
@@ -216,8 +226,7 @@ fn spawn_full_test_grpc_server(
                     .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
             )
             .add_service(
-                PreServiceServer::new(pre_service)
-                    .max_decoding_message_size(MAX_SMALL_GRPC_REQUEST_BYTES),
+                PreServiceServer::new(pre_service).max_decoding_message_size(MAX_PRE_REQUEST_BYTES),
             )
             .add_service(
                 InfoServiceServer::new(info_service)
@@ -365,6 +374,31 @@ async fn test_ensure_node_info_keeps_existing_whitelists() {
         node_info.whitelisted_ring_ids,
         existing.whitelisted_ring_ids
     );
+}
+
+#[test]
+fn test_existing_routed_peer_address_keeps_the_same_identity() {
+    let peer_id = "ab".repeat(32);
+    assert!(
+        existing_peer_identity_matches(&format!("{peer_id}@node-001:55316"), &peer_id)
+            .expect("valid routed peer address")
+    );
+    assert!(!existing_peer_identity_matches(
+        &format!("{}@node-001:55316", "cd".repeat(32)),
+        &peer_id
+    )
+    .expect("valid mismatched peer address"));
+}
+
+#[test]
+fn test_existing_peer_identity_rejects_invalid_expected_route() {
+    let peer_id = "ab".repeat(32);
+    let result = existing_peer_identity_matches(&peer_id, &format!("{peer_id}@invalid-route"));
+
+    assert!(matches!(
+        result,
+        Err(crate::error::PeerIdValidationError::InvalidSocketAddr(_))
+    ));
 }
 
 #[tokio::test]
@@ -603,9 +637,10 @@ async fn test_full_grpc_server_enforces_decode_caps() {
         .start_pre(StartPreRequest {
             rdr_pk: Vec::new(),
             object_id: "object-id".to_string(),
-            derivation: Some(vec![0u8; MAX_SMALL_GRPC_REQUEST_BYTES]),
+            derivation: Some(vec![0u8; MAX_PRE_REQUEST_BYTES]),
             salt: None,
             valid_window: None,
+            document: None,
         })
         .await
         .expect_err("oversized pre request should fail during decode");
@@ -809,6 +844,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             bulletin_grpc: None,
             chain_rest: None,
             chain_rpc: None,
+            allow_insecure_rpc: false,
             chain_id: None,
             denom: None,
             fee_granter: None,
@@ -824,6 +860,9 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
+            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+            network_max_ingress_events_per_peer_per_second:
+                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
         },
         cors_policy,
         node_key: "test-node-key".to_string(),
@@ -1208,8 +1247,8 @@ fn test_create_and_store_node_key() {
     let signer1 = result.unwrap();
     let address1 = signer1.address();
     assert!(
-        address1.starts_with("source1"),
-        "Address should be bech32 with source1 prefix, got: {}",
+        address1.starts_with("vera1"),
+        "Address should be bech32 with vera1 prefix, got: {}",
         address1
     );
 

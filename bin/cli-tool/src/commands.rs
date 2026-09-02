@@ -6,11 +6,11 @@
 use anyhow::{anyhow, Context, Result};
 use authn::{create_authenticated_request, JwtSigner};
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
-use bulletin::sourcehub::SourceHubBulletin;
+use bulletin::vera::VeraBulletin;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     orbis::WhitelistTarget,
-    ChainConfig, ChainConfigBuilder, SourceHubClient, TxSigner, TEST_ACCOUNT_HEX_KEY,
+    ChainConfig, ChainConfigBuilder, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize};
@@ -48,7 +48,7 @@ pub struct DkgResult {
     pub message: String,
 }
 
-fn is_retryable_dkg_start_error(status: &Status) -> bool {
+pub(crate) fn is_retryable_dkg_start_error(status: &Status) -> bool {
     status.code() == Code::Unavailable
         && status.message().to_ascii_lowercase().contains("timed out")
 }
@@ -344,7 +344,7 @@ pub async fn do_store_secret(
 /// `did_key::generate` only uses the seed deterministically when it is exactly
 /// 32 bytes; for any other length it falls back to a random key. Hashing to 32
 /// bytes ensures consistent, reproducible DIDs regardless of the input length.
-fn did_seed(s: &str) -> [u8; 32] {
+pub(crate) fn did_seed(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
 
@@ -403,6 +403,7 @@ pub async fn do_pre(
         derivation: derivation.clone(),
         salt: salt.clone(),
         valid_window,
+        document: None,
     };
 
     // JWT work use determinitic key_pair for now
@@ -603,16 +604,13 @@ fn chain_config_builder(config: &ChainConfig) -> ChainConfigBuilder {
         .default_gas_limit(Some(config.default_gas_limit))
         .gas_price(Some(config.gas_price.clone()))
         .gas_multiplier(Some(config.gas_multiplier))
+        .allow_insecure_rpc(Some(config.allow_insecure_rpc))
 }
 
-pub async fn add_policy_to_chain() -> Result<String> {
-    add_policy_to_chain_with_config(ChainConfig::local()).await
-}
-
-pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
-    let client = SourceHubClient::with_signer(
+async fn add_policy_to_chain_impl(config: ChainConfig, signing_key_hex: &str) -> Result<String> {
+    let client = VeraClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .map_err(|e| anyhow!("client builder issue: {}", e))?;
@@ -646,23 +644,26 @@ pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<Stri
     Ok(policy_id)
 }
 
-pub async fn register_object_to_chain(
-    policy_id: String,
-    object_id: String,
-    resource: String,
-) -> Result<()> {
-    register_object_to_chain_with_config(policy_id, object_id, resource, ChainConfig::local()).await
+pub async fn add_policy_to_chain(config: ChainConfig, signing_key_hex: &str) -> Result<String> {
+    add_policy_to_chain_impl(config, signing_key_hex).await
 }
 
-pub async fn register_object_to_chain_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn add_policy_to_chain_with_config(config: ChainConfig) -> Result<String> {
+    add_policy_to_chain_impl(config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn register_object_to_chain_impl(
     policy_id: String,
     object_id: String,
     resource: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let client = SourceHubClient::with_signer(
+    let client = VeraClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -691,35 +692,80 @@ pub async fn register_object_to_chain_with_config(
 
     Ok(())
 }
-pub async fn set_relationship_on_chain(
+
+pub async fn register_object_to_chain(
     policy_id: String,
     object_id: String,
     resource: String,
-    relation: String,
-    reader_did_pk: Option<String>,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    set_relationship_on_chain_with_config(
-        policy_id,
-        object_id,
-        resource,
-        relation,
-        reader_did_pk,
-        ChainConfig::local(),
-    )
-    .await
+    register_object_to_chain_impl(policy_id, object_id, resource, config, signing_key_hex).await
 }
 
-pub async fn set_relationship_on_chain_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn register_object_to_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    config: ChainConfig,
+) -> Result<()> {
+    register_object_to_chain_impl(policy_id, object_id, resource, config, TEST_ACCOUNT_HEX_KEY)
+        .await
+}
+
+/// Derive the Ed25519 did:key from an arbitrary seed string -- the same scheme
+/// used everywhere `--reader-did-pk` is accepted (JWT-authenticated requests
+/// to orbis-node: pre, sign, store-secret, store-prepared-secret).
+pub(crate) fn reader_did_from_seed(seed: &str) -> String {
+    let hashed = did_seed(seed);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&hashed));
+    format!("did:key:{}", key_pair.fingerprint())
+}
+
+/// Derive a did:key from a compressed secp256k1 public key, using the same
+/// multicodec encoding (0xe7 0x01 prefix, base58) Vera uses to resolve
+/// the ACP actor identity for signed transactions (e.g. MsgCreateRing's
+/// `create_ring` permission, MsgFinalizeRing's `update_ring` permission) --
+/// a different derivation from the Ed25519 `--reader-did-pk` scheme, since
+/// those transactions are authenticated by tx signature, not a JWT.
+pub(crate) fn secp256k1_pubkey_to_did(pubkey_hex: &str) -> Result<String> {
+    let pubkey_bytes =
+        hex::decode(pubkey_hex).map_err(|e| anyhow!("Invalid public key hex: {}", e))?;
+    let mut prefixed = vec![0xe7u8, 0x01u8];
+    prefixed.extend_from_slice(&pubkey_bytes);
+    Ok(format!(
+        "did:key:z{}",
+        bs58::encode(&prefixed).into_string()
+    ))
+}
+
+/// Derive the compressed secp256k1 public key and did:key for a signing key.
+/// Pure local computation, no network calls. Use this to find out, ahead of
+/// time, which DID needs an ACP relation granted (e.g. `ring_creator`) before
+/// a transaction signed with this key -- such as `create-ring` -- will be
+/// authorized.
+pub fn derive_signer_did(signing_key_hex: &str, config: ChainConfig) -> Result<(String, String)> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config)
+        .map_err(|e| anyhow!("Failed to derive signer: {}", e))?;
+    let public_key_hex = signer.public_key_hex();
+    let did = secp256k1_pubkey_to_did(&public_key_hex)?;
+    Ok((public_key_hex, did))
+}
+
+async fn set_relationship_on_chain_impl(
     policy_id: String,
     object_id: String,
     resource: String,
     relation: String,
-    reader_did_pk: Option<String>,
+    did_uri: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let client = SourceHubClient::with_signer(
+    let client = VeraClient::with_signer(
         config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config).expect("Tx signer"),
+        TxSigner::from_hex_key(signing_key_hex, config).expect("Tx signer"),
     )
     .await
     .expect("client builder issue");
@@ -728,11 +774,6 @@ pub async fn set_relationship_on_chain_with_config(
         resource,
         id: object_id,
     };
-
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
 
     let reader_relationship = Relationship {
         object: Some(document),
@@ -765,8 +806,56 @@ pub async fn set_relationship_on_chain_with_config(
     Ok(())
 }
 
-pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
-    let read_client = SourceHubClient::new(ChainConfig::local())
+pub async fn set_relationship_on_chain(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    did_uri: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    set_relationship_on_chain_impl(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        did_uri,
+        config,
+        signing_key_hex,
+    )
+    .await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn set_relationship_on_chain_with_config(
+    policy_id: String,
+    object_id: String,
+    resource: String,
+    relation: String,
+    reader_did_pk: Option<String>,
+    config: ChainConfig,
+) -> Result<()> {
+    let did_uri = reader_did_from_seed(&reader_did_pk.unwrap_or("test_jwt".to_string()));
+    set_relationship_on_chain_impl(
+        policy_id,
+        object_id,
+        resource,
+        relation,
+        did_uri,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+pub async fn register_bulletin_namespace(
+    namespace: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let read_client = VeraClient::new(config.clone())
         .await
         .map_err(|e| anyhow!("Failed to create chain client: {}", e))?;
 
@@ -775,10 +864,10 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
         return Ok(());
     }
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create chain client with signer: {}", e))?;
 
@@ -801,11 +890,13 @@ pub async fn register_bulletin_namespace(namespace: String) -> Result<()> {
 pub async fn add_bulletin_collaborator(
     namespace: String,
     collaborator_address: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, ChainConfig::local())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(ChainConfig::local(), signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create blockchain client: {}", e))?;
 
@@ -862,7 +953,7 @@ pub async fn create_bulletin_post_with_config(
     let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
+    let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -875,31 +966,63 @@ pub async fn create_bulletin_post_with_config(
     Ok(post_id)
 }
 
-pub async fn start_ring_reshare_by_acp(
-    ring_id: String,
-    new_peer_node_keys: Vec<String>,
-    new_threshold: Option<u32>,
-) -> Result<()> {
-    start_ring_reshare_by_acp_with_config(
-        ring_id,
-        new_peer_node_keys,
-        new_threshold,
-        ChainConfig::local(),
-    )
-    .await
+/// Create a blank ring on-chain, to be targeted by a subsequent `dkg` session.
+///
+/// Returns the chain-assigned `ring_id`.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_ring(
+    peer_node_keys: Vec<String>,
+    threshold: u32,
+    pss_interval: u64,
+    policy_id: String,
+    nonce: Option<String>,
+    current_version: u64,
+    trusted_auth_relay_dids: Vec<String>,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<String> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = VeraClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
+
+    let trusted_auth_relay_dids =
+        (!trusted_auth_relay_dids.is_empty()).then_some(trusted_auth_relay_dids);
+
+    let (result, ring_id) = client
+        .orbis_create_ring_get_id(
+            peer_node_keys,
+            threshold,
+            pss_interval,
+            &policy_id,
+            nonce,
+            current_version,
+            None,
+            trusted_auth_relay_dids,
+        )
+        .await
+        .map_err(|e| anyhow!("Failed to create ring: {}", e))?;
+
+    println!(
+        "[Orbis] create_ring: hash={} ring_id={}",
+        result.tx_hash, ring_id
+    );
+    Ok(ring_id)
 }
 
-pub async fn start_ring_reshare_by_acp_with_config(
+async fn start_ring_reshare_by_acp_impl(
     ring_id: String,
     new_peer_node_keys: Vec<String>,
     new_threshold: Option<u32>,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_start_ring_reshare_by_acp(&ring_id, new_peer_node_keys, new_threshold)
         .await
@@ -915,20 +1038,94 @@ pub async fn start_ring_reshare_by_acp_with_config(
     Ok(())
 }
 
-pub async fn set_ring_pss_interval_by_acp(ring_id: String, pss_interval: u64) -> Result<()> {
-    set_ring_pss_interval_by_acp_with_config(ring_id, pss_interval, ChainConfig::local()).await
+async fn cancel_ring_reshare_by_acp_impl(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let client = VeraClient::with_signer(config, signer)
+        .await
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
+    let result = client
+        .orbis_cancel_ring_reshare_by_acp(&ring_id)
+        .await
+        .map_err(|e| anyhow!("Failed to cancel ring reshare: {}", e))?;
+    if result.code != 0 {
+        return Err(anyhow!(
+            "Failed to cancel ring reshare: code {} {}",
+            result.code,
+            result.log
+        ));
+    }
+    println!("Cancelled reshare for ring: {}", ring_id);
+    Ok(())
 }
 
-pub async fn set_ring_pss_interval_by_acp_with_config(
+pub async fn cancel_ring_reshare_by_acp(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    cancel_ring_reshare_by_acp_impl(ring_id, config, signing_key_hex).await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn cancel_ring_reshare_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    cancel_ring_reshare_by_acp_impl(ring_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+pub async fn start_ring_reshare_by_acp(
+    ring_id: String,
+    new_peer_node_keys: Vec<String>,
+    new_threshold: Option<u32>,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    start_ring_reshare_by_acp_impl(
+        ring_id,
+        new_peer_node_keys,
+        new_threshold,
+        config,
+        signing_key_hex,
+    )
+    .await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn start_ring_reshare_by_acp_with_config(
+    ring_id: String,
+    new_peer_node_keys: Vec<String>,
+    new_threshold: Option<u32>,
+    config: ChainConfig,
+) -> Result<()> {
+    start_ring_reshare_by_acp_impl(
+        ring_id,
+        new_peer_node_keys,
+        new_threshold,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+async fn set_ring_pss_interval_by_acp_impl(
     ring_id: String,
     pss_interval: u64,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_set_ring_pss_interval_by_acp(&ring_id, pss_interval)
         .await
@@ -944,31 +1141,37 @@ pub async fn set_ring_pss_interval_by_acp_with_config(
     Ok(())
 }
 
-pub async fn schedule_ring_upgrade_by_acp(
+pub async fn set_ring_pss_interval_by_acp(
     ring_id: String,
-    next_version: u64,
-    activation_time: u64,
+    pss_interval: u64,
+    config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    schedule_ring_upgrade_by_acp_with_config(
-        ring_id,
-        next_version,
-        activation_time,
-        ChainConfig::local(),
-    )
-    .await
+    set_ring_pss_interval_by_acp_impl(ring_id, pss_interval, config, signing_key_hex).await
 }
 
-pub async fn schedule_ring_upgrade_by_acp_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn set_ring_pss_interval_by_acp_with_config(
+    ring_id: String,
+    pss_interval: u64,
+    config: ChainConfig,
+) -> Result<()> {
+    set_ring_pss_interval_by_acp_impl(ring_id, pss_interval, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn schedule_ring_upgrade_by_acp_impl(
     ring_id: String,
     next_version: u64,
     activation_time: u64,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_schedule_ring_upgrade_by_acp(&ring_id, next_version, activation_time)
         .await
@@ -984,19 +1187,51 @@ pub async fn schedule_ring_upgrade_by_acp_with_config(
     Ok(())
 }
 
-pub async fn cancel_ring_upgrade_by_acp(ring_id: String) -> Result<()> {
-    cancel_ring_upgrade_by_acp_with_config(ring_id, ChainConfig::local()).await
+pub async fn schedule_ring_upgrade_by_acp(
+    ring_id: String,
+    next_version: u64,
+    activation_time: u64,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    schedule_ring_upgrade_by_acp_impl(
+        ring_id,
+        next_version,
+        activation_time,
+        config,
+        signing_key_hex,
+    )
+    .await
 }
 
-pub async fn cancel_ring_upgrade_by_acp_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn schedule_ring_upgrade_by_acp_with_config(
     ring_id: String,
+    next_version: u64,
+    activation_time: u64,
     config: ChainConfig,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    schedule_ring_upgrade_by_acp_impl(
+        ring_id,
+        next_version,
+        activation_time,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
+}
+
+async fn cancel_ring_upgrade_by_acp_impl(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_cancel_ring_upgrade_by_acp(&ring_id)
         .await
@@ -1012,20 +1247,34 @@ pub async fn cancel_ring_upgrade_by_acp_with_config(
     Ok(())
 }
 
-pub async fn update_node_peer_id(node_key: String, peer_id: String) -> Result<()> {
-    update_node_peer_id_with_config(node_key, peer_id, ChainConfig::local()).await
+pub async fn cancel_ring_upgrade_by_acp(
+    ring_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    cancel_ring_upgrade_by_acp_impl(ring_id, config, signing_key_hex).await
 }
 
-pub async fn update_node_peer_id_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn cancel_ring_upgrade_by_acp_with_config(
+    ring_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    cancel_ring_upgrade_by_acp_impl(ring_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn update_node_peer_id_impl(
     node_key: String,
     peer_id: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_update_node_peer_id(&node_key, &peer_id)
         .await
@@ -1041,20 +1290,36 @@ pub async fn update_node_peer_id_with_config(
     Ok(())
 }
 
-pub async fn transfer_node_controller(node_key: String, controller_key: String) -> Result<()> {
-    transfer_node_controller_with_config(node_key, controller_key, ChainConfig::local()).await
+pub async fn update_node_peer_id(
+    node_key: String,
+    peer_id: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    update_node_peer_id_impl(node_key, peer_id, config, signing_key_hex).await
 }
 
-pub async fn transfer_node_controller_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn update_node_peer_id_with_config(
+    node_key: String,
+    peer_id: String,
+    config: ChainConfig,
+) -> Result<()> {
+    update_node_peer_id_impl(node_key, peer_id, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn transfer_node_controller_impl(
     node_key: String,
     controller_key: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_transfer_node_controller(&node_key, &controller_key)
         .await
@@ -1070,20 +1335,36 @@ pub async fn transfer_node_controller_with_config(
     Ok(())
 }
 
-pub async fn add_node_to_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
-    add_node_to_whitelist_with_config(node_key, target, ChainConfig::local()).await
+pub async fn transfer_node_controller(
+    node_key: String,
+    controller_key: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    transfer_node_controller_impl(node_key, controller_key, config, signing_key_hex).await
 }
 
-pub async fn add_node_to_whitelist_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn transfer_node_controller_with_config(
+    node_key: String,
+    controller_key: String,
+    config: ChainConfig,
+) -> Result<()> {
+    transfer_node_controller_impl(node_key, controller_key, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn add_node_to_whitelist_impl(
     node_key: String,
     target: WhitelistTarget,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_add_node_to_whitelist(&node_key, target)
         .await
@@ -1099,20 +1380,36 @@ pub async fn add_node_to_whitelist_with_config(
     Ok(())
 }
 
-pub async fn remove_node_from_whitelist(node_key: String, target: WhitelistTarget) -> Result<()> {
-    remove_node_from_whitelist_with_config(node_key, target, ChainConfig::local()).await
+pub async fn add_node_to_whitelist(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    add_node_to_whitelist_impl(node_key, target, config, signing_key_hex).await
 }
 
-pub async fn remove_node_from_whitelist_with_config(
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn add_node_to_whitelist_with_config(
     node_key: String,
     target: WhitelistTarget,
     config: ChainConfig,
 ) -> Result<()> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    add_node_to_whitelist_impl(node_key, target, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+async fn remove_node_from_whitelist_impl(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
-    let client = SourceHubClient::with_signer(config, signer)
+    let client = VeraClient::with_signer(config, signer)
         .await
-        .map_err(|e| anyhow!("Failed to create SourceHub client: {}", e))?;
+        .map_err(|e| anyhow!("Failed to create Vera client: {}", e))?;
     let result = client
         .orbis_remove_node_from_whitelist(&node_key, target)
         .await
@@ -1128,9 +1425,23 @@ pub async fn remove_node_from_whitelist_with_config(
     Ok(())
 }
 
-/// Read a bulletin post by ID
-pub async fn read_bulletin_post(id: String, kind: BulletinKind) -> Result<Vec<u8>> {
-    read_bulletin_post_with_config(id, kind, ChainConfig::local()).await
+pub async fn remove_node_from_whitelist(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    remove_node_from_whitelist_impl(node_key, target, config, signing_key_hex).await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn remove_node_from_whitelist_with_config(
+    node_key: String,
+    target: WhitelistTarget,
+    config: ChainConfig,
+) -> Result<()> {
+    remove_node_from_whitelist_impl(node_key, target, config, TEST_ACCOUNT_HEX_KEY).await
 }
 
 pub async fn read_bulletin_post_with_config(
@@ -1138,7 +1449,7 @@ pub async fn read_bulletin_post_with_config(
     kind: BulletinKind,
     config: ChainConfig,
 ) -> Result<Vec<u8>> {
-    let bulletin = SourceHubBulletin::new(chain_config_builder(&config))
+    let bulletin = VeraBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -1151,8 +1462,8 @@ pub async fn read_bulletin_post_with_config(
 }
 
 /// List all bulletin posts in a namespace
-pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn list_bulletin_posts(namespace: String, config: ChainConfig) -> Result<Vec<Vec<u8>>> {
+    let client = VeraClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1166,8 +1477,8 @@ pub async fn list_bulletin_posts(namespace: String) -> Result<Vec<Vec<u8>>> {
 
 /// Fetch a ring from the orbis module by ring_id.
 /// Returns (ring_id, ring_pk_hex).
-pub async fn get_latest_ring(ring_id: String) -> Result<(String, String)> {
-    let client = SourceHubClient::new(ChainConfig::local())
+pub async fn get_latest_ring(ring_id: String, config: ChainConfig) -> Result<(String, String)> {
+    let client = VeraClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1259,7 +1570,7 @@ pub async fn get_account_sequence(address: &str) -> Result<u64> {
 }
 
 pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig) -> Result<u64> {
-    let client = SourceHubClient::new(config)
+    let client = VeraClient::new(config)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1279,34 +1590,17 @@ pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig
 ///
 /// The caller must ensure the node's public address has been added as a
 /// collaborator on the namespace before posting.
-pub async fn post_key_derivation(
-    ring_id: String,
-    derivation: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
-) -> Result<(String, String)> {
-    post_key_derivation_with_config(
-        ring_id,
-        derivation,
-        policy_id,
-        resource,
-        permission,
-        ChainConfig::local(),
-    )
-    .await
-}
-
-pub async fn post_key_derivation_with_config(
+async fn post_key_derivation_impl(
     ring_id: String,
     derivation: String,
     policy_id: String,
     resource: String,
     permission: String,
     config: ChainConfig,
+    signing_key_hex: &str,
 ) -> Result<(String, String)> {
     // Fetch ring payload from bulletin to get the ring public key
-    let ring_bulletin = SourceHubBulletin::new(chain_config_builder(&config))
+    let ring_bulletin = VeraBulletin::new(chain_config_builder(&config))
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
     let ring_post = ring_bulletin
@@ -1331,10 +1625,10 @@ pub async fn post_key_derivation_with_config(
             .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
     );
 
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
         .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let bulletin = SourceHubBulletin::with_signer(chain_config_builder(&config), signer, None)
+    let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
         .map_err(|e| anyhow!("Failed to create bulletin client: {}", e))?;
 
@@ -1359,6 +1653,49 @@ pub async fn post_key_derivation_with_config(
         post_id, derived_pk_hex
     );
     Ok((post_id, derived_pk_hex))
+}
+
+pub async fn post_key_derivation(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<(String, String)> {
+    post_key_derivation_impl(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        config,
+        signing_key_hex,
+    )
+    .await
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn post_key_derivation_with_config(
+    ring_id: String,
+    derivation: String,
+    policy_id: String,
+    resource: String,
+    permission: String,
+    config: ChainConfig,
+) -> Result<(String, String)> {
+    post_key_derivation_impl(
+        ring_id,
+        derivation,
+        policy_id,
+        resource,
+        permission,
+        config,
+        TEST_ACCOUNT_HEX_KEY,
+    )
+    .await
 }
 
 /// Result of a Sign operation
@@ -1436,7 +1773,7 @@ pub async fn do_sign(
     })
 }
 
-pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) -> Result<()> {
     println!("Funding address: {}", address);
 
     // Transfer a reasonable amount (e.g., 1000000 uopen = 1 OPEN)
@@ -1453,10 +1790,10 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
     let mut last_error = None;
 
     // Create the signer once
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer from test account: {}", e))?;
+    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
 
-    let client = SourceHubClient::with_signer(config.clone(), signer)
+    let client = VeraClient::with_signer(config.clone(), signer)
         .await
         .map_err(|e| anyhow!("Failed to create client: {}", e))?;
 
@@ -1496,4 +1833,18 @@ pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
         max_retries,
         last_error.map(|e| e.to_string()).unwrap_or_default()
     ))
+}
+
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+    fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
+pub async fn fund_with_signer(
+    address: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> Result<()> {
+    fund_impl(address, config, signing_key_hex).await
 }

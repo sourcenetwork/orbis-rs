@@ -35,7 +35,7 @@ resources:
   memory_per_node: null
 
 setup_batch_size: 25
-# Retained for reference: SourceHub enforces a hard 86400s floor on every
+# Retained for reference: Vera enforces a hard 86400s floor on every
 # ring's pss_interval, so this value has no observable effect here (this
 # file's only operation is pss_reshare, not pss_refresh).
 pss_interval_secs: 15

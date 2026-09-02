@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 // Fallbacks used when the chain returns a ring without reporting config. They must mirror
-// the sourcehub orbis module's default reporting params: the substituted values feed the
+// the vera orbis module's default reporting params: the substituted values feed the
 // canonical ring-state hash, so a divergence would have nodes reporting against config the
 // chain never stored.
 pub const DEFAULT_NODE_OFFLINE_DEMERITS: u64 = 1;
@@ -381,7 +381,7 @@ pub trait Bulletin {
     async fn update(&self, id: String, signature_scheme: String, signature: Vec<u8>) -> Result<()>;
     /// Read a typed Orbis object.
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost>;
-    /// Read fresh-DKG finalization progress. SourceHub overrides this to expose
+    /// Read fresh-DKG finalization progress. Vera overrides this to expose
     /// the exact persisted confirmation set, allowing a node to detect a
     /// successful transaction response whose concurrent state write was lost.
     async fn ring_finalization_status(&self, id: String) -> Result<RingFinalizationStatus> {

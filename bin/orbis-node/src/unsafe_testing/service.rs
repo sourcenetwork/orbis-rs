@@ -475,6 +475,13 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
 
         match statement.origin_protocol.as_str() {
             "pre" => {
+                let inline_document = request
+                    .inline_document
+                    .map(crate::pre::v0::service::document_payload_from_inline)
+                    .transpose()
+                    .map_err(|error| {
+                        Status::invalid_argument(format!("invalid inline_document: {error}"))
+                    })?;
                 forward_unauthorized_pre(
                     app_state,
                     request.target_peer_id,
@@ -482,6 +489,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
                     request.relay_signature,
                     request.token_string,
                     request.pre_reader_pk,
+                    inline_document,
                 )
                 .await?;
             }
@@ -583,7 +591,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(Status::failed_precondition)?;
         if !ring_payload_matches_ring_key(&request.ring_pk, &ring.ring_pk) {
             return Err(Status::failed_precondition(
-                "ring_pk does not match SourceHub state",
+                "ring_pk does not match Vera state",
             ));
         }
 
@@ -775,6 +783,7 @@ async fn forward_unauthorized_pre(
     relay_signature: Vec<u8>,
     token_string: String,
     pre_reader_pk: Vec<u8>,
+    inline_document: Option<bulletin::r#trait::DocumentPayload>,
 ) -> Result<(), Status> {
     if pre_reader_pk.is_empty() {
         return Err(Status::invalid_argument(
@@ -795,6 +804,7 @@ async fn forward_unauthorized_pre(
             valid_window: None,
             relay_statement: Some(statement),
             relay_signature,
+            document: inline_document,
         },
     }));
     let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);

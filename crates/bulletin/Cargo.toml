@@ -18,8 +18,8 @@ backoff = { version = "0.4", features = ["tokio"] }
 tokio = { workspace = true }
 
 [features]
-default = ["sourcehub"]
-sourcehub = []
+default = ["vera"]
+vera = []
 dummy = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]
@@ -27,5 +27,7 @@ decaf377 = ["dep:crypto", "crypto/decaf377"]
 [dev-dependencies]
 serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
+# Vera-backend tests use common's Docker integration harness (VeraTestContainer).
+common = { path = "../common", features = ["test-harness"] }
 [lints]
 workspace = true

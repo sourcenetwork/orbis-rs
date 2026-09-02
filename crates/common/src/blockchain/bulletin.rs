@@ -1,9 +1,9 @@
 //! Bulletin module types and operations.
 //!
-//! This module provides types and methods for interacting with SourceHub's bulletin module,
+//! This module provides types and methods for interacting with Vera's bulletin module,
 //! which manages namespaced message posting and retrieval.
 
-use crate::blockchain::{BlockchainError, BroadcastResult, Result, SourceHubClient};
+use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 
 pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-finalize";
@@ -13,7 +13,7 @@ pub const RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN: &str = "orbis-ring-reshare-fina
 // ============================================================================
 
 /// Create a new post in a namespace.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: payload (bytes)
@@ -35,7 +35,7 @@ pub struct MsgCreatePost {
 }
 
 impl MsgCreatePost {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgCreatePost";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgCreatePost";
 
     /// Create a new post message.
     pub fn new(creator: &str, namespace: &str, payload: Vec<u8>, artifact: Option<String>) -> Self {
@@ -49,7 +49,7 @@ impl MsgCreatePost {
 }
 
 /// Update a ring post in a namespace via ACP authorization.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: post_id (string)
@@ -83,7 +83,7 @@ pub struct MsgUpdateRingPostByAcp {
 }
 
 impl MsgUpdateRingPostByAcp {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdateRingPostByAcp";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgUpdateRingPostByAcp";
 
     pub fn new(
         creator: &str,
@@ -107,7 +107,7 @@ impl MsgUpdateRingPostByAcp {
 }
 
 /// Finalize a ring reshare by threshold signature.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: post_id (string)
@@ -166,7 +166,7 @@ pub struct RingReshareFinalizeSignDoc {
     pub block_number_nonce: u64,
 }
 
-/// Build SourceHub-compatible sign bytes for a ring reshare finalization.
+/// Build Vera-compatible sign bytes for a ring reshare finalization.
 pub fn ring_reshare_finalize_sign_bytes_from_hashes(
     chain_id: &str,
     namespace: &str,
@@ -203,7 +203,7 @@ pub fn ring_reshare_finalize_sign_bytes_from_hashes(
 }
 
 impl MsgUpdateRingPostByThresholdSignature {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgUpdateRingPostByThresholdSignature";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgUpdateRingPostByThresholdSignature";
 
     pub fn new(
         creator: &str,
@@ -225,7 +225,7 @@ impl MsgUpdateRingPostByThresholdSignature {
 }
 
 /// Register a new namespace.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 #[derive(Clone, Message)]
@@ -239,7 +239,7 @@ pub struct MsgRegisterNamespace {
 }
 
 impl MsgRegisterNamespace {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgRegisterNamespace";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgRegisterNamespace";
 
     pub fn new(creator: &str, namespace: &str) -> Self {
         Self {
@@ -250,7 +250,7 @@ impl MsgRegisterNamespace {
 }
 
 /// Add a collaborator to a namespace.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: collaborator (string)
@@ -268,7 +268,7 @@ pub struct MsgAddCollaborator {
 }
 
 impl MsgAddCollaborator {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgAddCollaborator";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgAddCollaborator";
 
     pub fn new(creator: &str, namespace: &str, collaborator: &str) -> Self {
         Self {
@@ -280,7 +280,7 @@ impl MsgAddCollaborator {
 }
 
 /// Remove a collaborator from a namespace.
-/// Proto field numbers match sourcehub/bulletin/tx.proto:
+/// Proto field numbers match vera/bulletin/tx.proto:
 /// - 1: creator (string)
 /// - 2: namespace (string)
 /// - 3: collaborator (string)
@@ -298,7 +298,7 @@ pub struct MsgRemoveCollaborator {
 }
 
 impl MsgRemoveCollaborator {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgRemoveCollaborator";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgRemoveCollaborator";
 
     pub fn new(creator: &str, namespace: &str, collaborator: &str) -> Self {
         Self {
@@ -314,7 +314,7 @@ impl MsgRemoveCollaborator {
 // ============================================================================
 
 /// Request to read a single post.
-/// Proto: sourcehub.bulletin.QueryPostRequest
+/// Proto: vera.bulletin.QueryPostRequest
 #[derive(Clone, Message)]
 pub struct QueryPostRequest {
     /// Namespace identifier
@@ -326,7 +326,7 @@ pub struct QueryPostRequest {
 }
 
 /// Request to get namespace information.
-/// Proto: sourcehub.bulletin.QueryNamespaceRequest
+/// Proto: vera.bulletin.QueryNamespaceRequest
 #[derive(Clone, Message)]
 pub struct QueryNamespaceRequest {
     /// Namespace identifier
@@ -335,7 +335,7 @@ pub struct QueryNamespaceRequest {
 }
 
 /// Request to list posts in a namespace.
-/// Proto: sourcehub.bulletin.QueryNamespacePostsRequest
+/// Proto: vera.bulletin.QueryNamespacePostsRequest
 #[derive(Clone, Message)]
 pub struct QueryNamespacePostsRequest {
     /// Namespace identifier
@@ -347,7 +347,7 @@ pub struct QueryNamespacePostsRequest {
 }
 
 /// Request to iterate posts matching a glob pattern.
-/// Proto: sourcehub.bulletin.QueryIterateGlobRequest
+/// Proto: vera.bulletin.QueryIterateGlobRequest
 #[derive(Clone, Message)]
 pub struct QueryIterateGlobRequest {
     /// Namespace identifier
@@ -383,7 +383,7 @@ pub struct PageRequest {
 // ============================================================================
 
 /// Response containing a single post.
-/// Proto: sourcehub.bulletin.QueryPostResponse
+/// Proto: vera.bulletin.QueryPostResponse
 #[derive(Clone, Message)]
 pub struct QueryPostResponse {
     /// The post data
@@ -392,7 +392,7 @@ pub struct QueryPostResponse {
 }
 
 /// Response containing namespace information.
-/// Proto: sourcehub.bulletin.QueryNamespaceResponse
+/// Proto: vera.bulletin.QueryNamespaceResponse
 #[derive(Clone, Message)]
 pub struct QueryNamespaceResponse {
     /// The namespace data
@@ -401,7 +401,7 @@ pub struct QueryNamespaceResponse {
 }
 
 /// Response containing posts in a namespace.
-/// Proto: sourcehub.bulletin.QueryNamespacePostsResponse
+/// Proto: vera.bulletin.QueryNamespacePostsResponse
 #[derive(Clone, Message)]
 pub struct QueryNamespacePostsResponse {
     /// List of posts
@@ -413,7 +413,7 @@ pub struct QueryNamespacePostsResponse {
 }
 
 /// Response from glob iteration.
-/// Proto: sourcehub.bulletin.QueryIterateGlobResponse
+/// Proto: vera.bulletin.QueryIterateGlobResponse
 #[derive(Clone, Message)]
 pub struct QueryIterateGlobResponse {
     /// Matching posts
@@ -437,7 +437,7 @@ pub struct PageResponse {
 // ============================================================================
 
 /// A post stored on the bulletin board.
-/// Proto: sourcehub.bulletin.Post
+/// Proto: vera.bulletin.Post
 #[derive(Clone, Message)]
 pub struct Post {
     /// Post identifier
@@ -458,7 +458,7 @@ pub struct Post {
 }
 
 /// A namespace in the bulletin module.
-/// Proto: sourcehub.bulletin.Namespace
+/// Proto: vera.bulletin.Namespace
 #[derive(Clone, Message)]
 pub struct Namespace {
     /// Namespace identifier
@@ -470,7 +470,7 @@ pub struct Namespace {
 }
 
 /// A collaborator record.
-/// Proto: sourcehub.bulletin.Collaborator
+/// Proto: vera.bulletin.Collaborator
 #[derive(Clone, Message)]
 pub struct Collaborator {
     /// Namespace identifier
@@ -485,7 +485,7 @@ pub struct Collaborator {
 // Client Extension Methods
 // ============================================================================
 
-impl SourceHubClient {
+impl VeraClient {
     // ========================================================================
     // Bulletin Queries (ABCI/gRPC)
     // ========================================================================
@@ -499,7 +499,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/Post";
+        let path = "/vera.bulletin.Query/Post";
 
         let Some(response_bytes) = self
             .abci_query_optional(path, request_bytes, None, false)
@@ -522,7 +522,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/Namespace";
+        let path = "/vera.bulletin.Query/Namespace";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 
@@ -543,7 +543,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/NamespacePosts";
+        let path = "/vera.bulletin.Query/NamespacePosts";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 
@@ -563,7 +563,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/IterateGlob";
+        let path = "/vera.bulletin.Query/IterateGlob";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 

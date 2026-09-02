@@ -8,6 +8,7 @@ pub mod report;
 pub mod results;
 pub mod runner;
 pub mod setup;
+pub mod upgrade;
 
 pub use config::{Experiment, ExperimentPlan};
 pub use runner::BenchmarkRunner;

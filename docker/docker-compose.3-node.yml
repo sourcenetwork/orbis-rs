@@ -11,7 +11,10 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret1testsecret1
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50051:50051"
     networks:
@@ -26,7 +29,10 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret2testsecret2
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50052:50051"
     networks:
@@ -41,32 +47,35 @@ services:
       - ORBIS_PASSWORD=testpassword123
       - ORBIS_SECRET_KEY=testsecret3testsecret3
       - RUST_LOG=info
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://sourcehub:9090", "--bulletin-grpc", "http://sourcehub:9090", "--chain-rpc", "http://sourcehub:26657", "--chain-rest", "http://sourcehub:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+      # Trivial Argon2id KDF cost (local-test fixture) so node startup skips a ~256 MiB derivation.
+      - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
+      - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
+    command: ["--addr", "0.0.0.0:50051", "--log-level", "info", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
     ports:
       - "50053:50051"
     networks:
       - orbis-network
 
-  sourcehub:
+  vera:
     build:
-      context: https://github.com/sourcenetwork/sourcehub.git#jesse/update-orbis
+      context: https://github.com/sourcenetwork/vera.git#jesse/update-orbis
     volumes:
-      - sourcehub-data:/home/node/.sourcehub
+      - vera-data:/home/node/.vera
     entrypoint: ["/bin/sh", "-c"]
     networks:
       - orbis-network
     command:
       - |
-        rm -rf /home/node/.sourcehub/*
-        sourcehubd init local-node --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd keys add validator --keyring-backend test --home /home/node/.sourcehub
+        rm -rf /home/node/.vera/*
+        verad init local-node --chain-id vera-localnet --home /home/node/.vera
+        verad keys add validator --keyring-backend test --home /home/node/.vera
         # Add a test account with known mnemonic for CLI tool funding
-        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | sourcehubd keys add test --recover --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.sourcehub
-        sourcehubd genesis gentx validator 10000000000uopen --keyring-backend test --chain-id sourcehub-localnet --home /home/node/.sourcehub
-        sourcehubd genesis collect-gentxs --home /home/node/.sourcehub
-        exec sourcehubd start --home /home/node/.sourcehub --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
+        echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+        verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
+        verad genesis collect-gentxs --home /home/node/.vera
+        exec verad start --home /home/node/.vera --rpc.laddr tcp://0.0.0.0:26657 --api.enable --api.address tcp://0.0.0.0:1317
     ports:
       - "26657:26657" # RPC
       - "26656:26656" # P2P
@@ -78,4 +87,4 @@ networks:
     driver: bridge
 
 volumes:
-  sourcehub-data:
+  vera-data:

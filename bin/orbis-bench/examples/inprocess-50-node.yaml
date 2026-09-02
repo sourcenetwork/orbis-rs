@@ -4,10 +4,10 @@ crypto: bls12-381
 
 # In-process backend: real orbis-node instances run as tokio tasks in this
 # process over real loopback Iroh P2P, backed by a shared in-memory mock
-# bulletin instead of a Dockerized SourceHub. No containers, no chain, no
+# bulletin instead of a Dockerized Vera. No containers, no chain, no
 # external network dependency — this isolates orbis's own DKG/PRE/SIGN
 # protocol and P2P networking behavior from infrastructure flakiness
-# (SourceHub RPC hiccups, Iroh relay reachability, Docker host contention
+# (Vera RPC hiccups, Iroh relay reachability, Docker host contention
 # under 50+ containers) that has nothing to do with protocol correctness.
 #
 # v1 scope: dkg, pre, and sign, on a `lan`-kind profile only (see

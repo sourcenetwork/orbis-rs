@@ -51,7 +51,7 @@ requires them, and persists its own final ring material.
 ```mermaid
 flowchart LR
   Client["Client or benchmark"]
-  SourceHub[("SourceHub ring and NodeInfo")]
+  Vera[("Vera ring and NodeInfo")]
 
   subgraph Committee["Ring committee"]
     Leader["Canonical leader"]
@@ -75,10 +75,10 @@ flowchart LR
   A <-->|"private pair QUIC"| C
   B <-->|"private pair QUIC"| C
 
-  Leader --> SourceHub
-  A --> SourceHub
-  B --> SourceHub
-  C --> SourceHub
+  Leader --> Vera
+  A --> Vera
+  B --> Vera
+  C --> Vera
 ```
 
 The installed v0 DKG routes are:
@@ -125,8 +125,8 @@ Orbis uses several related identifiers because they solve different problems.
 
 | Identifier | Lifetime | Purpose |
 | --- | --- | --- |
-| Ring ID | Long-lived | SourceHub object being initialized or refreshed |
-| Node signing key | Long-lived | Canonical committee identity stored in SourceHub |
+| Ring ID | Long-lived | Vera object being initialized or refreshed |
+| Node signing key | Long-lived | Canonical committee identity stored in Vera |
 | Iroh endpoint identity | Node endpoint lifetime | Authenticates QUIC and signed Gossip payloads |
 | Canonical node ID | One committee ordering | Compact `1..=n` cryptographic participant number |
 | Committee scope | One attempt | Distinguishes `Current(1)` from `Next(1)` during reshare |
@@ -138,7 +138,7 @@ Orbis uses several related identifiers because they solve different problems.
 ### Canonical leader
 
 Fresh DKG and refresh choose the lexicographically lowest current-committee
-node signing key in SourceHub. Reshare chooses the lexicographically lowest
+node signing key in Vera. Reshare chooses the lexicographically lowest
 next-committee signing key, which is also next-committee node ID 1 and the
 participant-set selector. Every node can derive these results without an
 election. Canonical numeric node IDs are derived independently for the current
@@ -189,7 +189,7 @@ the replacement.
 `DkgService::StartDkg` is a synchronous **readiness** call, not a synchronous
 completion call. Success means the leader has prepared and activated every
 committee member. It does **not** mean the ring is already finalized on
-SourceHub.
+Vera.
 
 PSS refresh and PSS reshare both start through a forwarding mechanism, but
 they tolerate different failures. For reshare, any current member that
@@ -197,7 +197,7 @@ observes the pending transition sends an authenticated, idempotent
 `StartReshare` request to the fixed canonical next-committee leader; there is
 no fallback if that specific receiver is unreachable, since every
 next-committee receiver is required regardless of who triggers the attempt.
-That receiver independently rereads SourceHub, creates the attempt, and
+That receiver independently rereads Vera, creates the attempt, and
 prepares the deduplicated union of current and next committee endpoints.
 Refresh uses the same fixed-leader shape: any current member may send an
 authenticated `StartRefresh`, but only the canonical current-committee leader
@@ -212,7 +212,7 @@ sequenceDiagram
   participant N as API node
   participant L as Canonical leader
   participant F as Other participants
-  participant S as SourceHub
+  participant S as Vera
 
   C->>N: StartDkg ring ID plus JWT
   N->>S: Read ring and effective protocol version
@@ -243,7 +243,7 @@ sequenceDiagram
 This distinction matters to callers and benchmarks:
 
 - request acknowledgement latency ends when `StartDkg` returns;
-- end-to-end fresh-DKG latency ends when SourceHub finalization is visible and
+- end-to-end fresh-DKG latency ends when Vera finalization is visible and
   every committee node exposes matching local ring state.
 
 ## Preparation and topology barrier
@@ -258,7 +258,7 @@ the required committee or union. A participant:
 
 1. verifies that the named leader is canonical and is the authenticated sender;
 2. recomputes and verifies the complete configuration digest;
-3. validates SourceHub state, ring parameters, credentials, and node-ID mapping;
+3. validates Vera state, ring parameters, credentials, and node-ID mapping;
 4. creates or reuses the local session;
 5. subscribes to the attempt's transient Gossip topic, bootstrapping from the
    leader route;
@@ -315,7 +315,7 @@ activation digest.
 If reshare preparation fails, the error reports missing next receivers and the
 current-dealer shortfall separately. Prepared current-only nodes excluded from
 the frozen set receive an idempotent abort/cleanup. Their persisted old ring
-material is retained until SourceHub finalizes a committee that excludes them.
+material is retained until Vera finalizes a committee that excludes them.
 
 ### Step 3: activate, then begin once
 
@@ -367,7 +367,7 @@ flowchart TD
   Pairs["Run bounded bidirectional pair exchanges"]
   LocalDone{"All remote shares verified and all outbound shares acknowledged?"}
   Final["Compute and persist local ring share bundle"]
-  Chain["Finalize fresh ring on SourceHub"]
+  Chain["Finalize fresh ring on Vera"]
 
   Start --> HLocal --> HCollect --> HBatch --> HBarrier
   HBarrier -->|"no after 10-second stall"| HRepair --> HBarrier
@@ -390,7 +390,7 @@ Transition:
 
 `state_machine::transition` is pure. The driver snapshots and claims a phase
 under the session lock, releases the lock, and only then runs cryptography,
-network I/O, storage, SourceHub calls, or signing. Network handlers record a
+network I/O, storage, Vera calls, or signing. Network handlers record a
 validated local fact and emit an event; they do not directly force all nodes
 through a shared global phase.
 
@@ -403,7 +403,7 @@ The relevant fresh-DKG transitions are:
 | All required shares verified and aggregate material available | Enter single-flight Phase 4 completion |
 
 Phase 4 persists a `RingShareBundle` containing the local share and public
-polynomial. Fresh DKG also finalizes the ring on SourceHub. Completion is local
+polynomial. Fresh DKG also finalizes the ring on Vera. Completion is local
 and durable: `Phase4Completing` is claimed before I/O, and `Phase4Complete` is
 set only after durable work succeeds.
 
@@ -449,7 +449,7 @@ The leader verifies:
 - the endpoint signature is valid for the public-contribution domain;
 - the message ID matches the payload;
 - the ceremony, attempt, committee digest, and phase are current;
-- the origin node ID maps to that endpoint through the session's SourceHub
+- the origin node ID maps to that endpoint through the session's Vera
   `NodeInfo` routes.
 
 An identical duplicate is accepted idempotently. A different signed envelope
@@ -492,7 +492,7 @@ Receivers accept Gossip DKG messages only when the authenticated publisher is
 the canonical leader.
 Receivers buffer chunks by phase root, validate the manifest's exact origin set,
 chunk indexes, canonical ordering, and root, then independently verify every
-embedded origin signature and SourceHub membership before dispatching any
+embedded origin signature and Vera membership before dispatching any
 contribution from that batch into the local DKG state machine. Identical
 retransmissions are idempotent. An authenticated contradiction — such as
 conflicting complete roots, conflicting chunk contents, a manifest/content
@@ -526,7 +526,7 @@ direct-origin repair. Missing origins are queried concurrently, bounded by the
 50-member committee limit, and one unavailable origin does not prevent valid
 responses from the others from being retained and applied.
 Direct repair is not manifest-gated: it verifies each retained origin signature,
-message ID, attempt, and SourceHub endpoint binding before dispatch. This keeps
+message ID, attempt, and Vera endpoint binding before dispatch. This keeps
 the independently authenticated origins as the recovery source when a Gossip
 manifest or chunk was lost or the leader's repair endpoint is unavailable.
 Malformed or contradictory authenticated leader/origin responses fail the exact
@@ -588,7 +588,7 @@ sequenceDiagram
 
 Current and next numeric node IDs cannot be compared to choose a reshare
 opener: `Current(1)` and `Next(1)` can refer to different nodes. Orbis resolves
-both scoped identities to their SourceHub node signing keys and chooses the
+both scoped identities to their Vera node signing keys and chooses the
 lower key. Self-delivery is likewise detected by authenticated physical route,
 not by equal numeric IDs.
 
@@ -676,10 +676,10 @@ cryptographic and completion rules:
 ### Refresh trigger routing
 
 Every member derives the same canonical leader from the current committee.
-When refresh is due, a nonleader resolves only that leader's SourceHub route
+When refresh is due, a nonleader resolves only that leader's Vera route
 and sends `StartRefresh`. The request includes the requester's node key, which
 the leader checks against current committee membership, the authenticated
-connection, and the requester's independently resolved SourceHub route.
+connection, and the requester's independently resolved Vera route.
 
 The leader serializes starts for the deterministic ceremony ID. The first
 valid request creates a random attempt; later requests return that already
@@ -743,9 +743,9 @@ is required.
 
 ```mermaid
 flowchart TD
-  Pending["SourceHub exposes pending next committee and threshold"]
+  Pending["Vera exposes pending next committee and threshold"]
   Forward["Any current member forwards StartReshare"]
-  Prepare["Next(1) leader validates SourceHub and prepares the deduplicated union"]
+  Prepare["Next(1) leader validates Vera and prepares the deduplicated union"]
   Ready{"Every next receiver ready and current threshold dealers ready?"}
   Grace["Three-second dealer inclusion grace"]
   Freeze["Freeze ready current dealers into activation digest"]
@@ -757,7 +757,7 @@ flowchart TD
   Select["Selector freezes lowest current node IDs among threshold-complete dealers"]
   Publish["Publish selector-signed participant set as singleton public phase"]
   Aggregate["Receivers perform weighted aggregation and threshold signing"]
-  Finalize["SourceHub finalizes next membership; public key unchanged"]
+  Finalize["Vera finalizes next membership; public key unchanged"]
 
   Pending --> Forward --> Prepare --> Ready
   Ready -->|"no before 2-minute deadline"| Abort["Abort with missing receivers and dealer shortfall"]
@@ -785,9 +785,9 @@ members over control QUIC. Each relay has a scoped idempotency key, and duplicat
 delivery cannot repeat report side effects.
 
 Completion preserves the existing weighted aggregation, threshold signature,
-SourceHub update, and public-key equality checks. An old-only node retains its
+Vera update, and public-key equality checks. An old-only node retains its
 local bundle while the transition is merely pending—even if it was not selected
-as an active dealer. After SourceHub visibly finalizes a committee that excludes
+as an active dealer. After Vera visibly finalizes a committee that excludes
 that node, the PSS reconciliation loop securely removes the stale bundle and
 ring-index entry.
 
@@ -872,7 +872,7 @@ releasing session or PSS state.
 - Every relayed public contribution also has its own origin signature under the
   DKG public-contribution domain.
 - The verified endpoint identity must match the committee route resolved from
-  SourceHub `NodeInfo` for the claimed canonical node ID.
+  Vera `NodeInfo` for the claimed canonical node ID.
 - Configuration, committee, topic, message, phase-root, and share-digest hashes
   are domain separated and attempt scoped.
 
@@ -1025,12 +1025,12 @@ accounting for that.
 flowchart TD
   A["StartDkg has not returned"] --> B{"Near the 2-minute preparation deadline?"}
   B -->|"yes"| C["Inspect Prepare retries, probe broadcasts, unique ACKs, and missing peer prefixes"]
-  B -->|"no"| D["Inspect SourceHub lookup, JWT, config digest, and leader forwarding"]
-  E["StartDkg returned but SourceHub is not finalized"] --> F{"Public contribution count complete?"}
+  B -->|"no"| D["Inspect Vera lookup, JWT, config digest, and leader forwarding"]
+  E["StartDkg returned but Vera is not finalized"] --> F{"Public contribution count complete?"}
   F -->|"no"| G["Inspect origin submission, batch publication, Gossip lag, and direct repair"]
   F -->|"yes"| H{"Every private message ID acknowledged?"}
   H -->|"no"| I["Inspect Busy, retries, pair timeout, semaphore pressure, and connection invalidation"]
-  H -->|"yes"| J["Inspect share verification, Phase4Completing, local persistence, and SourceHub finalization"]
+  H -->|"yes"| J["Inspect share verification, Phase4Completing, local persistence, and Vera finalization"]
 ```
 
 Common log landmarks are:
@@ -1084,7 +1084,21 @@ maximum.
 
 | Area | File |
 | --- | --- |
-| Start forwarding, prepare barrier, Gossip listener, repair, public relay, private exchange | [`v0/network.rs`](v0/network.rs) |
+| DKG transport, split by plane/phase | [`v0/network/`](v0/network/) — see the submodule map at the top of [`v0/network/mod.rs`](v0/network/mod.rs) |
+| — inbound control dispatch (`DkgControlHandler`, per-message `on_*` handlers) | [`v0/network/control_handler.rs`](v0/network/control_handler.rs) |
+| — outbound control request/retry/classification | [`v0/network/control_client.rs`](v0/network/control_client.rs) |
+| — start forwarding + ceremony coordination + reshare route validation | [`v0/network/ceremony_start.rs`](v0/network/ceremony_start.rs) |
+| — prepare/topology/activate/begin barrier | [`v0/network/prepare.rs`](v0/network/prepare.rs), [`v0/network/prepare_participant.rs`](v0/network/prepare_participant.rs) |
+| — transient-topic listener + neighbor tracking | [`v0/network/gossip_listener.rs`](v0/network/gossip_listener.rs) |
+| — canonical public-batch assembly + fault-evidence types | [`v0/network/public_batch.rs`](v0/network/public_batch.rs) |
+| — direct-QUIC public-phase repair | [`v0/network/public_repair.rs`](v0/network/public_repair.rs) |
+| — verify/record/preflight/dispatch one public contribution | [`v0/network/public_contribution.rs`](v0/network/public_contribution.rs) |
+| — leader batch publication + refresh-result barrier + origin submission | [`v0/network/public_publish.rs`](v0/network/public_publish.rs) |
+| — best-effort fault-report wrappers | [`v0/network/fault_report.rs`](v0/network/fault_report.rs) |
+| — outbound fault-evidence senders | [`v0/network/evidence_relay.rs`](v0/network/evidence_relay.rs) |
+| — PSS offline attribution | [`v0/network/pss_offline.rs`](v0/network/pss_offline.rs) |
+| — private pair exchange (`DkgPrivateHandler`) | [`v0/network/private.rs`](v0/network/private.rs) |
+| — shared route/participant/digest helpers | [`v0/network/common.rs`](v0/network/common.rs) |
 | Type-safe control/public/private messages and ID derivations | [`v0/transport.rs`](v0/transport.rs) |
 | Attempt state, acknowledgement sets, exact retained bytes, cleanup | [`v0/session_state.rs`](v0/session_state.rs) |
 | ALPN descriptors | [`../../../../crates/network/src/protocol.rs`](../../../../crates/network/src/protocol.rs) |
@@ -1108,8 +1122,9 @@ maximum.
 
 ### Reshare state machine
 
-Reshare transport orchestration lives in [`v0/network.rs`](v0/network.rs),
-while weighted aggregation, selector logic, SourceHub finalization, and
+Reshare transport orchestration lives in [`v0/network/`](v0/network/)
+(mainly `ceremony_start.rs`, `prepare.rs`, `public_repair.rs`, and
+`private.rs`), while weighted aggregation, selector logic, Vera finalization, and
 role-specific completion live in
 [`v0/coordinator/reshare`](v0/coordinator/reshare). Reshare commitments and the
 selector-signed participant set use the public plane; shares, credentials, and
@@ -1132,7 +1147,7 @@ cargo test -p network
 When changing this code, preserve these engineering rules:
 
 1. Keep public and private wire types structurally separate.
-2. Validate authenticated endpoint identity against SourceHub committee routes.
+2. Validate authenticated endpoint identity against Vera committee routes.
 3. Keep the state-machine transition function pure.
 4. Claim transitions while holding the session lock; run side effects after
    releasing it.

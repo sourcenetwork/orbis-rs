@@ -248,6 +248,16 @@ lazy_static! {
     )
     .expect("failed to register reshare_active_sessions");
 
+    /// A reshare the chain confirmed still counts as a "completed" session (the
+    /// ceremony itself succeeded), but this counts the narrower, operator-actionable
+    /// failure of the local promotion write afterward — the node is left
+    /// locally-stale relative to the chain-recognized committee.
+    pub static ref RESHARE_PROMOTION_WRITE_FAILURES_TOTAL: Counter = register_counter!(
+        "reshare_promotion_write_failures_total",
+        "Total number of chain-confirmed reshares whose local bundle promotion write failed"
+    )
+    .expect("failed to register reshare_promotion_write_failures_total");
+
     // ============================================================================
     // Refresh Protocol Metrics
     // ============================================================================
@@ -283,6 +293,17 @@ lazy_static! {
         vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0]
     )
     .expect("failed to register store_secret_request_duration_seconds");
+
+    // ============================================================================
+    // Authentication Metrics
+    // ============================================================================
+
+    pub static ref JWT_REPLAY_REJECTED_TOTAL: CounterVec = register_counter_vec!(
+        "jwt_replay_rejected_total",
+        "Total number of requests rejected because their JWT id was already used or missing",
+        &["reason", "site"]
+    )
+    .expect("failed to register jwt_replay_rejected_total");
 
     // ============================================================================
     // Build Info Metric
@@ -332,6 +353,7 @@ pub fn init() {
     lazy_static::initialize(&REFRESH_ACTIVE_SESSIONS);
     lazy_static::initialize(&STORE_SECRET_REQUESTS_TOTAL);
     lazy_static::initialize(&STORE_SECRET_REQUEST_DURATION_SECONDS);
+    lazy_static::initialize(&JWT_REPLAY_REJECTED_TOTAL);
     lazy_static::initialize(&ORBIS_BUILD_INFO);
 }
 
@@ -659,6 +681,15 @@ pub fn record_sign_state_abandoned() {
     SIGN_ABANDONED_STATES_TOTAL.inc();
 }
 
+/// One request rejected by the JWT single-use guard. `reason` is `already_used`
+/// or `missing_jti`; `site` names the entry point (e.g. `start_pre`,
+/// `sign_nonce_request`).
+pub fn record_jwt_replay_rejected(reason: &str, site: &str) {
+    JWT_REPLAY_REJECTED_TOTAL
+        .with_label_values(&[reason, site])
+        .inc();
+}
+
 /// Record Reshare session started
 pub fn record_reshare_session_started() {
     RESHARE_SESSIONS_TOTAL.with_label_values(&["started"]).inc();
@@ -677,6 +708,11 @@ pub fn record_reshare_session_completed() {
 pub fn record_reshare_session_failed() {
     RESHARE_SESSIONS_TOTAL.with_label_values(&["failed"]).inc();
     RESHARE_ACTIVE_SESSIONS.dec();
+}
+
+/// Record a chain-confirmed reshare whose local bundle promotion write failed.
+pub fn record_reshare_promotion_write_failure() {
+    RESHARE_PROMOTION_WRITE_FAILURES_TOTAL.inc();
 }
 
 /// Record Refresh session started

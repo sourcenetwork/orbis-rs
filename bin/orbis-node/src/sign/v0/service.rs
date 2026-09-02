@@ -14,7 +14,7 @@ use crate::sign::v0::helpers::{
 };
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::SignClaims;
-use authz::sourcehub::ValidWindow;
+use authz::vera::ValidWindow;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crypto::SigShareInner;
 use crypto::SignaturePoint;
@@ -104,6 +104,13 @@ where
 
         // validate JWT claims match request fields (no IO) ---
         validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
+
+        // Reject a JWT this node has already accepted (single use).
+        self.state
+            .jti_guard
+            .check_and_record(&token.jwt_id, token.expiration_time, "start_sign")
+            .await
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         let valid_window = req.valid_window.map(|w| ValidWindow {
             start: w.start,
@@ -198,6 +205,7 @@ where
                 user_signed_at: token.issued_time,
                 acp_timestamp: relay_acp_timestamp,
                 valid_window: valid_window.clone(),
+                document_inline: false,
             },
             &self.state.local_storage,
         )

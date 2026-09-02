@@ -11,6 +11,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # `local-storage` derives its at-rest key with Argon2id at ~256 MiB / t=3 by
+  # default (see StoredKdfParams::for_new_db). The test suite makes ~150
+  # LocalStorageImpl::new calls, so run it with trivial KDF cost. The released
+  # binary is built by docker/Dockerfile and never sees these vars, so it keeps
+  # the strong default.
+  ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
+  ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
 
 jobs:
   lint:
