@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch / PR cancels the superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   # `local-storage` derives its at-rest key with Argon2id at ~256 MiB / t=3 by
@@ -26,12 +31,18 @@ jobs:
     - uses: actions/checkout@v4
     - name: Update Rust stable
       run: rustup update stable
+    - name: Cache cargo registry / index
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: lint
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Check formatting
       run: cargo fmt --all -- --check
     - name: Install cargo-deny
-      run: cargo install cargo-deny --locked
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deny
     - name: Check licences
       run: cargo deny check
 
@@ -51,6 +62,10 @@ jobs:
         persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.crypto }}
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Clippy (${{ matrix.crypto }})
@@ -73,6 +88,10 @@ jobs:
         persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.crypto }}
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Run tests (${{ matrix.crypto }})
