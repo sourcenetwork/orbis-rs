@@ -2,6 +2,10 @@
 //! orbis-node containers, brought up/down around a test. Compiled only when
 //! the `test-harness` feature is on (orbis-node's `integration-test` feature
 //! enables it); never part of the production build.
+//!
+//! Prerequisites on `PATH`: `docker` (with the Compose plugin) and `curl` — the
+//! health probes shell out to both, and a missing binary surfaces indirectly as
+//! a "failed to become healthy" panic rather than a clear error.
 
 use crate::blockchain::{ChainConfig, ChainConfigBuilder};
 use std::env;
