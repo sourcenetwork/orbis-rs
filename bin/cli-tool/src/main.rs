@@ -1,6 +1,6 @@
 mod commands;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bulletin::r#trait::BulletinKind;
 use clap::{Args, Parser, Subcommand};
 pub use commands::{
@@ -652,8 +652,9 @@ async fn main() -> Result<()> {
             }
             require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
-            let derivation_bytes =
-                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let derivation_bytes = derivation
+                .map(|d| hex::decode(&d).context("--derivation must be valid hex"))
+                .transpose()?;
             do_pre(
                 network.endpoint.clone(),
                 ring_pk,
@@ -681,8 +682,9 @@ async fn main() -> Result<()> {
             salt,
         } => {
             let secret = resolve_secret(secret, "Secret to encrypt: ")?;
-            let derivation_bytes =
-                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let derivation_bytes = derivation
+                .map(|d| hex::decode(&d).context("--derivation must be valid hex"))
+                .transpose()?;
             do_encrypt_secret(
                 ring_pk,
                 secret,
@@ -872,8 +874,9 @@ async fn main() -> Result<()> {
             salt,
         } => {
             let secret = resolve_secret(secret, "Secret to encrypt: ")?;
-            let derivation_bytes =
-                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let derivation_bytes = derivation
+                .map(|d| hex::decode(&d).context("--derivation must be valid hex"))
+                .transpose()?;
             let prepared = prepare_secret(
                 secret.as_bytes(),
                 &ring_pk_hex,
@@ -934,8 +937,9 @@ async fn main() -> Result<()> {
         } => {
             let secret = resolve_secret(secret, "Plaintext secret to store: ")?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
-            let derivation_bytes =
-                derivation.map(|d| hex::decode(&d).expect("Failed to decode derivation hex"));
+            let derivation_bytes = derivation
+                .map(|d| hex::decode(&d).context("--derivation must be valid hex"))
+                .transpose()?;
             do_store_secret(
                 network.endpoint.clone(),
                 secret.as_bytes(),

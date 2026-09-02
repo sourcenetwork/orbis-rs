@@ -22,7 +22,10 @@ pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use error::{BlockchainError, Result};
 pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
 
-#[cfg(test)]
+// These are Docker/Vera integration tests: they need the `test-harness` feature
+// (which brings in `VeraTestContainer`). Workspace `cargo test` enables it
+// transitively; `cargo test -p common` needs `--features test-harness`.
+#[cfg(all(test, feature = "test-harness"))]
 pub mod tests;
 
 // Known test key for the "test" account created in docker-compose-vera-test.yml

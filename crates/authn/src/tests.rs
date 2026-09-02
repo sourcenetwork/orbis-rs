@@ -92,6 +92,53 @@ fn test_resolve_jwt_did_with_dkg_claims() {
 }
 
 #[test]
+fn test_resolve_jwt_did_rejects_non_did_key_issuer() {
+    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let token: BearerToken<()> = BearerToken {
+        issuer_id: "did:web:example.com".to_string(),
+        subject_id: None,
+        jwt_id: String::new(),
+        issued_time: 900,
+        expiration_time: 2000,
+        not_before: None,
+        claims: (),
+    };
+    let jwt = JwtSigner::sign_bearer_token_with_key_pair(&key_pair, &token).unwrap();
+
+    let result: Result<BearerToken<()>> =
+        resolve_jwt_did(&jwt, 1000, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0);
+    assert!(
+        matches!(&result, Err(AuthNError::DidError(msg)) if msg.contains("did:key")),
+        "expected did:key method error, got: {result:?}"
+    );
+}
+
+#[test]
+fn test_resolve_jwt_did_rejects_non_ed25519_did_key_issuer() {
+    // A did:key X25519 identifier resolves fine and yields a 32-byte key, but it
+    // is a key-agreement key, not a signing key — the issuer must be Ed25519.
+    let x25519 = generate::<X25519KeyPair>(None);
+    let signing_key_pair = generate::<DidEd25519KeyPair>(None);
+    let token: BearerToken<()> = BearerToken {
+        issuer_id: format!("did:key:{}", x25519.fingerprint()),
+        subject_id: None,
+        jwt_id: String::new(),
+        issued_time: 900,
+        expiration_time: 2000,
+        not_before: None,
+        claims: (),
+    };
+    let jwt = JwtSigner::sign_bearer_token_with_key_pair(&signing_key_pair, &token).unwrap();
+
+    let result: Result<BearerToken<()>> =
+        resolve_jwt_did(&jwt, 1000, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0);
+    assert!(
+        matches!(&result, Err(AuthNError::DidError(msg)) if msg.contains("Ed25519")),
+        "expected Ed25519 key-type error, got: {result:?}"
+    );
+}
+
+#[test]
 fn test_resolve_jwt_did_expired() {
     let key_pair = generate::<DidEd25519KeyPair>(None);
     let did_uri = format!("did:key:{}", key_pair.fingerprint());

@@ -1,7 +1,7 @@
 use ark_ff::{One, Zero};
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use super::common::{PolynomialCommitment, PubPoly};
 use crate::{
@@ -11,9 +11,6 @@ use crate::{
         PolynomialCommitment as PolynomialCommitmentTrait, PriShare,
     },
 };
-
-/// Maximum number of nonces to store per node to prevent memory exhaustion
-const MAX_NONCES_PER_NODE: usize = 1000;
 
 /// Complete DKG state for a single node (decaf377)
 #[derive(Clone)]
@@ -56,9 +53,6 @@ pub struct DKGNode {
     // Session ID for this DKG run (prevents replay attacks)
     pub session_id: u128,
 
-    // Track received nonces to prevent replay (HashSet for O(1) lookup)
-    received_nonces: HashMap<u32, HashSet<[u8; 16]>>, // from_id -> set of nonces
-
     // Track complaints about malicious nodes
     complaints: HashMap<u32, Vec<u32>>, // complainer_id -> list of accused_ids
 }
@@ -91,7 +85,6 @@ impl std::fmt::Debug for DKGNode {
                 &self.selected_reshare_participants,
             )
             .field("session_id", &self.session_id)
-            .field("received_nonces", &self.received_nonces)
             .field("complaints", &self.complaints)
             .finish()
     }
@@ -157,7 +150,6 @@ impl Dkg for DKGNode {
             received_commitments: HashMap::new(),
             selected_reshare_participants: None,
             session_id,
-            received_nonces: HashMap::new(),
             complaints: HashMap::new(),
         }))
     }
@@ -334,20 +326,9 @@ impl Dkg for DKGNode {
             ));
         }
 
-        // Replay protection: check nonce
-        let nonces = self.received_nonces.entry(share.from_id).or_default();
-
-        if nonces.len() >= MAX_NONCES_PER_NODE {
-            return Err(CryptoError::DKGError(
-                "Nonce limit exceeded - possible DoS attack".to_string(),
-            ));
-        }
-
-        if nonces.contains(&share.nonce) {
-            return Err(CryptoError::DKGError(
-                "Duplicate nonce detected - possible replay attack".to_string(),
-            ));
-        }
+        // No separate share-nonce replay check: the "one accepted share per
+        // sender per session" guard above already rejects any second share from
+        // a given sender before it could reach here.
 
         // Get the commitment from the sender
         let commitment = self
@@ -367,7 +348,6 @@ impl Dkg for DKGNode {
             ));
         }
 
-        nonces.insert(share.nonce);
         self.received_shares.insert(share.from_id, share.value);
 
         Ok(())

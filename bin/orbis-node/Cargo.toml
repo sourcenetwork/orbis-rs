@@ -70,7 +70,7 @@ memory = ["local-storage/memory"]
 authz-vera = ["authz/vera"]
 bulletin-vera = ["bulletin/vera"]
 iroh = ["network/iroh"]
-integration-test = ["cli-tool", "unsafe-testing"]
+integration-test = ["cli-tool", "unsafe-testing", "common/test-harness"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead

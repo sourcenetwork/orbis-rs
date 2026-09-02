@@ -223,9 +223,30 @@ where
 
     let claims = unverified.claims;
 
+    // Only the did:key method is accepted. `resolve` would also take other DID
+    // methods the did-key crate understands; pin it to the one whose key
+    // material we know how to verify a JWT signature against.
+    if !claims.issuer_id.starts_with("did:key:") {
+        return Err(AuthNError::DidError(
+            "issuer DID must use the did:key method".to_string(),
+        ));
+    }
+
     // Resolve the DID to get the public key
     let key = resolve(&claims.issuer_id)
         .map_err(|_| AuthNError::DidError("Error resolving did_uri".to_string()))?;
+
+    // The 32-byte length check below also matches X25519 (and other 32-byte key
+    // types); require the resolved verification method to actually be Ed25519.
+    let is_ed25519 = key
+        .get_verification_methods(CONFIG_LD_PUBLIC, &claims.issuer_id)
+        .first()
+        .is_some_and(|method| method.key_type == "Ed25519VerificationKey2018");
+    if !is_ed25519 {
+        return Err(AuthNError::DidError(
+            "issuer DID must contain an Ed25519 public key".to_string(),
+        ));
+    }
 
     // Extract the public key bytes from the resolved DID key
     let public_key_bytes = key.public_key_bytes();

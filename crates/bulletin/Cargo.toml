@@ -27,5 +27,7 @@ decaf377 = ["dep:crypto", "crypto/decaf377"]
 [dev-dependencies]
 serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
+# Vera-backend tests use common's Docker integration harness (VeraTestContainer).
+common = { path = "../common", features = ["test-harness"] }
 [lints]
 workspace = true
