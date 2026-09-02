@@ -1,0 +1,22 @@
+version: v2
+
+modules:
+  - path: crates/proto/proto
+
+lint:
+  use:
+    - STANDARD
+  ignore_only:
+    # Existing RPC paths use orbis.v0.<service>.
+    # So we ignore it
+    PACKAGE_VERSION_SUFFIX:
+      - crates/proto/proto/orbis/unsafe_testing
+      - crates/proto/proto/orbis/v0/dkg
+      - crates/proto/proto/orbis/v0/info_service
+      - crates/proto/proto/orbis/v0/pre
+      - crates/proto/proto/orbis/v0/sign
+      - crates/proto/proto/orbis/v0/store_secret
+
+breaking:
+  use:
+    - FILE

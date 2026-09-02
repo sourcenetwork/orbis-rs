@@ -8,7 +8,7 @@ service DkgService {
 }
 
 message StartDkgRequest {
-  string ring_id = 1;  // Pre-created blank ring entry targeted by this DKG
+  string ring_id = 1; // Pre-created blank ring entry targeted by this DKG
 }
 
 message StartDkgResponse {

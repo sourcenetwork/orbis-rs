@@ -27,9 +27,20 @@ Use paths like `proto::v0::dkg::dkg_service_client::DkgServiceClient`, `proto::v
 
 Field-level documentation is in the **`.proto`** files.
 
+
 ## Build
 
 Code generation runs in **`build.rs`** whenever you `cargo build` / `cargo test` this package. Editing a `.proto` requires a rebuild to refresh generated Rust types.
+
+## Go Generation
+
+The repository also uses [Buf](https://buf.build/) to generate Go stubs of the API  [`../../gen/go`](../../gen/go).
+
+From the repository root:
+
+```bash
+go tool buf generate
+```
 
 ## Dependencies
 

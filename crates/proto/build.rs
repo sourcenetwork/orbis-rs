@@ -1,16 +1,14 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protos = [
-        "proto/v0/dkg_service.proto",
-        "proto/v0/pre_service.proto",
-        "proto/v0/info_service.proto",
-        "proto/v0/store_secret_service.proto",
-        "proto/v0/sign_service.proto",
-        "proto/unsafe_testing_service.proto",
+        "proto/orbis/v0/dkg/dkg_service.proto",
+        "proto/orbis/v0/pre/pre_service.proto",
+        "proto/orbis/v0/info_service/info_service.proto",
+        "proto/orbis/v0/store_secret/store_secret_service.proto",
+        "proto/orbis/v0/sign/sign_service.proto",
+        "proto/orbis/unsafe_testing/unsafe_testing_service.proto",
     ];
 
-    for proto in &protos {
-        tonic_prost_build::compile_protos(proto)?;
-    }
+    tonic_prost_build::configure().compile_protos(&protos, &["proto"])?;
 
     Ok(())
 }

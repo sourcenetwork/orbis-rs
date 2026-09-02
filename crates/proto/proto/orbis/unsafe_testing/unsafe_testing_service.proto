@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package orbis.unsafe_testing;
 
-import "v0/pre_service.proto";
+import "orbis/v0/pre/pre_service.proto";
 
 service UnsafeTestingService {
   rpc GetLocalStorage(GetLocalStorageRequest) returns (GetLocalStorageResponse);
