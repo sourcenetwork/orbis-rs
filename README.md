@@ -170,7 +170,7 @@ gRPC `.proto` files and tonic-generated Rust types for node APIs.  See [`crates/
 
 Go type generation uses buf and protoc. Generation tooling is pinned using go tools in [`go.mod`](go.mod)
 Generate go protos with `go tool buf generate`.
-Output goes to [`gen/go`](gen/go). 
+Output goes to [`gen/go`](gen/go).
 
 ### [`orbis-node`](bin/orbis-node/)
 

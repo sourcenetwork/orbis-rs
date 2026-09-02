@@ -7,6 +7,7 @@
 package unsafe_testing
 
 import (
+	pre "github.com/sourcenetwork/orbis-rs/gen/go/orbis/v0/pre"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -989,8 +990,14 @@ type SubmitUnauthorizedRelayEvidenceRequest struct {
 	TargetPeerId                 string                 `protobuf:"bytes,3,opt,name=target_peer_id,json=targetPeerId,proto3" json:"target_peer_id,omitempty"`
 	TokenString                  string                 `protobuf:"bytes,4,opt,name=token_string,json=tokenString,proto3" json:"token_string,omitempty"`
 	PreReaderPk                  []byte                 `protobuf:"bytes,5,opt,name=pre_reader_pk,json=preReaderPk,proto3" json:"pre_reader_pk,omitempty"`
-	unknownFields                protoimpl.UnknownFields
-	sizeCache                    protoimpl.SizeCache
+	// When set (origin_protocol "pre" only), the target node treats the request's document as
+	// supplied inline instead of resolving object_id via bulletin.read — mirrors
+	// StartPreRequest.document. The relay statement must have document_inline set; the target node
+	// re-derives object_id from this document when it reports, and carries it to co-signers
+	// out-of-band (never on chain).
+	InlineDocument *pre.InlineDocument `protobuf:"bytes,6,opt,name=inline_document,json=inlineDocument,proto3,oneof" json:"inline_document,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *SubmitUnauthorizedRelayEvidenceRequest) Reset() {
@@ -1054,6 +1061,13 @@ func (x *SubmitUnauthorizedRelayEvidenceRequest) GetTokenString() string {
 func (x *SubmitUnauthorizedRelayEvidenceRequest) GetPreReaderPk() []byte {
 	if x != nil {
 		return x.PreReaderPk
+	}
+	return nil
+}
+
+func (x *SubmitUnauthorizedRelayEvidenceRequest) GetInlineDocument() *pre.InlineDocument {
+	if x != nil {
+		return x.InlineDocument
 	}
 	return nil
 }
@@ -1463,7 +1477,7 @@ var File_orbis_unsafe_testing_unsafe_testing_service_proto protoreflect.FileDesc
 
 const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"\n" +
-	"1orbis/unsafe_testing/unsafe_testing_service.proto\x12\x14orbis.unsafe_testing\"r\n" +
+	"1orbis/unsafe_testing/unsafe_testing_service.proto\x12\x14orbis.unsafe_testing\x1a\x1eorbis/v0/pre/pre_service.proto\"r\n" +
 	"\x0fLocalStorageKey\x12D\n" +
 	"\bkey_type\x18\x01 \x01(\x0e2).orbis.unsafe_testing.LocalStorageKeyTypeR\akeyType\x12\x19\n" +
 	"\bring_key\x18\x02 \x01(\tR\aringKey\"\xa0\x01\n" +
@@ -1516,13 +1530,15 @@ const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"\x12new_peer_node_keys\x18\x05 \x03(\tR\x0fnewPeerNodeKeys\x12#\n" +
 	"\rnew_threshold\x18\x06 \x01(\rR\fnewThreshold\x12(\n" +
 	"\x10bulletin_post_id\x18\a \x01(\tR\x0ebulletinPostId\"%\n" +
-	"#SubmitPssStallOfflineReportResponse\"\x85\x02\n" +
+	"#SubmitPssStallOfflineReportResponse\"\xe5\x02\n" +
 	"&SubmitUnauthorizedRelayEvidenceRequest\x12E\n" +
 	"\x1frelay_statement_canonical_bytes\x18\x01 \x01(\fR\x1crelayStatementCanonicalBytes\x12'\n" +
 	"\x0frelay_signature\x18\x02 \x01(\fR\x0erelaySignature\x12$\n" +
 	"\x0etarget_peer_id\x18\x03 \x01(\tR\ftargetPeerId\x12!\n" +
 	"\ftoken_string\x18\x04 \x01(\tR\vtokenString\x12\"\n" +
-	"\rpre_reader_pk\x18\x05 \x01(\fR\vpreReaderPk\")\n" +
+	"\rpre_reader_pk\x18\x05 \x01(\fR\vpreReaderPk\x12J\n" +
+	"\x0finline_document\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x00R\x0einlineDocument\x88\x01\x01B\x12\n" +
+	"\x10_inline_document\")\n" +
 	"'SubmitUnauthorizedRelayEvidenceResponse\"u\n" +
 	")SubmitOrganicConflictingCommitmentRequest\x12\x1d\n" +
 	"\n" +
@@ -1611,6 +1627,7 @@ var file_orbis_unsafe_testing_unsafe_testing_service_proto_goTypes = []any{
 	(*SubmitOrganicConflictingManifestResponse)(nil),          // 26: orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
 	(*SubmitOrganicInvalidRefreshResultRequest)(nil),          // 27: orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest
 	(*SubmitOrganicInvalidRefreshResultResponse)(nil),         // 28: orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
+	(*pre.InlineDocument)(nil),                                // 29: orbis.v0.pre.InlineDocument
 }
 var file_orbis_unsafe_testing_unsafe_testing_service_proto_depIdxs = []int32{
 	0,  // 0: orbis.unsafe_testing.LocalStorageKey.key_type:type_name -> orbis.unsafe_testing.LocalStorageKeyType
@@ -1619,37 +1636,38 @@ var file_orbis_unsafe_testing_unsafe_testing_service_proto_depIdxs = []int32{
 	2,  // 3: orbis.unsafe_testing.SetLocalStorageRequest.key:type_name -> orbis.unsafe_testing.LocalStorageKey
 	1,  // 4: orbis.unsafe_testing.SetLocalStorageRequest.access_mode:type_name -> orbis.unsafe_testing.LocalStorageAccessMode
 	2,  // 5: orbis.unsafe_testing.DeleteLocalStorageRequest.key:type_name -> orbis.unsafe_testing.LocalStorageKey
-	3,  // 6: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:input_type -> orbis.unsafe_testing.GetLocalStorageRequest
-	5,  // 7: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:input_type -> orbis.unsafe_testing.SetLocalStorageRequest
-	7,  // 8: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:input_type -> orbis.unsafe_testing.DeleteLocalStorageRequest
-	9,  // 9: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:input_type -> orbis.unsafe_testing.GetActivePssSessionRequest
-	11, // 10: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:input_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceRequest
-	13, // 11: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:input_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceRequest
-	15, // 12: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:input_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceRequest
-	17, // 13: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:input_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportRequest
-	19, // 14: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:input_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceRequest
-	21, // 15: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:input_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentRequest
-	23, // 16: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:input_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareRequest
-	25, // 17: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:input_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestRequest
-	27, // 18: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:input_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest
-	4,  // 19: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:output_type -> orbis.unsafe_testing.GetLocalStorageResponse
-	6,  // 20: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:output_type -> orbis.unsafe_testing.SetLocalStorageResponse
-	8,  // 21: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:output_type -> orbis.unsafe_testing.DeleteLocalStorageResponse
-	10, // 22: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:output_type -> orbis.unsafe_testing.GetActivePssSessionResponse
-	12, // 23: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceResponse
-	14, // 24: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:output_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceResponse
-	16, // 25: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceResponse
-	18, // 26: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:output_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportResponse
-	20, // 27: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:output_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceResponse
-	22, // 28: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentResponse
-	24, // 29: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:output_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareResponse
-	26, // 30: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
-	28, // 31: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:output_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
-	19, // [19:32] is the sub-list for method output_type
-	6,  // [6:19] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	29, // 6: orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceRequest.inline_document:type_name -> orbis.v0.pre.InlineDocument
+	3,  // 7: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:input_type -> orbis.unsafe_testing.GetLocalStorageRequest
+	5,  // 8: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:input_type -> orbis.unsafe_testing.SetLocalStorageRequest
+	7,  // 9: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:input_type -> orbis.unsafe_testing.DeleteLocalStorageRequest
+	9,  // 10: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:input_type -> orbis.unsafe_testing.GetActivePssSessionRequest
+	11, // 11: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:input_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceRequest
+	13, // 12: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:input_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceRequest
+	15, // 13: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:input_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceRequest
+	17, // 14: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:input_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportRequest
+	19, // 15: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:input_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceRequest
+	21, // 16: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:input_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentRequest
+	23, // 17: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:input_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareRequest
+	25, // 18: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:input_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestRequest
+	27, // 19: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:input_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest
+	4,  // 20: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:output_type -> orbis.unsafe_testing.GetLocalStorageResponse
+	6,  // 21: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:output_type -> orbis.unsafe_testing.SetLocalStorageResponse
+	8,  // 22: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:output_type -> orbis.unsafe_testing.DeleteLocalStorageResponse
+	10, // 23: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:output_type -> orbis.unsafe_testing.GetActivePssSessionResponse
+	12, // 24: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceResponse
+	14, // 25: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:output_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceResponse
+	16, // 26: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceResponse
+	18, // 27: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:output_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportResponse
+	20, // 28: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:output_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceResponse
+	22, // 29: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentResponse
+	24, // 30: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:output_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareResponse
+	26, // 31: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
+	28, // 32: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:output_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
+	20, // [20:33] is the sub-list for method output_type
+	7,  // [7:20] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_orbis_unsafe_testing_unsafe_testing_service_proto_init() }
@@ -1657,6 +1675,7 @@ func file_orbis_unsafe_testing_unsafe_testing_service_proto_init() {
 	if File_orbis_unsafe_testing_unsafe_testing_service_proto != nil {
 		return
 	}
+	file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes[17].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

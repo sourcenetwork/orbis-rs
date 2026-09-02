@@ -73,6 +73,140 @@ func (x *TimestampRange) GetEnd() uint64 {
 	return 0
 }
 
+// The document, in full, supplied directly by the caller instead of already being on the
+// bulletin. object_id must equal generate_document_id(ring_id, encrypted_document, proof,
+// policy_id, resource, permission, tier, timestamp) — nodes recompute and check this locally
+// before doing anything else with the request.
+type InlineDocument struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	RingId string                 `protobuf:"bytes,1,opt,name=ring_id,json=ringId,proto3" json:"ring_id,omitempty"`
+	// The pre-encrypted document (serialized Secret struct from crypto crate).
+	// Same shape as StoreSecretRequest.encrypted_document.
+	EncryptedDocument []byte `protobuf:"bytes,2,opt,name=encrypted_document,json=encryptedDocument,proto3" json:"encrypted_document,omitempty"`
+	// The encryption commitment (compressed G1 point from encryption)
+	EncCmt     []byte `protobuf:"bytes,3,opt,name=enc_cmt,json=encCmt,proto3" json:"enc_cmt,omitempty"`
+	PolicyId   string `protobuf:"bytes,4,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
+	Resource   string `protobuf:"bytes,5,opt,name=resource,proto3" json:"resource,omitempty"`
+	Permission string `protobuf:"bytes,6,opt,name=permission,proto3" json:"permission,omitempty"`
+	// Shared point for encryption proof
+	SharedPoint []byte `protobuf:"bytes,7,opt,name=shared_point,json=sharedPoint,proto3" json:"shared_point,omitempty"`
+	// Challenge for encryption proof
+	Challenge []byte `protobuf:"bytes,8,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	// Response for encryption proof
+	Response      []byte  `protobuf:"bytes,9,opt,name=response,proto3" json:"response,omitempty"`
+	Tier          *string `protobuf:"bytes,10,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
+	Timestamp     *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InlineDocument) Reset() {
+	*x = InlineDocument{}
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InlineDocument) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InlineDocument) ProtoMessage() {}
+
+func (x *InlineDocument) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InlineDocument.ProtoReflect.Descriptor instead.
+func (*InlineDocument) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *InlineDocument) GetRingId() string {
+	if x != nil {
+		return x.RingId
+	}
+	return ""
+}
+
+func (x *InlineDocument) GetEncryptedDocument() []byte {
+	if x != nil {
+		return x.EncryptedDocument
+	}
+	return nil
+}
+
+func (x *InlineDocument) GetEncCmt() []byte {
+	if x != nil {
+		return x.EncCmt
+	}
+	return nil
+}
+
+func (x *InlineDocument) GetPolicyId() string {
+	if x != nil {
+		return x.PolicyId
+	}
+	return ""
+}
+
+func (x *InlineDocument) GetResource() string {
+	if x != nil {
+		return x.Resource
+	}
+	return ""
+}
+
+func (x *InlineDocument) GetPermission() string {
+	if x != nil {
+		return x.Permission
+	}
+	return ""
+}
+
+func (x *InlineDocument) GetSharedPoint() []byte {
+	if x != nil {
+		return x.SharedPoint
+	}
+	return nil
+}
+
+func (x *InlineDocument) GetChallenge() []byte {
+	if x != nil {
+		return x.Challenge
+	}
+	return nil
+}
+
+func (x *InlineDocument) GetResponse() []byte {
+	if x != nil {
+		return x.Response
+	}
+	return nil
+}
+
+func (x *InlineDocument) GetTier() string {
+	if x != nil && x.Tier != nil {
+		return *x.Tier
+	}
+	return ""
+}
+
+func (x *InlineDocument) GetTimestamp() uint64 {
+	if x != nil && x.Timestamp != nil {
+		return *x.Timestamp
+	}
+	return 0
+}
+
 type StartPreRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// reader public key
@@ -85,14 +219,16 @@ type StartPreRequest struct {
 	Salt *string `protobuf:"bytes,4,opt,name=salt,proto3,oneof" json:"salt,omitempty"`
 	// Optional timestamp range for validity window
 	// TODO: Insecure test code meant to be moved to acp eventually (not in authn either)
-	ValidWindow   *TimestampRange `protobuf:"bytes,5,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
+	ValidWindow *TimestampRange `protobuf:"bytes,5,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
+	// When set, the document is taken from here instead of read from the bulletin by object_id.
+	Document      *InlineDocument `protobuf:"bytes,6,opt,name=document,proto3,oneof" json:"document,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartPreRequest) Reset() {
 	*x = StartPreRequest{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -104,7 +240,7 @@ func (x *StartPreRequest) String() string {
 func (*StartPreRequest) ProtoMessage() {}
 
 func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -117,7 +253,7 @@ func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreRequest.ProtoReflect.Descriptor instead.
 func (*StartPreRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{1}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StartPreRequest) GetRdrPk() []byte {
@@ -155,6 +291,13 @@ func (x *StartPreRequest) GetValidWindow() *TimestampRange {
 	return nil
 }
 
+func (x *StartPreRequest) GetDocument() *InlineDocument {
+	if x != nil {
+		return x.Document
+	}
+	return nil
+}
+
 type StartPreResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Status          string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -167,7 +310,7 @@ type StartPreResponse struct {
 
 func (x *StartPreResponse) Reset() {
 	*x = StartPreResponse{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -179,7 +322,7 @@ func (x *StartPreResponse) String() string {
 func (*StartPreResponse) ProtoMessage() {}
 
 func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -192,7 +335,7 @@ func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreResponse.ProtoReflect.Descriptor instead.
 func (*StartPreResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartPreResponse) GetStatus() string {
@@ -230,7 +373,25 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\x1eorbis/v0/pre/pre_service.proto\x12\forbis.v0.pre\"8\n" +
 	"\x0eTimestampRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x04R\x05start\x12\x10\n" +
-	"\x03end\x18\x02 \x01(\x04R\x03end\"\xf2\x01\n" +
+	"\x03end\x18\x02 \x01(\x04R\x03end\"\xfa\x02\n" +
+	"\x0eInlineDocument\x12\x17\n" +
+	"\aring_id\x18\x01 \x01(\tR\x06ringId\x12-\n" +
+	"\x12encrypted_document\x18\x02 \x01(\fR\x11encryptedDocument\x12\x17\n" +
+	"\aenc_cmt\x18\x03 \x01(\fR\x06encCmt\x12\x1b\n" +
+	"\tpolicy_id\x18\x04 \x01(\tR\bpolicyId\x12\x1a\n" +
+	"\bresource\x18\x05 \x01(\tR\bresource\x12\x1e\n" +
+	"\n" +
+	"permission\x18\x06 \x01(\tR\n" +
+	"permission\x12!\n" +
+	"\fshared_point\x18\a \x01(\fR\vsharedPoint\x12\x1c\n" +
+	"\tchallenge\x18\b \x01(\fR\tchallenge\x12\x1a\n" +
+	"\bresponse\x18\t \x01(\fR\bresponse\x12\x17\n" +
+	"\x04tier\x18\n" +
+	" \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
+	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
+	"\x05_tierB\f\n" +
+	"\n" +
+	"_timestamp\"\xbe\x02\n" +
 	"\x0fStartPreRequest\x12\x15\n" +
 	"\x06rdr_pk\x18\x01 \x01(\fR\x05rdrPk\x12\x1b\n" +
 	"\tobject_id\x18\x02 \x01(\tR\bobjectId\x12#\n" +
@@ -238,10 +399,12 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"derivation\x18\x03 \x01(\fH\x00R\n" +
 	"derivation\x88\x01\x01\x12\x17\n" +
 	"\x04salt\x18\x04 \x01(\tH\x01R\x04salt\x88\x01\x01\x12D\n" +
-	"\fvalid_window\x18\x05 \x01(\v2\x1c.orbis.v0.pre.TimestampRangeH\x02R\vvalidWindow\x88\x01\x01B\r\n" +
+	"\fvalid_window\x18\x05 \x01(\v2\x1c.orbis.v0.pre.TimestampRangeH\x02R\vvalidWindow\x88\x01\x01\x12=\n" +
+	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01B\r\n" +
 	"\v_derivationB\a\n" +
 	"\x05_saltB\x0f\n" +
-	"\r_valid_window\"\x8e\x01\n" +
+	"\r_valid_windowB\v\n" +
+	"\t_document\"\x8e\x01\n" +
 	"\x10StartPreResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -265,21 +428,23 @@ func file_orbis_v0_pre_pre_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_pre_pre_service_proto_rawDescData
 }
 
-var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_orbis_v0_pre_pre_service_proto_goTypes = []any{
 	(*TimestampRange)(nil),   // 0: orbis.v0.pre.TimestampRange
-	(*StartPreRequest)(nil),  // 1: orbis.v0.pre.StartPreRequest
-	(*StartPreResponse)(nil), // 2: orbis.v0.pre.StartPreResponse
+	(*InlineDocument)(nil),   // 1: orbis.v0.pre.InlineDocument
+	(*StartPreRequest)(nil),  // 2: orbis.v0.pre.StartPreRequest
+	(*StartPreResponse)(nil), // 3: orbis.v0.pre.StartPreResponse
 }
 var file_orbis_v0_pre_pre_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.pre.StartPreRequest.valid_window:type_name -> orbis.v0.pre.TimestampRange
-	1, // 1: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
-	2, // 2: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
-	2, // [2:3] is the sub-list for method output_type
-	1, // [1:2] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 1: orbis.v0.pre.StartPreRequest.document:type_name -> orbis.v0.pre.InlineDocument
+	2, // 2: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
+	3, // 3: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
+	3, // [3:4] is the sub-list for method output_type
+	2, // [2:3] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_pre_pre_service_proto_init() }
@@ -288,13 +453,14 @@ func file_orbis_v0_pre_pre_service_proto_init() {
 		return
 	}
 	file_orbis_v0_pre_pre_service_proto_msgTypes[1].OneofWrappers = []any{}
+	file_orbis_v0_pre_pre_service_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_pre_pre_service_proto_rawDesc), len(file_orbis_v0_pre_pre_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

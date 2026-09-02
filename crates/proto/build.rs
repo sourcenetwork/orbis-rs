@@ -8,9 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "proto/orbis/unsafe_testing/unsafe_testing_service.proto",
     ];
 
-    for proto in &protos {
-        tonic_prost_build::compile_protos(proto)?;
-    }
+    tonic_prost_build::configure().compile_protos(&protos, &["proto"])?;
 
     Ok(())
 }
