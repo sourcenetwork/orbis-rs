@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: write   # `image` job pushes the integration image to GHCR
 
 # A newer push to the same branch / PR cancels the superseded run.
 concurrency:
@@ -16,6 +17,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Run-scoped GHCR tag for the integration image. Passed to the sharded
+  # `integration` jobs by registry rather than artifact — artifact v4 doesn't
+  # work on the runs-on.com spot runners.
+  INTEG_IMAGE: ghcr.io/${{ github.repository }}/node-integration
   # Incremental compilation has no upside on ephemeral CI runners (the cache we
   # restore doesn't carry target/debug/incremental) and adds codegen overhead.
   CARGO_INCREMENTAL: "0"
@@ -91,10 +96,10 @@ jobs:
     - name: Clippy (${{ matrix.crypto }})
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
-  # Build the orbis-node integration image once (cargo-chef in docker/Dockerfile
-  # keeps the dependency compile a cached layer). Saved as an artifact; the
-  # `integration` shards `docker load` it and reuse it via ORBIS_INTEGRATION_IMAGE
-  # instead of `docker compose up --build`.
+  # Build the orbis-node integration image once and push it to GHCR (cargo-chef
+  # in docker/Dockerfile keeps the dependency compile a cached layer). The
+  # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
+  # of `docker compose up --build`.
   image:
     runs-on: ubuntu-latest
     strategy:
@@ -106,23 +111,23 @@ jobs:
       with:
         persist-credentials: false
     - uses: docker/setup-buildx-action@v3
-    - name: Build integration image (${{ matrix.crypto }})
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build + push integration image (${{ matrix.crypto }})
       uses: docker/build-push-action@v5
       with:
         context: .
         file: docker/Dockerfile
-        tags: orbis-node-integration:${{ matrix.crypto }}
+        push: true
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-${{ matrix.crypto }}
         build-args: |
           ENABLE_INTEGRATION_TEST=true
           CRYPTO_FEATURE=${{ matrix.crypto }}
-        outputs: type=docker,dest=/tmp/integ-image.tar
         cache-from: type=gha,scope=integ-${{ matrix.crypto }}
         cache-to: type=gha,scope=integ-${{ matrix.crypto }},mode=max
-    - uses: actions/upload-artifact@v4
-      with:
-        name: integ-image-${{ matrix.crypto }}
-        path: /tmp/integ-image.tar
-        retention-days: 1
 
   # Compile every test binary once per crypto and save the shared cache the
   # `unit` / `integration` jobs restore.
@@ -227,12 +232,15 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-nextest
-    - uses: actions/download-artifact@v4
+    - uses: docker/login-action@v3
       with:
-        name: integ-image-${{ matrix.crypto }}
-        path: /tmp
-    - name: Load integration image
-      run: docker load -i /tmp/integ-image.tar
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Pull integration image
+      run: |
+        docker pull "$INTEG_IMAGE:${{ github.sha }}-${{ matrix.crypto }}"
+        docker tag "$INTEG_IMAGE:${{ github.sha }}-${{ matrix.crypto }}" "$ORBIS_INTEGRATION_IMAGE"
     - name: Integration tests (${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
       run: >-
         cargo nextest run --profile ci ${{ matrix.cargo_flags }}
