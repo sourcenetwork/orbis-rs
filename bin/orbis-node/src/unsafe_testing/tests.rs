@@ -182,7 +182,7 @@ async fn rejects_invalid_keys_and_access_modes() {
 #[tokio::test]
 #[serial_test::serial]
 async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
-    let network = common::IntegrationTestNetwork::builder()
+    let network = test_support::IntegrationTestNetwork::builder()
         .with_production_node_build()
         .build();
 
@@ -246,7 +246,7 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
 #[tokio::test]
 #[serial_test::serial]
 async fn unsafe_testing_docker_nodes_require_runtime_opt_in() {
-    let network = common::IntegrationTestNetwork::builder()
+    let network = test_support::IntegrationTestNetwork::builder()
         .with_unsafe_testing_runtime_disabled()
         .build();
     let endpoints = network.all_endpoints();

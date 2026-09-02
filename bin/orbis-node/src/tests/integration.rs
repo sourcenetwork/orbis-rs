@@ -10,13 +10,13 @@ use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
 };
-use common::{
-    blockchain::{orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY},
-    IntegrationTestNetwork,
+use common::blockchain::{
+    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
+use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
 // Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).

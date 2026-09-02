@@ -45,12 +45,9 @@ use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, RingPayload};
 use bulletin::BulletinImpl;
-use common::{
-    blockchain::{
-        events::ReportEventSubscription, sign_node_message_with_hex_key, ChainConfig, TxSigner,
-        VeraClient, TEST_ACCOUNT_HEX_KEY,
-    },
-    VeraTestContainer,
+use common::blockchain::{
+    events::ReportEventSubscription, sign_node_message_with_hex_key, ChainConfig, TxSigner,
+    VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::{
     helpers::generate_keypair,
@@ -76,6 +73,7 @@ use proto::{
 };
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use test_support::VeraTestContainer;
 use tokio::time::{sleep, Duration, Instant};
 use tonic::Request;
 

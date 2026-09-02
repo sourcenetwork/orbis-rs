@@ -5,11 +5,12 @@
 //!     test_stale_pending_dkg_is_cancelled_on_vera -- --nocapture
 
 use crate::ring_state::RingIndexEntry;
-use common::{blockchain::VeraClient, IntegrationTestNetwork};
+use common::blockchain::VeraClient;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
 };
+use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
 const RING_ID: &str = "integration-test-stale-pending-ring";

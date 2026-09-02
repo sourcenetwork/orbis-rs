@@ -24,15 +24,12 @@ use crate::reporting::v0::types::{
 use crate::ring_state::{RingIndexEntry, RingShareBundle};
 use authn::JwtSigner;
 use bulletin::r#trait::{BulletinKind, RingPayload};
-use common::{
-    blockchain::{
-        acp::Object,
-        events::{ReportAcceptedEvent, ReportEventSubscription},
-        orbis::{generate_document_id, WhitelistTarget},
-        sign_node_message_with_hex_key, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-        TEST_ACCOUNT_PUBKEY_HEX,
-    },
-    IntegrationTestNetwork,
+use common::blockchain::{
+    acp::Object,
+    events::{ReportAcceptedEvent, ReportEventSubscription},
+    orbis::{generate_document_id, WhitelistTarget},
+    sign_node_message_with_hex_key, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+    TEST_ACCOUNT_PUBKEY_HEX,
 };
 use crypto::helpers::generate_keypair;
 use crypto::r#trait::{
@@ -49,6 +46,7 @@ use proto::unsafe_testing::{
     SubmitPssStallOfflineReportRequest, SubmitUnauthorizedRelayEvidenceRequest,
 };
 use proto::v0::pre::InlineDocument;
+use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 use zeroize::Zeroizing;
 

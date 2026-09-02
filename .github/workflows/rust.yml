@@ -8,9 +8,22 @@ on:
 
 permissions:
   contents: read
+  packages: write   # `image` job pushes the integration image to GHCR
+
+# A newer push to the same branch / PR cancels the superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # Run-scoped GHCR tag for the integration image. Passed to the sharded
+  # `integration` jobs by registry rather than artifact — artifact v4 doesn't
+  # work on the runs-on.com spot runners.
+  INTEG_IMAGE: ghcr.io/${{ github.repository }}/node-integration
+  # Incremental compilation has no upside on ephemeral CI runners (the cache we
+  # restore doesn't carry target/debug/incremental) and adds codegen overhead.
+  CARGO_INCREMENTAL: "0"
   # `local-storage` derives its at-rest key with Argon2id at ~256 MiB / t=3 by
   # default (see StoredKdfParams::for_new_db). The test suite makes ~150
   # LocalStorageImpl::new calls, so run it with trivial KDF cost. The released
@@ -18,6 +31,21 @@ env:
   # the strong default.
   ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB: "8"
   ORBIS_LOCAL_STORAGE_KDF_T_COST: "1"
+  # The Docker/Vera integration tests — everything that shells out to
+  # `docker compose`. Run in their own sharded `integration` job; the `unit`
+  # job runs the complement. Validate with `cargo nextest list -E "<this>"`.
+  DOCKER_TESTS: >-
+    binary(blockchain_vera)
+    | (package(authz) & test(/^vera::tests::/))
+    | (package(bulletin) & test(/^vera::tests::/))
+    | (package(orbis-node) & (test(/^tests::concurrent::/)
+    | test(/^tests::reporting::/)
+    | test(/^tests::fault_injection::/)
+    | test(/^tests::integration::/)
+    | test(/^tests::upgrade::/)
+    | test(/^tests::cancel_ring_reshare::/)
+    | test(/^tests::pending_ring_cancellation::/)
+    | test(/^unsafe_testing::tests::/)))
 
 jobs:
   lint:
@@ -26,17 +54,25 @@ jobs:
     - uses: actions/checkout@v4
     - name: Update Rust stable
       run: rustup update stable
+    - name: Cache cargo registry / index
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: lint
     - name: Install protoc
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
     - name: Check formatting
       run: cargo fmt --all -- --check
     - name: Install cargo-deny
-      run: cargo install cargo-deny --locked
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-deny
     - name: Check licences
       run: cargo deny check
 
   clippy:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
       fail-fast: false
       matrix:
@@ -51,14 +87,55 @@ jobs:
         persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
-    - name: Install protoc
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.crypto }}
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Clippy (${{ matrix.crypto }})
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
-  build:
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}/\
+  # Build the orbis-node integration image once and push it to GHCR (cargo-chef
+  # in docker/Dockerfile keeps the dependency compile a cached layer). The
+  # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
+  # of `docker compose up --build`.
+  image:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, decaf377]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - uses: docker/setup-buildx-action@v3
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build + push integration image (${{ matrix.crypto }})
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        push: true
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-${{ matrix.crypto }}
+        build-args: |
+          ENABLE_INTEGRATION_TEST=true
+          CRYPTO_FEATURE=${{ matrix.crypto }}
+        cache-from: type=gha,scope=integ-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-${{ matrix.crypto }},mode=max
+
+  # Compile every test binary once per crypto and save the shared cache the
+  # `unit` / `integration` jobs restore.
+  compile:
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +150,99 @@ jobs:
         persist-credentials: false
     - name: Update Rust stable
       run: rustup update stable
-    - name: Install protoc
-      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-    - name: Run tests (${{ matrix.crypto }})
-      run: cargo test ${{ matrix.cargo_flags }} --verbose
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: testbins-${{ matrix.crypto }}
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
+    - name: Compile test binaries (${{ matrix.crypto }})
+      run: cargo nextest run --no-run --profile ci ${{ matrix.cargo_flags }}
+
+  unit:
+    needs: compile
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crypto: bls12-381
+            cargo_flags: --features=integration-test,fault-injection,scale-testing
+          - crypto: decaf377
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection,scale-testing
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Update Rust stable
+      run: rustup update stable
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: testbins-${{ matrix.crypto }}
+        save-if: 'false'
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
+    - name: Unit + in-process tests (${{ matrix.crypto }})
+      run: cargo nextest run --profile ci ${{ matrix.cargo_flags }} -E "not (${{ env.DOCKER_TESTS }})"
+
+  integration:
+    needs: [compile, image]
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
+      ORBIS_INTEGRATION_IMAGE: orbis-node-integration:${{ matrix.crypto }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, decaf377]
+        shard: ["1", "2", "3"]
+        include:
+          - crypto: bls12-381
+            cargo_flags: --features=integration-test,fault-injection,scale-testing
+          - crypto: decaf377
+            cargo_flags: --no-default-features --features=decaf377,redb,integration-test,fault-injection,scale-testing
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Update Rust stable
+      run: rustup update stable
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: testbins-${{ matrix.crypto }}
+        save-if: 'false'
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest
+    - uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Pull integration image
+      run: |
+        docker pull "$INTEG_IMAGE:${{ github.sha }}-${{ matrix.crypto }}"
+        docker tag "$INTEG_IMAGE:${{ github.sha }}-${{ matrix.crypto }}" "$ORBIS_INTEGRATION_IMAGE"
+    - name: Integration tests (${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
+      run: >-
+        cargo nextest run --profile ci ${{ matrix.cargo_flags }}
+        -E "${{ env.DOCKER_TESTS }}"
+        --partition count:${{ matrix.shard }}/3

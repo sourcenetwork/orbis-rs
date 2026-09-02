@@ -10,15 +10,13 @@
 //!   cargo test -p orbis-node --features integration-test -- test_cancel_stuck_reshare_reverts_ring_and_preserves_signing --nocapture
 
 use bulletin::r#trait::{BulletinKind, RingPayload};
-use common::{
-    blockchain::{
-        orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-        TEST_ACCOUNT_PUBKEY_HEX,
-    },
-    IntegrationTestNetwork,
+use common::blockchain::{
+    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+    TEST_ACCOUNT_PUBKEY_HEX,
 };
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, GroupAffine, SignImpl};
+use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
 use super::constants::{

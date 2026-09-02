@@ -168,12 +168,24 @@ impl JtiReplayGuard {
         deadline: Instant,
         now: Instant,
     ) -> Result<Outcome, ReplayError> {
+        Self::try_record_with_cap(map, jti, deadline, now, MAX_JTI_ENTRIES)
+    }
+
+    /// [`try_record`] with an explicit capacity, so the eviction branch can be
+    /// unit-tested without inserting a million entries.
+    fn try_record_with_cap(
+        map: &mut HashMap<String, Instant>,
+        jti: &str,
+        deadline: Instant,
+        now: Instant,
+        max_entries: usize,
+    ) -> Result<Outcome, ReplayError> {
         Self::sweep_expired(map, now);
         if map.contains_key(jti) {
             return Err(ReplayError::AlreadyUsed);
         }
         let mut outcome = Outcome::Recorded;
-        if map.len() >= MAX_JTI_ENTRIES {
+        if map.len() >= max_entries {
             if let Some(oldest) = map
                 .iter()
                 .min_by_key(|(_, expiry)| **expiry)
@@ -256,22 +268,27 @@ mod tests {
 
     #[test]
     fn at_capacity_the_oldest_entry_is_evicted() {
+        // Small explicit cap — the real MAX_JTI_ENTRIES is 1M and `try_record`
+        // is O(n) per call (the per-call `sweep_expired`), so filling it for real
+        // is O(n^2) and takes hours.
+        const CAP: usize = 8;
         let mut m = map();
         let now = Instant::now();
-        for i in 0..MAX_JTI_ENTRIES {
+        for i in 0..CAP {
             // Strictly increasing deadlines so entry 0 is unambiguously oldest.
             let deadline = now + Duration::from_secs(3600 + i as u64);
-            JtiReplayGuard::try_record(&mut m, &format!("jti-{i}"), deadline, now).unwrap();
+            JtiReplayGuard::try_record_with_cap(&mut m, &format!("jti-{i}"), deadline, now, CAP)
+                .unwrap();
         }
-        assert_eq!(m.len(), MAX_JTI_ENTRIES);
+        assert_eq!(m.len(), CAP);
 
-        let deadline = now + Duration::from_secs(3600 + MAX_JTI_ENTRIES as u64);
+        let deadline = now + Duration::from_secs(3600 + CAP as u64);
         assert_eq!(
-            JtiReplayGuard::try_record(&mut m, "newcomer", deadline, now),
+            JtiReplayGuard::try_record_with_cap(&mut m, "newcomer", deadline, now, CAP),
             Ok(Outcome::RecordedAfterEvicting)
         );
 
-        assert_eq!(m.len(), MAX_JTI_ENTRIES);
+        assert_eq!(m.len(), CAP);
         assert!(
             !m.contains_key("jti-0"),
             "oldest entry should have been evicted"

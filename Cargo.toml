@@ -8,15 +8,24 @@ members = [
     "crates/local-storage",
     "bin/cli-tool",
     "bin/orbis-bench",
-    "crates/authn", 
-    "crates/authz", 
-    "crates/common", 
+    "crates/authn",
+    "crates/authz",
+    "crates/common",
     "crates/bulletin",
+    "crates/test-support",
 ]
 
 [workspace.lints.clippy]
 too_many_arguments = "allow"
 type_complexity = "allow"
+
+# `dev` (and, by inheritance, `test`) — drop full debuginfo. `line-tables-only`
+# keeps function names + file:line in backtraces (and in test-failure panics),
+# but skips the per-type/per-local DWARF that dominates compile + link time for a
+# tree this size (iroh, tonic, arkworks). For step-debugging with locals, build
+# with `RUSTFLAGS="-C debuginfo=2"` or a local `[profile.dev]` override.
+[profile.dev]
+debug = "line-tables-only"
 
 [workspace.package]
 version = "0.0.1"

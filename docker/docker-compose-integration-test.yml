@@ -54,6 +54,9 @@ services:
       start_period: 30s
 
   node1:
+    # Pre-built image (CI does `docker load` + sets ORBIS_INTEGRATION_IMAGE);
+    # otherwise `docker compose up --build` builds into this local tag.
+    image: ${ORBIS_INTEGRATION_IMAGE:-orbis-node-integration:local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -87,6 +90,9 @@ services:
       start_period: 30s
 
   node2:
+    # Pre-built image (CI does `docker load` + sets ORBIS_INTEGRATION_IMAGE);
+    # otherwise `docker compose up --build` builds into this local tag.
+    image: ${ORBIS_INTEGRATION_IMAGE:-orbis-node-integration:local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -120,6 +126,9 @@ services:
       start_period: 30s
 
   node3:
+    # Pre-built image (CI does `docker load` + sets ORBIS_INTEGRATION_IMAGE);
+    # otherwise `docker compose up --build` builds into this local tag.
+    image: ${ORBIS_INTEGRATION_IMAGE:-orbis-node-integration:local}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -154,6 +163,9 @@ services:
 
   node4:
     profiles: ["node4"]
+    # Pre-built image (CI does `docker load` + sets ORBIS_INTEGRATION_IMAGE);
+    # otherwise `docker compose up --build` builds into this local tag.
+    image: ${ORBIS_INTEGRATION_IMAGE:-orbis-node-integration:local}
     build:
       context: ..
       dockerfile: docker/Dockerfile

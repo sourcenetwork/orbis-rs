@@ -1,13 +1,13 @@
 //! Docker Compose orchestration for integration tests: a Vera chain plus
 //! orbis-node containers, brought up/down around a test. Compiled only when
-//! the `test-harness` feature is on (orbis-node's `integration-test` feature
-//! enables it); never part of the production build.
+//! this crate is pulled in as a `[dev-dependencies]` entry; it is never part
+//! of any production build.
 //!
 //! Prerequisites on `PATH`: `docker` (with the Compose plugin) and `curl` — the
 //! health probes shell out to both, and a missing binary surfaces indirectly as
 //! a "failed to become healthy" panic rather than a clear error.
 
-use crate::blockchain::{ChainConfig, ChainConfigBuilder};
+use common::blockchain::{ChainConfig, ChainConfigBuilder};
 use std::env;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -280,11 +280,12 @@ pub struct NodeInfo {
 
 /// Integration test network that spins up vera + orbis nodes via Docker Compose.
 ///
-/// The node image is built with the crypto implementation selected by the
-/// `ORBIS_INTEGRATION_CRYPTO` env var (e.g. `bls12-381` or `decaf377`). When that var is set,
-/// `docker compose up` is run with `--build` so the image matches. When unset, default is
-/// bls12-381. Run the test with the same feature so host and containers match, e.g.:
-/// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test test_cli_calls_dkg_and_pre_endpoint --no-default-features --features integration-test,decaf377`
+/// The node image is built (`docker compose up --build`) with the crypto
+/// implementation named by the `ORBIS_INTEGRATION_CRYPTO` env var, which the
+/// compose subprocess inherits. **Unset ⇒ bls12-381.** A decaf377 run must
+/// export it so the built images match the host feature set — there is no
+/// auto-detection:
+/// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test --no-default-features --features integration-test,decaf377 test_cli_calls_dkg_and_pre_endpoint`
 pub struct IntegrationTestNetwork {
     compose_file: String,
     project_name: String,
@@ -560,23 +561,6 @@ impl IntegrationTestNetworkBuilder {
         let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
         let project_name = unique_project_name("orbis-integration");
 
-        let crypto_feature: Option<&'static str> = if env::var("ORBIS_INTEGRATION_CRYPTO").is_ok() {
-            None
-        } else {
-            #[cfg(feature = "bls12-381")]
-            {
-                Some("bls12-381")
-            }
-            #[cfg(all(not(feature = "bls12-381"), feature = "decaf377"))]
-            {
-                Some("decaf377")
-            }
-            #[cfg(not(any(feature = "bls12-381", feature = "decaf377")))]
-            {
-                None
-            }
-        };
-
         let patch_file: Option<tempfile::NamedTempFile> = if genesis_patches.is_empty() {
             None
         } else {
@@ -600,16 +584,34 @@ impl IntegrationTestNetworkBuilder {
             Some(f)
         };
 
+        // CI (and anyone who wants to) can pre-build the node image and load it,
+        // then set `ORBIS_INTEGRATION_IMAGE` so `docker compose up` reuses it
+        // instead of running a cold `cargo build --release` per test. The
+        // production-feature-set path (`with_production_node_build`) needs a
+        // *different* image, so it always builds — into a throwaway per-project
+        // tag so it never clobbers the shared pre-built one.
+        let reuse_prebuilt =
+            !production_node_build && std::env::var_os("ORBIS_INTEGRATION_IMAGE").is_some();
+        let prod_check_image = format!("orbis-node-prod-check:{project_name}");
+
         let start_compose = || {
             let mut command = compose_command(&compose_file, &project_name);
             if node_count == 4 {
                 command.args(["--profile", "node4"]);
             }
-            command.args(["up", "-d", "--build"]);
-
-            if let Some(feat) = crypto_feature {
-                command.env("ORBIS_INTEGRATION_CRYPTO", feat);
+            if reuse_prebuilt {
+                command.args(["up", "-d"]);
+            } else {
+                command.args(["up", "-d", "--build"]);
+                if production_node_build {
+                    command.env("ORBIS_INTEGRATION_IMAGE", &prod_check_image);
+                }
             }
+
+            // `ORBIS_INTEGRATION_CRYPTO` (if set) is inherited by the compose
+            // subprocess; when unset the compose file defaults to bls12-381. A
+            // decaf run must export it so the built node images match the host —
+            // see this type's doc comment and the CI `decaf377` matrix leg.
             command.env(
                 "ORBIS_BUILD_INTEGRATION_TEST",
                 if production_node_build {
