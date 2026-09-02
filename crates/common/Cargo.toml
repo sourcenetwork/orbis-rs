@@ -26,7 +26,7 @@ prost = { workspace = true }
 tonic = { workspace = true }
 rand = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
-tempfile = { workspace = true }
+tempfile = { workspace = true, optional = true }
 futures = { workspace = true }
 tokio-tungstenite = { workspace = true }
 
@@ -34,6 +34,9 @@ tokio-tungstenite = { workspace = true }
 default = []
 bls12-381 = []
 decaf377 = []
+# Docker Compose integration-test harness (see src/test_harness.rs). Enabled by
+# orbis-node's `integration-test` feature; excluded from the production build.
+test-harness = ["dep:tempfile"]
 
 [dev-dependencies]
 serial_test = "3.2.0"

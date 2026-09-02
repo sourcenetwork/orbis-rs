@@ -22,7 +22,14 @@ pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
 pub use error::{BlockchainError, Result};
 pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
 
-#[cfg(test)]
+// Docker/Vera integration tests; they need `VeraTestContainer` from the
+// `test-harness` feature, which is off by default — a plain `cargo test` omits
+// this module. It is turned on for `common` by `cargo test -p common --features
+// test-harness`, or by a workspace `cargo test --features integration-test`
+// (orbis-node's `integration-test` pulls in `common/test-harness`), which is
+// what CI runs. `authz`/`bulletin` enable it only for their own vera tests via a
+// dev-dependency and that does not reach this module.
+#[cfg(all(test, feature = "test-harness"))]
 pub mod tests;
 
 // Known test key for the "test" account created in docker-compose-vera-test.yml

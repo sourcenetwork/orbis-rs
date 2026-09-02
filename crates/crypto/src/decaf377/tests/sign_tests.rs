@@ -1,7 +1,7 @@
 use crate::decaf377::dkg::DKGNode;
 use crate::decaf377::sign::{FrostNonceCommitment, ThresholdDecafSigner};
 
-use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
+use crate::r#trait::{DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use decaf377::{Element, Fr};
 use rand_core::OsRng;
@@ -50,6 +50,35 @@ fn test_signer_creation() {
         ThresholdDecafSigner::name(),
         "threshold-frost-decaf377".to_string()
     );
+}
+
+#[test]
+fn test_hedged_nonces_are_fresh_each_call() {
+    // RFC 9591 §4.1 hedging still draws fresh randomness on every call: a signer
+    // that reused (d, e) — and therefore its commitment — across two FROST
+    // sessions with different messages would leak its share. Two calls with the
+    // same secret share must yield different nonces.
+    let signer = ThresholdDecafSigner::new();
+    let dks = DistKeyShare {
+        pri_share: PriShare {
+            i: 1,
+            v: Fr::rand(&mut OsRng),
+        },
+    };
+
+    let (_c1, s1) = signer.generate_nonces(&dks).unwrap();
+    let (_c2, s2) = signer.generate_nonces(&dks).unwrap();
+
+    assert_ne!(
+        s1.hiding_nonce, s2.hiding_nonce,
+        "hiding nonce repeated across calls"
+    );
+    assert_ne!(
+        s1.binding_nonce, s2.binding_nonce,
+        "binding nonce repeated across calls"
+    );
+    // Domain separation: the hiding and binding nonces of one call are distinct.
+    assert_ne!(s1.hiding_nonce, s1.binding_nonce);
 }
 
 #[test]
