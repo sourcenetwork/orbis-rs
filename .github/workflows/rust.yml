@@ -106,11 +106,27 @@ jobs:
       uses: taiki-e/install-action@v2
       with:
         tool: cargo-nextest
+    - uses: docker/setup-buildx-action@v3
+    - name: Build orbis-node integration image (${{ matrix.crypto }})
+      # cargo-chef in docker/Dockerfile makes the dependency compile a cached
+      # layer, so a source-only change rebuilds just the workspace crates. Built
+      # once here (not once per test) — the harness reuses it via
+      # ORBIS_INTEGRATION_IMAGE instead of `docker compose up --build`.
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        load: true
+        tags: orbis-node-integration:${{ matrix.crypto }}
+        build-args: |
+          ENABLE_INTEGRATION_TEST=true
+          CRYPTO_FEATURE=${{ matrix.crypto }}
+        cache-from: type=gha,scope=integ-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-${{ matrix.crypto }},mode=max
     - name: Run tests (${{ matrix.crypto }})
-      # Docker integration tests build node images for this crypto; the harness
-      # no longer auto-detects it from compile features (see test-support).
       # No doctests in this workspace (all fences are ```ignore), so nextest
       # covers everything `cargo test` did.
       env:
         ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
+        ORBIS_INTEGRATION_IMAGE: orbis-node-integration:${{ matrix.crypto }}
       run: cargo nextest run --profile ci ${{ matrix.cargo_flags }}

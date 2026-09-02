@@ -584,12 +584,29 @@ impl IntegrationTestNetworkBuilder {
             Some(f)
         };
 
+        // CI (and anyone who wants to) can pre-build the node image and load it,
+        // then set `ORBIS_INTEGRATION_IMAGE` so `docker compose up` reuses it
+        // instead of running a cold `cargo build --release` per test. The
+        // production-feature-set path (`with_production_node_build`) needs a
+        // *different* image, so it always builds — into a throwaway per-project
+        // tag so it never clobbers the shared pre-built one.
+        let reuse_prebuilt =
+            !production_node_build && std::env::var_os("ORBIS_INTEGRATION_IMAGE").is_some();
+        let prod_check_image = format!("orbis-node-prod-check:{project_name}");
+
         let start_compose = || {
             let mut command = compose_command(&compose_file, &project_name);
             if node_count == 4 {
                 command.args(["--profile", "node4"]);
             }
-            command.args(["up", "-d", "--build"]);
+            if reuse_prebuilt {
+                command.args(["up", "-d"]);
+            } else {
+                command.args(["up", "-d", "--build"]);
+                if production_node_build {
+                    command.env("ORBIS_INTEGRATION_IMAGE", &prod_check_image);
+                }
+            }
 
             // `ORBIS_INTEGRATION_CRYPTO` (if set) is inherited by the compose
             // subprocess; when unset the compose file defaults to bls12-381. A
