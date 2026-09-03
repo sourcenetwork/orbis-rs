@@ -2,6 +2,7 @@
 //!
 //! This module defines the core cryptography abstractions that can be implemented
 //! by various curves.
+pub mod context;
 pub mod error;
 pub mod helpers;
 pub mod r#trait;
@@ -57,6 +58,7 @@ pub const THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_nul";
 #[cfg(feature = "decaf377")]
 pub const THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";
 
+pub use context::CiphertextContext;
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
 
 #[cfg(any(test, feature = "test-helpers"))]

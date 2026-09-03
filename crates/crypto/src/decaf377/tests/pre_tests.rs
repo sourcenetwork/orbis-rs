@@ -42,6 +42,23 @@ fn test_all_pre() {
     .unwrap();
 }
 
+/// Regression guard for the public shared-point disclosure: the serialized proof
+/// must not carry AES key material, so a bulletin-only observer cannot decrypt.
+#[test]
+fn test_public_encryption_artifacts_cannot_decrypt() {
+    crate::pre_tests::test_public_encryption_artifacts_cannot_decrypt::<
+        ThresholdDealerNode,
+        _,
+        _,
+        _,
+    >(|| {
+        let sk = Fr::rand(&mut OsRng);
+        let pk = Element::GENERATOR * sk;
+        (sk, pk)
+    })
+    .unwrap();
+}
+
 // ============================================================================
 // Impl-specific tests
 // ============================================================================

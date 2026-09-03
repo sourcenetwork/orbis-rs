@@ -10,6 +10,7 @@ use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
@@ -138,35 +139,41 @@ pub fn deserialize_secret(document_json: &str) -> Result<Secret> {
         .map_err(|e| PreError::Deserialization(format!("Failed to deserialize secret: {}", e)))
 }
 
-/// Verifies that the encryption proof binds the ciphertext to the correct public key and policy.
-///
-/// Derives the actual public key (applying derivation if present), deserializes the
-/// encryption proof and commitment, then verifies via `ThresholdDealerNode::verify_encryption`.
-pub fn verify_encryption_binding(
-    ring_pk: &G1Affine,
-    derivation: Option<&[u8]>,
-    proof_str: String,
-    enc_cmt_bytes: &[u8],
-    policy_metadata: &[u8],
-) -> Result<()> {
-    let actual_pk = if let Some(derivation) = derivation {
-        ThresholdDealerNode::derive_public_key(ring_pk, derivation)
-            .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
-    } else {
-        *ring_pk
-    };
+/// Rebuilds the [`CiphertextContext`] that the encryptor bound into the
+/// encryption proof: the ring key, the policy fields from the resolved on-chain
+/// (or inline, id-checked) document, and the reader-supplied `salt`.
+pub fn build_ciphertext_context(
+    ring_pk_hex: &str,
+    document: &DocumentPayload,
+    salt: Option<&str>,
+) -> Result<CiphertextContext> {
+    let ring_pk = hex::decode(ring_pk_hex)
+        .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+    Ok(CiphertextContext {
+        ring_pk,
+        policy_id: document.policy_id.clone(),
+        resource: document.resource.clone(),
+        permission: document.permission.clone(),
+        tier: document.tier.clone(),
+        timestamp: document.timestamp,
+        salt: salt.map(str::to_string),
+    })
+}
 
+/// Verifies that the stored encryption proof binds the ciphertext (`secret`) to
+/// `context` — the exact `(ring_pk, policy fields, salt)` tuple and the exact
+/// `(nonce, ciphertext)`. A tamper in any of those fails here.
+pub fn verify_encryption_binding(
+    context: &CiphertextContext,
+    secret: &Secret,
+    proof_str: String,
+) -> Result<()> {
     let proof: EncryptionProof = EncryptionProof::try_from(proof_str).map_err(|e| {
         PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
     })?;
 
-    let enc_cmt = G1Affine::from_bytes(enc_cmt_bytes)
-        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e)))?;
-
-    ThresholdDealerNode::verify_encryption(&actual_pk, &enc_cmt, &proof, Some(policy_metadata))
-        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
-
-    Ok(())
+    ThresholdDealerNode::verify_encryption(&proof, context, secret)
+        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))
 }
 
 /// Validates JWT claims against the PRE request parameters.

@@ -12,6 +12,7 @@ use common::blockchain::{
     orbis::WhitelistTarget,
     ChainConfig, ChainConfigBuilder, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{
@@ -38,6 +39,10 @@ struct PreResponse {
     xnc_cmt: String,
     /// Original encrypted secret
     secret: Secret,
+    /// Ciphertext-binding context the node verified the proof against; needed to
+    /// rebuild the AES-GCM AAD for local decryption.
+    #[serde(default)]
+    context: Option<CiphertextContext>,
 }
 
 /// Result of a DKG operation
@@ -133,19 +138,19 @@ pub struct PreparedSecret {
     pub encrypted_document: Vec<u8>,
     /// Encryption commitment bytes (compressed G1 point)
     pub enc_cmt: Vec<u8>,
-    /// Shared point for encryption proof
-    pub shared_point: Vec<u8>,
-    /// Challenge for encryption proof
+    /// Fiat-Shamir challenge for the encryption proof
     pub challenge: Vec<u8>,
-    /// Response for encryption proof
+    /// Response for the encryption proof
     pub response: Vec<u8>,
-    /// Policy metadata hash
-    pub metadata: Vec<u8>,
+    /// Ciphertext-binding context the proof commits to. The single source of the
+    /// policy fields that must be posted alongside the document.
+    pub context: CiphertextContext,
 }
 
 /// Prepare a secret for storage by encrypting it locally.
 /// The returned PreparedSecret can be stored and reused for retries,
 /// ensuring idempotent storage (same encrypted data = same object_id).
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_secret(
     secret: &[u8],
     ring_pk_hex: &str,
@@ -163,21 +168,22 @@ pub fn prepare_secret(
     let ring_pk_point =
         G1Affine::from_bytes(&ring_pk_bytes).map_err(|e| anyhow!("Invalid ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(
-        &policy_id,
-        &resource,
-        &permission,
-        tier.as_deref(),
+    let context = CiphertextContext {
+        ring_pk: ring_pk_bytes,
+        policy_id,
+        resource,
+        permission,
+        tier,
         timestamp,
-        salt.as_deref(),
-    );
+        salt,
+    };
 
     // Encrypt locally - node never sees plaintext
     let (enc_cmt, encrypted_secret, proof) = ThresholdDealerNode::encrypt_secret(
         &ring_pk_point,
         secret,
         derivation.as_deref(),
-        Some(&metadata),
+        &context,
     )
     .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
@@ -191,10 +197,9 @@ pub fn prepare_secret(
     Ok(PreparedSecret {
         encrypted_document,
         enc_cmt,
-        shared_point: proof.shared_point,
         challenge: proof.challenge,
         response: proof.response,
-        metadata,
+        context,
     })
 }
 
@@ -205,18 +210,17 @@ pub async fn store_prepared_secret(
     endpoint: String,
     prepared: &PreparedSecret,
     ring_id: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
     reader_did_pk: Option<String>,
     with_proof: bool,
-    tier: Option<String>,
-    timestamp: Option<u64>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
     println!("  Ring ID: {}", ring_id);
     println!();
+
+    // Policy fields are sourced from the context the proof was bound to, so the
+    // stored DocumentPayload can never diverge from what the proof commits to.
+    let ctx = &prepared.context;
 
     let mut client = StoreSecretServiceClient::connect(endpoint.clone())
         .await
@@ -226,15 +230,14 @@ pub async fn store_prepared_secret(
         encrypted_document: prepared.encrypted_document.clone(),
         enc_cmt: prepared.enc_cmt.clone(),
         ring_id: ring_id.clone(),
-        policy_id: policy_id.clone(),
-        resource: resource.clone(),
-        permission: permission.clone(),
-        shared_point: prepared.shared_point.clone(),
+        policy_id: ctx.policy_id.clone(),
+        resource: ctx.resource.clone(),
+        permission: ctx.permission.clone(),
         challenge: prepared.challenge.clone(),
         response: prepared.response.clone(),
         with_proof,
-        tier: tier.clone(),
-        timestamp,
+        tier: ctx.tier.clone(),
+        timestamp: ctx.timestamp,
     };
 
     // Create JWT for authentication with all request fields
@@ -247,15 +250,14 @@ pub async fn store_prepared_secret(
             &prepared.encrypted_document,
             prepared.enc_cmt.clone(),
             &ring_id,
-            &policy_id,
-            &resource,
-            &permission,
-            prepared.shared_point.clone(),
+            &ctx.policy_id,
+            &ctx.resource,
+            &ctx.permission,
             prepared.challenge.clone(),
             prepared.response.clone(),
             with_proof,
-            tier,
-            timestamp,
+            ctx.tier.clone(),
+            ctx.timestamp,
         )
         .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
@@ -316,27 +318,15 @@ pub async fn do_store_secret(
     let prepared = prepare_secret(
         secret,
         &ring_pk_hex,
-        derivation.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        tier.clone(),
-        timestamp,
-        salt.clone(),
-    )?;
-    store_prepared_secret(
-        endpoint,
-        &prepared.clone(),
-        ring_id,
+        derivation,
         policy_id,
         resource,
         permission,
-        reader_did_pk,
-        with_proof,
         tier,
         timestamp,
-    )
-    .await
+        salt,
+    )?;
+    store_prepared_secret(endpoint, &prepared, ring_id, reader_did_pk, with_proof).await
 }
 
 /// Derive a 32-byte Ed25519 seed from an arbitrary string via SHA-256.
@@ -477,12 +467,21 @@ pub async fn do_pre(
             ring_pk_point
         };
 
+        // The node echoes back the ciphertext-binding context it verified the
+        // proof against; it is needed to rebuild the AES-GCM AAD. A wrong context
+        // (or a lying node) makes the authenticated decryption below fail.
+        let ciphertext_context = pre_response
+            .context
+            .as_ref()
+            .ok_or_else(|| anyhow!("PRE response did not include the ciphertext context"))?;
+
         // Decrypt using reader's secret key and the secret from the response
         let decrypted = ThresholdDealerNode::decrypt_secret(
             &effective_pk,
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,
+            ciphertext_context,
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
@@ -523,21 +522,22 @@ pub async fn do_encrypt_secret(
     let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 
-    let metadata = ThresholdDealerNode::encode_metadata(
-        &policy_id,
-        &resource,
-        &permission,
-        tier.as_deref(),
+    let context = CiphertextContext {
+        ring_pk: ring_pk_bytes,
+        policy_id,
+        resource,
+        permission,
+        tier,
         timestamp,
-        salt.as_deref(),
-    );
+        salt,
+    };
 
     // Encrypt the secret
     let (_enc_cmt, encrypted_secret, _proof) = ThresholdDealerNode::encrypt_secret(
         &ring_pk_point,
         secret.as_bytes(),
         derivation.as_deref(),
-        Some(&metadata),
+        &context,
     )
     .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 

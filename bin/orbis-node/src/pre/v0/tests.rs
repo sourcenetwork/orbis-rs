@@ -13,6 +13,7 @@ use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding, PreResponse}
 use crate::pre::v0::service::PreServiceImpl;
 use authn::{DkgClaims, PreClaims};
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, DocumentPayload, RingPayload};
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, DkgMode, DkgRole, EncryptionProof, ThresholdDealer,
 };
@@ -32,16 +33,18 @@ use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::ring_state::{RingPolyState, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 
-/// Generate policy metadata matching the test DocumentPayload fields.
-fn generate_test_policy_metadata() -> Vec<u8> {
-    PreImpl::encode_metadata(
-        "test-policy",
-        "test-resource",
-        "test-permission",
-        None,
-        None,
-        None,
-    )
+/// Build the ciphertext-binding context matching the test `DocumentPayload`
+/// fields and the given ring public key bytes (compressed point).
+fn generate_test_context(ring_pk_bytes: &[u8]) -> CiphertextContext {
+    CiphertextContext {
+        ring_pk: ring_pk_bytes.to_vec(),
+        policy_id: "test-policy".to_string(),
+        resource: "test-resource".to_string(),
+        permission: "test-permission".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    }
 }
 
 /// Helper to store a DocumentPayload in the bulletin for PRE tests.
@@ -187,9 +190,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     );
 
     // Alice encrypts the message using the DKG aggregate public key
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (enc_cmt, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
 
     println!("Message encrypted successfully!");
@@ -324,9 +327,14 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         .expect("Failed to deserialize xnc_cmt");
 
     // Bob decrypts using his private key
-    let decrypted_message =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
-            .expect("Decryption should succeed");
+    let decrypted_message = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        &ciphertext_context,
+    )
+    .expect("Decryption should succeed");
 
     println!(
         "Decrypted message: {:?}",
@@ -445,9 +453,9 @@ async fn test_pre_with_inline_document_end_to_end() {
         <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).expect("deserialize public key");
 
     let secret_message = b"Hello Bob! This one skips the bulletin entirely.";
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_enc_cmt, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("Failed to serialize secret");
 
@@ -574,9 +582,14 @@ async fn test_pre_with_inline_document_end_to_end() {
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).expect("Failed to decode xnc_cmt hex");
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes)
         .expect("Failed to deserialize xnc_cmt");
-    let decrypted_message =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
-            .expect("Decryption should succeed");
+    let decrypted_message = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        &ciphertext_context,
+    )
+    .expect("Decryption should succeed");
     assert_eq!(decrypted_message, secret_message);
 
     network.shutdown_routers().await.expect("shutdown routers");
@@ -633,9 +646,9 @@ async fn test_pre_with_large_secret() {
     println!("Large secret size: {} bytes", large_secret.len());
 
     // Alice encrypts
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, &large_secret, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -703,8 +716,14 @@ async fn test_pre_with_large_secret() {
     let xnc_cmt_bytes = hex::decode(&pre_response.xnc_cmt).unwrap();
     let xnc_cmt = <PreImpl as ThresholdDealer>::PublicKey::from_bytes(&xnc_cmt_bytes).unwrap();
 
-    let decrypted = PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret)
-        .expect("Decryption should succeed");
+    let decrypted = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        &ciphertext_context,
+    )
+    .expect("Decryption should succeed");
 
     assert_eq!(
         decrypted, large_secret,
@@ -769,9 +788,9 @@ async fn test_pre_fails_with_wrong_key() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be decrypted with wrong key";
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -847,6 +866,7 @@ async fn test_pre_fails_with_wrong_key() {
         &xnc_cmt,
         &eve_sk, // Wrong key!
         &pre_response.secret,
+        &ciphertext_context,
     );
 
     assert!(
@@ -909,9 +929,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Alice encrypts
     let secret_message = b"Secret that should not be re-encrypted with bad token";
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -1056,9 +1076,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
 
     // Alice encrypts
     let secret_message = b"Secret with mismatched claims";
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -1404,12 +1424,12 @@ async fn test_pre_fails_with_wrong_derivation() {
     let correct_derivation = b"correct_derivation_path".to_vec();
     let wrong_derivation = b"wrong_derivation_path".to_vec();
 
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, proof) = PreImpl::encrypt_secret(
         &aggregate_pk,
         secret_message,
         Some(&correct_derivation),
-        Some(&metadata),
+        &ciphertext_context,
     )
     .expect("Encryption with derivation should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
@@ -1492,6 +1512,7 @@ async fn test_pre_fails_with_wrong_derivation() {
         &xnc_cmt,
         &bob_sk,
         &pre_response.secret,
+        &ciphertext_context,
     );
 
     assert!(
@@ -1508,8 +1529,13 @@ async fn test_pre_fails_with_wrong_derivation() {
     // Now try to decrypt with WRONG derivation - should fail
     let wrong_effective_pk = PreImpl::derive_public_key(&aggregate_pk, &wrong_derivation).unwrap();
 
-    let decrypt_result_wrong =
-        PreImpl::decrypt_secret(&wrong_effective_pk, &xnc_cmt, &bob_sk, &pre_response.secret);
+    let decrypt_result_wrong = PreImpl::decrypt_secret(
+        &wrong_effective_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        &ciphertext_context,
+    );
 
     assert!(
         decrypt_result_wrong.is_err(),
@@ -1517,8 +1543,13 @@ async fn test_pre_fails_with_wrong_derivation() {
     );
 
     // Also verify that using no derivation (ring_pk directly) fails
-    let decrypt_result_no_derivation =
-        PreImpl::decrypt_secret(&aggregate_pk, &xnc_cmt, &bob_sk, &pre_response.secret);
+    let decrypt_result_no_derivation = PreImpl::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &bob_sk,
+        &pre_response.secret,
+        &ciphertext_context,
+    );
 
     assert!(
         decrypt_result_no_derivation.is_err(),
@@ -1582,9 +1613,9 @@ async fn test_pre_fails_with_bad_proof() {
 
     // Alice encrypts
     let secret_message = b"Secret with tampered proof";
-    let metadata = generate_test_policy_metadata();
+    let ciphertext_context = generate_test_context(&ring_pk_bytes);
     let (_, encrypted_secret, mut proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, Some(&metadata))
+        PreImpl::encrypt_secret(&aggregate_pk, secret_message, None, &ciphertext_context)
             .expect("Encryption should succeed");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
@@ -1718,9 +1749,13 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
 
     let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).expect("serialize reader public key");
-    let (_, encrypted_secret, _) =
-        PreImpl::encrypt_secret(&aggregate_pk, b"local verification failure", None, None)
-            .expect("encrypt secret");
+    let (_, encrypted_secret, _) = PreImpl::encrypt_secret(
+        &aggregate_pk,
+        b"local verification failure",
+        None,
+        &generate_test_context(&ring_pk_bytes),
+    )
+    .expect("encrypt secret");
     let secret_bytes = serde_json::to_vec(&encrypted_secret).expect("serialize secret");
 
     let request_id = "local-share-verify-failure".to_string();

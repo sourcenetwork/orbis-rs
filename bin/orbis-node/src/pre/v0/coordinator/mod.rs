@@ -18,6 +18,7 @@ mod verification;
 pub(crate) use initiator::PreReportBinding;
 
 use crate::app_state::AppState;
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{Dkg, Secret, ThresholdDealer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -29,6 +30,12 @@ pub struct PreResponse {
     pub xnc_cmt: String,
     /// Original encrypted secret (for Bob to decrypt) as JSON
     pub secret: Secret,
+    /// Ciphertext-binding context the requesting node verified the encryption
+    /// proof against. Echoed so the reader can rebuild the AES-GCM AAD for
+    /// `decrypt_secret` without a bulletin read. `None` when the initiating node
+    /// did not attach it (e.g. legacy in-process callers).
+    #[serde(default)]
+    pub context: Option<CiphertextContext>,
 }
 
 /// PRE Coordinator

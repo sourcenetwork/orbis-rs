@@ -25,11 +25,14 @@ message InlineDocument {
   string policy_id = 4;
   string resource = 5;
   string permission = 6;
-  // Shared point for encryption proof
-  bytes shared_point = 7;
-  // Challenge for encryption proof
+  // Field 7 was `bytes shared_point` (the KEM shared secret). Removed: the
+  // encryption proof no longer publishes it. The ciphertext-binding context is
+  // rebuilt by verifiers from the surrounding fields.
+  reserved 7;
+  reserved "shared_point";
+  // Challenge for encryption proof (Schnorr PoK)
   bytes challenge = 8;
-  // Response for encryption proof
+  // Response for encryption proof (Schnorr PoK)
   bytes response = 9;
   optional string tier = 10;
   optional uint64 timestamp = 11;

@@ -623,9 +623,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -1326,7 +1323,6 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let inline_document_str =
         String::from_utf8(inline_document_bytes.clone()).expect("secret JSON is valid utf8");
     let inline_proof = EncryptionProof {
-        shared_point: vec![1, 2, 3],
         challenge: vec![4, 5, 6],
         response: vec![7, 8, 9],
     };
@@ -1392,7 +1388,6 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         policy_id: policy_id.clone(),
         resource: resource.clone(),
         permission: permission.clone(),
-        shared_point: inline_proof.shared_point,
         challenge: inline_proof.challenge,
         response: inline_proof.response,
         tier: None,
@@ -1590,9 +1585,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -1781,9 +1773,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         endpoint.clone(),
         &sign_prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -1994,9 +1983,6 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -2062,13 +2048,8 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
             endpoint.clone(),
             &prepared,
             RING_ID.to_string(),
-            policy_id.clone(),
-            resource.clone(),
-            permission.clone(),
             Some(did_pk_string.clone()),
             true,
-            None,
-            None,
         )
         .await
         {
@@ -2316,9 +2297,6 @@ async fn store_secret_with_retry(
     endpoint: String,
     prepared: &cli_tool::PreparedSecret,
     ring_id: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
     reader_did_pk: Option<String>,
 ) -> cli_tool::StoreSecretResult {
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -2328,13 +2306,8 @@ async fn store_secret_with_retry(
             endpoint.clone(),
             prepared,
             ring_id.clone(),
-            policy_id.clone(),
-            resource.clone(),
-            permission.clone(),
             reader_did_pk.clone(),
             true,
-            None,
-            None,
         )
         .await
         {
@@ -4362,9 +4335,6 @@ async fn test_report_kick_promotes_backup_node() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;

@@ -7,8 +7,8 @@ use crate::metrics;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
 use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
-    validate_pre_claims, verify_encryption_binding,
+    build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
+    resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::PreRequestContext;
 use crate::reporting::v0::types::ReportedDocumentEvidence;
@@ -20,7 +20,6 @@ use bulletin::r#trait::DocumentPayload;
 use crypto::r#trait::{
     DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
 };
-use crypto::PreImpl as ThresholdDealerNode;
 use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
@@ -46,7 +45,6 @@ pub(crate) fn document_payload_from_inline(
     })?;
 
     let proof: String = EncryptionProof {
-        shared_point: inline.shared_point,
         challenge: inline.challenge,
         response: inline.response,
     }
@@ -201,26 +199,19 @@ where
         )
         .await?;
 
-        // Validate metadata not tampered
-        // Generate policy metadata for proof binding verification (before fields are moved)
-        let policy_metadata = ThresholdDealerNode::encode_metadata(
-            &document_payload.policy_id,
-            &document_payload.resource,
-            &document_payload.permission,
-            document_payload.tier.clone().as_deref(),
-            document_payload.timestamp,
-            req.salt.as_deref(),
-        );
         let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
         let secret = deserialize_secret(&document_payload.document)?;
 
-        verify_encryption_binding(
-            &ring_pk,
-            req.derivation.as_deref(),
-            document_payload.proof,
-            &secret.enc_cmt,
-            &policy_metadata,
+        // Rebuild the context the encryptor bound into the proof (ring key +
+        // policy fields from the id-checked document + reader-supplied salt) and
+        // verify the Schnorr proof against it. A tampered policy field, ring key,
+        // nonce, or ciphertext fails here.
+        let ciphertext_context = build_ciphertext_context(
+            &ring_payload.ring_pk,
+            &document_payload,
+            req.salt.as_deref(),
         )?;
+        verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof)?;
 
         tracing::info!(
             ring_id = %document_payload.ring_id,
@@ -330,11 +321,13 @@ where
             .initiate_reencryption(request_id, ring, secret_bytes, ctx, report_binding)
             .await?;
 
-        // 6. Parse result as PreResponse and encode as JSON
-        let pre_response: crate::pre::v0::coordinator::PreResponse =
+        // 6. Parse result as PreResponse, attach the verified ciphertext-binding
+        //    context so the reader can rebuild the AAD, and encode as JSON.
+        let mut pre_response: crate::pre::v0::coordinator::PreResponse =
             serde_json::from_slice(&result).map_err(|e| {
                 PreError::Deserialization(format!("Failed to parse PRE result: {}", e))
             })?;
+        pre_response.context = Some(ciphertext_context);
 
         let encrypted_secret = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;

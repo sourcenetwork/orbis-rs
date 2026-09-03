@@ -19,11 +19,50 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
+use crate::context::CiphertextContext;
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
-    DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret,
-    ThresholdDealer,
+    CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply,
+    Secret, ThresholdDealer,
 };
+use aes_gcm::{
+    aead::{Aead, KeyInit, Payload},
+    Aes256Gcm, Nonce,
+};
+use sha2::{Digest, Sha256};
+
+const LEGACY_AAD_DOMAIN: &[u8; 15] = b"elgamal-aad-v1\0";
+
+/// Fixed [`CiphertextContext`] for the generic PRE tests.
+///
+/// `ring_pk` is opaque bytes (never parsed as a point), so the generic test
+/// bounds need no serialization trait. `enc_cmt` is not a context field, so a
+/// fresh identical value is valid at encrypt, verify, and decrypt time.
+fn test_ctx() -> CiphertextContext {
+    CiphertextContext {
+        ring_pk: b"pre-tests-ring-pk".to_vec(),
+        policy_id: "policy".to_string(),
+        resource: "resource".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    }
+}
+
+/// A [`CiphertextContext`] with every field distinct from [`test_ctx`], for
+/// "wrong context" negative tests.
+fn other_ctx() -> CiphertextContext {
+    CiphertextContext {
+        ring_pk: b"a-different-ring-pk".to_vec(),
+        policy_id: "other-policy".to_string(),
+        resource: "other-resource".to_string(),
+        permission: "write".to_string(),
+        tier: Some("gold".to_string()),
+        timestamp: Some(42),
+        salt: Some("s".to_string()),
+    }
+}
 
 /// Run all generic PRE tests for a given [`ThresholdDealer`] implementation.
 ///
@@ -69,7 +108,8 @@ where
     test_encryption_proof_wrong_dkg_pk::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_encryption_proof_tampered_challenge::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_encryption_proof_tampered_response::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_tampered_shared_point::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_encryption_proof_tampered_context::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_encryption_proof_tampered_ciphertext::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_encrypt_decrypt_with_derivation::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_reencrypt_with_derivation::<T, SV, PK, PP, _, _>(
         make_keypair.clone(),
@@ -79,17 +119,14 @@ where
     test_reencrypt_missing_derivation_fails_at_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_reencrypt_extra_derivation_fails_at_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_different_derivations_produce_different_keys::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_with_metadata_valid::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_wrong_metadata_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_missing_metadata_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_extra_metadata_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_encryption_proof_metadata_with_derivation::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_encryption_proof_with_context_valid::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_encryption_proof_wrong_context_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_encryption_proof_context_with_derivation::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_ciphertext_and_nonce_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_enc_cmt_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_nonce_only_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_swap_enc_cmt_and_proof_fails_decrypt::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_verify_encryption_wrong_derivation_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
-    test_metadata_individual_field_tampering_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_context_individual_field_tampering_fails::<T, SV, PK, PP, _>(make_keypair.clone())?;
     test_dkg_encrypt_decrypt_integration::<T, SV, PK, PP, _, _>(
         make_keypair.clone(),
         run_dkg.clone(),
@@ -127,7 +164,7 @@ where
     MI: Fn() -> PK,
 {
     let (dkg_sk, dkg_pk) = make_keypair();
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let share = DistKeyShare {
         pri_share: PriShare { i: 1, v: dkg_sk },
@@ -183,6 +220,102 @@ where
 // Basic encrypt / decrypt
 // ============================================================================
 
+/// Security regression: public encryption artifacts must not be sufficient to
+/// recover the plaintext without threshold PRE participation.
+///
+/// This deliberately models an observer of the serialized bulletin payload. It
+/// does not retain the DKG secret key, encryption randomness, reader key, or any
+/// re-encryption shares. If a legacy proof exposes `shared_point`, the observer
+/// tries the exact public-only recovery path used by the vulnerability.
+///
+/// This test is expected to fail until the public shared point is removed from
+/// the encryption proof. Keeping the attack against serialized JSON also makes
+/// the regression survive the proof-structure change: once `shared_point` is no
+/// longer published, the attack returns `None` and the assertion passes.
+pub fn test_public_encryption_artifacts_cannot_decrypt<T, SV, PK, MK>(
+    make_keypair: MK,
+) -> Result<()>
+where
+    T: ThresholdDealer<ShareValue = SV, PublicKey = PK, Secret = Secret>,
+    PK: CryptoDeserialize,
+    MK: Fn() -> (SV, PK),
+{
+    let plaintext = b"threshold PRE must be required to recover this plaintext";
+    let (_discarded_dkg_sk, dkg_pk) = make_keypair();
+    let ctx = CiphertextContext {
+        ring_pk: b"confidential-ring-pk".to_vec(),
+        policy_id: "confidential-policy".to_string(),
+        resource: "documents/regression-test".to_string(),
+        permission: "read".to_string(),
+        tier: Some("restricted".to_string()),
+        timestamp: Some(1_725_321_600),
+        salt: Some("test-salt".to_string()),
+    };
+
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, plaintext, None, &ctx)?;
+
+    // Round-trip through the public wire representation. The attack below gets
+    // only these serialized artifacts; it receives no private scalar or PRE
+    // response from `make_keypair` / `encrypt_secret`.
+    let public_secret: Secret = serde_json::from_value(
+        serde_json::to_value(secret)
+            .map_err(|e| CryptoError::ParseError(format!("serialize public secret: {e}")))?,
+    )
+    .map_err(|e| CryptoError::ParseError(format!("deserialize public secret: {e}")))?;
+    let public_proof = serde_json::to_value(proof)
+        .map_err(|e| CryptoError::ParseError(format!("serialize public proof: {e}")))?;
+
+    let exposes_shared_point = public_proof.get("shared_point").is_some();
+    let recovered = attempt_legacy_public_only_decryption::<T, PK>(&public_secret, &public_proof);
+
+    assert!(
+        !exposes_shared_point && recovered.is_none(),
+        "SECURITY: public proof exposes shared_point; public-only AES decryption succeeded: {}",
+        recovered.is_some()
+    );
+    Ok(())
+}
+
+/// Attempt the known vulnerable public-only decryption path.
+///
+/// Returning `None` means the public wire artifacts did not provide everything
+/// this attack needs (or authenticated decryption rejected the recovered key).
+fn attempt_legacy_public_only_decryption<T, PK>(
+    secret: &Secret,
+    proof: &serde_json::Value,
+) -> Option<Vec<u8>>
+where
+    T: ThresholdDealer<PublicKey = PK, Secret = Secret>,
+    PK: CryptoDeserialize,
+{
+    let shared_point_value = proof.get("shared_point")?.clone();
+    let shared_point_bytes: Vec<u8> = serde_json::from_value(shared_point_value).ok()?;
+    let shared_point = PK::from_bytes(&shared_point_bytes).ok()?;
+    let aes_key = T::derive_key_from_point(&shared_point).ok()?;
+    let cipher = Aes256Gcm::new_from_slice(&aes_key).ok()?;
+
+    if secret.nonce.len() != 12 {
+        return None;
+    }
+
+    // Reconstruct the legacy AAD entirely from public fields.
+    let mut hasher = Sha256::new();
+    hasher.update(LEGACY_AAD_DOMAIN);
+    hasher.update(&secret.enc_cmt);
+    hasher.update(&shared_point_bytes);
+    let aad = hasher.finalize();
+
+    cipher
+        .decrypt(
+            Nonce::from_slice(&secret.nonce),
+            Payload {
+                msg: &secret.encrypted_data,
+                aad: &aad,
+            },
+        )
+        .ok()
+}
+
 pub fn test_encrypt_decrypt_flow<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
 where
     T: ThresholdDealer<
@@ -202,12 +335,12 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
     assert!(!encrypted_secret.encrypted_data.is_empty());
     assert_eq!(encrypted_secret.nonce.len(), 12);
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
-    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted, secret);
     Ok(())
 }
@@ -236,11 +369,11 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
     assert!(!encrypted_secret.encrypted_data.is_empty());
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
-    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted.len(), secret.len());
     assert_eq!(decrypted, secret);
     Ok(())
@@ -265,9 +398,9 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
-    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted, secret);
     Ok(())
 }
@@ -292,10 +425,16 @@ where
     let (_, rdr_pk) = make_keypair();
     let (wrong_rdr_sk, _) = make_keypair();
 
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &wrong_rdr_sk, &encrypted_secret);
+    let result = T::decrypt_secret(
+        &dkg_pk,
+        &xnc_cmt,
+        &wrong_rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    );
     assert!(result.is_err());
     assert!(
         result
@@ -338,7 +477,8 @@ where
         pri_share: PriShare { i: 1, v: dkg_sk },
     };
 
-    let (enc_cmt, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, None)?;
+    let (enc_cmt, encrypted_secret, _) =
+        T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
     let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, None)?;
@@ -373,7 +513,8 @@ where
         pri_share: PriShare { i: 1, v: dkg_sk },
     };
 
-    let (enc_cmt, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, None)?;
+    let (enc_cmt, encrypted_secret, _) =
+        T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
     let mut reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, None)?;
@@ -531,8 +672,8 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let (enc_cmt, _, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
-    T::verify_encryption(&dkg_pk, &enc_cmt, &proof, None)?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
+    T::verify_encryption(&proof, &test_ctx(), &secret)?;
     Ok(())
 }
 
@@ -552,14 +693,17 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let (_, wrong_dkg_pk) = make_keypair();
 
-    let (enc_cmt, _, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
 
-    let result = T::verify_encryption(&wrong_dkg_pk, &enc_cmt, &proof, None);
+    // The ring key is bound only through `context.ring_pk`; a mismatch there
+    // must fail verification.
+    let mut wrong = test_ctx();
+    wrong.ring_pk = b"a-different-ring-pk".to_vec();
+    let result = T::verify_encryption(&proof, &wrong, &secret);
     assert!(
         result.is_err(),
-        "encryption proof should fail with wrong DKG public key"
+        "encryption proof should fail with wrong ring_pk in the context"
     );
     Ok(())
 }
@@ -580,11 +724,12 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let (enc_cmt, _, mut proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
+    let (_, secret, mut proof) =
+        T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
 
     proof.challenge[0] ^= 0xFF;
 
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = T::verify_encryption(&proof, &test_ctx(), &secret);
     assert!(result.is_err(), "proof should fail with tampered challenge");
     Ok(())
 }
@@ -605,18 +750,19 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let (enc_cmt, _, mut proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
+    let (_, secret, mut proof) =
+        T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
 
     proof.response[0] ^= 0xFF;
 
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let result = T::verify_encryption(&proof, &test_ctx(), &secret);
     assert!(result.is_err(), "proof should fail with tampered response");
     Ok(())
 }
 
-pub fn test_encryption_proof_tampered_shared_point<T, SV, PK, PP, MK>(
-    make_keypair: MK,
-) -> Result<()>
+/// The proof binds `context_digest`, so verifying against any mutated context
+/// field must fail.
+pub fn test_encryption_proof_tampered_context<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
 where
     T: ThresholdDealer<
         ShareValue = SV,
@@ -632,14 +778,63 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let (enc_cmt, _, mut proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
 
-    proof.shared_point[0] ^= 0xFF;
-
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
+    let mut ctx = test_ctx();
+    ctx.policy_id = "tampered".to_string();
     assert!(
-        result.is_err(),
-        "proof should fail with tampered shared point"
+        T::verify_encryption(&proof, &ctx, &secret).is_err(),
+        "tampered policy_id must fail"
+    );
+
+    let mut ctx = test_ctx();
+    ctx.salt = Some("injected".to_string());
+    assert!(
+        T::verify_encryption(&proof, &ctx, &secret).is_err(),
+        "tampered salt must fail"
+    );
+
+    let mut ctx = test_ctx();
+    ctx.ring_pk = b"other-ring".to_vec();
+    assert!(
+        T::verify_encryption(&proof, &ctx, &secret).is_err(),
+        "tampered ring_pk must fail"
+    );
+    Ok(())
+}
+
+/// The proof binds `ciphertext_digest`, so verifying against a mutated ciphertext
+/// or nonce must fail.
+pub fn test_encryption_proof_tampered_ciphertext<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+{
+    let (_, dkg_pk) = make_keypair();
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
+
+    let mut tampered = secret.clone();
+    tampered.encrypted_data[0] ^= 0xFF;
+    assert!(
+        T::verify_encryption(&proof, &test_ctx(), &tampered).is_err(),
+        "tampered ciphertext must fail"
+    );
+
+    let mut tampered = secret.clone();
+    tampered.nonce[0] ^= 0xFF;
+    assert!(
+        T::verify_encryption(&proof, &test_ctx(), &tampered).is_err(),
+        "tampered nonce must fail"
     );
     Ok(())
 }
@@ -668,11 +863,18 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, Some(derivation), None)?;
+    let (_, encrypted_secret, _) =
+        T::encrypt_secret(&dkg_pk, secret, Some(derivation), &test_ctx())?;
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
     let xnc_cmt =
         single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, Some(derivation))?;
-    let decrypted = T::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(
+        &derived_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    )?;
     assert_eq!(decrypted, secret);
     Ok(())
 }
@@ -709,7 +911,7 @@ where
         &dkg_pk,
         b"test data with derivation",
         Some(derivation),
-        None,
+        &test_ctx(),
     )?;
 
     let dealer = T::new();
@@ -741,7 +943,7 @@ where
     let (rdr_sk, rdr_pk) = make_keypair();
 
     let (_, encrypted_secret, _) =
-        T::encrypt_secret(&dkg_pk, b"test data", Some(correct_derivation), None)?;
+        T::encrypt_secret(&dkg_pk, b"test data", Some(correct_derivation), &test_ctx())?;
     let derived_pk = T::derive_public_key(&dkg_pk, correct_derivation)?;
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(
@@ -751,7 +953,13 @@ where
         Some(wrong_derivation),
     )?;
 
-    let result = T::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
+    let result = T::decrypt_secret(
+        &derived_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    );
     assert!(result.is_err());
     assert!(
         result
@@ -785,13 +993,19 @@ where
     let (rdr_sk, rdr_pk) = make_keypair();
 
     let (_, encrypted_secret, _) =
-        T::encrypt_secret(&dkg_pk, b"test data", Some(derivation), None)?;
+        T::encrypt_secret(&dkg_pk, b"test data", Some(derivation), &test_ctx())?;
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
 
     // Reencrypt WITHOUT derivation
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
+    let result = T::decrypt_secret(
+        &derived_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    );
     assert!(result.is_err());
     assert!(
         result
@@ -825,13 +1039,13 @@ where
     let (rdr_sk, rdr_pk) = make_keypair();
 
     // Encrypt WITHOUT derivation
-    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, None)?;
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     // Reencrypt WITH (extra) derivation
     let xnc_cmt =
         single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, Some(derivation))?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret);
+    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx());
     assert!(result.is_err());
     assert!(
         result
@@ -878,10 +1092,10 @@ where
 }
 
 // ============================================================================
-// Metadata (policy binding)
+// Context (policy binding)
 // ============================================================================
 
-pub fn test_encryption_proof_with_metadata_valid<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
+pub fn test_encryption_proof_with_context_valid<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
 where
     T: ThresholdDealer<
         ShareValue = SV,
@@ -896,16 +1110,23 @@ where
     PP: PubPolyTrait<PublicKey = PK>,
     MK: Fn() -> (SV, PK),
 {
-    let metadata = T::encode_metadata("123", "file.txt", "read", None, None, None);
     let (_, dkg_pk) = make_keypair();
+    let ctx = CiphertextContext {
+        ring_pk: b"ring".to_vec(),
+        policy_id: "123".to_string(),
+        resource: "file.txt".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    };
 
-    let (enc_cmt, _, proof) =
-        T::encrypt_secret(&dkg_pk, b"test secret data", None, Some(&metadata))?;
-    T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata))?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &ctx)?;
+    T::verify_encryption(&proof, &ctx, &secret)?;
     Ok(())
 }
 
-pub fn test_encryption_proof_wrong_metadata_fails<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
+pub fn test_encryption_proof_wrong_context_fails<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
 where
     T: ThresholdDealer<
         ShareValue = SV,
@@ -920,19 +1141,19 @@ where
     PP: PubPolyTrait<PublicKey = PK>,
     MK: Fn() -> (SV, PK),
 {
-    let correct_metadata = T::encode_metadata("123", "file.txt", "read", None, None, None);
-    let wrong_metadata = T::encode_metadata("456", "other.txt", "write", None, None, None);
     let (_, dkg_pk) = make_keypair();
 
-    let (enc_cmt, _, proof) =
-        T::encrypt_secret(&dkg_pk, b"test secret data", None, Some(&correct_metadata))?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, &test_ctx())?;
 
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&wrong_metadata));
-    assert!(result.is_err(), "proof should fail with wrong metadata");
+    let result = T::verify_encryption(&proof, &other_ctx(), &secret);
+    assert!(
+        result.is_err(),
+        "proof should fail against a different context"
+    );
     Ok(())
 }
 
-pub fn test_encryption_proof_missing_metadata_fails<T, SV, PK, PP, MK>(
+pub fn test_encryption_proof_context_with_derivation<T, SV, PK, PP, MK>(
     make_keypair: MK,
 ) -> Result<()>
 where
@@ -949,82 +1170,18 @@ where
     PP: PubPolyTrait<PublicKey = PK>,
     MK: Fn() -> (SV, PK),
 {
-    let metadata = T::encode_metadata("123", "file.txt", "read", None, None, None);
-    let (_, dkg_pk) = make_keypair();
-
-    let (enc_cmt, _, proof) =
-        T::encrypt_secret(&dkg_pk, b"test secret data", None, Some(&metadata))?;
-
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, None);
-    assert!(
-        result.is_err(),
-        "proof should fail when metadata is missing"
-    );
-    Ok(())
-}
-
-pub fn test_encryption_proof_extra_metadata_fails<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>
-where
-    T: ThresholdDealer<
-        ShareValue = SV,
-        PublicKey = PK,
-        PubPoly = PP,
-        Secret = Secret,
-        DistKeyShare = DistKeyShare<SV>,
-        ReencryptReply = ReencryptReply<SV, PK>,
-    >,
-    SV: Clone + zeroize::Zeroize,
-    PK: PartialEq + std::fmt::Debug + Clone,
-    PP: PubPolyTrait<PublicKey = PK>,
-    MK: Fn() -> (SV, PK),
-{
-    let metadata = T::encode_metadata("123", "file.txt", "read", None, None, None);
-    let (_, dkg_pk) = make_keypair();
-
-    // Encrypt WITHOUT metadata
-    let (enc_cmt, _, proof) = T::encrypt_secret(&dkg_pk, b"test secret data", None, None)?;
-
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
-    assert!(
-        result.is_err(),
-        "proof should fail when extra metadata is supplied"
-    );
-    Ok(())
-}
-
-pub fn test_encryption_proof_metadata_with_derivation<T, SV, PK, PP, MK>(
-    make_keypair: MK,
-) -> Result<()>
-where
-    T: ThresholdDealer<
-        ShareValue = SV,
-        PublicKey = PK,
-        PubPoly = PP,
-        Secret = Secret,
-        DistKeyShare = DistKeyShare<SV>,
-        ReencryptReply = ReencryptReply<SV, PK>,
-    >,
-    SV: Clone + zeroize::Zeroize,
-    PK: PartialEq + std::fmt::Debug + Clone,
-    PP: PubPolyTrait<PublicKey = PK>,
-    MK: Fn() -> (SV, PK),
-{
-    let metadata = T::encode_metadata("789", "sensitive.doc", "decrypt", None, None, None);
     let derivation = b"alice-capability-v1";
     let (_, dkg_pk) = make_keypair();
+    let ctx = test_ctx();
 
-    let (enc_cmt, _, proof) =
-        T::encrypt_secret(&dkg_pk, b"test secret", Some(derivation), Some(&metadata))?;
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret", Some(derivation), &ctx)?;
 
-    let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
+    T::verify_encryption(&proof, &ctx, &secret)?;
 
-    T::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(&metadata))?;
-
-    let wrong_metadata = T::encode_metadata("000", "other", "none", None, None, None);
-    let result = T::verify_encryption(&derived_pk, &enc_cmt, &proof, Some(&wrong_metadata));
+    let result = T::verify_encryption(&proof, &other_ctx(), &secret);
     assert!(
         result.is_err(),
-        "proof should fail with wrong metadata even when derivation is correct"
+        "proof should fail against a different context even when derivation is correct"
     );
     Ok(())
 }
@@ -1053,8 +1210,8 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, None)?;
-    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, None)?;
+    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, &test_ctx())?;
+    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, &test_ctx())?;
 
     let franken_secret = Secret {
         enc_cmt: encrypted_a.enc_cmt.clone(),
@@ -1064,7 +1221,7 @@ where
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
         result.is_err(),
         "decryption should fail when ciphertext and nonce are swapped"
@@ -1090,8 +1247,8 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, None)?;
-    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, None)?;
+    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, &test_ctx())?;
+    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, &test_ctx())?;
 
     // enc_cmt from B, ciphertext+nonce from A — AAD mismatch
     let franken_secret = Secret {
@@ -1103,7 +1260,7 @@ where
     // xnc_cmt derived from encrypted_b (matching the swapped enc_cmt)
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
         result.is_err(),
         "decryption should fail when enc_cmt is swapped"
@@ -1129,8 +1286,8 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, None)?;
-    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, None)?;
+    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, &test_ctx())?;
+    let (_, encrypted_b, _) = T::encrypt_secret(&dkg_pk, b"secret B", None, &test_ctx())?;
 
     let franken_secret = Secret {
         enc_cmt: encrypted_a.enc_cmt.clone(),
@@ -1140,7 +1297,7 @@ where
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
         result.is_err(),
         "decryption should fail when only the nonce is swapped"
@@ -1166,11 +1323,11 @@ where
     let (dkg_sk, dkg_pk) = make_keypair();
     let (rdr_sk, rdr_pk) = make_keypair();
 
-    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, None)?;
-    let (enc_cmt_b, encrypted_b, proof_b) = T::encrypt_secret(&dkg_pk, b"secret B", None, None)?;
+    let (_, encrypted_a, _) = T::encrypt_secret(&dkg_pk, b"secret A", None, &test_ctx())?;
+    let (_, encrypted_b, proof_b) = T::encrypt_secret(&dkg_pk, b"secret B", None, &test_ctx())?;
 
     // Confirm proof_b is valid on its own
-    T::verify_encryption(&dkg_pk, &enc_cmt_b, &proof_b, None)?;
+    T::verify_encryption(&proof_b, &test_ctx(), &encrypted_b)?;
 
     // Swap enc_cmt+proof from B, ciphertext from A
     let franken_secret = Secret {
@@ -1181,7 +1338,7 @@ where
 
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_pk, None)?;
 
-    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret);
+    let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
         result.is_err(),
         "decryption should fail when enc_cmt+proof are swapped but ciphertext is from another encryption"
@@ -1190,59 +1347,10 @@ where
 }
 
 // ============================================================================
-// Derivation mismatch — verification must fail
+// Context field tampering — every field is bound
 // ============================================================================
 
-pub fn test_verify_encryption_wrong_derivation_fails<T, SV, PK, PP, MK>(
-    make_keypair: MK,
-) -> Result<()>
-where
-    T: ThresholdDealer<
-        ShareValue = SV,
-        PublicKey = PK,
-        PubPoly = PP,
-        Secret = Secret,
-        DistKeyShare = DistKeyShare<SV>,
-        ReencryptReply = ReencryptReply<SV, PK>,
-    >,
-    SV: Clone + zeroize::Zeroize,
-    PK: PartialEq + std::fmt::Debug + Clone,
-    PP: PubPolyTrait<PublicKey = PK>,
-    MK: Fn() -> (SV, PK),
-{
-    let correct_derivation = b"alice-capability-v1";
-    let wrong_derivation = b"eve-capability-v1";
-    let metadata = T::encode_metadata("123", "doc", "read", None, None, None);
-    let (_, dkg_pk) = make_keypair();
-
-    let (enc_cmt, _, proof) = T::encrypt_secret(
-        &dkg_pk,
-        b"test secret",
-        Some(correct_derivation),
-        Some(&metadata),
-    )?;
-    // Wrong derivation → must fail verification with an ElGamal proof error
-    let wrong_derived_pk = T::derive_public_key(&dkg_pk, wrong_derivation)?;
-    let result = T::verify_encryption(&wrong_derived_pk, &enc_cmt, &proof, Some(&metadata));
-    assert!(
-        matches!(result, Err(CryptoError::ElGamalError(_))),
-        "verify_encryption should fail with wrong derivation"
-    );
-
-    // No derivation when one was used → also fail
-    let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(&metadata));
-    assert!(
-        result.is_err(),
-        "verify_encryption should fail when derivation is omitted"
-    );
-
-    // Correct derivation → succeed
-    let correct_derived_pk = T::derive_public_key(&dkg_pk, correct_derivation)?;
-    T::verify_encryption(&correct_derived_pk, &enc_cmt, &proof, Some(&metadata))?;
-    Ok(())
-}
-
-pub fn test_metadata_individual_field_tampering_fails<T, SV, PK, PP, MK>(
+pub fn test_context_individual_field_tampering_fails<T, SV, PK, PP, MK>(
     make_keypair: MK,
 ) -> Result<()>
 where
@@ -1260,45 +1368,55 @@ where
     MK: Fn() -> (SV, PK),
 {
     let (_, dkg_pk) = make_keypair();
-    let policy = "policy-1";
-    let resource = "resource-1";
-    let permission = "read";
-    let tier = Some("tier-gold");
-    let timestamp = Some(1772127215u64);
-    let salt = Some("salt-xyz");
+    let correct = CiphertextContext {
+        ring_pk: b"ring-1".to_vec(),
+        policy_id: "policy-1".to_string(),
+        resource: "resource-1".to_string(),
+        permission: "read".to_string(),
+        tier: Some("tier-gold".to_string()),
+        timestamp: Some(1772127215u64),
+        salt: Some("salt-xyz".to_string()),
+    };
+    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret", None, &correct)?;
 
-    let correct = T::encode_metadata(policy, resource, permission, tier, timestamp, salt);
-    let (enc_cmt, _, proof) = T::encrypt_secret(&dkg_pk, b"test secret", None, Some(&correct))?;
+    let mut tampered: Vec<CiphertextContext> = Vec::new();
+    let mut c = correct.clone();
+    c.ring_pk = b"TAMPERED".to_vec();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.policy_id = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.resource = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.permission = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.tier = Some("TAMPERED".to_string());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.tier = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.timestamp = Some(0);
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.timestamp = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.salt = Some("TAMPERED".to_string());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.salt = None;
+    tampered.push(c);
 
-    let tampered: &[Vec<u8>] = &[
-        T::encode_metadata("TAMPERED", resource, permission, tier, timestamp, salt),
-        T::encode_metadata(policy, "TAMPERED", permission, tier, timestamp, salt),
-        T::encode_metadata(policy, resource, "TAMPERED", tier, timestamp, salt),
-        T::encode_metadata(
-            policy,
-            resource,
-            permission,
-            Some("TAMPERED"),
-            timestamp,
-            salt,
-        ),
-        T::encode_metadata(policy, resource, permission, tier, Some(0u64), salt),
-        T::encode_metadata(
-            policy,
-            resource,
-            permission,
-            tier,
-            timestamp,
-            Some("TAMPERED"),
-        ),
-        T::encode_metadata(policy, resource, permission, None, timestamp, salt),
-        T::encode_metadata(policy, resource, permission, tier, None, salt),
-        T::encode_metadata(policy, resource, permission, tier, timestamp, None),
-    ];
-
-    for variant in tampered {
-        let result = T::verify_encryption(&dkg_pk, &enc_cmt, &proof, Some(variant));
-        assert!(result.is_err(), "proof should fail with tampered metadata");
+    for variant in &tampered {
+        let result = T::verify_encryption(&proof, variant, &secret);
+        assert!(
+            result.is_err(),
+            "proof should fail with a tampered context field"
+        );
     }
     Ok(())
 }
@@ -1333,7 +1451,8 @@ where
     let (aggregate_pk, secret_shares, pub_poly) = run_dkg(n, t)?;
     assert_eq!(secret_shares.len(), n);
 
-    let (enc_cmt, encrypted_secret, _) = T::encrypt_secret(&aggregate_pk, secret, None, None)?;
+    let (enc_cmt, encrypted_secret, _) =
+        T::encrypt_secret(&aggregate_pk, secret, None, &test_ctx())?;
     assert!(!encrypted_secret.encrypted_data.is_empty());
     assert_eq!(encrypted_secret.nonce.len(), 12);
 
@@ -1356,7 +1475,13 @@ where
         .recover(&pub_shares, t, n)?
         .expect("recovery with t shares must succeed");
 
-    let decrypted = T::decrypt_secret(&aggregate_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(
+        &aggregate_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    )?;
     assert_eq!(decrypted, secret);
     Ok(())
 }
@@ -1388,7 +1513,7 @@ where
     let (aggregate_pk, secret_shares, pub_poly) = run_dkg(n, t)?;
 
     let (enc_cmt, encrypted_secret, _) =
-        T::encrypt_secret(&aggregate_pk, secret, Some(derivation), None)?;
+        T::encrypt_secret(&aggregate_pk, secret, Some(derivation), &test_ctx())?;
 
     let derived_pk = T::derive_public_key(&aggregate_pk, derivation)?;
 
@@ -1416,7 +1541,13 @@ where
         .recover(&pub_shares, t, n)?
         .expect("recovery with t shares must succeed");
 
-    let decrypted = T::decrypt_secret(&derived_pk, &xnc_cmt, &rdr_sk, &encrypted_secret)?;
+    let decrypted = T::decrypt_secret(
+        &derived_pk,
+        &xnc_cmt,
+        &rdr_sk,
+        &encrypted_secret,
+        &test_ctx(),
+    )?;
     assert_eq!(decrypted, secret);
     Ok(())
 }

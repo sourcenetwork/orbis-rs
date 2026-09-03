@@ -1,6 +1,20 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{EncryptionProof, PubShare, ThresholdDealer};
+
+/// Fixed ciphertext-binding context for the PRE benchmarks.
+pub fn bench_ctx() -> CiphertextContext {
+    CiphertextContext {
+        ring_pk: b"bench-ring-pk".to_vec(),
+        policy_id: "bench-policy".to_string(),
+        resource: "bench-resource".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    }
+}
 
 #[cfg(feature = "bls12-381")]
 #[path = "bls12_381/pre.rs"]
@@ -56,13 +70,15 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
     {
         let mut group = c.benchmark_group(format!("{prefix}/encrypt_secret"));
 
+        let ctx = bench_ctx();
+
         group.bench_function("no_derivation", |b| {
             b.iter(|| {
                 <S::Dealer as ThresholdDealer>::encrypt_secret(
                     black_box(&fixture.aggregate_pk),
                     black_box(data),
                     None,
-                    None,
+                    black_box(&ctx),
                 )
                 .unwrap()
             })
@@ -75,20 +91,25 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                     black_box(&fixture.aggregate_pk),
                     black_box(data),
                     Some(black_box(derivation)),
-                    None,
+                    black_box(&ctx),
                 )
                 .unwrap()
             })
         });
 
-        let metadata: &[u8] = b"document-id:12345";
-        group.bench_function("with_metadata", |b| {
+        let rich_ctx = CiphertextContext {
+            tier: Some("gold".to_string()),
+            timestamp: Some(1_725_321_600),
+            salt: Some("bench-salt".to_string()),
+            ..bench_ctx()
+        };
+        group.bench_function("with_context", |b| {
             b.iter(|| {
                 <S::Dealer as ThresholdDealer>::encrypt_secret(
                     black_box(&fixture.aggregate_pk),
                     black_box(data),
                     None,
-                    Some(black_box(metadata)),
+                    black_box(&rich_ctx),
                 )
                 .unwrap()
             })
@@ -98,6 +119,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
     }
 
     // -- decrypt_secret -------------------------------------------------------
+    let ctx = bench_ctx();
     c.bench_function(&format!("{prefix}/decrypt_secret"), |b| {
         b.iter(|| {
             <S::Dealer as ThresholdDealer>::decrypt_secret(
@@ -105,6 +127,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                 black_box(&fixture.xnc_cmt),
                 black_box(&fixture.rdr_sk),
                 black_box(&fixture.secret),
+                black_box(&ctx),
             )
             .unwrap()
         })
@@ -114,10 +137,9 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
     c.bench_function(&format!("{prefix}/verify_encryption"), |b| {
         b.iter(|| {
             <S::Dealer as ThresholdDealer>::verify_encryption(
-                black_box(&fixture.aggregate_pk),
-                black_box(&fixture.enc_cmt),
                 black_box(&fixture.proof),
-                None,
+                black_box(&ctx),
+                black_box(&fixture.secret),
             )
             .unwrap()
         })
@@ -209,7 +231,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                     &fixture.aggregate_pk,
                     data,
                     None,
-                    None,
+                    &ctx,
                 )
                 .unwrap();
 
@@ -236,6 +258,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                     &xnc_cmt,
                     &fixture.rdr_sk,
                     &secret,
+                    &ctx,
                 )
                 .unwrap()
             })
