@@ -434,8 +434,7 @@ pub struct PreFixture {
 struct PreResponse {
     xnc_cmt: String,
     secret: Secret,
-    #[serde(default)]
-    context: Option<crypto::context::CiphertextContext>,
+    context: crypto::context::CiphertextContext,
 }
 
 #[derive(Clone, Debug)]
@@ -485,16 +484,12 @@ pub async fn pre_call(
         Some(derivation) => PreImpl::derive_public_key(&ring_pk, derivation)?,
         None => ring_pk,
     };
-    let ciphertext_context = response
-        .context
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("PRE response did not include the ciphertext context"))?;
     let plaintext = PreImpl::decrypt_secret(
         &effective_pk,
         &xnc_cmt,
         &fixture.reader_sk,
         &response.secret,
-        ciphertext_context,
+        &response.context,
     )?;
     let decrypt_ms = decrypt_started.elapsed().as_secs_f64() * 1000.0;
     if plaintext != fixture.expected_plaintext {

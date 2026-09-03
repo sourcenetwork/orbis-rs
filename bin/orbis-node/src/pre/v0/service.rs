@@ -323,13 +323,17 @@ where
 
         // 6. Parse result as PreResponse, attach the verified ciphertext-binding
         //    context so the reader can rebuild the AAD, and encode as JSON.
-        let mut pre_response: crate::pre::v0::coordinator::PreResponse =
+        let pre_response: crate::pre::v0::coordinator::PreResponse =
             serde_json::from_slice(&result).map_err(|e| {
                 PreError::Deserialization(format!("Failed to parse PRE result: {}", e))
             })?;
-        pre_response.context = Some(ciphertext_context);
+        let wire_response = crate::pre::v0::coordinator::PreReencryptResponse {
+            xnc_cmt: pre_response.xnc_cmt,
+            secret: pre_response.secret,
+            context: ciphertext_context,
+        };
 
-        let encrypted_secret = serde_json::to_vec(&pre_response)
+        let encrypted_secret = serde_json::to_vec(&wire_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
 
         let response = StartPreResponse {

@@ -88,14 +88,12 @@ type InlineDocument struct {
 	PolicyId   string `protobuf:"bytes,4,opt,name=policy_id,json=policyId,proto3" json:"policy_id,omitempty"`
 	Resource   string `protobuf:"bytes,5,opt,name=resource,proto3" json:"resource,omitempty"`
 	Permission string `protobuf:"bytes,6,opt,name=permission,proto3" json:"permission,omitempty"`
-	// Shared point for encryption proof
-	SharedPoint []byte `protobuf:"bytes,7,opt,name=shared_point,json=sharedPoint,proto3" json:"shared_point,omitempty"`
-	// Challenge for encryption proof
-	Challenge []byte `protobuf:"bytes,8,opt,name=challenge,proto3" json:"challenge,omitempty"`
-	// Response for encryption proof
-	Response      []byte  `protobuf:"bytes,9,opt,name=response,proto3" json:"response,omitempty"`
-	Tier          *string `protobuf:"bytes,10,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
-	Timestamp     *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	// Challenge for the encryption proof (Schnorr PoK of the encryption randomness).
+	Challenge []byte `protobuf:"bytes,7,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	// Response for the encryption proof.
+	Response      []byte  `protobuf:"bytes,8,opt,name=response,proto3" json:"response,omitempty"`
+	Tier          *string `protobuf:"bytes,9,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
+	Timestamp     *uint64 `protobuf:"varint,10,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -170,13 +168,6 @@ func (x *InlineDocument) GetPermission() string {
 		return x.Permission
 	}
 	return ""
-}
-
-func (x *InlineDocument) GetSharedPoint() []byte {
-	if x != nil {
-		return x.SharedPoint
-	}
-	return nil
 }
 
 func (x *InlineDocument) GetChallenge() []byte {
@@ -373,7 +364,7 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\x1eorbis/v0/pre/pre_service.proto\x12\forbis.v0.pre\"8\n" +
 	"\x0eTimestampRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x04R\x05start\x12\x10\n" +
-	"\x03end\x18\x02 \x01(\x04R\x03end\"\xfa\x02\n" +
+	"\x03end\x18\x02 \x01(\x04R\x03end\"\xd7\x02\n" +
 	"\x0eInlineDocument\x12\x17\n" +
 	"\aring_id\x18\x01 \x01(\tR\x06ringId\x12-\n" +
 	"\x12encrypted_document\x18\x02 \x01(\fR\x11encryptedDocument\x12\x17\n" +
@@ -382,13 +373,12 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\bresource\x18\x05 \x01(\tR\bresource\x12\x1e\n" +
 	"\n" +
 	"permission\x18\x06 \x01(\tR\n" +
-	"permission\x12!\n" +
-	"\fshared_point\x18\a \x01(\fR\vsharedPoint\x12\x1c\n" +
-	"\tchallenge\x18\b \x01(\fR\tchallenge\x12\x1a\n" +
-	"\bresponse\x18\t \x01(\fR\bresponse\x12\x17\n" +
-	"\x04tier\x18\n" +
-	" \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
-	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
+	"permission\x12\x1c\n" +
+	"\tchallenge\x18\a \x01(\fR\tchallenge\x12\x1a\n" +
+	"\bresponse\x18\b \x01(\fR\bresponse\x12\x17\n" +
+	"\x04tier\x18\t \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
+	"\ttimestamp\x18\n" +
+	" \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
 	"_timestamp\"\xbe\x02\n" +

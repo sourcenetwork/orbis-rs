@@ -32,7 +32,7 @@ use tonic::{Code, Request, Status};
 const DKG_START_MAX_ATTEMPTS: usize = 3;
 const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Response structure from PRE server
+/// Response structure from PRE server (JSON in `StartPreResponse.encrypted_secret`).
 #[derive(Debug, Deserialize)]
 struct PreResponse {
     /// Recovered reencrypted commitment (xnc_cmt) as hex string
@@ -41,8 +41,7 @@ struct PreResponse {
     secret: Secret,
     /// Ciphertext-binding context the node verified the proof against; needed to
     /// rebuild the AES-GCM AAD for local decryption.
-    #[serde(default)]
-    context: Option<CiphertextContext>,
+    context: CiphertextContext,
 }
 
 /// Result of a DKG operation
@@ -470,18 +469,12 @@ pub async fn do_pre(
         // The node echoes back the ciphertext-binding context it verified the
         // proof against; it is needed to rebuild the AES-GCM AAD. A wrong context
         // (or a lying node) makes the authenticated decryption below fail.
-        let ciphertext_context = pre_response
-            .context
-            .as_ref()
-            .ok_or_else(|| anyhow!("PRE response did not include the ciphertext context"))?;
-
-        // Decrypt using reader's secret key and the secret from the response
         let decrypted = ThresholdDealerNode::decrypt_secret(
             &effective_pk,
             &xnc_cmt,
             &reader_sk_scalar,
             &pre_response.secret,
-            ciphertext_context,
+            &pre_response.context,
         )
         .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 

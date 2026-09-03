@@ -36,18 +36,16 @@ type StoreSecretRequest struct {
 	Resource string `protobuf:"bytes,5,opt,name=resource,proto3" json:"resource,omitempty"`
 	// Permission required for the policy
 	Permission string `protobuf:"bytes,6,opt,name=permission,proto3" json:"permission,omitempty"`
-	// Shared point for encryption proof
-	SharedPoint []byte `protobuf:"bytes,7,opt,name=shared_point,json=sharedPoint,proto3" json:"shared_point,omitempty"`
-	// challenge for encryption proof
-	Challenge []byte `protobuf:"bytes,8,opt,name=challenge,proto3" json:"challenge,omitempty"`
-	// Response for encryption proof
-	Response []byte `protobuf:"bytes,9,opt,name=response,proto3" json:"response,omitempty"`
+	// Challenge for the encryption proof (Schnorr PoK of the encryption randomness).
+	Challenge []byte `protobuf:"bytes,7,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	// Response for the encryption proof.
+	Response []byte `protobuf:"bytes,8,opt,name=response,proto3" json:"response,omitempty"`
 	// Return a signature from the DKG key as proof of storage
-	WithProof bool `protobuf:"varint,10,opt,name=with_proof,json=withProof,proto3" json:"with_proof,omitempty"`
+	WithProof bool `protobuf:"varint,9,opt,name=with_proof,json=withProof,proto3" json:"with_proof,omitempty"`
 	// tier for the policy
-	Tier *string `protobuf:"bytes,11,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
+	Tier *string `protobuf:"bytes,10,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
 	// timestamp for the policy
-	Timestamp     *uint64 `protobuf:"varint,12,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	Timestamp     *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -122,13 +120,6 @@ func (x *StoreSecretRequest) GetPermission() string {
 		return x.Permission
 	}
 	return ""
-}
-
-func (x *StoreSecretRequest) GetSharedPoint() []byte {
-	if x != nil {
-		return x.SharedPoint
-	}
-	return nil
 }
 
 func (x *StoreSecretRequest) GetChallenge() []byte {
@@ -257,7 +248,7 @@ var File_orbis_v0_store_secret_store_secret_service_proto protoreflect.FileDescr
 
 const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"\n" +
-	"0orbis/v0/store_secret/store_secret_service.proto\x12\x15orbis.v0.store_secret\"\x9d\x03\n" +
+	"0orbis/v0/store_secret/store_secret_service.proto\x12\x15orbis.v0.store_secret\"\xfa\x02\n" +
 	"\x12StoreSecretRequest\x12-\n" +
 	"\x12encrypted_document\x18\x01 \x01(\fR\x11encryptedDocument\x12\x17\n" +
 	"\aenc_cmt\x18\x02 \x01(\fR\x06encCmt\x12\x17\n" +
@@ -266,15 +257,14 @@ const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"\bresource\x18\x05 \x01(\tR\bresource\x12\x1e\n" +
 	"\n" +
 	"permission\x18\x06 \x01(\tR\n" +
-	"permission\x12!\n" +
-	"\fshared_point\x18\a \x01(\fR\vsharedPoint\x12\x1c\n" +
-	"\tchallenge\x18\b \x01(\fR\tchallenge\x12\x1a\n" +
-	"\bresponse\x18\t \x01(\fR\bresponse\x12\x1d\n" +
+	"permission\x12\x1c\n" +
+	"\tchallenge\x18\a \x01(\fR\tchallenge\x12\x1a\n" +
+	"\bresponse\x18\b \x01(\fR\bresponse\x12\x1d\n" +
 	"\n" +
-	"with_proof\x18\n" +
-	" \x01(\bR\twithProof\x12\x17\n" +
-	"\x04tier\x18\v \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
-	"\ttimestamp\x18\f \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
+	"with_proof\x18\t \x01(\bR\twithProof\x12\x17\n" +
+	"\x04tier\x18\n" +
+	" \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
+	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
 	"_timestamp\"\xba\x01\n" +

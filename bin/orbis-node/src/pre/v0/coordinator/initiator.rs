@@ -565,12 +565,11 @@ where
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
-        // 10. Create response structure. The ciphertext-binding context is
-        // attached by the service layer, which holds the resolved DocumentPayload.
+        // 10. Create the coordinator output. The service layer wraps this into a
+        // PreReencryptResponse with the ciphertext-binding context it verified.
         let pre_response = PreResponse {
             xnc_cmt: xnc_cmt_hex,
             secret,
-            context: None,
         };
 
         // 11. Serialize response to JSON bytes
