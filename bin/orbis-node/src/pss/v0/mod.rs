@@ -327,7 +327,8 @@ async fn warn_on_protocol_version_divergence<D>(
         let state = divergence_report_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if now_secs.saturating_sub(state.last_check_secs) < PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS {
+        if now_secs.saturating_sub(state.last_check_secs) < PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS
+        {
             return;
         }
     }
