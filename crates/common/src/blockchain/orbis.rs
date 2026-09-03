@@ -1018,7 +1018,7 @@ pub fn generate_document_id(
 
     let mut h = Sha256::new();
 
-    write_string(&mut h, "orbis/document/v2");
+    write_string(&mut h, "orbis/document/v1");
     write_string(&mut h, ring_id);
     write_bytes(&mut h, &secret.enc_cmt);
     write_bytes(&mut h, &secret.encrypted_data);
@@ -1843,7 +1843,7 @@ mod tests {
         );
         assert_eq!(
             id1,
-            "a5f065b5d5e02043d5427455daa3809b59d85990b60e7b5fa11dbcbbe2692fbe"
+            "e555cfcb145edf3d4cd8acbae93e05dc3a48eb0162b3af90f42064ab837c9a06"
         );
 
         // Rejections — each must fail identically on the Go side.
