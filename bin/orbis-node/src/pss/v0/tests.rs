@@ -1132,3 +1132,193 @@ async fn test_refresh_ring_missing_from_bulletin_reconciles_local_index() {
 
     cleanup_db(&db_path);
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Multi-ring protocol-version divergence warning
+// ──────────────────────────────────────────────────────────────────────────────
+
+mod divergence {
+    use super::super::{
+        classify_divergence, divergence_log_decision, member_ring_versions, DivergenceReport,
+        DivergenceReportState,
+    };
+    use bulletin::r#trait::{RingPayload, UpgradeInfo};
+
+    const NOW: u64 = 1_000_000;
+
+    fn payload(ring_pk: &str, members: &[&str], upgrade_info: UpgradeInfo) -> RingPayload {
+        RingPayload {
+            ring_pk: ring_pk.to_string(),
+            peer_node_keys: members.iter().map(|m| m.to_string()).collect(),
+            upgrade_info,
+            ..Default::default()
+        }
+    }
+
+    fn stable(current: u64) -> UpgradeInfo {
+        UpgradeInfo {
+            current_version: current,
+            next_version: None,
+            activation_time: None,
+        }
+    }
+
+    fn scheduled(current: u64, next: u64, activation_time: u64) -> UpgradeInfo {
+        UpgradeInfo {
+            current_version: current,
+            next_version: Some(next),
+            activation_time: Some(activation_time),
+        }
+    }
+
+    fn fresh_state() -> DivergenceReportState {
+        DivergenceReportState {
+            last_check_secs: 0,
+            last_fingerprint: None,
+        }
+    }
+
+    #[test]
+    fn classify_single_or_empty_is_silent() {
+        assert_eq!(classify_divergence(&[]), DivergenceReport::Silent);
+        assert_eq!(
+            classify_divergence(&[("r1".to_string(), 0, None)]),
+            DivergenceReport::Silent
+        );
+    }
+
+    #[test]
+    fn classify_two_rings_same_version() {
+        assert_eq!(
+            classify_divergence(&[("r1".to_string(), 0, None), ("r2".to_string(), 0, None)]),
+            DivergenceReport::MultiRingSingleVersion
+        );
+    }
+
+    #[test]
+    fn classify_two_rings_differing_effective_versions() {
+        assert_eq!(
+            classify_divergence(&[("r1".to_string(), 0, None), ("r2".to_string(), 1, None)]),
+            DivergenceReport::Divergent
+        );
+    }
+
+    #[test]
+    fn classify_pending_upgrade_makes_it_divergent() {
+        // Both rings are effective v0, but r2 has a scheduled v1.
+        assert_eq!(
+            classify_divergence(&[("r1".to_string(), 0, None), ("r2".to_string(), 0, Some(1))]),
+            DivergenceReport::Divergent
+        );
+    }
+
+    #[test]
+    fn member_ring_versions_filters_non_members_and_unfinalized() {
+        let payloads = vec![
+            ("r1".to_string(), payload("pk1", &["me", "b"], stable(0))),
+            ("r2".to_string(), payload("pk2", &["b", "c"], stable(1))), // not a member
+            ("r3".to_string(), payload("", &["me"], stable(0))),        // not finalized
+            (
+                "r4".to_string(),
+                payload("pk4", &["me"], scheduled(0, 2, NOW + 1000)),
+            ),
+        ];
+        assert_eq!(
+            member_ring_versions(&payloads, "me", NOW),
+            vec![("r1".to_string(), 0, None), ("r4".to_string(), 0, Some(2))]
+        );
+    }
+
+    #[test]
+    fn member_ring_versions_pending_upgrade_past_activation_is_effective() {
+        let payloads = vec![(
+            "r1".to_string(),
+            payload("pk1", &["me"], scheduled(0, 1, NOW - 10)),
+        )];
+        // activation_time has passed → effective is v1 and nothing is pending.
+        assert_eq!(
+            member_ring_versions(&payloads, "me", NOW),
+            vec![("r1".to_string(), 1, None)]
+        );
+    }
+
+    #[test]
+    fn member_ring_versions_skips_malformed_upgrade_info() {
+        // next_version without activation_time → effective_version() errors.
+        let malformed = UpgradeInfo {
+            current_version: 0,
+            next_version: Some(1),
+            activation_time: None,
+        };
+        let payloads = vec![("r1".to_string(), payload("pk1", &["me"], malformed))];
+        assert!(member_ring_versions(&payloads, "me", NOW).is_empty());
+    }
+
+    #[test]
+    fn log_decision_logs_first_then_dedups_until_change() {
+        let mut state = fresh_state();
+        let rings = vec![("r1".to_string(), 0, None), ("r2".to_string(), 1, None)];
+
+        assert_eq!(
+            divergence_log_decision(100, &rings, &mut state),
+            Some(DivergenceReport::Divergent)
+        );
+        assert_eq!(state.last_check_secs, 100);
+        assert!(state.last_fingerprint.is_some());
+
+        // Same set again → no repeat, but the check time still advances.
+        assert_eq!(divergence_log_decision(200, &rings, &mut state), None);
+        assert_eq!(state.last_check_secs, 200);
+
+        // A version flip on r2 → fresh log.
+        let changed = vec![("r1".to_string(), 0, None), ("r2".to_string(), 2, None)];
+        assert_eq!(
+            divergence_log_decision(300, &changed, &mut state),
+            Some(DivergenceReport::Divergent)
+        );
+    }
+
+    #[test]
+    fn log_decision_relogs_when_severity_changes() {
+        let mut state = fresh_state();
+        let same_version = vec![("r1".to_string(), 0, None), ("r2".to_string(), 0, None)];
+        assert_eq!(
+            divergence_log_decision(100, &same_version, &mut state),
+            Some(DivergenceReport::MultiRingSingleVersion)
+        );
+
+        let now_divergent = vec![("r1".to_string(), 0, None), ("r2".to_string(), 1, None)];
+        assert_eq!(
+            divergence_log_decision(200, &now_divergent, &mut state),
+            Some(DivergenceReport::Divergent)
+        );
+    }
+
+    #[test]
+    fn log_decision_silent_resets_so_re_entry_relogs() {
+        let mut state = fresh_state();
+        let divergent = vec![("r1".to_string(), 0, None), ("r2".to_string(), 1, None)];
+
+        assert!(divergence_log_decision(100, &divergent, &mut state).is_some());
+
+        // Drop to a single ring: nothing logged, fingerprint cleared.
+        assert_eq!(
+            divergence_log_decision(200, &[("r1".to_string(), 0, None)], &mut state),
+            None
+        );
+        assert_eq!(state.last_fingerprint, None);
+
+        // The same divergent set now re-logs because the state was reset.
+        assert_eq!(
+            divergence_log_decision(300, &divergent, &mut state),
+            Some(DivergenceReport::Divergent)
+        );
+    }
+
+    #[test]
+    fn log_decision_advances_check_time_even_when_silent() {
+        let mut state = fresh_state();
+        assert_eq!(divergence_log_decision(500, &[], &mut state), None);
+        assert_eq!(state.last_check_secs, 500);
+    }
+}

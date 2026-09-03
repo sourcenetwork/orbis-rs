@@ -147,6 +147,41 @@ This removes `next_version` and `activation_time`. The `effective_version` remai
 
 After `activation_time` has passed the upgrade cannot be rolled back via `--clear-upgrade`; at that point `next_version` has already become the effective version.
 
+## Operators Serving Multiple Rings
+
+Protocol versions are scheduled **per ring**, by whoever holds ACP write access to
+that ring — not bulletin-wide. This keeps upgrade timing under the control of the
+ring (and its policy) rather than the bulletin owner, but it has a consequence for
+node operators:
+
+> A node that belongs to more than one ring may be required to run a single binary
+> that serves **several protocol versions at once**, because each of its rings can
+> schedule upgrades independently and on unrelated timelines.
+
+Concretely:
+
+- During any ring's upgrade window the node must serve both that ring's
+  `current_version` and its `next_version`.
+- Two rings that have flipped to different versions require the node to keep
+  serving **both** for as long as it stays in both rings.
+- A ring that jumps across a version gap (e.g. v1 → v4) may require a **per-ring**
+  local-storage migration for that ring's keys — there is no automatic
+  multi-version migration pipeline.
+
+The node surfaces this in its logs on the PSS scheduler tick (throttled, and only
+re-logged when the set of `(ring, version)` pairs changes):
+
+- **INFO** — "This node is a member of multiple rings…" once the node is a current
+  member of two or more rings, even while they still share one version.
+- **WARN** — "…multiple rings whose protocol versions differ…" once the effective
+  or pending versions across those rings are no longer identical, with a per-ring
+  `ring=vN(pending vM)` breakdown.
+
+If you operate a node in multiple rings, keep its binary at a version that covers
+the union of every version its rings use or have scheduled, and treat the WARN
+line as a prompt to check whether a local-storage migration is needed before a
+ring's `activation_time`.
+
 ## Error Reference
 
 | Error | Cause | Fix |

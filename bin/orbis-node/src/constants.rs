@@ -504,6 +504,12 @@ pub const DEFAULT_RESHARE_INTERVAL_SECS: u64 = 60 * 60;
 /// the intended interval rather than up to check_interval seconds late.
 pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
 
+/// Minimum spacing between multi-ring protocol-version divergence checks run on
+/// the PSS scheduler tick. Bounds the extra bulletin reads that check performs
+/// regardless of how often the scheduler wakes up; it still only logs at
+/// INFO/WARN when the observed set of `(ring, version)` pairs changes.
+pub const PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS: u64 = 15 * 60;
+
 /// Maximum number of attempts to collect threshold signatures at the end of a reshare.
 pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 
