@@ -34,7 +34,7 @@ Full definitions: [`src/trait.rs`](src/trait.rs).
   - **`DkgRole`**: `Standard`, `Dealer`, `Receiver`, `DealerReceiver` — used for **resharing** (committee change) so some nodes only send shares, some only receive, or both.
   - **`DkgMode`**: `Fresh` (new secret), `Refresh` (share rotation, zero constant term), `Reshare { ... }` (redistribute the same secret to a new committee with Lagrange-weighted constants).
   - Constructor takes **`session_id`** and **`role`** up front. After share exchange, **`get_complaints`** exposes dispute information; **`combine_pub_poly_bytes`** adds serialized public polynomials (used when refreshing the public polynomial after a refresh-style update — PSS-style public-side updates in the orchestration layer).
-- **`ThresholdDealer` (PRE)**: Re-encryption of encrypted secrets under the DKG key, with **Schnorr-style NIZK** on re-encryption shares and **Chaum–Pedersen** proofs for client-side encryption (`encrypt_secret` / `verify_encryption`). Optional **capability derivation** scalars (`derive_public_key`, `derive`) bind encryption and decryption to derived keys. **`encode_metadata`** hashes policy fields (Poseidon on decaf377, SHA-256 on BLS12-381) for proof binding.
+- **`ThresholdDealer` (PRE)**: Re-encryption of encrypted secrets under the DKG key, with **Schnorr-style NIZK** on re-encryption shares and, for client-side encryption (`encrypt_secret` / `verify_encryption`), a **Schnorr proof of knowledge of the encryption randomness** bound (via a SHA-512 Fiat–Shamir challenge) to a `CiphertextContext` digest and the ciphertext digest. The KEM shared point (`r·s·G`, from which the AES key is derived) is never serialized. Optional **capability derivation** scalars (`derive_public_key`) bind encryption and decryption to derived keys.
 - **`ThresholdSigner`**: Threshold signing over DKG outputs.
   - **`INTERACTIVE`**: `false` for BLS (single signing round; empty nonce state), `true` for FROST (nonce commitments + signing state).
   - Optional signing **derivation** and **metadata** (domain-separated) to derive `d * pk` and bind policy bytes into the derivation.
@@ -72,7 +72,7 @@ let aggregate_pk = node.compute_aggregate_public_key()?;
 
 - **Threshold**: Reconstruction of secrets or signatures needs at least `t` honest participants; specifics depend on the orchestration layer.
 - **Replay protection**: DKG shares carry nonces and a **session id** agreed by participants.
-- **Proofs**: PRE uses NIZKs for re-encryption and Chaum–Pedersen for encryption correctness; verification APIs are on `ThresholdDealer`.
+- **Proofs**: PRE uses a NIZK on each re-encryption share and a Schnorr PoK of the encryption randomness (bound to the policy/ring context and the ciphertext) for client-side encryption; verification APIs are on `ThresholdDealer`. The KEM shared secret is never published, so a party holding only the bulletin data (`enc_cmt`, ciphertext, nonce, proof, policy fields) cannot derive the AES key — recovery requires a threshold re-encryption.
 - **VMs and entropy**: Randomness comes from the OS (`OsRng` / `rand_core`); see the section below.
 
 ## Benchmarks
