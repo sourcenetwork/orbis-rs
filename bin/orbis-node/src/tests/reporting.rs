@@ -1340,7 +1340,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         &permission,
         None,
         None,
-    );
+    )
+    .expect("generate inline object_id");
 
     register_object_with_client(&controller_client, &policy_id, &inline_object_id, &resource).await;
 

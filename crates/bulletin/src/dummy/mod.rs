@@ -294,7 +294,7 @@ impl DummyBulletin {
     fn document_id(payload: &[u8]) -> Result<String> {
         let doc: DocumentPayload = serde_json::from_slice(payload)
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-        Ok(generate_document_id(
+        generate_document_id(
             &doc.ring_id,
             &doc.document,
             &doc.proof,
@@ -303,7 +303,8 @@ impl DummyBulletin {
             &doc.permission,
             doc.tier.as_deref(),
             doc.timestamp,
-        ))
+        )
+        .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
 
     fn key_derivation_id(payload: &[u8]) -> Result<String> {

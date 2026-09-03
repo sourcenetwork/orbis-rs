@@ -47,7 +47,8 @@ pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) 
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
-    );
+    )
+    .map_err(|e| PreError::InvalidInput(format!("malformed inline document: {e}")))?;
 
     if expected != object_id {
         return Err(PreError::Unauthorized(format!(
@@ -250,11 +251,23 @@ pub async fn store_response(
 mod tests {
     use super::*;
 
+    /// A well-formed encrypted-`Secret` JSON; `tag` varies the ciphertext bytes.
+    fn secret_json(tag: u8) -> String {
+        format!(
+            r#"{{"enc_cmt":[1,2,3],"encrypted_data":[{tag},{tag},{tag}],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}}"#
+        )
+    }
+
+    /// A well-formed `EncryptionProof` JSON; `tag` varies the scalar bytes.
+    fn proof_json(tag: u8) -> String {
+        format!(r#"{{"challenge":[{tag}],"response":[{tag}]}}"#)
+    }
+
     fn document_b() -> DocumentPayload {
         DocumentPayload {
             ring_id: "ring-1".to_string(),
-            document: "b-ciphertext".to_string(),
-            proof: "b-proof".to_string(),
+            document: secret_json(11),
+            proof: proof_json(22),
             policy_id: "policy-b".to_string(),
             resource: "document".to_string(),
             permission: "read".to_string(),
@@ -274,6 +287,7 @@ mod tests {
             document.tier.as_deref(),
             document.timestamp,
         )
+        .expect("well-formed test document")
     }
 
     #[test]
@@ -294,11 +308,11 @@ mod tests {
             ),
             (
                 "document",
-                Box::new(|d: &mut DocumentPayload| d.document = "tampered".to_string()),
+                Box::new(|d: &mut DocumentPayload| d.document = secret_json(99)),
             ),
             (
                 "proof",
-                Box::new(|d: &mut DocumentPayload| d.proof = "tampered".to_string()),
+                Box::new(|d: &mut DocumentPayload| d.proof = proof_json(99)),
             ),
             (
                 "policy_id",
@@ -346,8 +360,8 @@ mod tests {
 
         let document_c = DocumentPayload {
             ring_id: "ring-1".to_string(),
-            document: "c-ciphertext".to_string(),
-            proof: "c-proof".to_string(),
+            document: secret_json(33),
+            proof: proof_json(44),
             policy_id: "policy-b".to_string(),
             resource: "document".to_string(),
             permission: "read".to_string(),

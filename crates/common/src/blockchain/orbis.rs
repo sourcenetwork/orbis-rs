@@ -968,7 +968,41 @@ pub fn ring_reshare_sign_state_hash(state: &RingReshareSignState) -> [u8; 32] {
     Sha256::digest(canonical.encode_to_vec()).into()
 }
 
-/// Compute the deterministic document ID matching Vera's on-chain `GenerateDocumentID`.
+/// The encrypted document, as far as the object‑id derivation is concerned: the
+/// three byte fields of the crypto `Secret`.
+///
+/// `deny_unknown_fields` + exact key names is deliberate: the id must be derived
+/// from the *same* three values on both sides of the wire. Go's `encoding/json`
+/// matches field names case‑insensitively (a later `"ENC_CMT"` overrides
+/// `"enc_cmt"`), so a permissive parser here would let one ciphertext acquire two
+/// object ids — one Vera hashes, one this crate verifies. Rejecting any extra or
+/// differently‑cased key closes that.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdDocumentSecret {
+    enc_cmt: Vec<u8>,
+    encrypted_data: Vec<u8>,
+    nonce: Vec<u8>,
+}
+
+/// The encryption proof, as far as the object‑id derivation is concerned. See
+/// [`IdDocumentSecret`] for why the field set is exact.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdDocumentProof {
+    challenge: Vec<u8>,
+    response: Vec<u8>,
+}
+
+/// Compute the deterministic document ID matching Vera's on-chain
+/// `GenerateDocumentID`.
+///
+/// `document` and `proof` are the JSON strings from `DocumentPayload`; they are
+/// parsed and re‑encoded into a canonical length‑prefixed form before hashing so
+/// that two byte‑different JSON encodings of the *same* ciphertext produce the
+/// *same* id (the authorization identity must be a function of the ciphertext's
+/// meaning, not its serialization). Returns an error if either string is not the
+/// expected shape.
 pub fn generate_document_id(
     ring_id: &str,
     document: &str,
@@ -978,20 +1012,26 @@ pub fn generate_document_id(
     permission: &str,
     tier: Option<&str>,
     timestamp: Option<u64>,
-) -> String {
+) -> Result<String> {
+    let secret: IdDocumentSecret = serde_json::from_str(document)?;
+    let proof: IdDocumentProof = serde_json::from_str(proof)?;
+
     let mut h = Sha256::new();
 
-    write_string(&mut h, "orbis/document/v1");
+    write_string(&mut h, "orbis/document/v2");
     write_string(&mut h, ring_id);
-    write_string(&mut h, document);
-    write_string(&mut h, proof);
+    write_bytes(&mut h, &secret.enc_cmt);
+    write_bytes(&mut h, &secret.encrypted_data);
+    write_bytes(&mut h, &secret.nonce);
+    write_bytes(&mut h, &proof.challenge);
+    write_bytes(&mut h, &proof.response);
     write_string(&mut h, policy_id);
     write_string(&mut h, resource);
     write_string(&mut h, permission);
     write_optional_string(&mut h, tier);
     write_optional_u64(&mut h, timestamp);
 
-    hex::encode(h.finalize())
+    Ok(hex::encode(h.finalize()))
 }
 
 /// Compute the deterministic key derivation ID matching Vera's on-chain `GenerateKeyDerivationID`.
@@ -1015,8 +1055,12 @@ pub fn generate_key_derivation_id(
 }
 
 fn write_string(h: &mut Sha256, s: &str) {
-    h.update((s.len() as u32).to_be_bytes());
-    h.update(s.as_bytes());
+    write_bytes(h, s.as_bytes());
+}
+
+fn write_bytes(h: &mut Sha256, b: &[u8]) {
+    h.update((b.len() as u32).to_be_bytes());
+    h.update(b);
 }
 
 fn write_optional_string(h: &mut Sha256, value: Option<&str>) {
@@ -1756,12 +1800,80 @@ mod tests {
     use prost::Message;
 
     use super::{
-        decode_store_document_id, decode_store_key_derivation_id, ring_reshare_sign_state_hash,
-        DemeritConfig, MsgAddRingTrustedAuthRelayByAcp, MsgCancelPendingRing, MsgCreateRing,
-        MsgFinalizeRing, MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
+        decode_store_document_id, decode_store_key_derivation_id, generate_document_id,
+        ring_reshare_sign_state_hash, DemeritConfig, MsgAddRingTrustedAuthRelayByAcp,
+        MsgCancelPendingRing, MsgCreateRing, MsgFinalizeRing,
+        MsgFinalizeRingReshareByThresholdSignature, MsgStoreDocumentResponse,
         MsgStoreKeyDerivationResponse, QueryNodeDemeritsRequest, QueryNodeDemeritsResponse,
         ReportingConfig, Ring, RingReshareSignState, UpgradeInfo,
     };
+
+    /// Cross-implementation vector: `generate_document_id` must agree byte-for-byte
+    /// with Vera's Go `GenerateDocumentID`. Whitespace and field order must not
+    /// change the id (one semantic ciphertext = one authorization identity), while
+    /// any extra or differently-cased key must be rejected on both sides — Go's
+    /// case-insensitive JSON field matching would otherwise let `"ENC_CMT"`
+    /// override `"enc_cmt"` in Vera's hash but not here.
+    #[test]
+    fn generate_document_id_is_canonical_and_matches_vera() {
+        const D1: &str =
+            r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#;
+        // Same three fields, whitespace + reordered.
+        const D2: &str = "{ \"nonce\" : [0,0,0,0,0,0,0,0,0,0,0,0],\n  \"enc_cmt\": [1, 2, 3] ,\"encrypted_data\":[4,5,6] }";
+        const P: &str = r#"{"challenge":[7,8],"response":[9,10]}"#;
+
+        let id = |doc: &str, proof: &str| {
+            generate_document_id(
+                "ring-1",
+                doc,
+                proof,
+                "policy-b",
+                "document",
+                "read",
+                Some("gold"),
+                Some(1_700_000_000),
+            )
+        };
+
+        let id1 = id(D1, P).unwrap();
+        assert_eq!(
+            id1,
+            id(D2, P).unwrap(),
+            "whitespace/order must not change the id"
+        );
+        assert_eq!(
+            id1,
+            "a5f065b5d5e02043d5427455daa3809b59d85990b60e7b5fa11dbcbbe2692fbe"
+        );
+
+        // Rejections — each must fail identically on the Go side.
+        assert!(id("{}", P).is_err(), "missing document fields");
+        assert!(id(D1, "not json").is_err(), "malformed proof");
+        assert!(
+            id(
+                r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0],"extra":1}"#,
+                P
+            )
+            .is_err(),
+            "unknown field"
+        );
+        assert!(
+            id(
+                r#"{"enc_cmt":[1,2,3],"ENC_CMT":[9,9,9],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+                P
+            )
+            .is_err(),
+            "case-variant duplicate key"
+        );
+        assert!(
+            id(
+                D1,
+                r#"{"challenge":[7,8],"response":[9,10],"Response":[0]}"#
+            )
+            .is_err(),
+            "case-variant duplicate key in proof"
+        );
+    }
 
     #[test]
     fn create_ring_round_trips_pss_interval() {

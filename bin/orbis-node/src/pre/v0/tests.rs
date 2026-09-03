@@ -493,7 +493,8 @@ async fn test_pre_with_inline_document_end_to_end() {
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
-    );
+    )
+    .expect("generate object_id");
     let document_evidence = ReportedDocumentEvidence {
         document: document.document.clone(),
         proof: document.proof.clone(),
