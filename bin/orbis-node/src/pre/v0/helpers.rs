@@ -25,19 +25,29 @@ async fn fetch_document_payload(
         .await
         .map_err(|e| PreError::Storage(format!("Failed to read object '{}': {}", object_id, e)))?;
 
-    serde_json::from_slice::<DocumentPayload>(&object_info.payload)
-        .map_err(|e| PreError::Deserialization(format!("Failed to parse document payload: {}", e)))
+    let document =
+        serde_json::from_slice::<DocumentPayload>(&object_info.payload).map_err(|e| {
+            PreError::Deserialization(format!("Failed to parse document payload: {}", e))
+        })?;
+
+    // Defence in depth: Vera derives `object_id` from this document's fields when it is stored
+    // (`crates/bulletin/src/vera`), so a bulletin read is expected to round-trip. Recomputing it
+    // here means PRE fails closed rather than re-encrypting a ciphertext to the wrong
+    // authorization identity if the on-chain and in-process canonicalizations ever diverge.
+    check_document_id_binding(object_id, &document)?;
+
+    Ok(document)
 }
 
-/// Confirms a caller-supplied document is genuinely the one `object_id` refers to.
+/// Recomputes the deterministic document ID from `document`'s fields and checks it equals
+/// `object_id`.
 ///
-/// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same
-/// deterministic ID Vera assigns when a document is posted to the bulletin
-/// (`crates/bulletin/src/vera/mod.rs`). Recomputing and comparing it here means a document
-/// supplied directly on the wire (never posted to the bulletin) is just as tightly bound to
-/// `object_id` as one read back from chain — a caller cannot pair an `object_id` they're
-/// authorized for with a different document's ciphertext/proof without this failing.
-pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) -> Result<()> {
+/// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same ID
+/// Vera assigns when a document is posted to the bulletin (`crates/bulletin/src/vera/mod.rs`) and
+/// the identity a PRE request is authorized against under ACP. Binding it back to the concrete
+/// ciphertext/proof means a caller cannot pair an `object_id` they hold access to with a
+/// different document's contents.
+fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
     let expected = generate_document_id(
         &document.ring_id,
         &document.document,
@@ -48,7 +58,7 @@ pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) 
         document.tier.as_deref(),
         document.timestamp,
     )
-    .map_err(|e| PreError::InvalidInput(format!("malformed inline document: {e}")))?;
+    .map_err(|e| PreError::InvalidInput(format!("malformed document: {e}")))?;
 
     if expected != object_id {
         return Err(PreError::Unauthorized(format!(
@@ -58,6 +68,14 @@ pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) 
     }
 
     Ok(())
+}
+
+/// Confirms a caller-supplied (never-posted) document is genuinely the one `object_id` refers to.
+///
+/// Same check as the bulletin-read path applies via [`check_document_id_binding`]; a document
+/// supplied directly on the wire is bound to `object_id` exactly as tightly as one read from chain.
+pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) -> Result<()> {
+    check_document_id_binding(object_id, document)
 }
 
 /// Resolves the document and ring payloads for a PRE request, either from a caller-supplied

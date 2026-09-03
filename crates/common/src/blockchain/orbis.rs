@@ -1873,6 +1873,34 @@ mod tests {
             .is_err(),
             "case-variant duplicate key in proof"
         );
+        assert!(
+            id(
+                r#"{"enc_cmt":[1,2,3],"enc_cmt":[9,9,9],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+                P
+            )
+            .is_err(),
+            "exact duplicate key (serde: 'duplicate field')"
+        );
+        assert!(
+            id(
+                r#"{"enc_cmt":null,"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+                P
+            )
+            .is_err(),
+            "explicit null value for a byte array"
+        );
+        assert!(
+            id(
+                r#"{"enc_cmt":[1,null,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#,
+                P
+            )
+            .is_err(),
+            "null array element"
+        );
+        assert!(
+            id(D1, &format!("{P}  trailing")).is_err(),
+            "trailing data after the JSON object"
+        );
     }
 
     #[test]
