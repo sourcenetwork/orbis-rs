@@ -567,10 +567,23 @@ impl ThresholdDealerNode {
         enc_cmt: &G1Affine,
         derivation_scalar: Option<Fr>,
     ) -> Result<(G1Affine, Fr, Fr)> {
-        // Validate inputs are not zero points
+        // Validate inputs are non-identity and in the prime-order subgroup.
+        //
+        // `enc_cmt` reaches here only via `decompress_point`, which already runs
+        // both checks. `rdr_pk` arrives as an already-decoded point, so it is
+        // re-validated here rather than trusting the caller to have gone through
+        // canonical deserialization: BLS12-381 G1 has a small-factor cofactor,
+        // so a low-order `rdr_pk` would make `xnc_ski = ski * (rdr_pk + enc_cmt)`
+        // leak `ski` modulo that small order. Keeping the check here makes the
+        // crypto layer sound independent of caller discipline.
         if rdr_pk.is_zero() {
             return Err(CryptoError::ElGamalError(
                 "Invalid reader public key: cannot be zero point".to_string(),
+            ));
+        }
+        if !rdr_pk.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid reader public key: not in the prime-order subgroup".to_string(),
             ));
         }
         if enc_cmt.is_zero() {
