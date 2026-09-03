@@ -19,7 +19,7 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
-use crate::context::CiphertextContext;
+use crate::context::{context_digest, CiphertextContext};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply,
@@ -29,9 +29,6 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use sha2::{Digest, Sha256};
-
-const LEGACY_AAD_DOMAIN: &[u8; 15] = b"elgamal-aad-v1\0";
 
 /// Fixed [`CiphertextContext`] for the generic PRE tests.
 ///
@@ -220,18 +217,16 @@ where
 // Basic encrypt / decrypt
 // ============================================================================
 
-/// Security regression: public encryption artifacts must not be sufficient to
-/// recover the plaintext without threshold PRE participation.
+/// A party that sees only what is published — the serialized [`EncryptionProof`]
+/// and [`Secret`] — cannot recover the plaintext. Recovery requires threshold PRE
+/// participation (a re-encryption to the reader's key).
 ///
-/// This deliberately models an observer of the serialized bulletin payload. It
-/// does not retain the DKG secret key, encryption randomness, reader key, or any
-/// re-encryption shares. If a legacy proof exposes `shared_point`, the observer
-/// tries the exact public-only recovery path used by the vulnerability.
-///
-/// This test is expected to fail until the public shared point is removed from
-/// the encryption proof. Keeping the attack against serialized JSON also makes
-/// the regression survive the proof-structure change: once `shared_point` is no
-/// longer published, the attack returns `None` and the assertion passes.
+/// The AES key is `derive_key_from_point(shared_point)`, where
+/// `shared_point = r · effective_pk` is the KEM secret; it is computed only by the
+/// encryptor and never serialized. This checks that invariant directly: for every
+/// group element that can be parsed out of the published bytes, a key derived from
+/// it does not open the ciphertext. If a future change serialized the KEM secret
+/// (or any other point that derives the AES key), this test fails.
 pub fn test_public_encryption_artifacts_cannot_decrypt<T, SV, PK, MK>(
     make_keypair: MK,
 ) -> Result<()>
@@ -240,80 +235,89 @@ where
     PK: CryptoDeserialize,
     MK: Fn() -> (SV, PK),
 {
-    let plaintext = b"threshold PRE must be required to recover this plaintext";
-    let (_discarded_dkg_sk, dkg_pk) = make_keypair();
+    let plaintext = b"threshold PRE participation is required to recover this plaintext";
+    let (_dkg_sk, dkg_pk) = make_keypair();
     let ctx = CiphertextContext {
-        ring_pk: b"confidential-ring-pk".to_vec(),
-        policy_id: "confidential-policy".to_string(),
-        resource: "documents/regression-test".to_string(),
+        ring_pk: b"ring-pk".to_vec(),
+        policy_id: "policy".to_string(),
+        resource: "documents/report".to_string(),
         permission: "read".to_string(),
         tier: Some("restricted".to_string()),
         timestamp: Some(1_725_321_600),
-        salt: Some("test-salt".to_string()),
+        salt: Some("salt".to_string()),
     };
 
-    let (_, secret, proof) = T::encrypt_secret(&dkg_pk, plaintext, None, &ctx)?;
+    let (_enc_cmt, secret, proof) = T::encrypt_secret(&dkg_pk, plaintext, None, &ctx)?;
 
-    // Round-trip through the public wire representation. The attack below gets
-    // only these serialized artifacts; it receives no private scalar or PRE
-    // response from `make_keypair` / `encrypt_secret`.
-    let public_secret: Secret = serde_json::from_value(
-        serde_json::to_value(secret)
-            .map_err(|e| CryptoError::ParseError(format!("serialize public secret: {e}")))?,
-    )
-    .map_err(|e| CryptoError::ParseError(format!("deserialize public secret: {e}")))?;
-    let public_proof = serde_json::to_value(proof)
-        .map_err(|e| CryptoError::ParseError(format!("serialize public proof: {e}")))?;
+    // Serialize exactly what a bulletin reader receives and gather every byte
+    // string in it — walking the JSON keeps this correct if a field is added to
+    // either struct later.
+    let mut published: Vec<Vec<u8>> = Vec::new();
+    for value in [
+        serde_json::to_value(&proof)
+            .map_err(|e| CryptoError::ParseError(format!("serialize proof: {e}")))?,
+        serde_json::to_value(&secret)
+            .map_err(|e| CryptoError::ParseError(format!("serialize secret: {e}")))?,
+    ] {
+        collect_byte_strings(&value, &mut published);
+    }
 
-    let exposes_shared_point = public_proof.get("shared_point").is_some();
-    let recovered = attempt_legacy_public_only_decryption::<T, PK>(&public_secret, &public_proof);
-
-    assert!(
-        !exposes_shared_point && recovered.is_none(),
-        "SECURITY: public proof exposes shared_point; public-only AES decryption succeeded: {}",
-        recovered.is_some()
-    );
+    let aad = context_digest(&ctx, &secret.enc_cmt);
+    for bytes in published {
+        // A field that is not a valid group element cannot yield a point-derived
+        // key; `enc_cmt` (= r·G) is a point but is not the KEM secret, so a key
+        // derived from it must not open the ciphertext either.
+        let Ok(point) = PK::from_bytes(&bytes) else {
+            continue;
+        };
+        let Ok(key) = T::derive_key_from_point(&point) else {
+            continue;
+        };
+        let opened = Aes256Gcm::new_from_slice(&key).ok().and_then(|cipher| {
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&secret.nonce),
+                    Payload {
+                        msg: &secret.encrypted_data,
+                        aad: &aad,
+                    },
+                )
+                .ok()
+        });
+        assert!(
+            opened.is_none(),
+            "a published field yields a working symmetric key — the KEM secret must never be serialized"
+        );
+    }
     Ok(())
 }
 
-/// Attempt the known vulnerable public-only decryption path.
-///
-/// Returning `None` means the public wire artifacts did not provide everything
-/// this attack needs (or authenticated decryption rejected the recovered key).
-fn attempt_legacy_public_only_decryption<T, PK>(
-    secret: &Secret,
-    proof: &serde_json::Value,
-) -> Option<Vec<u8>>
-where
-    T: ThresholdDealer<PublicKey = PK, Secret = Secret>,
-    PK: CryptoDeserialize,
-{
-    let shared_point_value = proof.get("shared_point")?.clone();
-    let shared_point_bytes: Vec<u8> = serde_json::from_value(shared_point_value).ok()?;
-    let shared_point = PK::from_bytes(&shared_point_bytes).ok()?;
-    let aes_key = T::derive_key_from_point(&shared_point).ok()?;
-    let cipher = Aes256Gcm::new_from_slice(&aes_key).ok()?;
-
-    if secret.nonce.len() != 12 {
-        return None;
+/// Collect every JSON byte string — an array of `0..=255` integers, which is how
+/// `serde` encodes `Vec<u8>` — reachable from `value`.
+fn collect_byte_strings(value: &serde_json::Value, out: &mut Vec<Vec<u8>>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            let as_bytes: Option<Vec<u8>> = items
+                .iter()
+                .map(|item| {
+                    item.as_u64()
+                        .filter(|n| *n <= u8::MAX as u64)
+                        .map(|n| n as u8)
+                })
+                .collect();
+            match as_bytes {
+                Some(bytes) => out.push(bytes),
+                None => items
+                    .iter()
+                    .for_each(|item| collect_byte_strings(item, out)),
+            }
+        }
+        serde_json::Value::Object(map) => {
+            map.values()
+                .for_each(|item| collect_byte_strings(item, out));
+        }
+        _ => {}
     }
-
-    // Reconstruct the legacy AAD entirely from public fields.
-    let mut hasher = Sha256::new();
-    hasher.update(LEGACY_AAD_DOMAIN);
-    hasher.update(&secret.enc_cmt);
-    hasher.update(&shared_point_bytes);
-    let aad = hasher.finalize();
-
-    cipher
-        .decrypt(
-            Nonce::from_slice(&secret.nonce),
-            Payload {
-                msg: &secret.encrypted_data,
-                aad: &aad,
-            },
-        )
-        .ok()
 }
 
 pub fn test_encrypt_decrypt_flow<T, SV, PK, PP, MK>(make_keypair: MK) -> Result<()>

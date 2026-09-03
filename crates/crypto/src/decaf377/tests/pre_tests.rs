@@ -42,8 +42,8 @@ fn test_all_pre() {
     .unwrap();
 }
 
-/// Regression guard for the public shared-point disclosure: the serialized proof
-/// must not carry AES key material, so a bulletin-only observer cannot decrypt.
+/// The published proof and secret must not carry anything from which the AES key
+/// can be derived, so a party with only the bulletin data cannot decrypt.
 #[test]
 fn test_public_encryption_artifacts_cannot_decrypt() {
     crate::pre_tests::test_public_encryption_artifacts_cannot_decrypt::<
