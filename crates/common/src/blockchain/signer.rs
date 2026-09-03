@@ -210,7 +210,7 @@ mod tests {
         let address = signer.address();
 
         // Address should be bech32 encoded with the configured prefix
-        assert!(address.starts_with("source1"));
+        assert!(address.starts_with("vera1"));
         println!("Test address: {}", address);
     }
 
@@ -223,6 +223,6 @@ mod tests {
         let signer = TxSigner::new(&key_bytes, config).unwrap();
         let address = signer.address();
 
-        assert!(address.starts_with("source1"));
+        assert!(address.starts_with("vera1"));
     }
 }

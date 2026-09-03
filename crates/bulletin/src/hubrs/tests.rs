@@ -72,5 +72,8 @@ fn test_get_post_abi_encoding() {
 #[test]
 fn test_precompile_address() {
     let addr = Address::from(abi::BULLETIN_PRECOMPILE_ADDRESS);
-    assert_eq!(format!("{:?}", addr), "0x0000000000000000000000000000000000000811");
+    assert_eq!(
+        format!("{:?}", addr),
+        "0x0000000000000000000000000000000000000811"
+    );
 }

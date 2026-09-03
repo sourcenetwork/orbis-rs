@@ -33,10 +33,7 @@ pub struct HubRsBulletin {
 #[async_trait]
 impl Bulletin for HubRsBulletin {
     async fn register(&self, namespace: String) -> Result<()> {
-        let calldata = IBulletin::registerNamespaceCall {
-            namespace,
-        }
-        .abi_encode();
+        let calldata = IBulletin::registerNamespaceCall { namespace }.abi_encode();
 
         self.client
             .send_precompile_tx(self.precompile_addr, calldata)
@@ -80,31 +77,21 @@ impl Bulletin for HubRsBulletin {
         }
         .abi_encode();
 
-        let result_bytes = self
-            .client
-            .eth_call(self.precompile_addr, calldata)
-            .await?;
+        let result_bytes = self.client.eth_call(self.precompile_addr, calldata).await?;
 
         // ABI-decode the return value: getPost returns (bytes memory)
-        let decoded = IBulletin::getPostCall::abi_decode_returns(&result_bytes)
-            .map_err(|e| {
-                BulletinError::ChainError(format!("Failed to ABI-decode getPost response: {}", e))
-            })?;
+        let decoded = IBulletin::getPostCall::abi_decode_returns(&result_bytes).map_err(|e| {
+            BulletinError::ChainError(format!("Failed to ABI-decode getPost response: {}", e))
+        })?;
 
         let json_bytes: &[u8] = &decoded.0;
 
         if json_bytes.is_empty() {
-            return Err(BulletinError::NotFound {
-                namespace: ns,
-                id,
-            });
+            return Err(BulletinError::NotFound { namespace: ns, id });
         }
 
         let hub_post: HubPost = serde_json::from_slice(json_bytes).map_err(|e| {
-            BulletinError::ParseError(format!(
-                "Failed to parse hub.rs post JSON: {}",
-                e
-            ))
+            BulletinError::ParseError(format!("Failed to parse hub.rs post JSON: {}", e))
         })?;
 
         Ok(BulletinPost {

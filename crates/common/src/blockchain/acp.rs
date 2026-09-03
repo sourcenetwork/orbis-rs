@@ -31,7 +31,7 @@ pub struct MsgCreatePolicy {
 }
 
 impl MsgCreatePolicy {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgCreatePolicy";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgCreatePolicy";
 
     /// Create a new policy message with YAML format.
     pub fn new_yaml(creator: &str, policy: &str) -> Self {
@@ -71,7 +71,7 @@ pub struct MsgCheckAccess {
 }
 
 impl MsgCheckAccess {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgCheckAccess";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgCheckAccess";
 }
 
 /// Direct policy command message.
@@ -93,7 +93,7 @@ pub struct MsgDirectPolicyCmd {
 }
 
 impl MsgDirectPolicyCmd {
-    pub const TYPE_URL: &'static str = "/sourcehub.acp.MsgDirectPolicyCmd";
+    pub const TYPE_URL: &'static str = "/vera.acp.MsgDirectPolicyCmd";
 }
 
 // ============================================================================
@@ -381,7 +381,7 @@ pub struct OperationResult {
 // ============================================================================
 
 /// ABCI request for the VerifyAccessRequest query.
-/// Proto: sourcehub.acp.QueryVerifyAccessRequestRequest
+/// Proto: vera.acp.QueryVerifyAccessRequestRequest
 #[derive(Clone, Message)]
 pub struct QueryVerifyAccessRequestRequest {
     #[prost(string, tag = "1")]
@@ -391,7 +391,7 @@ pub struct QueryVerifyAccessRequestRequest {
 }
 
 /// ABCI response for the VerifyAccessRequest query.
-/// Proto: sourcehub.acp.QueryVerifyAccessRequestResponse
+/// Proto: vera.acp.QueryVerifyAccessRequestResponse
 #[derive(Clone, Message)]
 pub struct QueryVerifyAccessRequestResponse {
     #[prost(bool, tag = "1")]
@@ -474,7 +474,7 @@ pub enum SubjectSelectorKind {
 }
 
 /// gRPC request for FilterRelationships query.
-/// Proto: sourcehub.acp.QueryFilterRelationshipsRequest
+/// Proto: vera.acp.QueryFilterRelationshipsRequest
 #[derive(Clone, Message)]
 pub struct QueryFilterRelationshipsRequest {
     #[prost(string, tag = "1")]
@@ -484,7 +484,7 @@ pub struct QueryFilterRelationshipsRequest {
 }
 
 /// Response from filtering relationships (gRPC).
-/// Proto: sourcehub.acp.QueryFilterRelationshipsResponse
+/// Proto: vera.acp.QueryFilterRelationshipsResponse
 #[derive(Clone, Message)]
 pub struct QueryFilterRelationshipsResponse {
     #[prost(message, repeated, tag = "1")]
@@ -492,7 +492,7 @@ pub struct QueryFilterRelationshipsResponse {
 }
 
 /// A relationship record stored on-chain.
-/// Proto: sourcehub.acp.RelationshipRecord
+/// Proto: vera.acp.RelationshipRecord
 #[derive(Clone, Message)]
 pub struct RelationshipRecord {
     #[prost(string, tag = "1")]
@@ -515,7 +515,7 @@ impl SourceHubClient {
     /// Query a policy by ID.
     pub async fn acp_query_policy(&self, policy_id: &str) -> Result<QueryPolicyResponse> {
         let url = format!(
-            "{}/sourcenetwork/sourcehub/acp/policy/{}",
+            "{}/sourcenetwork/vera/acp/policy/{}",
             self.config().rest_url,
             policy_id
         );
@@ -525,7 +525,7 @@ impl SourceHubClient {
     /// List all policy IDs.
     pub async fn acp_list_policy_ids(&self) -> Result<QueryPolicyIdsResponse> {
         let url = format!(
-            "{}/sourcenetwork/sourcehub/acp/policy_ids",
+            "{}/sourcenetwork/vera/acp/policy_ids",
             self.config().rest_url
         );
         self.rest_get(&url).await
@@ -549,7 +549,7 @@ impl SourceHubClient {
 
         let response_bytes = self
             .abci_query(
-                "/sourcehub.acp.Query/VerifyAccessRequest",
+                "/vera.acp.Query/VerifyAccessRequest",
                 request_bytes,
                 None,
                 false,
@@ -585,7 +585,7 @@ impl SourceHubClient {
         let request_bytes = request.encode_to_vec();
 
         // Query path for gRPC-style ABCI query
-        let path = "/sourcehub.acp.Query/FilterRelationships";
+        let path = "/vera.acp.Query/FilterRelationships";
 
         // Execute ABCI query
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;

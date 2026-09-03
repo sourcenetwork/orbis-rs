@@ -23,7 +23,7 @@ impl Default for GasPrice {
 /// Configuration for connecting to a SourceHub chain.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChainConfig {
-    /// Chain ID (e.g., "sourcehub-testnet")
+    /// Chain ID (e.g., "vera-testnet")
     pub chain_id: String,
 
     /// Tendermint RPC URL (e.g., "http://localhost:26657")
@@ -35,7 +35,7 @@ pub struct ChainConfig {
     /// gRPC URL (e.g., "http://localhost:9090")
     pub grpc_url: String,
 
-    /// Account address prefix (e.g., "source")
+    /// Account address prefix (e.g., "vera")
     pub account_prefix: String,
 
     /// Default gas limit for transactions
@@ -57,11 +57,11 @@ impl ChainConfig {
     /// Configuration for local development (default Docker setup).
     pub fn local() -> Self {
         Self {
-            chain_id: "sourcehub-localnet".to_string(),
+            chain_id: "vera-localnet".to_string(),
             rpc_url: "http://localhost:26657".to_string(),
             rest_url: "http://localhost:1317".to_string(),
             grpc_url: "http://localhost:9090".to_string(),
-            account_prefix: "source".to_string(),
+            account_prefix: "vera".to_string(),
             default_gas_limit: 300_000,
             gas_price: GasPrice::default(),
             gas_multiplier: 1.2,

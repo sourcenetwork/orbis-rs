@@ -66,8 +66,8 @@ fn test_signer_creation() {
     let address = signer.address();
     println!("Signer address: {}", address);
 
-    // Address should be bech32 encoded with "source" prefix
-    assert!(address.starts_with("source1"));
+    // Address should be bech32 encoded with "vera" prefix
+    assert!(address.starts_with("vera1"));
 }
 
 /// Test ChainConfig builder.

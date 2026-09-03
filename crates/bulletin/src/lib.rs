@@ -23,7 +23,7 @@ compile_error!("Features 'dummy' and 'hubrs' are mutually exclusive. Use --no-de
 // Export the selected implementation
 #[cfg(feature = "dummy")]
 pub use dummy::DummyBulletin as BulletinImpl;
-#[cfg(feature = "sourcehub")]
-pub use sourcehub::SourceHubBulletin as BulletinImpl;
 #[cfg(feature = "hubrs")]
 pub use hubrs::HubRsBulletin as BulletinImpl;
+#[cfg(feature = "sourcehub")]
+pub use sourcehub::SourceHubBulletin as BulletinImpl;

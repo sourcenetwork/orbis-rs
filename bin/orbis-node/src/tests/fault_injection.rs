@@ -128,9 +128,12 @@ async fn setup_fault_three_node_network(
 
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
-        let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build(), None)
-                .expect("create node signing key");
+        let signer = create_and_store_node_key(
+            local_storage.clone(),
+            ChainConfigBuilder::default().build(),
+            None,
+        )
+        .expect("create node signing key");
         let public_address = signer.address();
 
         cli_tool::fund(

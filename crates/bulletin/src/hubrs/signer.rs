@@ -15,8 +15,8 @@ pub struct EvmSigner {
 impl EvmSigner {
     /// Create a signer from a hex-encoded private key and chain ID
     pub fn from_hex(hex_key: &str, chain_id: u64) -> Result<Self> {
-        let key_bytes =
-            hex::decode(hex_key).map_err(|e| BulletinError::ChainError(format!("Invalid hex key: {}", e)))?;
+        let key_bytes = hex::decode(hex_key)
+            .map_err(|e| BulletinError::ChainError(format!("Invalid hex key: {}", e)))?;
         let signing_key = k256::ecdsa::SigningKey::from_slice(&key_bytes)
             .map_err(|e| BulletinError::ChainError(format!("Invalid private key: {}", e)))?;
         let signer = PrivateKeySigner::from_signing_key(signing_key);

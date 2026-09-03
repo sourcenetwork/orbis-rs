@@ -34,6 +34,11 @@ pub struct Args {
     /// Chain REST URL (Cosmos REST API endpoint)
     #[arg(long, default_value = "http://localhost:1317")]
     pub chain_rest: Option<String>,
+    /// Chain ID of the Vera chain this node signs transactions for. It is part
+    /// of every signed transaction, so a value that does not match the chain
+    /// makes signature verification fail on every send.
+    #[arg(long)]
+    pub chain_id: Option<String>,
     /// denomination of chain gas tokens
     #[arg(long)]
     pub denom: Option<String>,
@@ -339,7 +344,11 @@ pub fn db_path(name: &str, data_dir: Option<&str>) -> String {
     let base = resolve_base_dir(data_dir);
     // With explicit --data-dir, put the db directly in it.
     // With auto-resolved root, use a "dbs" subdirectory to keep things tidy.
-    let db_dir = if data_dir.is_some() { base } else { base.join("dbs") };
+    let db_dir = if data_dir.is_some() {
+        base
+    } else {
+        base.join("dbs")
+    };
     std::fs::create_dir_all(&db_dir).ok();
     format!("{}/{}.redb", db_dir.display(), name)
 }

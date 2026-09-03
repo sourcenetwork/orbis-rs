@@ -42,8 +42,9 @@ impl EvmClient {
             .ok_or_else(|| BulletinError::ChainError("eth_call returned non-string".into()))?;
 
         let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-        hex::decode(hex_str)
-            .map_err(|e| BulletinError::ChainError(format!("Failed to decode eth_call result: {}", e)))
+        hex::decode(hex_str).map_err(|e| {
+            BulletinError::ChainError(format!("Failed to decode eth_call result: {}", e))
+        })
     }
 
     /// Get the transaction count (nonce) for an address
@@ -73,14 +74,16 @@ impl EvmClient {
             )
             .await?;
 
-        result
-            .as_str()
-            .map(|s| s.to_string())
-            .ok_or_else(|| BulletinError::ChainError("sendRawTransaction returned non-string".into()))
+        result.as_str().map(|s| s.to_string()).ok_or_else(|| {
+            BulletinError::ChainError("sendRawTransaction returned non-string".into())
+        })
     }
 
     /// Get the transaction receipt
-    pub async fn get_transaction_receipt(&self, tx_hash: &str) -> Result<Option<TransactionReceipt>> {
+    pub async fn get_transaction_receipt(
+        &self,
+        tx_hash: &str,
+    ) -> Result<Option<TransactionReceipt>> {
         let result = self
             .rpc_request("eth_getTransactionReceipt", json!([tx_hash]))
             .await?;
@@ -109,11 +112,14 @@ impl EvmClient {
     }
 
     /// Send a precompile transaction: fetch nonce, sign, send, wait for receipt
-    pub async fn send_precompile_tx(&self, to: Address, calldata: Vec<u8>) -> Result<TransactionReceipt> {
-        let signer = self
-            .signer
-            .as_ref()
-            .ok_or_else(|| BulletinError::ChainError("No signer configured for write operation".into()))?;
+    pub async fn send_precompile_tx(
+        &self,
+        to: Address,
+        calldata: Vec<u8>,
+    ) -> Result<TransactionReceipt> {
+        let signer = self.signer.as_ref().ok_or_else(|| {
+            BulletinError::ChainError("No signer configured for write operation".into())
+        })?;
 
         let nonce = self.get_nonce(signer.address()).await?;
         let raw_tx = signer.sign_tx(to, calldata, nonce)?;
@@ -147,10 +153,9 @@ impl EvmClient {
             .await
             .map_err(|e| BulletinError::ChainError(format!("RPC request failed: {}", e)))?;
 
-        let json: Value = response
-            .json()
-            .await
-            .map_err(|e| BulletinError::ChainError(format!("Failed to parse RPC response: {}", e)))?;
+        let json: Value = response.json().await.map_err(|e| {
+            BulletinError::ChainError(format!("Failed to parse RPC response: {}", e))
+        })?;
 
         if let Some(error) = json.get("error") {
             return Err(BulletinError::ChainError(format!("RPC error: {}", error)));
