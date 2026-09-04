@@ -15,7 +15,7 @@ The node / network layer in the wider repo orchestrates MPC sessions; this crate
 | Feature | Effect |
 |--------|--------|
 | `bls12-381` | Default. Enables `crypto::bls12_381` (`ark-bls12-381`). |
-| `decaf377` | Enables `crypto::decaf377` (`decaf377`, `poseidon377` for PRE metadata hashing). |
+| `decaf377` | Enables `crypto::decaf377` (`decaf377` group operations). |
 | `test-helpers` | Test utilities and Criterion benches (see below). |
 
 **`bls12-381` and `decaf377` are mutually exclusive.** To use decaf377:
@@ -34,7 +34,7 @@ Full definitions: [`src/trait.rs`](src/trait.rs).
   - **`DkgRole`**: `Standard`, `Dealer`, `Receiver`, `DealerReceiver` — used for **resharing** (committee change) so some nodes only send shares, some only receive, or both.
   - **`DkgMode`**: `Fresh` (new secret), `Refresh` (share rotation, zero constant term), `Reshare { ... }` (redistribute the same secret to a new committee with Lagrange-weighted constants).
   - Constructor takes **`session_id`** and **`role`** up front. After share exchange, **`get_complaints`** exposes dispute information; **`combine_pub_poly_bytes`** adds serialized public polynomials (used when refreshing the public polynomial after a refresh-style update — PSS-style public-side updates in the orchestration layer).
-- **`ThresholdDealer` (PRE)**: Re-encryption of encrypted secrets under the DKG key, with **Schnorr-style NIZK** on re-encryption shares and, for client-side encryption (`encrypt_secret` / `verify_encryption`), a **Schnorr proof of knowledge of the encryption randomness** bound (via a SHA-512 Fiat–Shamir challenge) to a `CiphertextContext` digest and the ciphertext digest. The KEM shared point (`r·s·G`, from which the AES key is derived) is never serialized. Optional **capability derivation** scalars (`derive_public_key`) bind encryption and decryption to derived keys.
+- **`ThresholdDealer` (PRE)**: Re-encryption of encrypted secrets under the DKG key, with **Schnorr-style NIZK** on re-encryption shares and, for client-side encryption (`encrypt_secret` / `verify_encryption`), a **Schnorr proof of knowledge of the encryption randomness** bound (via a SHA-512 Fiat–Shamir challenge) to SHA-256 `CiphertextContext` and ciphertext digests. The KEM shared point (`r·s·G`, from which the AES key is derived) is never serialized. Optional **capability derivation** scalars (`derive_public_key`) bind encryption and decryption to derived keys.
 - **`ThresholdSigner`**: Threshold signing over DKG outputs.
   - **`INTERACTIVE`**: `false` for BLS (single signing round; empty nonce state), `true` for FROST (nonce commitments + signing state).
   - Optional signing **derivation** and **metadata** (domain-separated) to derive `d * pk` and bind policy bytes into the derivation.
@@ -100,7 +100,7 @@ critcmp main feature-branch
 ## Dependencies (high level)
 
 - **BLS12-381 path**: `ark-bls12-381`, `ark-ec`, `ark-ff`, `ark-serialize`, `sha2`, `aes-gcm`, `hkdf`, `subtle`, `zeroize`, `serde`, etc.
-- **Decaf377 path**: `decaf377`, `poseidon377` (metadata hashing for PRE), plus shared `ark-*` / crypto crates as used by the implementation.
+- **Decaf377 path**: `decaf377`, plus shared `ark-*` / crypto crates (`sha2`, `aes-gcm`, `hkdf`, `subtle`, …) as used by the implementation.
 
 ## Virtual machines and entropy
 
