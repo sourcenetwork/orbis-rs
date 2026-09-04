@@ -2523,7 +2523,8 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         .await
         .unwrap();
 
-    let (_reader_sk, rdr_pk) = PreImpl::generate_keypair();
+    let (reader_sk, rdr_pk) = PreImpl::generate_keypair();
+    let rdr_pk_proof = PreImpl::prove_reader_key(&reader_sk, &rdr_pk).unwrap();
     let rdr_pk_bytes = CryptoSerialize::to_bytes(&rdr_pk).unwrap();
     let charlie_bundle =
         RingShareBundle::load(&network.charlie.app_state.local_storage, &aggregate_pk).unwrap();
@@ -2535,6 +2536,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
             },
             &encrypted_secret,
             &rdr_pk,
+            &rdr_pk_proof,
             None,
         )
         .unwrap();

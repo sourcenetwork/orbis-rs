@@ -33,6 +33,17 @@ message InlineDocument {
   optional uint64 timestamp = 10;
 }
 
+// Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
+// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G). Required so
+// that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in rdr_pk, cannot be
+// redirected toward an unrelated ciphertext by submitting a difference of two
+// published commitments as rdr_pk. Verified independently by every responder,
+// not only the ingress node.
+message ReaderKeyProof {
+  bytes challenge = 1;
+  bytes response = 2;
+}
+
 message StartPreRequest {
   // reader public key
   bytes rdr_pk = 1;
@@ -47,6 +58,8 @@ message StartPreRequest {
   optional TimestampRange valid_window = 5;
   // When set, the document is taken from here instead of read from the bulletin by object_id.
   optional InlineDocument document = 6;
+  // Proof of knowledge of rdr_pk's discrete log.
+  ReaderKeyProof rdr_pk_proof = 7;
 }
 
 message StartPreResponse {

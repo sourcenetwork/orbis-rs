@@ -166,8 +166,10 @@ pub enum SubCommands {
         #[clap(long)]
         reader_pk: String,
 
-        /// Reader's secret key in hex format (for decryption after PRE).
-        /// Not required when --xnc-only is set.
+        /// Reader's secret key in hex format. Always required: the node needs
+        /// a proof of knowledge of this key's discrete log before it will
+        /// re-encrypt to `reader_pk` (including with --xnc-only), and
+        /// decryption after PRE needs it too.
         #[clap(long, env = "ORBIS_READER_SK", hide_env_values = true)]
         reader_sk: Option<String>,
 
@@ -633,8 +635,11 @@ async fn main() -> Result<()> {
             valid_window_end,
             xnc_only,
         } => {
-            if !xnc_only && reader_sk.is_none() {
-                anyhow::bail!("--reader-sk is required unless --xnc-only is set");
+            if reader_sk.is_none() {
+                anyhow::bail!(
+                    "--reader-sk is required: the node needs proof of knowledge of \
+                     reader_pk's discrete log before it will re-encrypt to it"
+                );
             }
             require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;

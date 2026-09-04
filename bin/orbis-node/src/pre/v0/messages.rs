@@ -4,6 +4,7 @@
 //! protocol communication between nodes over the iroh network.
 
 use authz::vera::ValidWindow;
+use crypto::r#trait::ReaderKeyProof;
 use serde::{Deserialize, Serialize};
 
 /// All parameters specific to a reencryption request.
@@ -16,6 +17,12 @@ use serde::{Deserialize, Serialize};
 pub struct PreRequestContext {
     /// Serialized reader public key (G1Affine)
     pub rdr_pk_bytes: Vec<u8>,
+    /// Proof of knowledge of `rdr_pk_bytes`'s discrete log. Verified by every
+    /// responder inside `ThresholdDealer::reencrypt`, not only the ingress
+    /// node — without it, a caller authorized for one ciphertext can redirect
+    /// PRE toward an unrelated one under the same ring key by submitting a
+    /// difference of two published commitments as `rdr_pk`.
+    pub rdr_pk_proof: ReaderKeyProof,
     /// Object ID of the encrypted document on the bulletin
     pub object_id: String,
     /// Raw JWT string issued by the caller

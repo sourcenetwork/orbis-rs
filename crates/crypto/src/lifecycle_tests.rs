@@ -62,13 +62,14 @@ where
     PP: PubPolyTrait<PublicKey = PK>,
 {
     let dealer = T::new();
+    let rdr_proof = T::prove_reader_key(rdr_sk, rdr_pk)?;
     let mut replies = Vec::new();
 
     for share in shares.iter().take(threshold) {
         let dks = DistKeyShare {
             pri_share: share.clone(),
         };
-        let reply = dealer.reencrypt(&dks, encrypted_secret, rdr_pk, None)?;
+        let reply = dealer.reencrypt(&dks, encrypted_secret, rdr_pk, &rdr_proof, None)?;
         dealer.verify(rdr_pk, pub_poly, enc_cmt, &reply, None)?;
         replies.push(reply);
     }

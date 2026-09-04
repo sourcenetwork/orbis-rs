@@ -364,9 +364,15 @@ step_grant_secret_reader_access() {
 
 step_run_pre_and_verify_plaintext() {
   local out decrypted
+  # --reader-sk is required now: the node needs a proof of knowledge of
+  # reader_pk's discrete log before it will re-encrypt to it at all, not just
+  # for the local decrypt step below. Passed explicitly even though
+  # ORBIS_READER_SK is already exported (step_generate_reader_key) so the
+  # requirement is visible at the call site.
   if ! out="$("$CLI_BIN" pre \
     --ring-pk "$RING_PK" \
     --reader-pk "$READER_PK" \
+    --reader-sk "$READER_SK" \
     --object-id "$OBJECT_ID" 2>&1)"; then
     printf '%s\n' "$out"
     return 1

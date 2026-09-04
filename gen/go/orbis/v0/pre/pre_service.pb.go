@@ -198,6 +198,64 @@ func (x *InlineDocument) GetTimestamp() uint64 {
 	return 0
 }
 
+// Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
+// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G). Required so
+// that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in rdr_pk, cannot be
+// redirected toward an unrelated ciphertext by submitting a difference of two
+// published commitments as rdr_pk. Verified independently by every responder,
+// not only the ingress node.
+type ReaderKeyProof struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Challenge     []byte                 `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
+	Response      []byte                 `protobuf:"bytes,2,opt,name=response,proto3" json:"response,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReaderKeyProof) Reset() {
+	*x = ReaderKeyProof{}
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReaderKeyProof) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReaderKeyProof) ProtoMessage() {}
+
+func (x *ReaderKeyProof) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReaderKeyProof.ProtoReflect.Descriptor instead.
+func (*ReaderKeyProof) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ReaderKeyProof) GetChallenge() []byte {
+	if x != nil {
+		return x.Challenge
+	}
+	return nil
+}
+
+func (x *ReaderKeyProof) GetResponse() []byte {
+	if x != nil {
+		return x.Response
+	}
+	return nil
+}
+
 type StartPreRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// reader public key
@@ -212,14 +270,16 @@ type StartPreRequest struct {
 	// TODO: Insecure test code meant to be moved to acp eventually (not in authn either)
 	ValidWindow *TimestampRange `protobuf:"bytes,5,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
 	// When set, the document is taken from here instead of read from the bulletin by object_id.
-	Document      *InlineDocument `protobuf:"bytes,6,opt,name=document,proto3,oneof" json:"document,omitempty"`
+	Document *InlineDocument `protobuf:"bytes,6,opt,name=document,proto3,oneof" json:"document,omitempty"`
+	// Proof of knowledge of rdr_pk's discrete log.
+	RdrPkProof    *ReaderKeyProof `protobuf:"bytes,7,opt,name=rdr_pk_proof,json=rdrPkProof,proto3" json:"rdr_pk_proof,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StartPreRequest) Reset() {
 	*x = StartPreRequest{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -231,7 +291,7 @@ func (x *StartPreRequest) String() string {
 func (*StartPreRequest) ProtoMessage() {}
 
 func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -244,7 +304,7 @@ func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreRequest.ProtoReflect.Descriptor instead.
 func (*StartPreRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StartPreRequest) GetRdrPk() []byte {
@@ -289,6 +349,13 @@ func (x *StartPreRequest) GetDocument() *InlineDocument {
 	return nil
 }
 
+func (x *StartPreRequest) GetRdrPkProof() *ReaderKeyProof {
+	if x != nil {
+		return x.RdrPkProof
+	}
+	return nil
+}
+
 type StartPreResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Status          string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -301,7 +368,7 @@ type StartPreResponse struct {
 
 func (x *StartPreResponse) Reset() {
 	*x = StartPreResponse{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -313,7 +380,7 @@ func (x *StartPreResponse) String() string {
 func (*StartPreResponse) ProtoMessage() {}
 
 func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -326,7 +393,7 @@ func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreResponse.ProtoReflect.Descriptor instead.
 func (*StartPreResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StartPreResponse) GetStatus() string {
@@ -381,7 +448,10 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	" \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
-	"_timestamp\"\xbe\x02\n" +
+	"_timestamp\"J\n" +
+	"\x0eReaderKeyProof\x12\x1c\n" +
+	"\tchallenge\x18\x01 \x01(\fR\tchallenge\x12\x1a\n" +
+	"\bresponse\x18\x02 \x01(\fR\bresponse\"\xfe\x02\n" +
 	"\x0fStartPreRequest\x12\x15\n" +
 	"\x06rdr_pk\x18\x01 \x01(\fR\x05rdrPk\x12\x1b\n" +
 	"\tobject_id\x18\x02 \x01(\tR\bobjectId\x12#\n" +
@@ -390,7 +460,9 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"derivation\x88\x01\x01\x12\x17\n" +
 	"\x04salt\x18\x04 \x01(\tH\x01R\x04salt\x88\x01\x01\x12D\n" +
 	"\fvalid_window\x18\x05 \x01(\v2\x1c.orbis.v0.pre.TimestampRangeH\x02R\vvalidWindow\x88\x01\x01\x12=\n" +
-	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01B\r\n" +
+	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01\x12>\n" +
+	"\frdr_pk_proof\x18\a \x01(\v2\x1c.orbis.v0.pre.ReaderKeyProofR\n" +
+	"rdrPkProofB\r\n" +
 	"\v_derivationB\a\n" +
 	"\x05_saltB\x0f\n" +
 	"\r_valid_windowB\v\n" +
@@ -418,23 +490,25 @@ func file_orbis_v0_pre_pre_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_pre_pre_service_proto_rawDescData
 }
 
-var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_orbis_v0_pre_pre_service_proto_goTypes = []any{
 	(*TimestampRange)(nil),   // 0: orbis.v0.pre.TimestampRange
 	(*InlineDocument)(nil),   // 1: orbis.v0.pre.InlineDocument
-	(*StartPreRequest)(nil),  // 2: orbis.v0.pre.StartPreRequest
-	(*StartPreResponse)(nil), // 3: orbis.v0.pre.StartPreResponse
+	(*ReaderKeyProof)(nil),   // 2: orbis.v0.pre.ReaderKeyProof
+	(*StartPreRequest)(nil),  // 3: orbis.v0.pre.StartPreRequest
+	(*StartPreResponse)(nil), // 4: orbis.v0.pre.StartPreResponse
 }
 var file_orbis_v0_pre_pre_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.pre.StartPreRequest.valid_window:type_name -> orbis.v0.pre.TimestampRange
 	1, // 1: orbis.v0.pre.StartPreRequest.document:type_name -> orbis.v0.pre.InlineDocument
-	2, // 2: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
-	3, // 3: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	2, // 2: orbis.v0.pre.StartPreRequest.rdr_pk_proof:type_name -> orbis.v0.pre.ReaderKeyProof
+	3, // 3: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
+	4, // 4: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
+	4, // [4:5] is the sub-list for method output_type
+	3, // [3:4] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_pre_pre_service_proto_init() }
@@ -443,14 +517,14 @@ func file_orbis_v0_pre_pre_service_proto_init() {
 		return
 	}
 	file_orbis_v0_pre_pre_service_proto_msgTypes[1].OneofWrappers = []any{}
-	file_orbis_v0_pre_pre_service_proto_msgTypes[2].OneofWrappers = []any{}
+	file_orbis_v0_pre_pre_service_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_pre_pre_service_proto_rawDesc), len(file_orbis_v0_pre_pre_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

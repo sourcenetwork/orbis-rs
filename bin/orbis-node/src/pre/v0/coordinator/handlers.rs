@@ -250,7 +250,13 @@ where
         // Check permission binding - verify proof before re-encryption
         verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof)?;
         let reply = dealer
-            .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
+            .reencrypt(
+                &dist_key_share,
+                &secret,
+                &rdr_pk,
+                &ctx.rdr_pk_proof,
+                ctx.derivation.as_deref(),
+            )
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
         // 8. Serialize the reply components using trait methods
