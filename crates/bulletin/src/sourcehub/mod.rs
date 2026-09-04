@@ -69,7 +69,8 @@ impl Bulletin for SourceHubBulletin {
             id: post.id,
             namespace: post.namespace,
             payload: post.payload,
-            proof: post.proof,
+            // Vera's bulletin Post carries no proof field.
+            proof: Vec::new(),
         })
     }
 

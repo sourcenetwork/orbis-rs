@@ -16,12 +16,11 @@ mod tests;
 
 use crate::dkg::service::DkgServiceImpl;
 use crate::helpers::create_routers::create_router_with_all_handlers;
-use crate::helpers::launch::{
-    db_path, derive_secret_key_bytes, get_network_key_secret,
-    get_password, Args,
-};
 #[cfg(feature = "bulletin-sourcehub")]
 use crate::helpers::launch::create_and_store_node_key;
+use crate::helpers::launch::{
+    db_path, derive_secret_key_bytes, get_network_key_secret, get_password, Args,
+};
 #[cfg(feature = "bulletin-hubrs")]
 use crate::helpers::launch::{get_or_create_signing_key_hex, resolve_base_dir};
 use crate::info::InfoServiceImpl;
@@ -158,8 +157,7 @@ pub async fn run_server(node: InitializedNode) -> Result<(), Box<dyn std::error:
     let store_secret_service =
         StoreSecretServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
     let sign_service = SignServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
-    let utility_service =
-        UtilityServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
+    let utility_service = UtilityServiceImpl::<DkgImpl, SignImpl>::new((*node.app_state).clone());
 
     // Start gRPC server with DKG, PRE, Info, StoreSecret, Sign, and Utility services
     let grpc_server = tonic::transport::Server::builder()
@@ -268,6 +266,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         .grpc_url(args.authz_grpc.clone())
         .rpc_url(args.chain_rpc.clone())
         .rest_url(args.chain_rest.clone())
+        .chain_id(args.chain_id.clone())
         .denom(args.denom.clone());
 
     let authz: Arc<dyn Authz> = Arc::new(
@@ -283,9 +282,14 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .grpc_url(args.bulletin_grpc.clone())
             .rpc_url(args.chain_rpc.clone())
             .rest_url(args.chain_rest.clone())
+            .chain_id(args.chain_id.clone())
             .denom(args.denom.clone());
-        let signer = create_and_store_node_key(local_storage.clone(), chain_config_builder.clone().build(), args.data_dir.as_deref())
-            .map_err(|e| format!("Failed to create or store node key: {}", e))?;
+        let signer = create_and_store_node_key(
+            local_storage.clone(),
+            chain_config_builder.clone().build(),
+            args.data_dir.as_deref(),
+        )
+        .map_err(|e| format!("Failed to create or store node key: {}", e))?;
 
         // For integration tests, this funds the account, this is handled differently live
         #[cfg(feature = "integration-test")]
@@ -308,8 +312,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .hub_rpc
             .clone()
             .ok_or("--hub-rpc is required when using the hubrs bulletin backend")?;
-        let hex_key = get_or_create_signing_key_hex(local_storage.clone(), args.data_dir.as_deref())
-            .map_err(|e| format!("Failed to create or retrieve signing key: {}", e))?;
+        let hex_key =
+            get_or_create_signing_key_hex(local_storage.clone(), args.data_dir.as_deref())
+                .map_err(|e| format!("Failed to create or retrieve signing key: {}", e))?;
         let config = bulletin::hubrs::HubRsConfig {
             rpc_url: hub_rpc,
             chain_id: args.hub_chain_id,

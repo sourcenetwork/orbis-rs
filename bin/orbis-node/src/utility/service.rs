@@ -7,8 +7,7 @@ use crate::utility::error::UtilityError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, SignClaims};
 use authz::sourcehub::AccessCheckRequest;
 use bulletin::r#trait::RingPayload;
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdDealer, ThresholdSigner};
-use crypto::PreImpl as ThresholdDealerNode;
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, ThresholdSigner};
 use proto::utility_service::{
     utility_service_server::UtilityService, DerivePublicKeyRequest, DerivePublicKeyResponse,
     SignAlgorithm, SignRequest, SignResponse as ProtoSignResponse,
@@ -93,10 +92,7 @@ where
             .read(BULLETIN_RING_NAMESPACE.to_string(), req.ring_id.clone())
             .await
             .map_err(|e| {
-                UtilityError::RingNotFound(format!(
-                    "Failed to read ring '{}': {}",
-                    req.ring_id, e
-                ))
+                UtilityError::RingNotFound(format!("Failed to read ring '{}': {}", req.ring_id, e))
             })?;
 
         let ring_payload =
@@ -105,18 +101,25 @@ where
             })?;
 
         // 2. Parse ring_pk from hex -> G1Affine
-        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
-            UtilityError::Deserialization(format!("Invalid ring_pk hex: {}", e))
-        })?;
+        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+            .map_err(|e| UtilityError::Deserialization(format!("Invalid ring_pk hex: {}", e)))?;
         let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes).map_err(|e| {
             UtilityError::Deserialization(format!("Invalid ring_pk curve point: {}", e))
         })?;
 
-        // 3. Derive public key
-        let derived_pk =
-            ThresholdDealerNode::derive_public_key(&ring_pk, &req.derivation).map_err(|e| {
-                UtilityError::Crypto(format!("Failed to derive public key: {}", e))
-            })?;
+        // 3. Derive the public key threshold signatures under this derivation
+        //    will actually carry.
+        //
+        //    There are two derivation scalars in the crypto crate: the PRE
+        //    capability scalar (`Dkg::derive_public_key`, two arguments) and
+        //    the signing scalar (`ThresholdSigner::derive_public_key`, which
+        //    also takes metadata). This RPC exists to tell a client which key
+        //    to publish for signature verification, so it must use the signing
+        //    one. Using the capability scalar here returned a key no signature
+        //    ever verifies under, and the mismatch surfaced only on a peer as
+        //    `BLST_VERIFY_FAIL` when it merged an otherwise valid block.
+        let derived_pk = <S as ThresholdSigner>::derive_public_key(&ring_pk, &req.derivation, None)
+            .map_err(|e| UtilityError::Crypto(format!("Failed to derive public key: {}", e)))?;
 
         // 4. Serialize derived key
         let derived_pk_bytes = CryptoSerialize::to_bytes(&derived_pk).map_err(|e| {
@@ -143,16 +146,16 @@ where
         let token_str = extract_bearer_token(&request)
             .map_err(|e| UtilityError::Unauthorized(e.to_string()))?;
         let jwt_string = token_str.to_string();
-        let token: BearerToken<SignClaims> = resolve_jwt_did(token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
-            .map_err(|e| {
-                UtilityError::Unauthorized(format!("JWT validation failed: {}", e))
-            })?;
+        let token: BearerToken<SignClaims> =
+            resolve_jwt_did(token_str, current_time, MAX_TOKEN_LIFETIME_SECS)
+                .map_err(|e| UtilityError::Unauthorized(format!("JWT validation failed: {}", e)))?;
 
         let req = request.into_inner();
 
         // 2. Algorithm guard
         let ring_algorithm = signer_algorithm::<S>();
-        let requested = SignAlgorithm::try_from(req.algorithm).unwrap_or(SignAlgorithm::Unspecified);
+        let requested =
+            SignAlgorithm::try_from(req.algorithm).unwrap_or(SignAlgorithm::Unspecified);
         if requested != SignAlgorithm::Unspecified && requested != ring_algorithm {
             return Err(UtilityError::UnsupportedAlgorithm(format!(
                 "requested algorithm {:?} but ring uses {:?}",
@@ -171,10 +174,10 @@ where
             .into());
         }
         if token.claims.message != req.message {
-            return Err(
-                UtilityError::Unauthorized("Token message does not match request".to_string())
-                    .into(),
-            );
+            return Err(UtilityError::Unauthorized(
+                "Token message does not match request".to_string(),
+            )
+            .into());
         }
         let req_derivation = if req.derivation.is_empty() {
             None
@@ -207,9 +210,7 @@ where
             let result = light_client
                 .check_access_decision(&req.decision_id)
                 .await
-                .map_err(|e| {
-                    UtilityError::Signing(format!("ACP light client error: {}", e))
-                })?;
+                .map_err(|e| UtilityError::Signing(format!("ACP light client error: {}", e)))?;
             if !result.allowed {
                 return Err(UtilityError::Unauthorized(format!(
                     "AccessDecision '{}' not authorized on-chain",
@@ -272,10 +273,7 @@ where
             .read(BULLETIN_RING_NAMESPACE.to_string(), req.ring_id.clone())
             .await
             .map_err(|e| {
-                UtilityError::RingNotFound(format!(
-                    "Failed to read ring '{}': {}",
-                    req.ring_id, e
-                ))
+                UtilityError::RingNotFound(format!("Failed to read ring '{}': {}", req.ring_id, e))
             })?;
 
         let ring_payload =
@@ -284,19 +282,24 @@ where
             })?;
 
         // 5. Compute the public key that will verify this signature
-        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk).map_err(|e| {
-            UtilityError::Deserialization(format!("Invalid ring_pk hex: {}", e))
-        })?;
+        let ring_pk_bytes = hex::decode(&ring_payload.ring_pk)
+            .map_err(|e| UtilityError::Deserialization(format!("Invalid ring_pk hex: {}", e)))?;
         let verification_pk = if req.derivation.is_empty() {
             ring_pk_bytes.clone()
         } else {
             let ring_pk = <D::PublicKey>::from_bytes(&ring_pk_bytes).map_err(|e| {
                 UtilityError::Deserialization(format!("Invalid ring_pk curve point: {}", e))
             })?;
-            let derived = ThresholdDealerNode::derive_public_key(&ring_pk, &req.derivation)
-                .map_err(|e| UtilityError::Crypto(format!("Failed to derive public key: {}", e)))?;
-            CryptoSerialize::to_bytes(&derived)
-                .map_err(|e| UtilityError::Crypto(format!("Failed to serialize public key: {}", e)))?
+            // Same signing scalar the threshold signature is produced under,
+            // not the PRE capability scalar; see `derive_public_key` above.
+            let derived =
+                <S as ThresholdSigner>::derive_public_key(&ring_pk, &req.derivation, None)
+                    .map_err(|e| {
+                        UtilityError::Crypto(format!("Failed to derive public key: {}", e))
+                    })?;
+            CryptoSerialize::to_bytes(&derived).map_err(|e| {
+                UtilityError::Crypto(format!("Failed to serialize public key: {}", e))
+            })?
         };
 
         // Validate peers
@@ -327,6 +330,7 @@ where
                 jwt: jwt_string,
                 ring_id: req.ring_id.clone(),
                 decision_id: req.decision_id.clone(),
+                derivation: req_derivation.clone(),
             }
         } else {
             SignContext::Authenticated {
@@ -336,6 +340,7 @@ where
                 resource: req.resource.clone(),
                 object_id: req.object_id.clone(),
                 permission: req.permission.clone(),
+                derivation: req_derivation.clone(),
             }
         };
 
@@ -346,14 +351,11 @@ where
             .await
             .map_err(|e| UtilityError::Signing(format!("Signing failed: {}", e)))?;
 
-        let sign_response: SignResponse =
-            serde_json::from_slice(&response_bytes).map_err(|e| {
-                UtilityError::Signing(format!("Failed to parse sign response: {}", e))
-            })?;
+        let sign_response: SignResponse = serde_json::from_slice(&response_bytes)
+            .map_err(|e| UtilityError::Signing(format!("Failed to parse sign response: {}", e)))?;
 
-        let signature_bytes = hex::decode(&sign_response.signature).map_err(|e| {
-            UtilityError::Signing(format!("Failed to decode signature hex: {}", e))
-        })?;
+        let signature_bytes = hex::decode(&sign_response.signature)
+            .map_err(|e| UtilityError::Signing(format!("Failed to decode signature hex: {}", e)))?;
 
         Ok(Response::new(ProtoSignResponse {
             signature: signature_bytes,

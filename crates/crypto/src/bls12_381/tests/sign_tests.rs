@@ -112,3 +112,56 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
     assert!(signer.verify(&aggregate_pk, msg, &sig1).is_ok());
     assert!(signer.verify(&aggregate_pk, msg, &sig2).is_ok());
 }
+
+// ============================================================================
+// Derivation: the signing scalar and the PRE capability scalar are different
+// ============================================================================
+
+/// A key derived for signing is not the key derived for proxy re-encryption.
+///
+/// Both traits expose `derive_public_key` over the same ring key and label, but
+/// they use different scalars. Advertising one and signing with the other
+/// yields a signature no verifier accepts, and nothing fails until a peer
+/// rejects the block, so the distinction is pinned here.
+#[test]
+fn sign_derivation_differs_from_pre_capability_derivation() {
+    use crate::bls12_381::pre::ThresholdDealerNode;
+    use crate::r#trait::ThresholdDealer as _;
+
+    let sk = Fr::rand(&mut OsRng);
+    let ring_pk: G1Affine = (G1Projective::generator() * sk).into();
+    let derivation = b"acme-corp";
+
+    let for_signing =
+        <ThresholdBlsSigner as ThresholdSigner>::derive_public_key(&ring_pk, derivation, None)
+            .expect("signing derivation");
+    let for_capability = ThresholdDealerNode::derive_public_key(&ring_pk, derivation)
+        .expect("capability derivation");
+
+    assert_ne!(
+        for_signing, for_capability,
+        "the two derivations must stay distinguishable; if they ever coincide, \
+         the RPC that advertises a signing key can no longer be checked by this test"
+    );
+}
+
+/// The signing derivation is deterministic and label-separating: the same label
+/// gives the same key, a different label a different one.
+#[test]
+fn sign_derivation_is_deterministic_and_label_separating() {
+    let sk = Fr::rand(&mut OsRng);
+    let ring_pk: G1Affine = (G1Projective::generator() * sk).into();
+
+    let acme =
+        <ThresholdBlsSigner as ThresholdSigner>::derive_public_key(&ring_pk, b"acme-corp", None)
+            .expect("acme derivation");
+    let acme_again =
+        <ThresholdBlsSigner as ThresholdSigner>::derive_public_key(&ring_pk, b"acme-corp", None)
+            .expect("acme derivation again");
+    let globex =
+        <ThresholdBlsSigner as ThresholdSigner>::derive_public_key(&ring_pk, b"globex-inc", None)
+            .expect("globex derivation");
+
+    assert_eq!(acme, acme_again, "the same label must derive the same key");
+    assert_ne!(acme, globex, "two tenants' labels must not derive one key");
+}

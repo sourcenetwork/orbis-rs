@@ -52,6 +52,15 @@ pub enum SignContext {
         object_id: String,
         /// ACP permission/relationship to check
         permission: String,
+        /// Derivation path requested by the client, or `None` to sign from the
+        /// ring's root key.
+        ///
+        /// A client that advertises a derived public key (`DerivePublicKey`)
+        /// must get a signature under that same derived key, or every verifier
+        /// rejects it. Dropping this made the ring sign from the root key while
+        /// the client published the derived one, which surfaced downstream as
+        /// `BLST_VERIFY_FAIL` on merge rather than as an error here.
+        derivation: Option<Vec<u8>>,
     },
     /// JWT-verified signing with on-chain AccessDecision verification via ACP light client.
     /// Each responder independently validates the JWT and checks the decision via AcpLightClient.
@@ -62,6 +71,8 @@ pub enum SignContext {
         ring_id: String,
         /// The on-chain access decision ID to verify
         decision_id: String,
+        /// Derivation path requested by the client, or `None` for the root key.
+        derivation: Option<Vec<u8>>,
     },
 }
 

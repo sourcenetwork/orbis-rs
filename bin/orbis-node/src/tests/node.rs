@@ -47,6 +47,7 @@ async fn make_test_node_config(
             bulletin_grpc: None,
             chain_rest: None,
             chain_rpc: None,
+            chain_id: None,
             denom: None,
             data_dir: None,
             metrics_addr: None,
@@ -348,8 +349,8 @@ fn test_create_and_store_node_key() {
     let signer1 = result.unwrap();
     let address1 = signer1.address();
     assert!(
-        address1.starts_with("source1"),
-        "Address should be bech32 with source1 prefix, got: {}",
+        address1.starts_with("vera1"),
+        "Address should be bech32 with vera1 prefix, got: {}",
         address1
     );
 

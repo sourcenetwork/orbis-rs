@@ -28,16 +28,17 @@ pub struct MsgCreatePost {
     /// Post payload data
     #[prost(bytes = "vec", tag = "3")]
     pub payload: Vec<u8>,
-    /// Cryptographic proof (optional)
-    #[prost(bytes = "vec", tag = "4")]
-    pub proof: Vec<u8>,
     /// Artifact for finding post (optional)
+    ///
+    /// Tag 4 was a `proof` field that Vera's `MsgCreatePost` does not have.
+    /// Sending it makes the chain reject the transaction at decode time with
+    /// `errUnknownField "*types.MsgCreatePost": {TagNum: 4}`.
     #[prost(string, tag = "5")]
     pub artifact: String,
 }
 
 impl MsgCreatePost {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgCreatePost";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgCreatePost";
 
     /// Create a new post message.
     pub fn new(creator: &str, namespace: &str, payload: Vec<u8>, artifact: Option<String>) -> Self {
@@ -45,24 +46,6 @@ impl MsgCreatePost {
             creator: creator.to_string(),
             namespace: namespace.to_string(),
             payload,
-            proof: Vec::new(),
-            artifact: artifact.unwrap_or("".to_string()),
-        }
-    }
-
-    /// Create a new post message with proof.
-    pub fn with_proof(
-        creator: &str,
-        namespace: &str,
-        payload: Vec<u8>,
-        proof: Vec<u8>,
-        artifact: Option<String>,
-    ) -> Self {
-        Self {
-            creator: creator.to_string(),
-            namespace: namespace.to_string(),
-            payload,
-            proof,
             artifact: artifact.unwrap_or("".to_string()),
         }
     }
@@ -83,7 +66,7 @@ pub struct MsgRegisterNamespace {
 }
 
 impl MsgRegisterNamespace {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgRegisterNamespace";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgRegisterNamespace";
 
     pub fn new(creator: &str, namespace: &str) -> Self {
         Self {
@@ -112,7 +95,7 @@ pub struct MsgAddCollaborator {
 }
 
 impl MsgAddCollaborator {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgAddCollaborator";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgAddCollaborator";
 
     pub fn new(creator: &str, namespace: &str, collaborator: &str) -> Self {
         Self {
@@ -142,7 +125,7 @@ pub struct MsgRemoveCollaborator {
 }
 
 impl MsgRemoveCollaborator {
-    pub const TYPE_URL: &'static str = "/sourcehub.bulletin.MsgRemoveCollaborator";
+    pub const TYPE_URL: &'static str = "/vera.bulletin.MsgRemoveCollaborator";
 
     pub fn new(creator: &str, namespace: &str, collaborator: &str) -> Self {
         Self {
@@ -158,7 +141,7 @@ impl MsgRemoveCollaborator {
 // ============================================================================
 
 /// Request to read a single post.
-/// Proto: sourcehub.bulletin.QueryPostRequest
+/// Proto: vera.bulletin.QueryPostRequest
 #[derive(Clone, Message)]
 pub struct QueryPostRequest {
     /// Namespace identifier
@@ -170,7 +153,7 @@ pub struct QueryPostRequest {
 }
 
 /// Request to get namespace information.
-/// Proto: sourcehub.bulletin.QueryNamespaceRequest
+/// Proto: vera.bulletin.QueryNamespaceRequest
 #[derive(Clone, Message)]
 pub struct QueryNamespaceRequest {
     /// Namespace identifier
@@ -179,7 +162,7 @@ pub struct QueryNamespaceRequest {
 }
 
 /// Request to list posts in a namespace.
-/// Proto: sourcehub.bulletin.QueryNamespacePostsRequest
+/// Proto: vera.bulletin.QueryNamespacePostsRequest
 #[derive(Clone, Message)]
 pub struct QueryNamespacePostsRequest {
     /// Namespace identifier
@@ -191,7 +174,7 @@ pub struct QueryNamespacePostsRequest {
 }
 
 /// Request to iterate posts matching a glob pattern.
-/// Proto: sourcehub.bulletin.QueryIterateGlobRequest
+/// Proto: vera.bulletin.QueryIterateGlobRequest
 #[derive(Clone, Message)]
 pub struct QueryIterateGlobRequest {
     /// Namespace identifier
@@ -227,7 +210,7 @@ pub struct PageRequest {
 // ============================================================================
 
 /// Response containing a single post.
-/// Proto: sourcehub.bulletin.QueryPostResponse
+/// Proto: vera.bulletin.QueryPostResponse
 #[derive(Clone, Message)]
 pub struct QueryPostResponse {
     /// The post data
@@ -236,7 +219,7 @@ pub struct QueryPostResponse {
 }
 
 /// Response containing namespace information.
-/// Proto: sourcehub.bulletin.QueryNamespaceResponse
+/// Proto: vera.bulletin.QueryNamespaceResponse
 #[derive(Clone, Message)]
 pub struct QueryNamespaceResponse {
     /// The namespace data
@@ -245,7 +228,7 @@ pub struct QueryNamespaceResponse {
 }
 
 /// Response containing posts in a namespace.
-/// Proto: sourcehub.bulletin.QueryNamespacePostsResponse
+/// Proto: vera.bulletin.QueryNamespacePostsResponse
 #[derive(Clone, Message)]
 pub struct QueryNamespacePostsResponse {
     /// List of posts
@@ -257,7 +240,7 @@ pub struct QueryNamespacePostsResponse {
 }
 
 /// Response from glob iteration.
-/// Proto: sourcehub.bulletin.QueryIterateGlobResponse
+/// Proto: vera.bulletin.QueryIterateGlobResponse
 #[derive(Clone, Message)]
 pub struct QueryIterateGlobResponse {
     /// Matching posts
@@ -281,7 +264,7 @@ pub struct PageResponse {
 // ============================================================================
 
 /// A post stored on the bulletin board.
-/// Proto: sourcehub.bulletin.Post
+/// Proto: vera.bulletin.Post
 #[derive(Clone, Message)]
 pub struct Post {
     /// Post identifier
@@ -296,13 +279,10 @@ pub struct Post {
     /// Post payload data
     #[prost(bytes = "vec", tag = "4")]
     pub payload: Vec<u8>,
-    /// Cryptographic proof
-    #[prost(bytes = "vec", tag = "5")]
-    pub proof: Vec<u8>,
 }
 
 /// A namespace in the bulletin module.
-/// Proto: sourcehub.bulletin.Namespace
+/// Proto: vera.bulletin.Namespace
 #[derive(Clone, Message)]
 pub struct Namespace {
     /// Namespace identifier
@@ -314,7 +294,7 @@ pub struct Namespace {
 }
 
 /// A collaborator record.
-/// Proto: sourcehub.bulletin.Collaborator
+/// Proto: vera.bulletin.Collaborator
 #[derive(Clone, Message)]
 pub struct Collaborator {
     /// Namespace identifier
@@ -343,7 +323,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/Post";
+        let path = "/vera.bulletin.Query/Post";
 
         let response_bytes = match self.abci_query(path, request_bytes, None, false).await {
             Ok(bytes) => bytes,
@@ -365,7 +345,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/Namespace";
+        let path = "/vera.bulletin.Query/Namespace";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 
@@ -386,7 +366,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/NamespacePosts";
+        let path = "/vera.bulletin.Query/NamespacePosts";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 
@@ -406,7 +386,7 @@ impl SourceHubClient {
         };
 
         let request_bytes = request.encode_to_vec();
-        let path = "/sourcehub.bulletin.Query/IterateGlob";
+        let path = "/vera.bulletin.Query/IterateGlob";
 
         let response_bytes = self.abci_query(path, request_bytes, None, false).await?;
 
@@ -460,7 +440,12 @@ impl SourceHubClient {
         .await
     }
 
-    /// Create a post with proof in a namespace.
+    /// Create a post in a namespace, given a proof the caller holds.
+    ///
+    /// Vera's `MsgCreatePost` carries no proof field, so the proof is not
+    /// persisted on chain. A caller passing a non-empty proof is warned rather
+    /// than silently ignored, because a dropped proof is not visible in the
+    /// result.
     pub async fn bulletin_create_post_with_proof(
         &self,
         namespace: &str,
@@ -472,7 +457,15 @@ impl SourceHubClient {
             .signer()
             .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
 
-        let msg = MsgCreatePost::with_proof(&signer.address(), namespace, payload, proof, artifact);
+        if !proof.is_empty() {
+            eprintln!(
+                "bulletin_create_post_with_proof: dropping a {}-byte proof for namespace {}: \
+                 Vera's MsgCreatePost has no proof field",
+                proof.len(),
+                namespace
+            );
+        }
+        let msg = MsgCreatePost::new(&signer.address(), namespace, payload, artifact);
 
         self.broadcast_proto_msg_with_gas(
             MsgCreatePost::TYPE_URL,
@@ -522,5 +515,63 @@ impl SourceHubClient {
             self.config().gas_multiplier,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod message_shape_tests {
+    use super::{MsgCreatePost, MsgRegisterNamespace};
+    use prost::Message;
+
+    /// A permissive view of `MsgCreatePost` that keeps the removed field 4, so
+    /// a test can prove the encoder never writes it.
+    #[derive(Clone, PartialEq, Message)]
+    struct PostWithLegacyProof {
+        #[prost(string, tag = "1")]
+        creator: String,
+        #[prost(string, tag = "2")]
+        namespace: String,
+        #[prost(bytes = "vec", tag = "3")]
+        payload: Vec<u8>,
+        #[prost(bytes = "vec", tag = "4")]
+        legacy_proof: Vec<u8>,
+        #[prost(string, tag = "5")]
+        artifact: String,
+    }
+
+    /// Vera's `MsgCreatePost` has no field 4. Sending one makes the chain
+    /// reject the whole transaction at decode time with
+    /// `errUnknownField "*types.MsgCreatePost": {TagNum: 4}`, which surfaces as
+    /// a failed DKG rather than as a bulletin error, so it is worth pinning.
+    #[test]
+    fn create_post_never_encodes_the_removed_proof_field() {
+        let msg = MsgCreatePost::new(
+            "vera1creator",
+            "orbis",
+            b"ring payload".to_vec(),
+            Some("session-1".to_string()),
+        );
+        let encoded = msg.encode_to_vec();
+
+        let decoded = PostWithLegacyProof::decode(encoded.as_slice()).expect("decode");
+        assert!(
+            decoded.legacy_proof.is_empty(),
+            "field 4 must not be on the wire"
+        );
+        assert_eq!(decoded.creator, "vera1creator");
+        assert_eq!(decoded.namespace, "orbis");
+        assert_eq!(decoded.payload, b"ring payload");
+        assert_eq!(decoded.artifact, "session-1");
+    }
+
+    /// The type URLs name Vera's proto package. The chain routes on these
+    /// exactly, so a stale `sourcehub.` prefix is an unroutable transaction.
+    #[test]
+    fn type_urls_are_vera_qualified() {
+        assert_eq!(MsgCreatePost::TYPE_URL, "/vera.bulletin.MsgCreatePost");
+        assert_eq!(
+            MsgRegisterNamespace::TYPE_URL,
+            "/vera.bulletin.MsgRegisterNamespace"
+        );
     }
 }

@@ -1276,8 +1276,8 @@ pub async fn do_utility_sign(
 
     // Create JWT for authentication
     let signer_did_pk = signer_did_pk.unwrap_or("test_jwt".to_string());
-    let seed_bytes = hex::decode(&signer_did_pk)
-        .unwrap_or_else(|_| signer_did_pk.as_bytes().to_vec());
+    let seed_bytes =
+        hex::decode(&signer_did_pk).unwrap_or_else(|_| signer_did_pk.as_bytes().to_vec());
     let key_pair = generate::<DidEd25519KeyPair>(Some(&seed_bytes));
     let jwt_signer = JwtSigner::from_key_pair(key_pair);
     let token = jwt_signer

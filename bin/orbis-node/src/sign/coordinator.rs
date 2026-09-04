@@ -178,7 +178,8 @@ where
                 )
                 .await?;
             }
-            SignContext::Authenticated { ref jwt, .. } | SignContext::AccessDecision { ref jwt, .. } => {
+            SignContext::Authenticated { ref jwt, .. }
+            | SignContext::AccessDecision { ref jwt, .. } => {
                 // Validate JWT — responder independently verifies the token is valid
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -334,6 +335,7 @@ where
                 ref resource,
                 ref object_id,
                 ref permission,
+                ref derivation,
             } => {
                 // Validate JWT independently
                 let current_time = SystemTime::now()
@@ -389,18 +391,17 @@ where
                             ring_id, e
                         ))
                     })?;
-                let ring_payload =
-                    serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
+                    .map_err(|e| {
                         SignError::Deserialization(format!("Failed to parse ring payload: {}", e))
                     })?;
 
-                let pub_poly_bytes =
-                    hex::decode(&ring_payload.public_polynomial).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to decode public polynomial hex: {}",
-                            e
-                        ))
-                    })?;
+                let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode public polynomial hex: {}",
+                        e
+                    ))
+                })?;
                 let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
                     SignError::Deserialization(format!(
                         "Failed to deserialize public polynomial: {}",
@@ -408,12 +409,13 @@ where
                     ))
                 })?;
 
-                (ring_payload.ring_pk, pub_poly, None, None)
+                (ring_payload.ring_pk, pub_poly, derivation.clone(), None)
             }
             SignContext::AccessDecision {
                 ref jwt,
                 ref ring_id,
                 ref decision_id,
+                ref derivation,
             } => {
                 // Validate JWT independently
                 let current_time = SystemTime::now()
@@ -434,9 +436,7 @@ where
                 let result = light_client
                     .check_access_decision(decision_id)
                     .await
-                    .map_err(|e| {
-                        SignError::AuthZ(format!("ACP light client error: {}", e))
-                    })?;
+                    .map_err(|e| SignError::AuthZ(format!("ACP light client error: {}", e)))?;
                 if !result.allowed {
                     return Err(SignError::AuthZ(format!(
                         "AccessDecision '{}' not authorized on-chain",
@@ -456,18 +456,17 @@ where
                             ring_id, e
                         ))
                     })?;
-                let ring_payload =
-                    serde_json::from_slice::<RingPayload>(&ring_info.payload).map_err(|e| {
+                let ring_payload = serde_json::from_slice::<RingPayload>(&ring_info.payload)
+                    .map_err(|e| {
                         SignError::Deserialization(format!("Failed to parse ring payload: {}", e))
                     })?;
 
-                let pub_poly_bytes =
-                    hex::decode(&ring_payload.public_polynomial).map_err(|e| {
-                        SignError::Deserialization(format!(
-                            "Failed to decode public polynomial hex: {}",
-                            e
-                        ))
-                    })?;
+                let pub_poly_bytes = hex::decode(&ring_payload.public_polynomial).map_err(|e| {
+                    SignError::Deserialization(format!(
+                        "Failed to decode public polynomial hex: {}",
+                        e
+                    ))
+                })?;
                 let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
                     SignError::Deserialization(format!(
                         "Failed to deserialize public polynomial: {}",
@@ -475,7 +474,7 @@ where
                     ))
                 })?;
 
-                (ring_payload.ring_pk, pub_poly, None, None)
+                (ring_payload.ring_pk, pub_poly, derivation.clone(), None)
             }
         };
 
@@ -783,7 +782,8 @@ where
                 ));
                 (derivation, meta)
             }
-            SignContext::Authenticated { .. } | SignContext::AccessDecision { .. } => (None, None),
+            SignContext::Authenticated { derivation, .. }
+            | SignContext::AccessDecision { derivation, .. } => (derivation.clone(), None),
         };
 
         // =====================================================================

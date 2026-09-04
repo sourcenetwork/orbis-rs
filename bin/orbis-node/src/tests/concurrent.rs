@@ -124,9 +124,12 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let local_storage = LocalStorageImpl::new(None, db_path.clone()).expect("local storage");
 
         // Create signing key (stored in local_storage) and fund it via the faucet
-        let signer =
-            create_and_store_node_key(local_storage.clone(), ChainConfigBuilder::default().build(), None)
-                .expect("create node signing key");
+        let signer = create_and_store_node_key(
+            local_storage.clone(),
+            ChainConfigBuilder::default().build(),
+            None,
+        )
+        .expect("create node signing key");
         let public_address = signer.address();
 
         cli_tool::fund(
@@ -175,6 +178,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 bulletin_grpc: None,
                 chain_rest: None,
                 chain_rpc: None,
+                chain_id: None,
                 denom: None,
                 data_dir: None,
                 metrics_addr: None,
