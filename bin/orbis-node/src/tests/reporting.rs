@@ -917,11 +917,28 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
 
     // PRE: node1 produced a relayer-signed statement for an actor with no ACP relationship.
     println!("Setting up PRE unauthorized relay fixture...");
+    // Vera parses `document`/`proof` to derive the object id (`GenerateDocumentID`),
+    // so both must be the real canonical shapes.
+    let pre_document_str = String::from_utf8(
+        serde_json::to_vec(&Secret {
+            enc_cmt: vec![3u8; 32],
+            encrypted_data: vec![20, 21, 22, 23],
+            nonce: vec![2u8; 12],
+        })
+        .expect("serialize PRE secret"),
+    )
+    .expect("secret JSON is valid utf8");
+    let pre_proof_str: String = EncryptionProof {
+        challenge: vec![9, 8, 7],
+        response: vec![6, 5, 4],
+    }
+    .try_into()
+    .expect("serialize PRE proof");
     let (_, pre_object_id) = controller_client
         .orbis_store_document_get_id(
             RING_ID,
-            "{}",
-            "{}",
+            &pre_document_str,
+            &pre_proof_str,
             &policy_id,
             &resource,
             &permission,
@@ -1222,11 +1239,27 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
 
     // ── Sub-case 1: document posted to the bulletin (today's existing path) ──────────────
     println!("Sub-case 1: bulletin-sourced document...");
+    // Vera derives the on-chain object id by parsing `document`/`proof`
+    // (`GenerateDocumentID`), so both must be the real canonical shapes.
+    let bulletin_secret = Secret {
+        enc_cmt: vec![7u8; 32],
+        encrypted_data: vec![10, 11, 12, 13],
+        nonce: vec![1u8; 12],
+    };
+    let bulletin_document_str =
+        String::from_utf8(serde_json::to_vec(&bulletin_secret).expect("serialize bulletin secret"))
+            .expect("secret JSON is valid utf8");
+    let bulletin_proof_str: String = EncryptionProof {
+        challenge: vec![1, 2, 3],
+        response: vec![4, 5, 6],
+    }
+    .try_into()
+    .expect("serialize bulletin proof");
     let (_, bulletin_object_id) = controller_client
         .orbis_store_document_get_id(
             RING_ID,
-            "{}",
-            "{}",
+            &bulletin_document_str,
+            &bulletin_proof_str,
             &policy_id,
             &resource,
             &permission,
