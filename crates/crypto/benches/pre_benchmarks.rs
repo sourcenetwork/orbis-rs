@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 use crypto::context::CiphertextContext;
-use crypto::r#trait::{EncryptionProof, PubShare, ThresholdDealer};
+use crypto::r#trait::{EncryptionProof, PubShare, ReaderKeyProof, ThresholdDealer};
 
 /// Fixed ciphertext-binding context for the PRE benchmarks.
 pub fn bench_ctx() -> CiphertextContext {
@@ -36,6 +36,7 @@ pub struct BenchFixture<D: ThresholdDealer> {
     pub dist_key_shares: Vec<D::DistKeyShare>,
     pub rdr_sk: D::ShareValue,
     pub rdr_pk: D::PublicKey,
+    pub rdr_pk_proof: ReaderKeyProof,
     pub enc_cmt: D::PublicKey,
     pub secret: D::Secret,
     pub proof: EncryptionProof,
@@ -157,6 +158,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                         black_box(&fixture.dist_key_shares[0]),
                         black_box(&fixture.secret),
                         black_box(&fixture.rdr_pk),
+                        black_box(&fixture.rdr_pk_proof),
                         None,
                     )
                     .unwrap()
@@ -172,6 +174,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                         black_box(&fixture.dist_key_shares[0]),
                         black_box(&fixture.secret),
                         black_box(&fixture.rdr_pk),
+                        black_box(&fixture.rdr_pk_proof),
                         Some(black_box(derivation)),
                     )
                     .unwrap()
@@ -240,7 +243,7 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                 for dks in fixture.dist_key_shares.iter().take(fixture.t) {
                     let reply = fixture
                         .dealer
-                        .reencrypt(dks, &secret, &fixture.rdr_pk, None)
+                        .reencrypt(dks, &secret, &fixture.rdr_pk, &fixture.rdr_pk_proof, None)
                         .unwrap();
                     pub_shares.push(S::extract_pub_share(&reply));
                 }

@@ -249,7 +249,13 @@ where
             let dist_key_share = DistKeyShare { pri_share };
 
             let reply = dealer
-                .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
+                .reencrypt(
+                    &dist_key_share,
+                    &secret,
+                    &rdr_pk,
+                    &ctx.rdr_pk_proof,
+                    ctx.derivation.as_deref(),
+                )
                 .map_err(|error| {
                     PreError::Crypto(format!("Local reencryption failed: {}", error))
                 })?;

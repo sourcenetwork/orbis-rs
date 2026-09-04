@@ -161,6 +161,28 @@ where
             .await
             .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
+        // Parse the reader's proof of knowledge of rdr_pk's discrete log. This
+        // is re-verified independently by every committee member inside
+        // `ThresholdDealer::reencrypt` (the actual security boundary — see
+        // `ReaderKeyProof`'s docs); checking it here too just fails fast, before
+        // a threshold round trip, on a missing or malformed proof.
+        let rdr_pk_proof = req
+            .rdr_pk_proof
+            .take()
+            .map(|p| crypto::r#trait::ReaderKeyProof {
+                challenge: p.challenge,
+                response: p.response,
+            })
+            .ok_or_else(|| PreError::InvalidInput("Missing rdr_pk_proof".to_string()))?;
+        let rdr_pk_point = <T::PublicKey as crypto::r#trait::CryptoDeserialize>::from_bytes(
+            &req.rdr_pk,
+        )
+        .map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
+        })?;
+        T::verify_reader_key(&rdr_pk_point, &rdr_pk_proof)
+            .map_err(|e| PreError::Unauthorized(format!("Invalid reader key proof: {}", e)))?;
+
         // Resolve document and ring payloads. When the caller supplied `document` inline, it's
         // used directly instead of being read from the bulletin (validated against `object_id`
         // inside); otherwise this reads the document from the bulletin exactly as before.
@@ -309,6 +331,7 @@ where
         };
         let ctx = PreRequestContext {
             rdr_pk_bytes: req.rdr_pk,
+            rdr_pk_proof,
             object_id: req.object_id,
             token_string: token_str.to_string(),
             derivation: req.derivation,

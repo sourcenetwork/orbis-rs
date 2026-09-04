@@ -797,6 +797,14 @@ async fn forward_unauthorized_pre(
         from_node_id: statement.from_node_id,
         context: PreRequestContext {
             rdr_pk_bytes: pre_reader_pk,
+            // This harness exercises the ACP-denial / unauthorized-relay-report
+            // path, which `handle_reencrypt_request` short-circuits on before
+            // ever calling `reencrypt` — so a placeholder proof is fine here and
+            // never needs to be genuinely valid.
+            rdr_pk_proof: crypto::r#trait::ReaderKeyProof {
+                challenge: Vec::new(),
+                response: Vec::new(),
+            },
             object_id: statement.object_id.clone(),
             token_string,
             derivation: None,

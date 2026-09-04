@@ -22,8 +22,8 @@
 use crate::context::{context_digest, CiphertextContext};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
-    CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReencryptReply,
-    Secret, ThresholdDealer,
+    CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReaderKeyProof,
+    ReencryptReply, Secret, ThresholdDealer,
 };
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
@@ -169,7 +169,14 @@ where
     let dealer = T::new();
     let identity = make_identity_pk();
 
-    let result = dealer.reencrypt(&share, &encrypted_secret, &identity, None);
+    // No valid PoP can exist for the identity element (see `ReaderKeyProof`'s
+    // docs), so any proof value — including this empty placeholder — must be
+    // rejected together with the identity check itself.
+    let bogus_proof = ReaderKeyProof {
+        challenge: Vec::new(),
+        response: Vec::new(),
+    };
+    let result = dealer.reencrypt(&share, &encrypted_secret, &identity, &bogus_proof, None);
     assert!(
         result.is_err(),
         "reencrypt must reject the identity element as rdr_pk"
@@ -186,6 +193,7 @@ where
 fn single_node_xnc_cmt<T, SV, PK, PP>(
     dkg_sk: SV,
     encrypted_secret: &Secret,
+    rdr_sk: &SV,
     rdr_pk: &PK,
     derivation: Option<&[u8]>,
 ) -> Result<PK>
@@ -206,7 +214,8 @@ where
         pri_share: PriShare { i: 1, v: dkg_sk },
     };
     let dealer = T::new();
-    let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, derivation)?;
+    let rdr_proof = T::prove_reader_key(rdr_sk, rdr_pk)?;
+    let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, &rdr_proof, derivation)?;
     let xnc_cmt = dealer
         .recover(std::slice::from_ref(&reply.share), 1, 1)?
         .expect("recover with 1 share at t=1 must succeed");
@@ -343,7 +352,8 @@ where
     assert!(!encrypted_secret.encrypted_data.is_empty());
     assert_eq!(encrypted_secret.nonce.len(), 12);
 
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_sk, &rdr_pk, None)?;
     let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted, secret);
     Ok(())
@@ -376,7 +386,8 @@ where
     let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
     assert!(!encrypted_secret.encrypted_data.is_empty());
 
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_sk, &rdr_pk, None)?;
     let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted.len(), secret.len());
     assert_eq!(decrypted, secret);
@@ -403,7 +414,8 @@ where
     let (rdr_sk, rdr_pk) = make_keypair();
 
     let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_sk, &rdr_pk, None)?;
     let decrypted = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx())?;
     assert_eq!(decrypted, secret);
     Ok(())
@@ -426,11 +438,12 @@ where
 {
     let secret = b"test secret";
     let (dkg_sk, dkg_pk) = make_keypair();
-    let (_, rdr_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
     let (wrong_rdr_sk, _) = make_keypair();
 
     let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, secret, None, &test_ctx())?;
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(
         &dkg_pk,
@@ -474,7 +487,7 @@ where
     MP: Fn(Vec<PK>) -> PP,
 {
     let (dkg_sk, dkg_pk) = make_keypair();
-    let (_, rdr_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
 
     let commitment = make_pub_poly(vec![dkg_pk.clone()]);
     let share = DistKeyShare {
@@ -485,7 +498,8 @@ where
         T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
-    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, None)?;
+    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
+    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &rdr_proof, None)?;
     dealer.verify(&rdr_pk, &commitment, &enc_cmt, &reply, None)?;
     Ok(())
 }
@@ -510,7 +524,7 @@ where
     MP: Fn(Vec<PK>) -> PP,
 {
     let (dkg_sk, dkg_pk) = make_keypair();
-    let (_, rdr_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
 
     let commitment = make_pub_poly(vec![dkg_pk.clone()]);
     let share = DistKeyShare {
@@ -521,7 +535,8 @@ where
         T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
-    let mut reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, None)?;
+    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
+    let mut reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &rdr_proof, None)?;
 
     // Replace the proof scalar with a different one from a fresh keypair
     reply.proof = make_keypair().0;
@@ -870,8 +885,13 @@ where
     let (_, encrypted_secret, _) =
         T::encrypt_secret(&dkg_pk, secret, Some(derivation), &test_ctx())?;
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
-    let xnc_cmt =
-        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, Some(derivation))?;
+    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(
+        dkg_sk,
+        &encrypted_secret,
+        &rdr_sk,
+        &rdr_pk,
+        Some(derivation),
+    )?;
     let decrypted = T::decrypt_secret(
         &derived_pk,
         &xnc_cmt,
@@ -904,7 +924,7 @@ where
 {
     let derivation = b"test-capability";
     let (dkg_sk, dkg_pk) = make_keypair();
-    let (_, rdr_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
 
     let commitment = make_pub_poly(vec![dkg_pk.clone()]);
     let share = DistKeyShare {
@@ -919,7 +939,14 @@ where
     )?;
 
     let dealer = T::new();
-    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, Some(derivation))?;
+    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
+    let reply = dealer.reencrypt(
+        &share,
+        &encrypted_secret,
+        &rdr_pk,
+        &rdr_proof,
+        Some(derivation),
+    )?;
     dealer.verify(&rdr_pk, &commitment, &enc_cmt, &reply, Some(derivation))?;
     Ok(())
 }
@@ -953,6 +980,7 @@ where
     let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(
         dkg_sk,
         &encrypted_secret,
+        &rdr_sk,
         &rdr_pk,
         Some(wrong_derivation),
     )?;
@@ -1001,7 +1029,8 @@ where
     let derived_pk = T::derive_public_key(&dkg_pk, derivation)?;
 
     // Reencrypt WITHOUT derivation
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(
         &derived_pk,
@@ -1046,8 +1075,13 @@ where
     let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     // Reencrypt WITH (extra) derivation
-    let xnc_cmt =
-        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_secret, &rdr_pk, Some(derivation))?;
+    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(
+        dkg_sk,
+        &encrypted_secret,
+        &rdr_sk,
+        &rdr_pk,
+        Some(derivation),
+    )?;
 
     let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &encrypted_secret, &test_ctx());
     assert!(result.is_err());
@@ -1223,7 +1257,8 @@ where
         nonce: encrypted_b.nonce.clone(),
     };
 
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
@@ -1262,7 +1297,8 @@ where
     };
 
     // xnc_cmt derived from encrypted_b (matching the swapped enc_cmt)
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
@@ -1299,7 +1335,8 @@ where
         nonce: encrypted_b.nonce.clone(),
     };
 
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_a, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
@@ -1340,7 +1377,8 @@ where
         nonce: encrypted_a.nonce.clone(),
     };
 
-    let xnc_cmt = single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_pk, None)?;
+    let xnc_cmt =
+        single_node_xnc_cmt::<T, SV, PK, PP>(dkg_sk, &encrypted_b, &rdr_sk, &rdr_pk, None)?;
 
     let result = T::decrypt_secret(&dkg_pk, &xnc_cmt, &rdr_sk, &franken_secret, &test_ctx());
     assert!(
@@ -1461,6 +1499,7 @@ where
     assert_eq!(encrypted_secret.nonce.len(), 12);
 
     let (rdr_sk, rdr_pk) = make_keypair();
+    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
 
     let dealer = T::new();
     let mut reencrypt_replies = Vec::new();
@@ -1469,7 +1508,13 @@ where
         let dist_key_share = DistKeyShare {
             pri_share: share.clone(),
         };
-        let reply = dealer.reencrypt(&dist_key_share, &encrypted_secret, &rdr_pk, None)?;
+        let reply = dealer.reencrypt(
+            &dist_key_share,
+            &encrypted_secret,
+            &rdr_pk,
+            &rdr_proof,
+            None,
+        )?;
         dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, None)?;
         reencrypt_replies.push(reply);
     }
@@ -1522,6 +1567,7 @@ where
     let derived_pk = T::derive_public_key(&aggregate_pk, derivation)?;
 
     let (rdr_sk, rdr_pk) = make_keypair();
+    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
 
     let dealer = T::new();
     let mut reencrypt_replies = Vec::new();
@@ -1534,6 +1580,7 @@ where
             &dist_key_share,
             &encrypted_secret,
             &rdr_pk,
+            &rdr_proof,
             Some(derivation),
         )?;
         dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, Some(derivation))?;

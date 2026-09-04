@@ -38,6 +38,7 @@ impl BenchSetup for Bls12381Bench {
         let mut rng = OsRng;
         let rdr_sk = Fr::rand(&mut rng);
         let rdr_pk: G1Affine = (G1Projective::generator() * rdr_sk).into();
+        let rdr_pk_proof = ThresholdDealerNode::prove_reader_key(&rdr_sk, &rdr_pk).unwrap();
 
         let data = b"benchmark secret payload - 36 bytes!";
         let (enc_cmt, secret, proof) =
@@ -54,7 +55,9 @@ impl BenchSetup for Bls12381Bench {
         let mut pub_shares = Vec::with_capacity(t);
         let mut replies = Vec::with_capacity(t);
         for dks in dist_key_shares.iter().take(t) {
-            let reply = dealer.reencrypt(dks, &secret, &rdr_pk, None).unwrap();
+            let reply = dealer
+                .reencrypt(dks, &secret, &rdr_pk, &rdr_pk_proof, None)
+                .unwrap();
             pub_shares.push(reply.share.clone());
             replies.push(reply);
         }
@@ -69,6 +72,7 @@ impl BenchSetup for Bls12381Bench {
             dist_key_shares,
             rdr_sk,
             rdr_pk,
+            rdr_pk_proof,
             enc_cmt,
             secret,
             proof,

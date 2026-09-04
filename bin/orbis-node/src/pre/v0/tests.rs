@@ -218,6 +218,8 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     // Serialize Bob's public key using trait method
     let bob_pk_bytes =
         CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
+    let bob_pk_proof =
+        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("Failed to prove Bob's reader key");
 
     // Serialize the ring (DKG) public key using trait method
     let ring_pk_bytes =
@@ -291,6 +293,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -462,6 +465,8 @@ async fn test_pre_with_inline_document_end_to_end() {
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes =
         CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
+    let bob_pk_proof =
+        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("Failed to prove Bob's reader key");
     let ring_pk_bytes =
         CryptoSerialize::to_bytes(&aggregate_pk).expect("Failed to serialize ring public key");
 
@@ -559,6 +564,7 @@ async fn test_pre_with_inline_document_end_to_end() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -656,6 +662,7 @@ async fn test_pre_with_large_secret() {
     // Bob's keys using trait method
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -697,6 +704,7 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -796,8 +804,9 @@ async fn test_pre_fails_with_wrong_key() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's real keys
-    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // Wrong private key (Eve trying to decrypt)
     let (eve_sk, _eve_pk) = PreImpl::generate_keypair();
@@ -842,6 +851,7 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -937,8 +947,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with invalid token
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -978,6 +989,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: invalid_token,
                 derivation: None,
@@ -1084,8 +1096,9 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1134,6 +1147,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: mismatched_token,
                 derivation: None,
@@ -1203,6 +1217,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         salt: None,
         valid_window: None,
         document: None,
+        rdr_pk_proof: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1245,6 +1260,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         salt: None,
         valid_window: None,
         document: None,
+        rdr_pk_proof: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1303,6 +1319,7 @@ async fn test_start_pre_fails_wrong_signature() {
         salt: None,
         valid_window: None,
         document: None,
+        rdr_pk_proof: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1346,6 +1363,7 @@ async fn test_start_pre_rejects_a_replayed_jwt() {
         salt: None,
         valid_window: None,
         document: None,
+        rdr_pk_proof: None,
     };
 
     // First call: JWT and claims are valid, so the jti is recorded before the
@@ -1438,6 +1456,7 @@ async fn test_pre_fails_with_wrong_derivation() {
     // Bob's keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with CORRECT derivation (re-encryption should work)
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1484,6 +1503,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             secret_bytes.clone(),
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
+                rdr_pk_proof: bob_pk_proof,
                 object_id: object_id.clone(),
                 token_string: pre_token,
                 derivation: Some(correct_derivation.clone()),
@@ -1626,8 +1646,9 @@ async fn test_pre_fails_with_bad_proof() {
     }
 
     // Bob's keys
-    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
+    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1669,6 +1690,7 @@ async fn test_pre_fails_with_bad_proof() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -1748,8 +1770,10 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
     .save(&app_state.local_storage, &aggregate_pk)
     .expect("save local ring share bundle");
 
-    let (_bob_sk, bob_pk) = PreImpl::generate_keypair();
+    let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).expect("serialize reader public key");
+    let bob_pk_proof =
+        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("prove reader public key");
     let (_, encrypted_secret, _) = PreImpl::encrypt_secret(
         &aggregate_pk,
         b"local verification failure",
@@ -1792,6 +1816,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
             0,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
+                rdr_pk_proof: bob_pk_proof,
                 object_id: "local-verify-failure-object".to_string(),
                 token_string: "unused".to_string(),
                 derivation: None,

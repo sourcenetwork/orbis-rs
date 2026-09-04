@@ -335,7 +335,8 @@ mod tests {
         )
         .unwrap();
         let enc_cmt = <DkgImpl as Dkg>::PublicKey::from_bytes(&encrypted_secret.enc_cmt).unwrap();
-        let (_, rdr_pk) = PreImpl::generate_keypair();
+        let (rdr_sk, rdr_pk) = PreImpl::generate_keypair();
+        let rdr_pk_proof = PreImpl::prove_reader_key(&rdr_sk, &rdr_pk).unwrap();
         let responder_share = shares
             .into_iter()
             .find(|share| share.i == 2)
@@ -348,6 +349,7 @@ mod tests {
                 },
                 &encrypted_secret,
                 &rdr_pk,
+                &rdr_pk_proof,
                 None,
             )
             .unwrap();

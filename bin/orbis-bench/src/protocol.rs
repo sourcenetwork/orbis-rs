@@ -455,6 +455,8 @@ pub async fn pre_call(
         fixture.derivation.clone(),
         fixture.salt.clone(),
     )?;
+    let reader_pk_point = GroupAffine::from_bytes(&fixture.reader_pk)?;
+    let rdr_pk_proof = PreImpl::prove_reader_key(&fixture.reader_sk, &reader_pk_point)?;
     let total_started = Instant::now();
     let request = create_authenticated_request(
         StartPreRequest {
@@ -464,6 +466,10 @@ pub async fn pre_call(
             salt: fixture.salt.clone(),
             valid_window: None,
             document: None,
+            rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
+                challenge: rdr_pk_proof.challenge,
+                response: rdr_pk_proof.response,
+            }),
         },
         &token,
     )?;

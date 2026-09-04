@@ -4,7 +4,7 @@ use crate::{
     error::{CryptoError, Result},
     r#trait::{
         CryptoDeserialize, DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare,
-        ReencryptReply, Secret, ThresholdDealer,
+        ReaderKeyProof, ReencryptReply, Secret, ThresholdDealer,
     },
 };
 use aes_gcm::{
@@ -27,6 +27,8 @@ const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
 const DERIVATION_DOMAIN: &[u8; 23] = b"elgamal-derivation-v1\0\0";
 /// Domain separator for the encryption proof's Fiat-Shamir challenge.
 const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-policy-binding-proof-v1";
+/// Domain separator for the reader-key proof-of-possession's Fiat-Shamir challenge.
+const READER_POP_DOMAIN: &[u8] = b"orbis-reader-pop-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -52,6 +54,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
+        rdr_proof: &ReaderKeyProof,
         derivation: Option<&[u8]>,
     ) -> Result<Self::ReencryptReply> {
         // Input validation
@@ -71,6 +74,14 @@ impl ThresholdDealer for ThresholdDealerNode {
                 idx
             )));
         }
+
+        // Reject any rdr_pk the caller cannot prove knowledge of, before doing
+        // anything with it. Without this, xnc_ski = ski*(rdr_pk + enc_cmt) is
+        // linear in rdr_pk: a caller authorized for ciphertext A can submit
+        // rdr_pk = U_B - U_A (a difference of two published commitments, no
+        // discrete log required) to redirect the recovered commitment to
+        // s*U_B — ciphertext B's own KEM shared point.
+        Self::verify_reader_key(rdr_pk, rdr_proof)?;
 
         // Unmarshal the commitment
         let enc_cmt = Self::decompress_point(&scrt.enc_cmt)?;
@@ -428,6 +439,92 @@ impl ThresholdDealer for ThresholdDealerNode {
     fn derive_key_from_point(point: &Self::PublicKey) -> Result<[u8; 32]> {
         ThresholdDealerNode::derive_key_from_point(point)
     }
+
+    fn prove_reader_key(
+        rdr_sk: &Self::ShareValue,
+        rdr_pk: &Self::PublicKey,
+    ) -> Result<ReaderKeyProof> {
+        let (challenge, response) = Self::generate_reader_key_proof(rdr_sk, rdr_pk)?;
+
+        let mut challenge_bytes = Vec::new();
+        challenge.serialize_compressed(&mut challenge_bytes)?;
+        let mut response_bytes = Vec::new();
+        response.serialize_compressed(&mut response_bytes)?;
+
+        Ok(ReaderKeyProof {
+            challenge: challenge_bytes,
+            response: response_bytes,
+        })
+    }
+
+    fn verify_reader_key(rdr_pk: &Self::PublicKey, proof: &ReaderKeyProof) -> Result<()> {
+        // A rdr_pk of the identity element makes the discrete-log statement
+        // vacuous (0 = 0*G): any (c, z) with c = H(rdr_pk, z*G) trivially
+        // verifies without the prover knowing anything, so identity/non-subgroup
+        // points must be rejected here independent of whatever `reencrypt`'s own
+        // checks do.
+        if rdr_pk.is_zero() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid reader public key: cannot be zero point".to_string(),
+            ));
+        }
+        if !rdr_pk.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid reader public key: not in the prime-order subgroup".to_string(),
+            ));
+        }
+
+        if proof.challenge.len() != FR_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid reader-key-proof challenge length: expected {}, got {}",
+                FR_COMPRESSED_SIZE,
+                proof.challenge.len()
+            )));
+        }
+        let challenge = Fr::from_bytes(&proof.challenge[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!(
+                "Failed to deserialize reader-key-proof challenge: {:?}",
+                e
+            ))
+        })?;
+        if proof.response.len() != FR_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid reader-key-proof response length: expected {}, got {}",
+                FR_COMPRESSED_SIZE,
+                proof.response.len()
+            )));
+        }
+        let response = Fr::from_bytes(&proof.response[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!(
+                "Failed to deserialize reader-key-proof response: {:?}",
+                e
+            ))
+        })?;
+
+        // R1' = z*G - c*rdr_pk
+        let r1_prime: G1Affine =
+            (G1Projective::generator() * response - G1Projective::from(*rdr_pk) * challenge).into();
+
+        let recomputed_challenge = Self::reader_key_proof_challenge(rdr_pk, &r1_prime)?;
+
+        // Constant-time compare. Fr serializes to exactly 32 bytes for BLS12-381.
+        let mut challenge_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        challenge
+            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if challenge_bytes.ct_ne(&recomputed_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "Reader key proof verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl ThresholdDealerNode {
@@ -777,6 +874,42 @@ impl ThresholdDealerNode {
         }
         hasher.update(context_digest);
         hasher.update(ciphertext_digest);
+
+        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+    }
+
+    /// Generate the Schnorr PoK of `rdr_sk` for `rdr_pk = rdr_sk*G`.
+    ///
+    /// `k <- random nonzero Fr`, `R1 = k*G`,
+    /// `c = reader_key_proof_challenge(rdr_pk, R1)`, `z = k + c*rdr_sk`.
+    /// Returns `(c, z)`.
+    fn generate_reader_key_proof(rdr_sk: &Fr, rdr_pk: &G1Affine) -> Result<(Fr, Fr)> {
+        let mut rng = OsRng;
+        let k = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
+        let r1: G1Affine = (G1Projective::generator() * k).into();
+
+        let c = Self::reader_key_proof_challenge(rdr_pk, &r1)?;
+        let z = k + (c * rdr_sk);
+        Ok((c, z))
+    }
+
+    /// Fiat-Shamir challenge:
+    /// `Fr::from_le_bytes_mod_order(SHA512(READER_POP_DOMAIN || compress(rdr_pk) || compress(R1)))`.
+    fn reader_key_proof_challenge(rdr_pk: &G1Affine, r1: &G1Affine) -> Result<Fr> {
+        let mut hasher = Sha512::new();
+        hasher.update(READER_POP_DOMAIN);
+
+        let mut bytes = Vec::with_capacity(G1_COMPRESSED_SIZE);
+        for point in [rdr_pk, r1] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
 
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }

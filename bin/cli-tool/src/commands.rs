@@ -357,20 +357,24 @@ pub async fn do_pre(
     // Parse the reader public key
     let reader_pk_bytes =
         hex::decode(&reader_pk).map_err(|e| anyhow!("Failed to decode reader_pk hex: {}", e))?;
-    let _reader_pk_point = G1Affine::from_bytes(&reader_pk_bytes)
+    let reader_pk_point = G1Affine::from_bytes(&reader_pk_bytes)
         .map_err(|e| anyhow!("Failed to deserialize reader_pk: {}", e))?;
 
-    // Parse reader secret key (not needed for --xnc-only)
-    let reader_sk_scalar = if let Some(ref sk_hex) = reader_sk {
-        let reader_sk_bytes =
-            hex::decode(sk_hex).map_err(|e| anyhow!("Failed to decode reader_sk hex: {}", e))?;
-        Some(
-            Fr::from_bytes(&reader_sk_bytes)
-                .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?,
-        )
-    } else {
-        None
-    };
+    // Parse reader secret key. Always required — not merely for the final
+    // decrypt step, but because the node now requires a proof of knowledge of
+    // reader_pk's discrete log before it will re-encrypt to it at all.
+    let reader_sk_hex = reader_sk
+        .as_deref()
+        .ok_or_else(|| anyhow!("--reader-sk is required"))?;
+    let reader_sk_bytes =
+        hex::decode(reader_sk_hex).map_err(|e| anyhow!("Failed to decode reader_sk hex: {}", e))?;
+    let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
+        .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?;
+
+    // Prove knowledge of reader_sk for reader_pk; every responder verifies
+    // this before computing anything with reader_pk.
+    let rdr_pk_proof = ThresholdDealerNode::prove_reader_key(&reader_sk_scalar, &reader_pk_point)
+        .map_err(|e| anyhow!("Failed to prove reader key: {}", e))?;
 
     println!("  Encrypted secret created");
     println!();
@@ -393,6 +397,10 @@ pub async fn do_pre(
         salt: salt.clone(),
         valid_window,
         document: None,
+        rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
+            challenge: rdr_pk_proof.challenge,
+            response: rdr_pk_proof.response,
+        }),
     };
 
     // JWT work use determinitic key_pair for now
@@ -448,9 +456,6 @@ pub async fn do_pre(
 
         println!();
         println!("Step 3: Decrypting with reader secret key...");
-
-        let reader_sk_scalar =
-            reader_sk_scalar.ok_or_else(|| anyhow!("--reader-sk is required for decryption"))?;
 
         // Parse the ring public key
         let ring_pk_bytes =
