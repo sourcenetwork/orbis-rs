@@ -404,7 +404,7 @@ async fn wait_for_dkg_completion(
 /// End-to-end test: the document is supplied inline in the PRE request instead of being
 /// posted to the bulletin first. Runs the same real 3-node cascade as
 /// `test_delegated_dkg_then_pre_end_to_end` — each committee member independently resolves and
-/// re-verifies the inline document via `validate_inline_document_id` (`handle_reencrypt_request`)
+/// re-verifies the inline document via `check_document_id_binding` (`handle_reencrypt_request`)
 /// rather than trusting the coordinator's word, then re-encryption and decryption proceed exactly
 /// as with a bulletin-sourced document.
 #[tokio::test]

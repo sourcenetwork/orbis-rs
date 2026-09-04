@@ -26,8 +26,9 @@ use tonic::{Request, Response, Status};
 
 /// Converts a caller-supplied `InlineDocument` into the internal `DocumentPayload` shape,
 /// validating the encrypted document's structure along the way. Does not check `object_id` —
-/// that happens in `resolve_document_and_ring_payloads` via `validate_inline_document_id`, which
-/// every node (including cascaded committee members) independently re-runs.
+/// that happens in `resolve_document_and_ring_payloads` via `check_document_id_binding` (after the
+/// protocol-version gate), which every node (including cascaded committee members) independently
+/// re-runs.
 ///
 /// `pub(crate)` so `unsafe_testing::service` can reuse it to inject a
 /// `PreRequestContext.document` for integration tests exercising the inline-document path.

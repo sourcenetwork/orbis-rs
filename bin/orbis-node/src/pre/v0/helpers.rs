@@ -25,18 +25,8 @@ async fn fetch_document_payload(
         .await
         .map_err(|e| PreError::Storage(format!("Failed to read object '{}': {}", object_id, e)))?;
 
-    let document =
-        serde_json::from_slice::<DocumentPayload>(&object_info.payload).map_err(|e| {
-            PreError::Deserialization(format!("Failed to parse document payload: {}", e))
-        })?;
-
-    // Defence in depth: Vera derives `object_id` from this document's fields when it is stored
-    // (`crates/bulletin/src/vera`), so a bulletin read is expected to round-trip. Recomputing it
-    // here means PRE fails closed rather than re-encrypting a ciphertext to the wrong
-    // authorization identity if the on-chain and in-process canonicalizations ever diverge.
-    check_document_id_binding(object_id, &document)?;
-
-    Ok(document)
+    serde_json::from_slice::<DocumentPayload>(&object_info.payload)
+        .map_err(|e| PreError::Deserialization(format!("Failed to parse document payload: {}", e)))
 }
 
 /// Recomputes the deterministic document ID from `document`'s fields and checks it equals
@@ -46,7 +36,10 @@ async fn fetch_document_payload(
 /// Vera assigns when a document is posted to the bulletin (`crates/bulletin/src/vera/mod.rs`) and
 /// the identity a PRE request is authorized against under ACP. Binding it back to the concrete
 /// ciphertext/proof means a caller cannot pair an `object_id` they hold access to with a
-/// different document's contents.
+/// different document's contents. Applied to both document sources: an inline document supplied
+/// on the wire, and one read back from the bulletin (where a match is expected, but recomputing
+/// it in-process fails PRE closed rather than re-encrypting to the wrong identity if the on-chain
+/// and in-process canonicalizations ever diverge).
 fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
     let expected = generate_document_id(
         &document.ring_id,
@@ -70,20 +63,15 @@ fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Res
     Ok(())
 }
 
-/// Confirms a caller-supplied (never-posted) document is genuinely the one `object_id` refers to.
-///
-/// Same check as the bulletin-read path applies via [`check_document_id_binding`]; a document
-/// supplied directly on the wire is bound to `object_id` exactly as tightly as one read from chain.
-pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) -> Result<()> {
-    check_document_id_binding(object_id, document)
-}
-
 /// Resolves the document and ring payloads for a PRE request, either from a caller-supplied
-/// `DocumentPayload` (validated against `object_id` via [`validate_inline_document_id`]) or, when
-/// none is supplied, by reading the document from the bulletin by `object_id`.
+/// `DocumentPayload` or, when none is supplied, by reading the document from the bulletin by
+/// `object_id`.
 ///
-/// `ring_payload` is always read live from the bulletin regardless of the document's source —
-/// ring membership/threshold and the live ACP check are not made caller-suppliable.
+/// Order matters: the ring is read (and its protocol version gated for this route) *before* the
+/// document is bound to `object_id`, so a request for a ring that has moved to another protocol
+/// version is refused with a version error rather than a document-shape error. `ring_payload` is
+/// always read live from the bulletin regardless of the document's source — ring
+/// membership/threshold and the live ACP check are not made caller-suppliable.
 pub async fn resolve_document_and_ring_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
     object_id: &str,
@@ -91,16 +79,15 @@ pub async fn resolve_document_and_ring_payloads(
     inline_document: Option<DocumentPayload>,
 ) -> Result<(DocumentPayload, RingPayload)> {
     let document_payload = match inline_document {
-        Some(document) => {
-            validate_inline_document_id(object_id, &document)?;
-            document
-        }
+        Some(document) => document,
         None => fetch_document_payload(bulletin, object_id).await?,
     };
 
     let ring_payload = read_ring_for_route(bulletin, &document_payload.ring_id, protocol_version)
         .await
         .map_err(PreError::ProtocolError)?;
+
+    check_document_id_binding(object_id, &document_payload)?;
 
     Ok((document_payload, ring_payload))
 }
@@ -309,14 +296,14 @@ mod tests {
     }
 
     #[test]
-    fn validate_inline_document_id_accepts_matching_document() {
+    fn check_document_id_binding_accepts_matching_document() {
         let document = document_b();
         let object_id = object_id_for(&document);
-        assert!(validate_inline_document_id(&object_id, &document).is_ok());
+        assert!(check_document_id_binding(&object_id, &document).is_ok());
     }
 
     #[test]
-    fn validate_inline_document_id_rejects_tampered_fields() {
+    fn check_document_id_binding_rejects_tampered_fields() {
         let object_id = object_id_for(&document_b());
 
         let mutations: Vec<(&str, Box<dyn Fn(&mut DocumentPayload)>)> = vec![
@@ -359,7 +346,7 @@ mod tests {
             mutate(&mut tampered);
             assert!(
                 matches!(
-                    validate_inline_document_id(&object_id, &tampered),
+                    check_document_id_binding(&object_id, &tampered),
                     Err(PreError::Unauthorized(_))
                 ),
                 "tampering '{field}' should have been rejected"
@@ -373,7 +360,7 @@ mod tests {
     /// `object_id` commits to every field of the document (including the ciphertext and proof),
     /// so C's fields can never hash to B's object_id.
     #[test]
-    fn validate_inline_document_id_rejects_a_different_honest_document_under_the_wrong_object_id() {
+    fn check_document_id_binding_rejects_a_different_honest_document_under_the_wrong_object_id() {
         let object_id_b = object_id_for(&document_b());
 
         let document_c = DocumentPayload {
@@ -387,10 +374,10 @@ mod tests {
             timestamp: Some(1_700_000_000),
         };
         // document_c is itself internally valid for its own object_id...
-        assert!(validate_inline_document_id(&object_id_for(&document_c), &document_c).is_ok());
+        assert!(check_document_id_binding(&object_id_for(&document_c), &document_c).is_ok());
         // ...but cannot be smuggled in under B's object_id.
         assert!(matches!(
-            validate_inline_document_id(&object_id_b, &document_c),
+            check_document_id_binding(&object_id_b, &document_c),
             Err(PreError::Unauthorized(_))
         ));
     }

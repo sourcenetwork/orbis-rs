@@ -35,7 +35,7 @@ pub struct PreRequestContext {
     pub relay_signature: Vec<u8>,
     /// Present only when the caller supplied the document inline instead of posting it to the
     /// bulletin first. Every node (leader and cascaded committee members) uses this directly and
-    /// independently re-verifies it via `validate_inline_document_id` — mirrors the existing
+    /// independently re-verifies it via `check_document_id_binding` — mirrors the existing
     /// pattern where each node independently re-does `check_policy_access`/`verify_encryption_binding`
     /// rather than trusting the relay's word. `None` means the document is read from the bulletin
     /// by `object_id`, exactly as before this field existed.
