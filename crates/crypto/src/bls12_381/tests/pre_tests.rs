@@ -1,4 +1,5 @@
 use crate::bls12_381::pre::ThresholdDealerNode;
+use crate::context::CiphertextContext;
 use crate::r#trait::{DistKeyShare, PriShare, ThresholdDealer};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fq, Fr, G1Affine, G1Projective};
@@ -91,8 +92,17 @@ fn test_reencrypt_rejects_reader_key_outside_prime_order_subgroup() {
     // key, otherwise `xnc_ski = ski * (rdr_pk + enc_cmt)` leaks `ski` modulo the
     // order of `rdr_pk`.
     let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
+    let ctx = CiphertextContext {
+        ring_pk: vec![9, 9, 9],
+        policy_id: "p".to_string(),
+        resource: "r".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    };
     let (_enc_cmt, secret, _proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, b"payload", None, None).expect("encrypt");
+        ThresholdDealerNode::encrypt_secret(&ring_pk, b"payload", None, &ctx).expect("encrypt");
 
     let dks = DistKeyShare {
         pri_share: PriShare {

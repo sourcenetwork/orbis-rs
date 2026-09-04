@@ -231,7 +231,7 @@ fn test_frost_recover_rejects_share_outside_commitment_set() {
     )
     .unwrap();
 
-    let (_aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
     let signer = ThresholdDecafSigner::new();
     let msg = b"share outside commitment set";
 
@@ -269,7 +269,7 @@ fn test_frost_recover_rejects_share_outside_commitment_set() {
 
     // The honest {1, 2} set recovers.
     signer
-        .recover(&sig_shares, t, n, msg, &commitments)
+        .recover(&sig_shares, t, n, &aggregate_pk, msg, &commitments)
         .unwrap()
         .expect("honest FROST share set recovers");
 
@@ -279,7 +279,9 @@ fn test_frost_recover_rejects_share_outside_commitment_set() {
     foreign.i = 3;
     let tampered = vec![sig_shares[1].clone(), foreign];
     assert!(
-        signer.recover(&tampered, t, n, msg, &commitments).is_err(),
+        signer
+            .recover(&tampered, t, n, &aggregate_pk, msg, &commitments)
+            .is_err(),
         "recover must reject a share whose index is absent from all_commitments"
     );
 }
