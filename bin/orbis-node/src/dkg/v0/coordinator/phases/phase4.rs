@@ -122,6 +122,17 @@ where
         .map(|k| k.to_string())
         .unwrap_or_else(|| aggregate_pk.to_string());
 
+    // Fresh DKG and reshare produce a usable ring key. The identity is never a
+    // valid signing/PRE key: accepting it would make Decaf Schnorr signatures
+    // forgeable. Refresh is excluded because its delta polynomial intentionally
+    // has an identity constant term; the combined staged key is checked below.
+    if !matches!(kind, SessionKind::Refresh { .. }) && D::public_key_is_identity(&aggregate_pk) {
+        return Err(DkgError::Crypto(
+            "DKG produced the identity aggregate public key; aborting before persistence"
+                .to_string(),
+        ));
+    }
+
     if matches!(kind, SessionKind::Reshare { .. })
         && !public_key_matches_storage_key(&aggregate_pk, &storage_key)
     {

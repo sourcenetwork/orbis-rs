@@ -1089,12 +1089,25 @@ where
             });
         }
 
-        // 5. Recover the full signature
+        // 5. Resolve the exact public key used by this signing transcript. FROST
+        // binds this key into its per-participant binding factors; BLS ignores it
+        // during aggregation but receives the same explicit input.
+        let aggregate_pk = pub_poly.eval(0);
+        let verify_pk = if let Some(deriv) = derivation.as_deref() {
+            S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
+                SignError::Crypto(format!("Key derivation for verification failed: {}", e))
+            })?
+        } else {
+            aggregate_pk
+        };
+
+        // 6. Recover the full signature
         let signature_opt = signer
             .recover(
                 &verified_shares,
                 ring.threshold,
                 ring.total_participants,
+                &verify_pk,
                 &message,
                 &signing_commitments,
             )
@@ -1105,29 +1118,21 @@ where
         let signature = signature_opt
             .ok_or_else(|| SignError::RecoveryFailed("Recovery returned None".to_string()))?;
 
-        // 6. Verify the final recovered signature before serializing. This catches
+        // 7. Verify the final recovered signature before serializing. This catches
         // aggregation bugs before a silently bad signature reaches the caller.
-        let aggregate_pk = pub_poly.eval(0);
-        let verify_pk = if let Some(deriv) = derivation.as_deref() {
-            S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
-                SignError::Crypto(format!("Key derivation for verification failed: {}", e))
-            })?
-        } else {
-            aggregate_pk
-        };
         signer
             .verify(&verify_pk, &message, &signature)
             .map_err(|e| {
                 SignError::RecoveryFailed(format!("Final signature verification failed: {}", e))
             })?;
 
-        // 7. Serialize signature to bytes then hex
+        // 8. Serialize signature to bytes then hex
         let signature_bytes = CryptoSerialize::to_bytes(&signature).map_err(|e| {
             SignError::Serialization(format!("Failed to serialize signature: {}", e))
         })?;
         let signature_hex = hex::encode(&signature_bytes);
 
-        // 8. Create response structure
+        // 9. Create response structure
         let sign_response = SignResponse {
             signature: signature_hex,
         };

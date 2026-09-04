@@ -72,7 +72,7 @@ impl SignBenchSetup for Decaf377SignBench {
 
         // Recover the full signature
         let full_sig = signer
-            .recover(&sig_shares, t, n, MSG, &commitments)
+            .recover(&sig_shares, t, n, &aggregate_pk, MSG, &commitments)
             .unwrap()
             .unwrap();
 
