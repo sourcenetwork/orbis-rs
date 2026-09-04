@@ -144,11 +144,9 @@ pub struct StoreSecretClaims {
     pub resource: String,
     /// Permission required for the policy
     pub permission: String,
-    /// rsG - the shared point used for key derivation
-    pub shared_point: Vec<u8>,
-    /// Fiat-Shamir challenge
+    /// Fiat-Shamir challenge (Schnorr PoK of the encryption randomness)
     pub challenge: Vec<u8>,
-    /// proof response (s = k + c*r)
+    /// Proof response `z = k + c*r`
     pub response: Vec<u8>,
     /// Add a proof to the store secret call
     pub with_proof: bool,

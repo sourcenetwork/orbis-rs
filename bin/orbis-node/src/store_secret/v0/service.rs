@@ -126,7 +126,6 @@ where
                 .map_err(StoreSecretError::ProtocolError)?;
 
         let proof = EncryptionProof {
-            shared_point: req.shared_point,
             challenge: req.challenge,
             response: req.response,
         };
@@ -304,13 +303,6 @@ fn validate_store_secret_claims(
         return Err(StoreSecretError::Unauthorized(format!(
             "Token permission '{}' does not match request permission '{}'",
             token.claims.permission, req.permission
-        )));
-    }
-
-    if token.claims.shared_point != req.shared_point {
-        return Err(StoreSecretError::Unauthorized(format!(
-            "Token shared_point '{:?}' does not match request shared_point '{:?}'",
-            token.claims.shared_point, req.shared_point
         )));
     }
 

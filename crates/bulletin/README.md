@@ -16,7 +16,7 @@ Defined in [`src/trait.rs`](src/trait.rs):
 Shared **value types** (JSON serde):
 
 - **`BulletinPost`** — `id`, raw **`payload`** bytes.
-- **`DocumentPayload`** — Encrypted document + Chaum–Pedersen proof fields + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
+- **`DocumentPayload`** — Encrypted document + encryption‑proof fields (Schnorr PoK of the encryption randomness) + policy binding (`ring_id`, `policy_id`, `resource`, `permission`, optional tier/timestamp).
 - **`RingPayload`** — Ring metadata: `ring_pk`, `peer_node_keys`, `threshold`, optional `pss_interval`, optional **`new_peer_node_keys`** / **`new_threshold`** for reshare coordination, and **`block_number_nonce`** used as anti-replay input to the reshare finalization sign doc.
 - **`RingFinalizationPayload`** — Fresh DKG finalization confirmation: `ring_id` and aggregate `ring_pk`.
 - **`KeyDerivation`** — Bulletin entry for signing/PRE derivation: `ring_id`, `derivation`, policy fields.

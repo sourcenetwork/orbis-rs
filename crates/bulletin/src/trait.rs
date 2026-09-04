@@ -134,9 +134,10 @@ pub struct BulletinPost {
 pub struct DocumentPayload {
     /// Id of the Ring to find other information about the ring
     pub ring_id: String,
-    /// Encrypted document
+    /// Encrypted document (JSON of the crypto `Secret`: enc_cmt, ciphertext, nonce)
     pub document: String,
-    /// Chaum-Pedersen NIZK proof of correct encryption (binds policy info to encryption)
+    /// Encryption proof: a Schnorr PoK of the encryption randomness, bound to the
+    /// policy/ring context and the ciphertext. JSON of `EncryptionProof`.
     pub proof: String,
     /// Id of the policy associated with document
     pub policy_id: String,

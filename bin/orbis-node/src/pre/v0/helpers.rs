@@ -10,6 +10,7 @@ use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
@@ -28,15 +29,18 @@ async fn fetch_document_payload(
         .map_err(|e| PreError::Deserialization(format!("Failed to parse document payload: {}", e)))
 }
 
-/// Confirms a caller-supplied document is genuinely the one `object_id` refers to.
+/// Recomputes the deterministic document ID from `document`'s fields and checks it equals
+/// `object_id`.
 ///
-/// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same
-/// deterministic ID Vera assigns when a document is posted to the bulletin
-/// (`crates/bulletin/src/vera/mod.rs`). Recomputing and comparing it here means a document
-/// supplied directly on the wire (never posted to the bulletin) is just as tightly bound to
-/// `object_id` as one read back from chain — a caller cannot pair an `object_id` they're
-/// authorized for with a different document's ciphertext/proof without this failing.
-pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) -> Result<()> {
+/// `object_id` is `generate_document_id` over every field of `DocumentPayload` — the same ID
+/// Vera assigns when a document is posted to the bulletin (`crates/bulletin/src/vera/mod.rs`) and
+/// the identity a PRE request is authorized against under ACP. Binding it back to the concrete
+/// ciphertext/proof means a caller cannot pair an `object_id` they hold access to with a
+/// different document's contents. Applied to both document sources: an inline document supplied
+/// on the wire, and one read back from the bulletin (where a match is expected, but recomputing
+/// it in-process fails PRE closed rather than re-encrypting to the wrong identity if the on-chain
+/// and in-process canonicalizations ever diverge).
+fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
     let expected = generate_document_id(
         &document.ring_id,
         &document.document,
@@ -46,7 +50,8 @@ pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) 
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
-    );
+    )
+    .map_err(|e| PreError::InvalidInput(format!("malformed document: {e}")))?;
 
     if expected != object_id {
         return Err(PreError::Unauthorized(format!(
@@ -59,11 +64,14 @@ pub fn validate_inline_document_id(object_id: &str, document: &DocumentPayload) 
 }
 
 /// Resolves the document and ring payloads for a PRE request, either from a caller-supplied
-/// `DocumentPayload` (validated against `object_id` via [`validate_inline_document_id`]) or, when
-/// none is supplied, by reading the document from the bulletin by `object_id`.
+/// `DocumentPayload` or, when none is supplied, by reading the document from the bulletin by
+/// `object_id`.
 ///
-/// `ring_payload` is always read live from the bulletin regardless of the document's source —
-/// ring membership/threshold and the live ACP check are not made caller-suppliable.
+/// Order matters: the ring is read (and its protocol version gated for this route) *before* the
+/// document is bound to `object_id`, so a request for a ring that has moved to another protocol
+/// version is refused with a version error rather than a document-shape error. `ring_payload` is
+/// always read live from the bulletin regardless of the document's source — ring
+/// membership/threshold and the live ACP check are not made caller-suppliable.
 pub async fn resolve_document_and_ring_payloads(
     bulletin: &(dyn Bulletin + Send + Sync),
     object_id: &str,
@@ -71,16 +79,15 @@ pub async fn resolve_document_and_ring_payloads(
     inline_document: Option<DocumentPayload>,
 ) -> Result<(DocumentPayload, RingPayload)> {
     let document_payload = match inline_document {
-        Some(document) => {
-            validate_inline_document_id(object_id, &document)?;
-            document
-        }
+        Some(document) => document,
         None => fetch_document_payload(bulletin, object_id).await?,
     };
 
     let ring_payload = read_ring_for_route(bulletin, &document_payload.ring_id, protocol_version)
         .await
         .map_err(PreError::ProtocolError)?;
+
+    check_document_id_binding(object_id, &document_payload)?;
 
     Ok((document_payload, ring_payload))
 }
@@ -138,35 +145,41 @@ pub fn deserialize_secret(document_json: &str) -> Result<Secret> {
         .map_err(|e| PreError::Deserialization(format!("Failed to deserialize secret: {}", e)))
 }
 
-/// Verifies that the encryption proof binds the ciphertext to the correct public key and policy.
-///
-/// Derives the actual public key (applying derivation if present), deserializes the
-/// encryption proof and commitment, then verifies via `ThresholdDealerNode::verify_encryption`.
-pub fn verify_encryption_binding(
-    ring_pk: &G1Affine,
-    derivation: Option<&[u8]>,
-    proof_str: String,
-    enc_cmt_bytes: &[u8],
-    policy_metadata: &[u8],
-) -> Result<()> {
-    let actual_pk = if let Some(derivation) = derivation {
-        ThresholdDealerNode::derive_public_key(ring_pk, derivation)
-            .map_err(|e| PreError::Crypto(format!("derive_public_key error: {}", e)))?
-    } else {
-        *ring_pk
-    };
+/// Rebuilds the [`CiphertextContext`] that the encryptor bound into the
+/// encryption proof: the ring key, the policy fields from the resolved on-chain
+/// (or inline, id-checked) document, and the reader-supplied `salt`.
+pub fn build_ciphertext_context(
+    ring_pk_hex: &str,
+    document: &DocumentPayload,
+    salt: Option<&str>,
+) -> Result<CiphertextContext> {
+    let ring_pk = hex::decode(ring_pk_hex)
+        .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+    Ok(CiphertextContext {
+        ring_pk,
+        policy_id: document.policy_id.clone(),
+        resource: document.resource.clone(),
+        permission: document.permission.clone(),
+        tier: document.tier.clone(),
+        timestamp: document.timestamp,
+        salt: salt.map(str::to_string),
+    })
+}
 
+/// Verifies that the stored encryption proof binds the ciphertext (`secret`) to
+/// `context` — the exact `(ring_pk, policy fields, salt)` tuple and the exact
+/// `(nonce, ciphertext)`. A tamper in any of those fails here.
+pub fn verify_encryption_binding(
+    context: &CiphertextContext,
+    secret: &Secret,
+    proof_str: String,
+) -> Result<()> {
     let proof: EncryptionProof = EncryptionProof::try_from(proof_str).map_err(|e| {
         PreError::Deserialization(format!("Failed to deserialize encryption proof: {}", e))
     })?;
 
-    let enc_cmt = G1Affine::from_bytes(enc_cmt_bytes)
-        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e)))?;
-
-    ThresholdDealerNode::verify_encryption(&actual_pk, &enc_cmt, &proof, Some(policy_metadata))
-        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))?;
-
-    Ok(())
+    ThresholdDealerNode::verify_encryption(&proof, context, secret)
+        .map_err(|e| PreError::Crypto(format!("Policy binding verification failed: {}", e)))
 }
 
 /// Validates JWT claims against the PRE request parameters.
@@ -243,11 +256,23 @@ pub async fn store_response(
 mod tests {
     use super::*;
 
+    /// A well-formed encrypted-`Secret` JSON; `tag` varies the ciphertext bytes.
+    fn secret_json(tag: u8) -> String {
+        format!(
+            r#"{{"enc_cmt":[1,2,3],"encrypted_data":[{tag},{tag},{tag}],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}}"#
+        )
+    }
+
+    /// A well-formed `EncryptionProof` JSON; `tag` varies the scalar bytes.
+    fn proof_json(tag: u8) -> String {
+        format!(r#"{{"challenge":[{tag}],"response":[{tag}]}}"#)
+    }
+
     fn document_b() -> DocumentPayload {
         DocumentPayload {
             ring_id: "ring-1".to_string(),
-            document: "b-ciphertext".to_string(),
-            proof: "b-proof".to_string(),
+            document: secret_json(11),
+            proof: proof_json(22),
             policy_id: "policy-b".to_string(),
             resource: "document".to_string(),
             permission: "read".to_string(),
@@ -267,17 +292,18 @@ mod tests {
             document.tier.as_deref(),
             document.timestamp,
         )
+        .expect("well-formed test document")
     }
 
     #[test]
-    fn validate_inline_document_id_accepts_matching_document() {
+    fn check_document_id_binding_accepts_matching_document() {
         let document = document_b();
         let object_id = object_id_for(&document);
-        assert!(validate_inline_document_id(&object_id, &document).is_ok());
+        assert!(check_document_id_binding(&object_id, &document).is_ok());
     }
 
     #[test]
-    fn validate_inline_document_id_rejects_tampered_fields() {
+    fn check_document_id_binding_rejects_tampered_fields() {
         let object_id = object_id_for(&document_b());
 
         let mutations: Vec<(&str, Box<dyn Fn(&mut DocumentPayload)>)> = vec![
@@ -287,11 +313,11 @@ mod tests {
             ),
             (
                 "document",
-                Box::new(|d: &mut DocumentPayload| d.document = "tampered".to_string()),
+                Box::new(|d: &mut DocumentPayload| d.document = secret_json(99)),
             ),
             (
                 "proof",
-                Box::new(|d: &mut DocumentPayload| d.proof = "tampered".to_string()),
+                Box::new(|d: &mut DocumentPayload| d.proof = proof_json(99)),
             ),
             (
                 "policy_id",
@@ -320,7 +346,7 @@ mod tests {
             mutate(&mut tampered);
             assert!(
                 matches!(
-                    validate_inline_document_id(&object_id, &tampered),
+                    check_document_id_binding(&object_id, &tampered),
                     Err(PreError::Unauthorized(_))
                 ),
                 "tampering '{field}' should have been rejected"
@@ -334,13 +360,13 @@ mod tests {
     /// `object_id` commits to every field of the document (including the ciphertext and proof),
     /// so C's fields can never hash to B's object_id.
     #[test]
-    fn validate_inline_document_id_rejects_a_different_honest_document_under_the_wrong_object_id() {
+    fn check_document_id_binding_rejects_a_different_honest_document_under_the_wrong_object_id() {
         let object_id_b = object_id_for(&document_b());
 
         let document_c = DocumentPayload {
             ring_id: "ring-1".to_string(),
-            document: "c-ciphertext".to_string(),
-            proof: "c-proof".to_string(),
+            document: secret_json(33),
+            proof: proof_json(44),
             policy_id: "policy-b".to_string(),
             resource: "document".to_string(),
             permission: "read".to_string(),
@@ -348,10 +374,10 @@ mod tests {
             timestamp: Some(1_700_000_000),
         };
         // document_c is itself internally valid for its own object_id...
-        assert!(validate_inline_document_id(&object_id_for(&document_c), &document_c).is_ok());
+        assert!(check_document_id_binding(&object_id_for(&document_c), &document_c).is_ok());
         // ...but cannot be smuggled in under B's object_id.
         assert!(matches!(
-            validate_inline_document_id(&object_id_b, &document_c),
+            check_document_id_binding(&object_id_b, &document_c),
             Err(PreError::Unauthorized(_))
         ));
     }

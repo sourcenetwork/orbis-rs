@@ -44,6 +44,23 @@ fn test_all_pre() {
     .unwrap();
 }
 
+/// The published proof and secret must not carry anything from which the AES key
+/// can be derived, so a party with only the bulletin data cannot decrypt.
+#[test]
+fn test_public_encryption_artifacts_cannot_decrypt() {
+    crate::pre_tests::test_public_encryption_artifacts_cannot_decrypt::<
+        ThresholdDealerNode,
+        _,
+        _,
+        _,
+    >(|| {
+        let sk = Fr::rand(&mut OsRng);
+        let pk = G1Projective::generator() * sk;
+        (sk, pk.into())
+    })
+    .unwrap();
+}
+
 // ============================================================================
 // Impl-specific tests
 // ============================================================================

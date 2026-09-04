@@ -3,8 +3,8 @@ use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFE
 use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
-    check_policy_access, decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads,
-    validate_pre_claims, verify_encryption_binding,
+    build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
+    resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
 use crate::reporting::v0::types::{
@@ -159,15 +159,12 @@ where
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator
         // may not be in the ring (external requesters use node_id=0).
 
-        // Generate policy metadata for proof binding verification (before fields are moved)
-        let policy_metadata = T::encode_metadata(
-            &document_payload.policy_id,
-            &document_payload.resource,
-            &document_payload.permission,
-            document_payload.tier.as_deref(),
-            document_payload.timestamp,
+        // Rebuild the context the encryptor bound into the proof (before fields are moved).
+        let ciphertext_context = build_ciphertext_context(
+            &ring_payload.ring_pk,
+            &document_payload,
             ctx.salt.as_deref(),
-        );
+        )?;
 
         if let Err(error) = check_policy_access(
             &*self.app_state.authz,
@@ -251,13 +248,7 @@ where
         // 7. Perform reencryption
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
-        verify_encryption_binding(
-            &ring_pk,
-            ctx.derivation.as_deref(),
-            document_payload.proof,
-            &secret.enc_cmt,
-            &policy_metadata,
-        )?;
+        verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof)?;
         let reply = dealer
             .reencrypt(&dist_key_share, &secret, &rdr_pk, ctx.derivation.as_deref())
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;

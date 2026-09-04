@@ -248,9 +248,8 @@ impl JwtSigner {
     /// * `policy_id` - Policy ID for access control
     /// * `resource` - Resource type for the policy
     /// * `permission` - Permission required for the policy
-    /// * `shared_point`- rsG - the shared point used for key derivation
-    /// * `challenge` - c - Fiat-Shamir challenge
-    /// * `response` - s - proof response (s = k + c*r)
+    /// * `challenge` - c - Fiat-Shamir challenge (Schnorr PoK)
+    /// * `response` - z - proof response (z = k + c*r)
     /// * `with_proof` - If a proof should be returned
     /// * `tier` - Optional tier for policy
     /// * `timestamp` - Optional timestamp for policy
@@ -265,7 +264,6 @@ impl JwtSigner {
         policy_id: &str,
         resource: &str,
         permission: &str,
-        shared_point: Vec<u8>,
         challenge: Vec<u8>,
         response: Vec<u8>,
         with_proof: bool,
@@ -279,7 +277,6 @@ impl JwtSigner {
             policy_id: policy_id.to_string(),
             resource: resource.to_string(),
             permission: permission.to_string(),
-            shared_point,
             challenge,
             response,
             with_proof,
@@ -407,7 +404,6 @@ mod tests {
             "policy_id",
             "resource",
             "permission",
-            b"shared_point".to_vec(),
             b"challenge".to_vec(),
             b"response".to_vec(),
             false,

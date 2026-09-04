@@ -69,7 +69,7 @@ impl Bulletin for VeraBulletin {
                         check_result(result, "store document")?;
                         Ok(document_id)
                     }
-                    Err(e) if is_already_exists_error(&e) => Ok(generate_document_id(
+                    Err(e) if is_already_exists_error(&e) => generate_document_id(
                         &doc.ring_id,
                         &doc.document,
                         &doc.proof,
@@ -78,7 +78,8 @@ impl Bulletin for VeraBulletin {
                         &doc.permission,
                         doc.tier.as_deref(),
                         doc.timestamp,
-                    )),
+                    )
+                    .map_err(|e| BulletinError::ParseError(e.to_string())),
                     Err(e) => Err(BulletinError::ChainError(e.to_string())),
                 }
             }

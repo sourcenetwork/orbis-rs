@@ -571,10 +571,16 @@ async fn relayed_request_refutation_rejects_authorized_request() {
     crate::helpers::test_helpers::cleanup_db(&db_path);
 }
 
+/// A well-formed encrypted-`Secret` JSON for inline-document test evidence.
+const TEST_SECRET_JSON: &str =
+    r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#;
+/// A well-formed `EncryptionProof` JSON for inline-document test evidence.
+const TEST_PROOF_JSON: &str = r#"{"challenge":[7,8],"response":[9,10]}"#;
+
 fn matching_document_evidence() -> ReportedDocumentEvidence {
     ReportedDocumentEvidence {
-        document: "{}".to_string(),
-        proof: String::new(),
+        document: TEST_SECRET_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "policy".to_string(),
         resource: "document".to_string(),
         permission: "read".to_string(),
@@ -614,7 +620,8 @@ async fn relayed_request_refutation_accepts_matching_inline_document() {
         &evidence.permission,
         evidence.tier.as_deref(),
         statement.timestamp,
-    );
+    )
+    .expect("generate object_id");
     statement.document_inline = true;
 
     // DummyAuthZ always authorizes, so this must still hit the "authorized" refutation —
@@ -711,8 +718,8 @@ async fn pre_proof_refutation_rejects_mismatched_inline_document() {
     let base_context = validation_context(&app_state, 10);
     let context = ReportValidationContext {
         inline_document: Some(ReportedDocumentEvidence {
-            document: "{}".to_string(),
-            proof: String::new(),
+            document: TEST_SECRET_JSON.to_string(),
+            proof: TEST_PROOF_JSON.to_string(),
             policy_id: "policy".to_string(),
             resource: "document".to_string(),
             permission: "read".to_string(),
@@ -770,11 +777,10 @@ async fn pre_proof_refutation_accepts_matching_inline_document() {
     let base_context = validation_context(&app_state, 10);
 
     let evidence = ReportedDocumentEvidence {
-        // A well-formed `Secret` JSON so `deserialize_secret` succeeds and execution reaches
-        // the crypto-input decode below.
-        document: r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#
-            .to_string(),
-        proof: String::new(),
+        // Well-formed `Secret` + `EncryptionProof` JSON so the object-id recompute and
+        // `deserialize_secret` succeed and execution reaches the crypto-input decode below.
+        document: TEST_SECRET_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "policy".to_string(),
         resource: "document".to_string(),
         permission: "read".to_string(),
@@ -795,7 +801,8 @@ async fn pre_proof_refutation_accepts_matching_inline_document() {
         &evidence.permission,
         evidence.tier.as_deref(),
         timestamp,
-    );
+    )
+    .expect("generate object_id");
 
     let statement = PreReencryptResponseStatement {
         domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),

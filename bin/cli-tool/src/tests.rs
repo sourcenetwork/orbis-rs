@@ -210,7 +210,9 @@ fn prepare_secret_roundtrips_through_json() {
         round_tripped.encrypted_document
     );
     assert_eq!(prepared.enc_cmt, round_tripped.enc_cmt);
-    assert_eq!(prepared.metadata, round_tripped.metadata);
+    assert_eq!(prepared.challenge, round_tripped.challenge);
+    assert_eq!(prepared.response, round_tripped.response);
+    assert_eq!(prepared.context, round_tripped.context);
 }
 
 #[test]

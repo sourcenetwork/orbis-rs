@@ -18,17 +18,35 @@ mod verification;
 pub(crate) use initiator::PreReportBinding;
 
 use crate::app_state::AppState;
+use crypto::context::CiphertextContext;
 use crypto::r#trait::{Dkg, Secret, ThresholdDealer};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Response structure containing reencrypted commitment and original secret
+/// Internal coordinator output: the recovered reencrypted commitment plus the
+/// original secret. The requesting node's service layer wraps this into a
+/// [`PreReencryptResponse`] before returning it to the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreResponse {
     /// Recovered reencrypted commitment (xnc_cmt) as hex string
     pub xnc_cmt: String,
-    /// Original encrypted secret (for Bob to decrypt) as JSON
+    /// Original encrypted secret (for the reader to decrypt) as JSON
     pub secret: Secret,
+}
+
+/// The `start_pre` wire payload (JSON inside `StartPreResponse.encrypted_secret`).
+///
+/// Carries the ciphertext-binding [`CiphertextContext`] the requesting node
+/// verified the encryption proof against, so the reader rebuilds the AES-GCM AAD
+/// for `decrypt_secret` without a bulletin read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PreReencryptResponse {
+    /// Recovered reencrypted commitment (xnc_cmt) as hex string
+    pub xnc_cmt: String,
+    /// Original encrypted secret (for the reader to decrypt) as JSON
+    pub secret: Secret,
+    /// Context the encryption proof was bound to.
+    pub context: CiphertextContext,
 }
 
 /// PRE Coordinator

@@ -2,6 +2,7 @@
 //!
 //! This module defines the core cryptography abstractions that can be implemented
 //! by various Curves.
+use crate::context::CiphertextContext;
 use crate::error::{CryptoError, Result};
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -126,20 +127,20 @@ pub struct Secret {
     pub nonce: Vec<u8>,          // AES-GCM nonce (12 bytes)
 }
 
-/// Chaum-Pedersen NIZK proof that encryption was performed correctly.
-/// Proves that enc_cmt = rG and shared_point = r*effective_pk use the same randomness r.
+/// Schnorr proof of knowledge of the encryption randomness `r` for `U = r*G`,
+/// with the [`CiphertextContext`] digest and the ciphertext digest bound into
+/// the Fiat-Shamir challenge.
 ///
-/// When capability derivation is used:
-///   effective_pk = d * dkg_pk  (where d = H(DERIVATION_DOMAIN || derivation))
-/// Otherwise:
-///   effective_pk = dkg_pk
+/// This proves the encryptor knew `r` and commits them to exactly one
+/// `(ring_pk, policy fields, salt)` context and one `(nonce, ciphertext)` pair.
+/// It intentionally does **not** prove the KEM was performed against the ring
+/// key (a malformed document simply fails to decrypt via the threshold flow),
+/// and it never carries the KEM shared secret.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EncryptionProof {
-    /// The shared point used for key derivation: r * effective_pk
-    pub shared_point: Vec<u8>,
-    /// Fiat-Shamir challenge
+    /// Fiat-Shamir challenge scalar, serialized.
     pub challenge: Vec<u8>,
-    /// Proof response (s = k + c*r)
+    /// Proof response `z = k + c*r`, serialized.
     pub response: Vec<u8>,
 }
 
@@ -753,28 +754,35 @@ pub trait ThresholdDealer {
     ///   derivation    - Optional capability derivation bytes. When provided,
     ///                   a scalar d = H(derivation) is derived and applied
     ///                   multiplicatively: derived_pk = d * dkg_pk.
-    ///                   The shared_point becomes r * derived_pk = r*d*s*G.
-    ///   metadata  - Metadata Added to Chaum-Pedersen NIZK proof of correct encryption
-    ///
+    ///                   The KEM shared point becomes r * derived_pk = r*d*s*G
+    ///                   (never serialized — only the AES key is derived from it).
+    ///   context   - Policy/ring inputs bound to the ciphertext and the proof.
+    ///               `context.enc_cmt` is not a field; the fresh `U` is folded in
+    ///               internally.
     ///
     /// Output:
-    ///   enc_cmt  - Schnorr commit (rG)
-    ///   secret   - Encrypted data with capability binding
-    ///   proof    - Chaum-Pedersen NIZK proof of correct encryption
+    ///   enc_cmt  - Schnorr commit (rG), i.e. `U`
+    ///   secret   - Encrypted data (AAD = context_digest(context, U))
+    ///   proof    - Schnorr PoK of `r` bound to context_digest and ciphertext_digest
     fn encrypt_secret(
         dkg_pk: &Self::PublicKey,
         data: &[u8],
         derivation: Option<&[u8]>,
-        metadata: Option<&[u8]>,
+        context: &CiphertextContext,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)>;
 
-    /// Verify that a secret was correctly encrypted to the given effective public key.
-    /// Uses Chaum-Pedersen NIZK proof to verify enc_cmt and shared_point use same randomness.
+    /// Verify the encryption proof against a rebuilt [`CiphertextContext`] and the
+    /// stored [`Secret`].
+    ///
+    /// Checks knowledge of `r` for `U = secret.enc_cmt` and that the same
+    /// `context_digest(context, secret.enc_cmt)` and
+    /// `ciphertext_digest(secret.nonce, secret.encrypted_data)` were bound at
+    /// encryption time. Any mismatch in a context field, the commitment, the
+    /// nonce, or the ciphertext fails verification.
     fn verify_encryption(
-        effective_pk: &Self::PublicKey,
-        enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
-        metadata: Option<&[u8]>,
+        context: &CiphertextContext,
+        secret: &Self::Secret,
     ) -> Result<()>;
 
     /// Decrypt a secret using the reader's secret key.
@@ -787,6 +795,8 @@ pub trait ThresholdDealer {
     ///                        or (x+r)*sG (without derivation).
     ///   rdr_sk  (x)        - Secret key of the reader.
     ///   secret             - The encrypted secret.
+    ///   context            - The same context bound at encryption time; rebuilds
+    ///                        the AES-GCM AAD. A wrong context fails the GCM open.
     ///
     /// Output:
     ///   Decrypted data.
@@ -794,12 +804,13 @@ pub trait ThresholdDealer {
     /// Note: When derivation was used during encryption/re-encryption:
     ///   - xnc_cmt = d * (x+r) * sG
     ///   - effective_pk = d * sG
-    ///   - shared_point = xnc_cmt - x * effective_pk = d*r*sG
+    ///   - recovered KEM point = xnc_cmt - x * effective_pk = d*r*sG
     fn decrypt_secret(
         effective_pk: &Self::PublicKey,
         xnc_cmt: &Self::PublicKey,
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
+        context: &CiphertextContext,
     ) -> Result<Vec<u8>>;
 
     /// Derive the effective public key from the DKG public key and derivation bytes.
@@ -821,24 +832,6 @@ pub trait ThresholdDealer {
     /// that decrypts the ciphertext. Exposed on the trait so generic tests can
     /// verify determinism and point-distinctness without curve-specific imports.
     fn derive_key_from_point(point: &Self::PublicKey) -> Result<[u8; 32]>;
-
-    /// Encode policy metadata fields into a 32-byte commitment for proof binding.
-    ///
-    /// Both the encrypter and the PRE verification nodes must call this function
-    /// with the same inputs to produce a consistent metadata commitment to pass
-    /// to `encrypt_secret` and `verify_encryption`.
-    ///
-    /// For decaf377 implementations, the output is the LE serialization of a
-    /// Poseidon377 Fq hash, enabling efficient in-circuit verification of the
-    /// raw policy fields without SHA256. For bls12-381, SHA256 is used.
-    fn encode_metadata(
-        policy_id: &str,
-        resource: &str,
-        permission: &str,
-        tier: Option<&str>,
-        timestamp: Option<u64>,
-        salt: Option<&str>,
-    ) -> Vec<u8>;
 }
 
 pub trait ThresholdSigner {
