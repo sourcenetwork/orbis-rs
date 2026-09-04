@@ -212,3 +212,74 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
         "Signer 1's commitment wasn't tampered — they sign (though R is wrong)"
     );
 }
+
+#[test]
+fn test_frost_recover_rejects_share_outside_commitment_set() {
+    // FROST's group commitment R is fixed by `all_commitments`. A partial
+    // signature whose index has no entry in that set contributes a `z_i` with no
+    // matching `D_i + rho_i·E_i` in R, so `recover` must reject it rather than
+    // fold it into a silently invalid aggregate.
+    let n = 3;
+    let t = 2;
+
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+
+    let (_aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdDecafSigner::new();
+    let msg = b"share outside commitment set";
+
+    // Signers 1 and 2 run a complete FROST round.
+    let participants: Vec<_> = secret_shares.iter().take(t).collect();
+    let mut commitments = Vec::new();
+    let mut signing_states = Vec::new();
+    for share in &participants {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        let (c, s) = signer.generate_nonces(&dks).unwrap();
+        commitments.push((share.i, c));
+        signing_states.push(s);
+    }
+    let mut sig_shares = Vec::new();
+    for (idx, share) in participants.iter().enumerate() {
+        let dks = DistKeyShare {
+            pri_share: (*share).clone(),
+        };
+        sig_shares.push(
+            signer
+                .sign(
+                    &dks,
+                    msg,
+                    &pub_poly,
+                    Some(&signing_states[idx]),
+                    &commitments,
+                    None,
+                    None,
+                )
+                .unwrap(),
+        );
+    }
+
+    // The honest {1, 2} set recovers.
+    signer
+        .recover(&sig_shares, t, n, msg, &commitments)
+        .unwrap()
+        .expect("honest FROST share set recovers");
+
+    // Re-label signer 1's partial signature as node 3 — a valid ring index, but
+    // one with no commitment in this signing set.
+    let mut foreign = sig_shares[0].clone();
+    foreign.i = 3;
+    let tampered = vec![sig_shares[1].clone(), foreign];
+    assert!(
+        signer.recover(&tampered, t, n, msg, &commitments).is_err(),
+        "recover must reject a share whose index is absent from all_commitments"
+    );
+}

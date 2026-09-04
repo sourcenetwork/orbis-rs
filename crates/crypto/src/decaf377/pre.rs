@@ -449,7 +449,10 @@ impl ThresholdDealerNode {
         enc_cmt: &Element,
         derivation_scalar: Option<Fr>,
     ) -> Result<(Element, Fr, Fr)> {
-        // Validate inputs are not identity points
+        // Validate inputs are not identity points. decaf377 is a prime-order
+        // group, so every non-identity `Element` is already a valid subgroup
+        // member — there is no cofactor / small-subgroup check to add here, the
+        // way BLS12-381 G1's `reencrypt_internal` needs one for `rdr_pk`.
         if *rdr_pk == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid reader public key: cannot be zero point".to_string(),

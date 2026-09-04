@@ -24,6 +24,7 @@ use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashSet;
 use zeroize::Zeroize;
 
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
@@ -548,6 +549,28 @@ impl ThresholdSigner for ThresholdDecafSigner {
             return Err(CryptoError::InvalidSignature);
         }
         if shares.len() < t {
+            return Ok(None);
+        }
+
+        // The FROST group commitment R is computed over exactly `all_commitments`,
+        // so the aggregate `z` must be the sum of one partial signature per
+        // participant in that set — no repeats, and nothing from a participant
+        // with no matching commitment. Enforce that here instead of trusting the
+        // caller to have deduplicated: a repeated index double-counts its `z_i`,
+        // and a stray index adds a `z_i` term with no matching `D_i + rho_i·E_i`
+        // in R; either way `recover` would silently return a signature that
+        // fails verification.
+        let participant_ids: HashSet<u32> = all_commitments.iter().map(|(id, _)| *id).collect();
+        let mut seen: HashSet<u32> = HashSet::with_capacity(shares.len());
+        for share in shares {
+            if !participant_ids.contains(&share.i) {
+                return Err(CryptoError::InvalidSignatureShare);
+            }
+            if !seen.insert(share.i) {
+                return Err(CryptoError::InvalidSignatureShare);
+            }
+        }
+        if seen.len() < t {
             return Ok(None);
         }
 

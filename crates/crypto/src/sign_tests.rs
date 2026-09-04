@@ -58,6 +58,7 @@ where
     test_single_key_threshold_1(&signer, run_dkg.clone())?;
     test_different_subsets_valid(&signer, run_dkg.clone())?;
     test_insufficient_shares(&signer, run_dkg.clone())?;
+    test_recover_rejects_duplicate_share_index(&signer, run_dkg.clone())?;
     test_tampered_share_rejected(&signer, run_dkg.clone(), tamper_sig_share.clone())?;
 
     // Derivation tests
@@ -468,6 +469,54 @@ where
         result.is_none(),
         "should return None with insufficient shares"
     );
+
+    Ok(())
+}
+
+/// `recover` must not treat a duplicated share as an extra signer. Feeding it
+/// the same partial signature twice would double-count that signer's
+/// contribution (FROST) or trip the Lagrange basis (BLS), so both schemes
+/// reject a repeated share index rather than emit a silently invalid signature.
+pub fn test_recover_rejects_duplicate_share_index<T, SV, PK, PP, RD>(
+    signer: &T,
+    run_dkg: RD,
+) -> Result<()>
+where
+    T: ThresholdSigner<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        DistKeyShare = DistKeyShare<SV>,
+    >,
+    T::SigShare: Clone,
+    T::NonceCommitment: Clone,
+    SV: Clone + zeroize::Zeroize,
+    PK: Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)>,
+{
+    let n = 3;
+    let t = 2;
+    let (_agg_pk, shares, pub_poly) = run_dkg(n, t)?;
+
+    let msg = b"duplicate share index test";
+    let participants: Vec<_> = shares.iter().take(t).collect();
+    let (sig_shares, commitments) =
+        run_sign_round(signer, &participants, &pub_poly, msg, None, None)?;
+
+    // Threshold-many shares by count, but the first signer's share appears twice
+    // and the second signer's is dropped.
+    let duplicated = vec![sig_shares[0].clone(), sig_shares[0].clone()];
+    let result = signer.recover(&duplicated, t, n, msg, &commitments);
+    assert!(
+        result.is_err(),
+        "recover must reject a repeated share index instead of returning a signature"
+    );
+
+    // Control: the honest, distinct share set still recovers.
+    signer
+        .recover(&sig_shares, t, n, msg, &commitments)?
+        .expect("distinct shares still recover");
 
     Ok(())
 }
