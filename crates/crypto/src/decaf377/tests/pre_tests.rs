@@ -73,7 +73,6 @@ fn test_threshold_dealer_creation() {
     assert_eq!(ThresholdDealerNode::name(), "elgamal/decaf377");
 }
 
-
 /// — decaf377's `reencrypt_internal` uses the identical linear
 /// `effective_ski * (rdr_pk + enc_cmt)` structure with no proof of knowledge of
 /// `rdr_pk`'s discrete log, so the forged-reader-key attack applied here too
