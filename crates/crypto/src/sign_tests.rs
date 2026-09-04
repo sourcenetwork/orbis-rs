@@ -497,7 +497,7 @@ where
 {
     let n = 3;
     let t = 2;
-    let (_agg_pk, shares, pub_poly) = run_dkg(n, t)?;
+    let (agg_pk, shares, pub_poly) = run_dkg(n, t)?;
 
     let msg = b"duplicate share index test";
     let participants: Vec<_> = shares.iter().take(t).collect();
@@ -507,7 +507,7 @@ where
     // Threshold-many shares by count, but the first signer's share appears twice
     // and the second signer's is dropped.
     let duplicated = vec![sig_shares[0].clone(), sig_shares[0].clone()];
-    let result = signer.recover(&duplicated, t, n, msg, &commitments);
+    let result = signer.recover(&duplicated, t, n, &agg_pk, msg, &commitments);
     assert!(
         result.is_err(),
         "recover must reject a repeated share index instead of returning a signature"
@@ -515,7 +515,7 @@ where
 
     // Control: the honest, distinct share set still recovers.
     signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &agg_pk, msg, &commitments)?
         .expect("distinct shares still recover");
 
     Ok(())
