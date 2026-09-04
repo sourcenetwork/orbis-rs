@@ -434,6 +434,7 @@ pub struct PreFixture {
 struct PreResponse {
     xnc_cmt: String,
     secret: Secret,
+    context: crypto::context::CiphertextContext,
 }
 
 #[derive(Clone, Debug)]
@@ -488,6 +489,7 @@ pub async fn pre_call(
         &xnc_cmt,
         &fixture.reader_sk,
         &response.secret,
+        &response.context,
     )?;
     let decrypt_ms = decrypt_started.elapsed().as_secs_f64() * 1000.0;
     if plaintext != fixture.expected_plaintext {

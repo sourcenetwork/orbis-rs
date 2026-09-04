@@ -490,6 +490,10 @@ impl Dkg for DKGNode {
         Ok(aggregate_pk.into())
     }
 
+    fn public_key_is_identity(public_key: &Self::PublicKey) -> bool {
+        *public_key == G1Affine::identity()
+    }
+
     fn get_complaints(&self) -> &HashMap<u32, Vec<u32>> {
         &self.complaints
     }

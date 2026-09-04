@@ -318,8 +318,22 @@ mod tests {
         )
         .unwrap();
         let (aggregate_pk, shares, pub_poly) = coordinator.run_dkg().unwrap();
-        let (_, encrypted_secret, _) =
-            PreImpl::encrypt_secret(&aggregate_pk, b"verifier report fixture", None, None).unwrap();
+        let fixture_ctx = crypto::context::CiphertextContext {
+            ring_pk: Vec::new(),
+            policy_id: "p".to_string(),
+            resource: "r".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+            timestamp: None,
+            salt: None,
+        };
+        let (_, encrypted_secret, _) = PreImpl::encrypt_secret(
+            &aggregate_pk,
+            b"verifier report fixture",
+            None,
+            &fixture_ctx,
+        )
+        .unwrap();
         let enc_cmt = <DkgImpl as Dkg>::PublicKey::from_bytes(&encrypted_secret.enc_cmt).unwrap();
         let (_, rdr_pk) = PreImpl::generate_keypair();
         let responder_share = shares

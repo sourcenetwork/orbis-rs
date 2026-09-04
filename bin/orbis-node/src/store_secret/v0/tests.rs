@@ -29,7 +29,6 @@ const TEST_RING_ID: &str = "test-ring";
 const TEST_POLICY_ID: &str = "test-policy";
 const TEST_RESOURCE: &str = "test-resource";
 const TEST_PERMISSION: &str = "test-permission";
-const TEST_SHARED_POINT: &str = "test-shared-point";
 const TEST_CHALLENGE: &str = "test-challenge";
 const TEST_RESPONSE: &str = "test-response";
 
@@ -99,7 +98,6 @@ fn create_dummy_request() -> StoreSecretRequest {
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
-        shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
         with_proof: false,
@@ -118,7 +116,6 @@ fn create_test_jwt(test_keys: &TestKeyPair) -> String {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
-            TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
             false,
@@ -210,7 +207,6 @@ async fn test_store_secret_rejects_delegated_actor() {
                 policy_id: request.policy_id.clone(),
                 resource: request.resource.clone(),
                 permission: request.permission.clone(),
-                shared_point: request.shared_point.clone(),
                 challenge: request.challenge.clone(),
                 response: request.response.clone(),
                 with_proof: request.with_proof,
@@ -249,7 +245,6 @@ async fn test_store_secret_fails_claims_mismatch() {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
-            TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
             false,
@@ -306,7 +301,6 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
             TEST_POLICY_ID,
             TEST_RESOURCE,
             TEST_PERMISSION,
-            TEST_SHARED_POINT.into(),
             TEST_CHALLENGE.into(),
             TEST_RESPONSE.into(),
             false,
@@ -323,7 +317,6 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         policy_id: TEST_POLICY_ID.to_string(),
         resource: TEST_RESOURCE.to_string(),
         permission: TEST_PERMISSION.to_string(),
-        shared_point: TEST_SHARED_POINT.as_bytes().to_vec(),
         challenge: TEST_CHALLENGE.as_bytes().to_vec(),
         response: TEST_RESPONSE.as_bytes().to_vec(),
         with_proof: false,
@@ -463,15 +456,21 @@ async fn test_store_secret_idempotent() {
     let policy_id = "test_policy";
     let resource = "test_resource";
     let permission = "read";
-    let metadata =
-        ThresholdDealerNode::encode_metadata(policy_id, resource, permission, None, None, None);
+    let ciphertext_context = crypto::context::CiphertextContext {
+        ring_pk: ring_pk_bytes.clone(),
+        policy_id: policy_id.to_string(),
+        resource: resource.to_string(),
+        permission: permission.to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    };
     let (_enc_cmt, secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, Some(&metadata))
+        ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, &ciphertext_context)
             .expect("encrypt with proof");
 
     let encrypted_doc = serde_json::to_vec(&secret).expect("serialize Secret");
     let enc_cmt_bytes = secret.enc_cmt.clone();
-    let shared_point_bytes = proof.shared_point.clone();
     let challenge_bytes = proof.challenge.clone();
     let response_bytes = proof.response.clone();
 
@@ -485,7 +484,6 @@ async fn test_store_secret_idempotent() {
             policy_id,
             resource,
             permission,
-            shared_point_bytes.clone(),
             challenge_bytes.clone(),
             response_bytes.clone(),
             false,
@@ -501,7 +499,6 @@ async fn test_store_secret_idempotent() {
         policy_id: policy_id.to_string(),
         resource: resource.to_string(),
         permission: permission.to_string(),
-        shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
         with_proof: false,
@@ -543,7 +540,6 @@ async fn test_store_secret_idempotent() {
         policy_id: policy_id.to_string(),
         resource: resource.to_string(),
         permission: permission.to_string(),
-        shared_point: shared_point_bytes.clone(),
         challenge: challenge_bytes.clone(),
         response: response_bytes.clone(),
         with_proof: false,

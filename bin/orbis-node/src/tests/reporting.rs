@@ -623,9 +623,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -920,11 +917,28 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
 
     // PRE: node1 produced a relayer-signed statement for an actor with no ACP relationship.
     println!("Setting up PRE unauthorized relay fixture...");
+    // Vera parses `document`/`proof` to derive the object id (`GenerateDocumentID`),
+    // so both must be the real canonical shapes.
+    let pre_document_str = String::from_utf8(
+        serde_json::to_vec(&Secret {
+            enc_cmt: vec![3u8; 32],
+            encrypted_data: vec![20, 21, 22, 23],
+            nonce: vec![2u8; 12],
+        })
+        .expect("serialize PRE secret"),
+    )
+    .expect("secret JSON is valid utf8");
+    let pre_proof_str: String = EncryptionProof {
+        challenge: vec![9, 8, 7],
+        response: vec![6, 5, 4],
+    }
+    .try_into()
+    .expect("serialize PRE proof");
     let (_, pre_object_id) = controller_client
         .orbis_store_document_get_id(
             RING_ID,
-            "{}",
-            "{}",
+            &pre_document_str,
+            &pre_proof_str,
             &policy_id,
             &resource,
             &permission,
@@ -1225,11 +1239,27 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
 
     // ── Sub-case 1: document posted to the bulletin (today's existing path) ──────────────
     println!("Sub-case 1: bulletin-sourced document...");
+    // Vera derives the on-chain object id by parsing `document`/`proof`
+    // (`GenerateDocumentID`), so both must be the real canonical shapes.
+    let bulletin_secret = Secret {
+        enc_cmt: vec![7u8; 32],
+        encrypted_data: vec![10, 11, 12, 13],
+        nonce: vec![1u8; 12],
+    };
+    let bulletin_document_str =
+        String::from_utf8(serde_json::to_vec(&bulletin_secret).expect("serialize bulletin secret"))
+            .expect("secret JSON is valid utf8");
+    let bulletin_proof_str: String = EncryptionProof {
+        challenge: vec![1, 2, 3],
+        response: vec![4, 5, 6],
+    }
+    .try_into()
+    .expect("serialize bulletin proof");
     let (_, bulletin_object_id) = controller_client
         .orbis_store_document_get_id(
             RING_ID,
-            "{}",
-            "{}",
+            &bulletin_document_str,
+            &bulletin_proof_str,
             &policy_id,
             &resource,
             &permission,
@@ -1326,7 +1356,6 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let inline_document_str =
         String::from_utf8(inline_document_bytes.clone()).expect("secret JSON is valid utf8");
     let inline_proof = EncryptionProof {
-        shared_point: vec![1, 2, 3],
         challenge: vec![4, 5, 6],
         response: vec![7, 8, 9],
     };
@@ -1344,7 +1373,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         &permission,
         None,
         None,
-    );
+    )
+    .expect("generate inline object_id");
 
     register_object_with_client(&controller_client, &policy_id, &inline_object_id, &resource).await;
 
@@ -1392,7 +1422,6 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         policy_id: policy_id.clone(),
         resource: resource.clone(),
         permission: permission.clone(),
-        shared_point: inline_proof.shared_point,
         challenge: inline_proof.challenge,
         response: inline_proof.response,
         tier: None,
@@ -1590,9 +1619,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -1781,9 +1807,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         endpoint.clone(),
         &sign_prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -1994,9 +2017,6 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;
@@ -2062,13 +2082,8 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
             endpoint.clone(),
             &prepared,
             RING_ID.to_string(),
-            policy_id.clone(),
-            resource.clone(),
-            permission.clone(),
             Some(did_pk_string.clone()),
             true,
-            None,
-            None,
         )
         .await
         {
@@ -2316,9 +2331,6 @@ async fn store_secret_with_retry(
     endpoint: String,
     prepared: &cli_tool::PreparedSecret,
     ring_id: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
     reader_did_pk: Option<String>,
 ) -> cli_tool::StoreSecretResult {
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -2328,13 +2340,8 @@ async fn store_secret_with_retry(
             endpoint.clone(),
             prepared,
             ring_id.clone(),
-            policy_id.clone(),
-            resource.clone(),
-            permission.clone(),
             reader_did_pk.clone(),
             true,
-            None,
-            None,
         )
         .await
         {
@@ -4362,9 +4369,6 @@ async fn test_report_kick_promotes_backup_node() {
         endpoint.clone(),
         &prepared,
         RING_ID.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
     )
     .await;

@@ -1,5 +1,6 @@
 use super::common::{PubPoly, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crate::{
+    context::{self, CiphertextContext},
     error::{CryptoError, Result},
     r#trait::{
         CryptoDeserialize, DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare,
@@ -22,11 +23,10 @@ use subtle::ConstantTimeEq;
 
 const NAME: &str = "elgamal/bls12_381";
 
-const ENCRYPT_PROOF_DOMAIN: &[u8; 24] = b"elgamal-encrypt-proof-v1";
 const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
-const AAD_DOMAIN: &[u8; 15] = b"elgamal-aad-v1\0";
 const DERIVATION_DOMAIN: &[u8; 23] = b"elgamal-derivation-v1\0\0";
-const POLICY_METADATA_DOMAIN: &[u8] = b"orbis-policy-metadata-v1";
+/// Domain separator for the encryption proof's Fiat-Shamir challenge.
+const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-policy-binding-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -165,7 +165,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         dkg_pk: &Self::PublicKey,
         data: &[u8],
         derivation: Option<&[u8]>,
-        metadata: Option<&[u8]>,
+        context: &CiphertextContext,
     ) -> Result<(Self::PublicKey, Self::Secret, EncryptionProof)> {
         // Validate dkg_pk is not the identity element
         if dkg_pk.is_zero() {
@@ -182,9 +182,14 @@ impl ThresholdDealer for ThresholdDealerNode {
         }
 
         let mut rng = OsRng;
-        // Generate random r
-        let r = Fr::rand(&mut rng);
-        let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // rG
+        // Generate random non-zero r to avoid an identity commitment / fixed AES key.
+        let r = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
+        let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // U = rG
 
         // Compute the effective public key if derivation is provided.
         let effective_pk = if let Some(deriv_bytes) = derivation {
@@ -205,51 +210,46 @@ impl ThresholdDealer for ThresholdDealerNode {
             *dkg_pk
         };
 
-        // shared_point = r * effective_pk = r*d*s*G (with derivation) or r*s*G (without)
+        // KEM shared point V = r * effective_pk = r*d*s*G (with derivation) or r*s*G.
+        // Never serialized — only the AES key is derived from it.
         let shared_point: G1Affine = (G1Projective::from(effective_pk) * r).into();
+        let aes_key = Self::derive_key_from_point(&shared_point)?;
+        let cipher = Aes256Gcm::new(&aes_key.into());
 
-        // Generate Chaum-Pedersen NIZK proof
-        // Proves that enc_cmt = r*G and shared_point = r*effective_pk use the same r
+        // Serialize commitment U.
+        let mut enc_cmt_bytes = Vec::new();
+        enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
+
+        // AAD = context_digest(context, U). Encrypt first so the proof can bind
+        // the ciphertext digest.
+        let context_digest = context::context_digest(context, &enc_cmt_bytes);
+
+        let mut nonce_bytes = [0u8; 12];
+        rng.fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+        let payload = Payload {
+            msg: data,
+            aad: &context_digest,
+        };
+        let ciphertext = cipher
+            .encrypt(nonce, payload)
+            .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
+
+        let ciphertext_digest = context::ciphertext_digest(&nonce_bytes, &ciphertext);
+
+        // Schnorr PoK of r for U = rG, bound to context_digest and ciphertext_digest.
         let (challenge, response) =
-            Self::generate_encryption_proof(&r, &effective_pk, &enc_cmt, &shared_point, metadata)?;
+            Self::generate_encryption_proof(&r, &enc_cmt, &context_digest, &ciphertext_digest)?;
 
-        // Serialize proof components
-        let mut shared_point_bytes = Vec::new();
-        shared_point.serialize_compressed(&mut shared_point_bytes)?;
         let mut challenge_bytes = Vec::new();
         challenge.serialize_compressed(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
         response.serialize_compressed(&mut response_bytes)?;
 
-        // Derive AES key from shared_point
-        let aes_key = Self::derive_key_from_point(&shared_point)?;
-        let cipher = Aes256Gcm::new(&aes_key.into());
-
-        // Generate nonce using cryptographically secure RNG
-        let mut nonce_bytes = [0u8; 12];
-        rng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
-
-        // Serialize commitment
-        let mut enc_cmt_bytes = Vec::new();
-        enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
-
-        let aad = Self::build_aad(&enc_cmt_bytes, &shared_point_bytes);
-
         let proof = EncryptionProof {
-            shared_point: shared_point_bytes,
             challenge: challenge_bytes,
             response: response_bytes,
         };
-
-        // Encrypt data with AAD to bind ciphertext to commitment and shared point
-        let payload = Payload {
-            msg: data,
-            aad: &aad,
-        };
-        let ciphertext = cipher
-            .encrypt(nonce, payload)
-            .map_err(|_| CryptoError::ElGamalError("Encryption failed".to_string()))?;
 
         Ok((
             enc_cmt,
@@ -262,30 +262,36 @@ impl ThresholdDealer for ThresholdDealerNode {
         ))
     }
 
-    /// Verify the Chaum-Pedersen NIZK proof for encryption.
-    ///
-    /// This verifies that `enc_cmt` and `shared_point` (in the proof) share the same
-    /// discrete logarithm relative to G and effective_pk respectively. In other words:
-    ///   enc_cmt = r * G  AND  shared_point = r * effective_pk  for some r
+    /// Verify the encryption proof: a Schnorr PoK of `r` for `U = secret.enc_cmt`,
+    /// with `context_digest(context, U)` and
+    /// `ciphertext_digest(secret.nonce, secret.encrypted_data)` bound into the
+    /// Fiat-Shamir challenge.
     ///
     /// ## What this DOES verify:
-    /// - The mathematical relationship between enc_cmt and shared_point
-    /// - That the encryptor knew the discrete log (randomness r)
-    /// - Point validity (not identity, correct subgroup)
+    /// - The encryptor knew `r` such that `U = r*G`.
+    /// - `U` is a valid non-identity prime-order point.
+    /// - The exact `(ring_pk, policy fields, salt)` context and the exact
+    ///   `(nonce, ciphertext)` were the ones bound at encryption time.
     ///
     /// ## What this does NOT verify:
-    /// - That the ciphertext was actually encrypted using shared_point
-    /// - Ciphertext integrity (that's verified at decrypt time via AES-GCM)
-    ///   The ciphertext binding is enforced via AAD in AES-GCM: if the wrong
-    ///   shared_point was used during encryption, decryption will fail with
-    ///   an authentication error.
+    /// - That the KEM was performed against the ring key (no DLEQ leg). A
+    ///   malformed document simply fails to decrypt through the threshold flow.
     fn verify_encryption(
-        effective_pk: &Self::PublicKey,
-        enc_cmt: &Self::PublicKey,
         proof: &EncryptionProof,
-        metadata: Option<&[u8]>,
+        context: &CiphertextContext,
+        secret: &Self::Secret,
     ) -> Result<()> {
-        // Validate enc_cmt from untrusted input
+        // Parse and validate U from the stored commitment.
+        if secret.enc_cmt.len() != G1_COMPRESSED_SIZE {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid enc_cmt length: expected {}, got {}",
+                G1_COMPRESSED_SIZE,
+                secret.enc_cmt.len()
+            )));
+        }
+        let enc_cmt = G1Affine::from_bytes(&secret.enc_cmt[..]).map_err(|e| {
+            CryptoError::ElGamalError(format!("Failed to deserialize enc_cmt: {:?}", e))
+        })?;
         if enc_cmt.is_zero() {
             return Err(CryptoError::ElGamalError(
                 "Invalid enc_cmt: cannot be the identity element".to_string(),
@@ -297,42 +303,18 @@ impl ThresholdDealer for ThresholdDealerNode {
             ));
         }
 
-        // Validate the caller-supplied effective public key.
-        if effective_pk.is_zero() {
+        if secret.nonce.len() != 12 {
             return Err(CryptoError::ElGamalError(
-                "Invalid effective_pk: cannot be the identity element".to_string(),
+                "Invalid nonce length: must be exactly 12 bytes".to_string(),
             ));
         }
-        if !effective_pk.is_in_correct_subgroup_assuming_on_curve() {
+        if secret.encrypted_data.is_empty() {
             return Err(CryptoError::ElGamalError(
-                "Invalid effective_pk: not in correct subgroup".to_string(),
-            ));
-        }
-
-        // Deserialize proof components
-        if proof.shared_point.len() != G1_COMPRESSED_SIZE {
-            return Err(CryptoError::ElGamalError(format!(
-                "Invalid shared_point length: expected {}, got {}",
-                G1_COMPRESSED_SIZE,
-                proof.shared_point.len()
-            )));
-        }
-        let shared_point = G1Affine::from_bytes(&proof.shared_point[..]).map_err(|e| {
-            CryptoError::ElGamalError(format!("Failed to deserialize shared_point: {:?}", e))
-        })?;
-
-        // Validate shared_point is not the identity element and is in correct subgroup
-        if shared_point.is_zero() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid shared_point: cannot be the identity element".to_string(),
-            ));
-        }
-        if !shared_point.is_in_correct_subgroup_assuming_on_curve() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid shared_point: not in correct subgroup".to_string(),
+                "Empty encrypted data".to_string(),
             ));
         }
 
+        // Deserialize proof scalars.
         if proof.challenge.len() != FR_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
                 "Invalid challenge length: expected {}, got {}",
@@ -354,38 +336,21 @@ impl ThresholdDealer for ThresholdDealerNode {
             CryptoError::ElGamalError(format!("Failed to deserialize response: {:?}", e))
         })?;
 
-        // Verify: R1' = s*G - c*enc_cmt
-        let r1_prime: G1Affine = (G1Projective::generator() * response
-            - G1Projective::from(*enc_cmt) * challenge)
-            .into();
+        // R1' = z*G - c*U
+        let r1_prime: G1Affine =
+            (G1Projective::generator() * response - G1Projective::from(enc_cmt) * challenge).into();
 
-        // Verify: R2' = s*effective_pk - c*shared_point
-        let r2_prime: G1Affine = (G1Projective::from(*effective_pk) * response
-            - G1Projective::from(shared_point) * challenge)
-            .into();
+        let context_digest = context::context_digest(context, &secret.enc_cmt);
+        let ciphertext_digest = context::ciphertext_digest(&secret.nonce, &secret.encrypted_data);
 
-        // Recompute challenge: c' = Hash(ENCRYPT_PROOF_DOMAIN, G, effective_pk, enc_cmt, shared_point, R1', R2')
-        let metadata_arr: Option<[u8; 32]> = metadata
-            .map(|m| {
-                m.try_into().map_err(|_| {
-                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
-                })
-            })
-            .transpose()?;
-        let g = G1Affine::generator();
-        let challenge_hash = Self::hash_encryption_proof_points(
-            &g,
-            effective_pk,
-            enc_cmt,
-            &shared_point,
+        let recomputed_challenge = Self::encryption_proof_challenge(
+            &enc_cmt,
             &r1_prime,
-            &r2_prime,
-            metadata_arr.as_ref(),
+            &context_digest,
+            &ciphertext_digest,
         )?;
-        let recomputed_challenge = Fr::from_le_bytes_mod_order(&challenge_hash);
 
-        // Compare challenges using constant-time comparison
-        // Fr serializes to exactly 32 bytes for BLS12-381
+        // Constant-time compare. Fr serializes to exactly 32 bytes for BLS12-381.
         let mut challenge_bytes = [0u8; 32];
         let mut recomputed_bytes = [0u8; 32];
         challenge
@@ -408,6 +373,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         xnc_cmt: &Self::PublicKey, // Recovered from re-encryption
         rdr_sk: &Self::ShareValue,
         secret: &Self::Secret,
+        context: &CiphertextContext,
     ) -> Result<Vec<u8>> {
         // Input validation
         if secret.nonce.len() != 12 {
@@ -426,17 +392,11 @@ impl ThresholdDealer for ThresholdDealerNode {
             return Err(CryptoError::ElGamalError("Empty commitment".to_string()));
         }
 
-        // Recover shared_point from re-encryption result
-        //
-        // Without derivation:
-        //   xnc_cmt = (x+r)*s*G
-        //   effective_pk = s*G
-        //   shared_point = xnc_cmt - x*effective_pk = r*s*G
-        //
-        // With derivation (d applied at re-encrypt time):
-        //   xnc_cmt = d*(x+r)*s*G
-        //   effective_pk = d*s*G
-        //   shared_point = xnc_cmt - x*effective_pk = d*r*s*G
+        // Recover the KEM shared point from the re-encryption result:
+        //   without derivation: xnc_cmt = (x+r)*s*G, effective_pk = s*G
+        //                       -> shared_point = xnc_cmt - x*effective_pk = r*s*G
+        //   with derivation:    xnc_cmt = d*(x+r)*s*G, effective_pk = d*s*G
+        //                       -> shared_point = xnc_cmt - x*effective_pk = d*r*s*G
         let xs_g = G1Projective::from(*effective_pk) * rdr_sk; // x * effective_pk
         let shared_point: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into();
 
@@ -444,12 +404,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
-        // Build AAD using centralized helper (must match encryption)
-        let mut shared_point_bytes = Vec::new();
-        shared_point.serialize_compressed(&mut shared_point_bytes)?;
-        let aad = Self::build_aad(&secret.enc_cmt, &shared_point_bytes);
+        // AAD = context_digest(context, U). A wrong context or commitment fails the open.
+        let aad = context::context_digest(context, &secret.enc_cmt);
 
-        // Decrypt with AAD to verify binding to commitment and shared point
         let nonce = Nonce::from_slice(&secret.nonce);
         let payload = Payload {
             msg: secret.encrypted_data.as_ref(),
@@ -470,36 +427,6 @@ impl ThresholdDealer for ThresholdDealerNode {
 
     fn derive_key_from_point(point: &Self::PublicKey) -> Result<[u8; 32]> {
         ThresholdDealerNode::derive_key_from_point(point)
-    }
-
-    fn encode_metadata(
-        policy_id: &str,
-        resource: &str,
-        permission: &str,
-        tier: Option<&str>,
-        timestamp: Option<u64>,
-        salt: Option<&str>,
-    ) -> Vec<u8> {
-        let ts_le = timestamp.map(|t| t.to_le_bytes());
-        let ts_bytes: &[u8] = ts_le.as_ref().map_or(&[], |b| b.as_slice());
-
-        let mut hasher = Sha256::new();
-        hasher.update(POLICY_METADATA_DOMAIN);
-        hasher.update((policy_id.len() as u64).to_le_bytes());
-        hasher.update(policy_id.as_bytes());
-        hasher.update((resource.len() as u64).to_le_bytes());
-        hasher.update(resource.as_bytes());
-        hasher.update((permission.len() as u64).to_le_bytes());
-        hasher.update(permission.as_bytes());
-        let tier = tier.unwrap_or("");
-        hasher.update((tier.len() as u64).to_le_bytes());
-        hasher.update(tier.as_bytes());
-        hasher.update((ts_bytes.len() as u64).to_le_bytes());
-        hasher.update(ts_bytes);
-        let salt = salt.unwrap_or("");
-        hasher.update((salt.len() as u64).to_le_bytes());
-        hasher.update(salt.as_bytes());
-        hasher.finalize().to_vec()
     }
 }
 
@@ -567,10 +494,23 @@ impl ThresholdDealerNode {
         enc_cmt: &G1Affine,
         derivation_scalar: Option<Fr>,
     ) -> Result<(G1Affine, Fr, Fr)> {
-        // Validate inputs are not zero points
+        // Validate inputs are non-identity and in the prime-order subgroup.
+        //
+        // `enc_cmt` reaches here only via `decompress_point`, which already runs
+        // both checks. `rdr_pk` arrives as an already-decoded point, so it is
+        // re-validated here rather than trusting the caller to have gone through
+        // canonical deserialization: BLS12-381 G1 has a small-factor cofactor,
+        // so a low-order `rdr_pk` would make `xnc_ski = ski * (rdr_pk + enc_cmt)`
+        // leak `ski` modulo that small order. Keeping the check here makes the
+        // crypto layer sound independent of caller discipline.
         if rdr_pk.is_zero() {
             return Err(CryptoError::ElGamalError(
                 "Invalid reader public key: cannot be zero point".to_string(),
+            ));
+        }
+        if !rdr_pk.is_in_correct_subgroup_assuming_on_curve() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid reader public key: not in the prime-order subgroup".to_string(),
             ));
         }
         if enc_cmt.is_zero() {
@@ -599,7 +539,7 @@ impl ThresholdDealerNode {
         // Produce random oracle challenge (ei)
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
-        let ri = Fr::rand(&mut rng); // ri = Random scalar
+        let ri = crate::helpers::sample_nonzero(|| Fr::rand(&mut rng));
         let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
         let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
 
@@ -779,27 +719,6 @@ impl ThresholdDealerNode {
         Ok(output)
     }
 
-    /// Build AAD (Additional Authenticated Data) for AES-GCM encryption/decryption.
-    ///
-    /// AAD format: H(AAD_DOMAIN || enc_cmt || shared_point)
-    ///
-    /// This binds the ciphertext to both the ElGamal commitment and the shared point,
-    /// ensuring that:
-    /// 1. The ciphertext cannot be transplanted to a different commitment
-    /// 2. The shared_point used for key derivation matches what's in the proof
-    ///
-    /// Using a hash ensures consistent length and provides domain separation.
-    fn build_aad(enc_cmt_bytes: &[u8], shared_point_bytes: &[u8]) -> [u8; 32] {
-        let mut hasher = Sha256::new();
-        hasher.update(AAD_DOMAIN);
-        hasher.update(enc_cmt_bytes);
-        hasher.update(shared_point_bytes);
-        let result = hasher.finalize();
-        let mut output = [0u8; 32];
-        output.copy_from_slice(&result);
-        output
-    }
-
     /// Derive AES key from elliptic curve point
     pub fn derive_key_from_point(point: &G1Affine) -> Result<[u8; 32]> {
         let mut point_bytes = Vec::new();
@@ -813,83 +732,52 @@ impl ThresholdDealerNode {
         Ok(key)
     }
 
-    /// Generate Chaum-Pedersen NIZK proof for encryption
-    /// Proves that enc_cmt = r*G and shared_point = r*dkg_pk use the same randomness r
+    /// Generate the Schnorr PoK of `r` for `U = r*G`.
+    ///
+    /// `k <- random nonzero Fr`, `R1 = k*G`,
+    /// `c = encryption_proof_challenge(U, R1, context_digest, ciphertext_digest)`,
+    /// `z = k + c*r`. Returns `(c, z)`.
     fn generate_encryption_proof(
         r: &Fr,
-        dkg_pk: &G1Affine,
         enc_cmt: &G1Affine,
-        shared_point: &G1Affine,
-        metadata: Option<&[u8]>,
+        context_digest: &[u8; 32],
+        ciphertext_digest: &[u8; 32],
     ) -> Result<(Fr, Fr)> {
-        let metadata_arr: Option<[u8; 32]> = metadata
-            .map(|m| {
-                m.try_into().map_err(|_| {
-                    CryptoError::ElGamalError("Metadata must be exactly 32 bytes".to_string())
-                })
-            })
-            .transpose()?;
-
         let mut rng = OsRng;
-
-        // 1. k ← random scalar
-        let k = Fr::rand(&mut rng);
-
-        // 2. R1 = k * G, R2 = k * dkg_pk
+        let k = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
         let r1: G1Affine = (G1Projective::generator() * k).into();
-        let r2: G1Affine = (G1Projective::from(*dkg_pk) * k).into();
 
-        // 3. c = Hash(ENCRYPT_PROOF_DOMAIN, G, dkg_pk, enc_cmt, shared_point, R1, R2)
-        let g = G1Affine::generator();
-        let challenge_hash = Self::hash_encryption_proof_points(
-            &g,
-            dkg_pk,
-            enc_cmt,
-            shared_point,
-            &r1,
-            &r2,
-            metadata_arr.as_ref(),
-        )?;
-        let c = Fr::from_le_bytes_mod_order(&challenge_hash);
-
-        // 4. s = k + c * r
-        let s = k + (c * r);
-
-        // 5. Output: (c, s)
-        Ok((c, s))
+        let c = Self::encryption_proof_challenge(enc_cmt, &r1, context_digest, ciphertext_digest)?;
+        let z = k + (c * r);
+        Ok((c, z))
     }
 
-    /// Hash points for encryption proof with domain separation
-    fn hash_encryption_proof_points(
-        g: &G1Affine,
-        dkg_pk: &G1Affine,
+    /// Fiat-Shamir challenge:
+    /// `Fr::from_le_bytes_mod_order(SHA512(POLICY_BINDING_PROOF_DOMAIN || compress(U)
+    ///   || compress(R1) || context_digest || ciphertext_digest))`.
+    fn encryption_proof_challenge(
         enc_cmt: &G1Affine,
-        shared_point: &G1Affine,
         r1: &G1Affine,
-        r2: &G1Affine,
-        metadata_option: Option<&[u8; 32]>,
-    ) -> Result<[u8; 64]> {
+        context_digest: &[u8; 32],
+        ciphertext_digest: &[u8; 32],
+    ) -> Result<Fr> {
         let mut hasher = Sha512::new();
+        hasher.update(POLICY_BINDING_PROOF_DOMAIN);
 
-        // Add domain separation
-        hasher.update(ENCRYPT_PROOF_DOMAIN);
-
-        if let Some(metadata) = metadata_option {
-            hasher.update(metadata);
-        }
-
-        // Serialize and hash all points
-        let mut bytes = Vec::with_capacity(48);
-        for point in &[g, dkg_pk, enc_cmt, shared_point, r1, r2] {
+        let mut bytes = Vec::with_capacity(G1_COMPRESSED_SIZE);
+        for point in [enc_cmt, r1] {
             bytes.clear();
             point.serialize_compressed(&mut bytes)?;
             hasher.update(&bytes);
         }
+        hasher.update(context_digest);
+        hasher.update(ciphertext_digest);
 
-        let result = hasher.finalize();
-        let mut output = [0u8; 64];
-        output.copy_from_slice(&result);
-
-        Ok(output)
+        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }
 }

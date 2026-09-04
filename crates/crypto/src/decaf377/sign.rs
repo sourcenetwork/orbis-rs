@@ -24,6 +24,7 @@ use ark_serialize::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashSet;
 use zeroize::Zeroize;
 
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
@@ -183,15 +184,23 @@ const FROST_BINDING_DOMAIN: &[u8] = b"FROST-decaf377-binding";
 const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-decaf377-challenge";
 
 /// Compute binding factor for participant j:
-///   rho_j = H(BINDING_DOMAIN || j || msg || encoded_commitments)
+///   rho_j = H(BINDING_DOMAIN || j || group_public_key || msg || encoded_commitments)
 fn compute_binding_factor(
     participant_id: u32,
+    group_public_key: &Element,
     msg: &[u8],
     all_commitments: &[(u32, FrostNonceCommitment)],
 ) -> Result<Fr> {
+    if *group_public_key == Element::default() {
+        return Err(CryptoError::InvalidSignature);
+    }
+
     let mut hasher = Sha512::new();
     hasher.update(FROST_BINDING_DOMAIN);
     hasher.update(participant_id.to_le_bytes());
+    let mut public_key_bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
+    group_public_key.serialize_compressed(&mut public_key_bytes)?;
+    hasher.update(&public_key_bytes);
     hasher.update((msg.len() as u64).to_le_bytes());
     hasher.update(msg);
     // Encode all commitments deterministically (sorted by participant_id)
@@ -208,6 +217,7 @@ fn compute_binding_factor(
 /// Compute the group commitment R = sum(D_j + rho_j * E_j)
 fn compute_group_commitment(
     all_commitments: &[(u32, FrostNonceCommitment)],
+    group_public_key: &Element,
     msg: &[u8],
 ) -> Result<(Element, Vec<(u32, Fr)>)> {
     // Canonicalize: sort by participant_id so compute_binding_factor sees deterministic ordering
@@ -225,7 +235,7 @@ fn compute_group_commitment(
     let mut binding_factors = Vec::with_capacity(canonical.len());
 
     for (id, commitment) in &canonical {
-        let rho = compute_binding_factor(*id, msg, &canonical)?;
+        let rho = compute_binding_factor(*id, group_public_key, msg, &canonical)?;
         r += commitment.hiding + commitment.binding * rho;
         binding_factors.push((*id, rho));
     }
@@ -288,9 +298,10 @@ fn aggregate_pk_from_pub_poly(pub_poly: &PubPoly) -> Element {
 /// Hedged FROST nonce (RFC 9591 §4.1): `Fr::reduce(H(domain || random(32) || secret))`.
 ///
 /// The fresh 32 random bytes keep nonces unpredictable when the RNG is healthy;
-/// folding in the signer's secret share means that even a degraded or repeating
-/// `OsRng` cannot on its own produce the same `(d, e)` pair twice and leak the
-/// share. Non-zero is enforced by re-drawing (probability of a hit is ~2^-251).
+/// folding in the signer's secret share hedges against RNG disclosure or
+/// predictability. Exact repetition of the random input still repeats a nonce,
+/// so freshness continues to rely on `OsRng`. Non-zero is enforced by
+/// re-drawing (probability of a hit is ~2^-251).
 fn hedged_nonce(domain: &[u8], secret: &Fr) -> Result<Fr> {
     let mut secret_bytes = Vec::with_capacity(FR_COMPRESSED_SIZE);
     secret
@@ -353,8 +364,8 @@ impl ThresholdSigner for ThresholdDecafSigner {
         dist_key_share: &Self::DistKeyShare,
     ) -> Result<(Self::NonceCommitment, Self::SigningState)> {
         // RFC 9591 §4.1 hedged derivation: bind the hiding/binding nonces to the
-        // signer's secret share as well as fresh RNG output, so a degraded
-        // `OsRng` cannot by itself cause the nonce reuse that leaks the share.
+        // signer's secret share as well as fresh RNG output. This hedges against
+        // RNG disclosure/predictability; freshness still relies on `OsRng`.
         let secret = dist_key_share.pri_share.v;
         let d = hedged_nonce(FROST_HIDING_NONCE_DOMAIN, &secret)?;
         let e = hedged_nonce(FROST_BINDING_NONCE_DOMAIN, &secret)?;
@@ -409,16 +420,6 @@ impl ThresholdSigner for ThresholdDecafSigner {
             ));
         }
 
-        // Compute group commitment R and binding factors
-        let (r_point, binding_factors) = compute_group_commitment(all_commitments, msg)?;
-
-        // Find our binding factor
-        let rho_i = binding_factors
-            .iter()
-            .find(|(id, _)| *id == idx)
-            .map(|(_, rho)| *rho)
-            .ok_or(CryptoError::InvalidSignatureShare)?;
-
         // Aggregate public key; use derived pk in challenge when derivation is provided.
         // Metadata is folded into the derivation scalar for binding.
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
@@ -433,6 +434,22 @@ impl ThresholdSigner for ThresholdDecafSigner {
         } else {
             aggregate_pk
         };
+        if effective_pk == Element::default() {
+            return Err(CryptoError::InvalidSignature);
+        }
+
+        // Compute group commitment R and binding factors. The effective public
+        // key is part of every binding-factor transcript, preventing the same
+        // commitment list from being transplanted between signing keys.
+        let (r_point, binding_factors) =
+            compute_group_commitment(all_commitments, &effective_pk, msg)?;
+
+        // Find our binding factor
+        let rho_i = binding_factors
+            .iter()
+            .find(|(id, _)| *id == idx)
+            .map(|(_, rho)| *rho)
+            .ok_or(CryptoError::InvalidSignatureShare)?;
 
         // Fiat-Shamir challenge binds to derived public key (which encodes metadata via d)
         let c = compute_challenge(&r_point, &effective_pk, msg)?;
@@ -475,15 +492,6 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, c)| c)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        // Compute group commitment R and binding factor for this participant
-        let (r_point, binding_factors) = compute_group_commitment(all_commitments, msg)?;
-
-        let rho_i = binding_factors
-            .iter()
-            .find(|(id, _)| *id == idx)
-            .map(|(_, rho)| *rho)
-            .ok_or(CryptoError::InvalidSignatureShare)?;
-
         // Aggregate public key; use derived pk (with metadata binding) in challenge
         let aggregate_pk = aggregate_pk_from_pub_poly(pub_poly);
         let effective_pk = if let Some(deriv) = derivation {
@@ -491,6 +499,19 @@ impl ThresholdSigner for ThresholdDecafSigner {
         } else {
             aggregate_pk
         };
+        if effective_pk == Element::default() {
+            return Err(CryptoError::InvalidSignature);
+        }
+
+        // Compute group commitment R and binding factor for this participant.
+        let (r_point, binding_factors) =
+            compute_group_commitment(all_commitments, &effective_pk, msg)?;
+
+        let rho_i = binding_factors
+            .iter()
+            .find(|(id, _)| *id == idx)
+            .map(|(_, rho)| *rho)
+            .ok_or(CryptoError::InvalidSignatureShare)?;
         let c = compute_challenge(&r_point, &effective_pk, msg)?;
 
         // Lagrange coefficient
@@ -520,6 +541,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         shares: &[Self::SigShare],
         t: usize,
         _n: usize,
+        group_public_key: &Self::PublicKey,
         msg: &[u8],
         all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Option<Self::Signature>> {
@@ -530,16 +552,42 @@ impl ThresholdSigner for ThresholdDecafSigner {
             return Ok(None);
         }
 
+        // The FROST group commitment R is computed over exactly `all_commitments`,
+        // so the aggregate `z` must be the sum of one partial signature per
+        // participant in that set — no repeats, and nothing from a participant
+        // with no matching commitment. Enforce that here instead of trusting the
+        // caller to have deduplicated: a repeated index double-counts its `z_i`,
+        // and a stray index adds a `z_i` term with no matching `D_i + rho_i·E_i`
+        // in R; either way `recover` would silently return a signature that
+        // fails verification.
+        let participant_ids: HashSet<u32> = all_commitments.iter().map(|(id, _)| *id).collect();
+        let mut seen: HashSet<u32> = HashSet::with_capacity(shares.len());
+        for share in shares {
+            if !participant_ids.contains(&share.i) {
+                return Err(CryptoError::InvalidSignatureShare);
+            }
+            if !seen.insert(share.i) {
+                return Err(CryptoError::InvalidSignatureShare);
+            }
+        }
+        if seen.len() < t {
+            return Ok(None);
+        }
+
         // Sum partial signatures: z = sum(z_i)
         let z = shares.iter().fold(Fr::zero(), |acc, share| acc + share.v);
 
         // Compute group commitment R
-        let (r_point, _) = compute_group_commitment(all_commitments, msg)?;
+        let (r_point, _) = compute_group_commitment(all_commitments, group_public_key, msg)?;
 
         Ok(Some(SchnorrSignature { r_point, z }))
     }
 
     fn verify(&self, pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> Result<()> {
+        if *pk == Element::default() {
+            return Err(CryptoError::InvalidSignature);
+        }
+
         // Verify: z * G == R + c * Y
         let c = compute_challenge(&sig.r_point, pk, msg)?;
         let lhs = Element::GENERATOR * sig.z;
@@ -569,13 +617,20 @@ impl ThresholdSigner for ThresholdDecafSigner {
         derivation: &[u8],
         metadata: Option<&[u8]>,
     ) -> Result<Self::PublicKey> {
+        if *dkg_pk == Element::default() {
+            return Err(CryptoError::InvalidSignature);
+        }
         let d = derive_sign_scalar(derivation, metadata);
         if d.is_zero() {
             return Err(CryptoError::SigningError(
                 "Zero derivation scalar".to_string(),
             ));
         }
-        Ok(*dkg_pk * d)
+        let derived_pk = *dkg_pk * d;
+        if derived_pk == Element::default() {
+            return Err(CryptoError::InvalidSignature);
+        }
+        Ok(derived_pk)
     }
 }
 

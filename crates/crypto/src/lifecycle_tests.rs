@@ -7,6 +7,7 @@
 //! The SAME ciphertext is used throughout all three rounds, proving the
 //! shared secret is preserved across key rotations.
 
+use crate::context::CiphertextContext;
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     DistKeyShare, DistributedShare, DkgMode, DkgRole, PriShare, PubPoly as PubPolyTrait, PubShare,
@@ -16,6 +17,20 @@ use crate::test_helper::{DKGCoordinator, TestDkgNode};
 use ark_serialize::CanonicalSerialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
+
+/// Fixed [`CiphertextContext`] used for the single encryption exercised across
+/// every rotation round in this lifecycle test.
+fn lifecycle_ctx() -> CiphertextContext {
+    CiphertextContext {
+        ring_pk: b"lifecycle-ring-pk".to_vec(),
+        policy_id: "lifecycle-policy".to_string(),
+        resource: "lifecycle-resource".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    }
+}
 
 // ============================================================================
 // Internal helpers
@@ -63,7 +78,7 @@ where
         .recover(&pub_shares, threshold, total)?
         .expect("recovery must succeed with threshold shares");
 
-    T::decrypt_secret(agg_pk, &xnc_cmt, rdr_sk, encrypted_secret)
+    T::decrypt_secret(agg_pk, &xnc_cmt, rdr_sk, encrypted_secret, &lifecycle_ctx())
 }
 
 /// Run a full threshold SIGN roundtrip: sign with t shares, recover signature, verify.
@@ -121,7 +136,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, threshold, total, msg, &commitments)?
+        .recover(&sig_shares, threshold, total, agg_pk, msg, &commitments)?
         .expect("signature recovery must succeed");
 
     signer.verify(agg_pk, msg, &sig)?;
@@ -293,7 +308,8 @@ where
     let (agg_pk, shares_v1, pub_poly_v1) = coord.run_dkg()?;
 
     let (rdr_sk, rdr_pk) = make_keypair();
-    let (enc_cmt, encrypted_secret, _) = T::encrypt_secret(&agg_pk, plaintext, None, None)?;
+    let (enc_cmt, encrypted_secret, _) =
+        T::encrypt_secret(&agg_pk, plaintext, None, &lifecycle_ctx())?;
 
     // PRE round 1
     let decrypted_v1 = pre_roundtrip::<T, SV, PK, PP>(

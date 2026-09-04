@@ -58,6 +58,7 @@ where
     test_single_key_threshold_1(&signer, run_dkg.clone())?;
     test_different_subsets_valid(&signer, run_dkg.clone())?;
     test_insufficient_shares(&signer, run_dkg.clone())?;
+    test_recover_rejects_duplicate_share_index(&signer, run_dkg.clone())?;
     test_tampered_share_rejected(&signer, run_dkg.clone(), tamper_sig_share.clone())?;
 
     // Derivation tests
@@ -159,7 +160,7 @@ where
 
     let (sig_shares, commitments) = run_sign_round(signer, &[&share], &pub_poly, msg, None, None)?;
     let sig = signer
-        .recover(&sig_shares, 1, 1, msg, &commitments)?
+        .recover(&sig_shares, 1, 1, &pk, msg, &commitments)?
         .expect("should recover a signature from single key");
 
     signer.verify(&pk, msg, &sig)?;
@@ -194,7 +195,7 @@ where
 
     let (sig_shares, commitments) = run_sign_round(signer, &[&share], &pub_poly, msg, None, None)?;
     let sig = signer
-        .recover(&sig_shares, 1, 1, msg, &commitments)?
+        .recover(&sig_shares, 1, 1, &pk, msg, &commitments)?
         .expect("should recover");
 
     assert!(signer.verify(&pk, msg, &sig).is_ok());
@@ -234,7 +235,7 @@ where
 
     let (sig_shares, commitments) = run_sign_round(signer, &[&share], &pub_poly, msg, None, None)?;
     let sig = signer
-        .recover(&sig_shares, 1, 1, msg, &commitments)?
+        .recover(&sig_shares, 1, 1, &pk, msg, &commitments)?
         .expect("should recover");
 
     assert!(
@@ -272,7 +273,7 @@ where
 
     let (sig_shares, commitments) = run_sign_round(signer, &[&share], &pub_poly, msg, None, None)?;
     let sig = signer
-        .recover(&sig_shares, 1, 1, msg, &commitments)?
+        .recover(&sig_shares, 1, 1, &pk, msg, &commitments)?
         .expect("should recover for empty message");
 
     signer.verify(&pk, msg, &sig)?;
@@ -307,7 +308,7 @@ where
 
     let (sig_shares, commitments) = run_sign_round(signer, &[&share], &pub_poly, &msg, None, None)?;
     let sig = signer
-        .recover(&sig_shares, 1, 1, &msg, &commitments)?
+        .recover(&sig_shares, 1, 1, &pk, &msg, &commitments)?
         .expect("should recover for large message");
 
     signer.verify(&pk, &msg, &sig)?;
@@ -352,7 +353,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &agg_pk, msg, &commitments)?
         .expect("should recover full signature");
 
     signer.verify(&agg_pk, msg, &sig)?;
@@ -388,7 +389,7 @@ where
         .is_ok());
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &agg_pk, msg, &commitments)?
         .expect("should recover with threshold 1");
 
     signer.verify(&agg_pk, msg, &sig)?;
@@ -421,14 +422,14 @@ where
     let p1: Vec<_> = shares.iter().take(3).collect();
     let (s1, cmts1) = run_sign_round(signer, &p1, &pub_poly, msg, None, None)?;
     let sig1 = signer
-        .recover(&s1, t, n, msg, &cmts1)?
+        .recover(&s1, t, n, &agg_pk, msg, &cmts1)?
         .expect("should recover from subset {0,1,2}");
 
     // Subset {2, 3, 4}
     let p2: Vec<_> = shares.iter().skip(2).take(3).collect();
     let (s2, cmts2) = run_sign_round(signer, &p2, &pub_poly, msg, None, None)?;
     let sig2 = signer
-        .recover(&s2, t, n, msg, &cmts2)?
+        .recover(&s2, t, n, &agg_pk, msg, &cmts2)?
         .expect("should recover from subset {2,3,4}");
 
     // Both must produce valid signatures against the aggregate key
@@ -455,7 +456,7 @@ where
 {
     let n = 3;
     let t = 2;
-    let (_agg_pk, shares, pub_poly) = run_dkg(n, t)?;
+    let (agg_pk, shares, pub_poly) = run_dkg(n, t)?;
 
     let msg = b"insufficient shares test";
 
@@ -463,11 +464,59 @@ where
     let (sig_shares, commitments) =
         run_sign_round(signer, &[&shares[0]], &pub_poly, msg, None, None)?;
 
-    let result = signer.recover(&sig_shares, t, n, msg, &commitments)?;
+    let result = signer.recover(&sig_shares, t, n, &agg_pk, msg, &commitments)?;
     assert!(
         result.is_none(),
         "should return None with insufficient shares"
     );
+
+    Ok(())
+}
+
+/// `recover` must not treat a duplicated share as an extra signer. Feeding it
+/// the same partial signature twice would double-count that signer's
+/// contribution (FROST) or trip the Lagrange basis (BLS), so both schemes
+/// reject a repeated share index rather than emit a silently invalid signature.
+pub fn test_recover_rejects_duplicate_share_index<T, SV, PK, PP, RD>(
+    signer: &T,
+    run_dkg: RD,
+) -> Result<()>
+where
+    T: ThresholdSigner<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        DistKeyShare = DistKeyShare<SV>,
+    >,
+    T::SigShare: Clone,
+    T::NonceCommitment: Clone,
+    SV: Clone + zeroize::Zeroize,
+    PK: Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)>,
+{
+    let n = 3;
+    let t = 2;
+    let (_agg_pk, shares, pub_poly) = run_dkg(n, t)?;
+
+    let msg = b"duplicate share index test";
+    let participants: Vec<_> = shares.iter().take(t).collect();
+    let (sig_shares, commitments) =
+        run_sign_round(signer, &participants, &pub_poly, msg, None, None)?;
+
+    // Threshold-many shares by count, but the first signer's share appears twice
+    // and the second signer's is dropped.
+    let duplicated = vec![sig_shares[0].clone(), sig_shares[0].clone()];
+    let result = signer.recover(&duplicated, t, n, msg, &commitments);
+    assert!(
+        result.is_err(),
+        "recover must reject a repeated share index instead of returning a signature"
+    );
+
+    // Control: the honest, distinct share set still recovers.
+    signer
+        .recover(&sig_shares, t, n, msg, &commitments)?
+        .expect("distinct shares still recover");
 
     Ok(())
 }
@@ -564,7 +613,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &derived_pk, msg, &commitments)?
         .expect("should recover derived signature");
 
     signer.verify(&derived_pk, msg, &sig)?;
@@ -620,7 +669,7 @@ where
     )?;
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &correct_derived_pk, msg, &commitments)?
         .expect("should recover");
 
     signer.verify(&correct_derived_pk, msg, &sig)?;
@@ -756,7 +805,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &pk_with_meta, msg, &commitments)?
         .expect("should recover metadata-bound signature");
 
     // Must verify under the metadata-bound derived key
@@ -879,7 +928,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, t, n, msg, &commitments)?
+        .recover(&sig_shares, t, n, &agg_pk, msg, &commitments)?
         .expect("should recover");
 
     // Must verify under the base aggregate key (no derivation applied)

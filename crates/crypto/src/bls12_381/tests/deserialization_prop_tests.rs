@@ -3,12 +3,13 @@ use crate::bls12_381::common::{
     G2_COMPRESSED_SIZE,
 };
 use crate::bls12_381::pre::ThresholdDealerNode;
+use crate::context::CiphertextContext;
 use crate::deserialization_prop_tests_helpers::{
     assert_canonical_from_bytes, assert_value_roundtrips, byte_vec, small_byte_vec, PROPTEST_CASES,
 };
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare,
-    PubShare, ReencryptReply, ThresholdDealer,
+    PubShare, ReencryptReply, Secret, ThresholdDealer,
 };
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Projective};
 use ark_ec::Group;
@@ -88,19 +89,26 @@ proptest! {
 
     #[test]
     fn verify_encryption_rejects_or_handles_arbitrary_proof_bytes(
-        shared_point in small_byte_vec(),
         challenge in small_byte_vec(),
         response in small_byte_vec(),
     ) {
-        let effective_pk = g1(5);
-        let enc_cmt = g1(7);
-        let proof = EncryptionProof {
-            shared_point,
-            challenge,
-            response,
+        let secret = Secret {
+            enc_cmt: g1(7).to_bytes().unwrap(),
+            encrypted_data: vec![0u8; 32],
+            nonce: vec![0u8; 12],
         };
+        let ctx = CiphertextContext {
+            ring_pk: vec![1, 2, 3],
+            policy_id: "p".to_string(),
+            resource: "r".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+            timestamp: None,
+            salt: None,
+        };
+        let proof = EncryptionProof { challenge, response };
 
-        let _ = ThresholdDealerNode::verify_encryption(&effective_pk, &enc_cmt, &proof, None);
+        let _ = ThresholdDealerNode::verify_encryption(&proof, &ctx, &secret);
     }
 }
 
@@ -152,34 +160,28 @@ fn non_canonical_identity_encodings_are_rejected() {
 #[test]
 fn pre_proof_component_lengths_are_exact() {
     let dkg_pk = g1(11);
-    let (enc_cmt, _secret, proof) =
-        ThresholdDealerNode::encrypt_secret(&dkg_pk, b"proof length test", None, None).unwrap();
-    ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &proof, None).unwrap();
-
-    let mut with_trailing_shared = proof.clone();
-    with_trailing_shared.shared_point.push(0);
-    assert!(
-        ThresholdDealerNode::verify_encryption(&dkg_pk, &enc_cmt, &with_trailing_shared, None)
-            .is_err()
-    );
+    let ctx = CiphertextContext {
+        ring_pk: vec![9, 9, 9],
+        policy_id: "p".to_string(),
+        resource: "r".to_string(),
+        permission: "read".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    };
+    let (_enc_cmt, secret, proof) =
+        ThresholdDealerNode::encrypt_secret(&dkg_pk, b"proof length test", None, &ctx).unwrap();
+    ThresholdDealerNode::verify_encryption(&proof, &ctx, &secret).unwrap();
 
     let mut with_trailing_challenge = proof.clone();
     with_trailing_challenge.challenge.push(0);
-    assert!(ThresholdDealerNode::verify_encryption(
-        &dkg_pk,
-        &enc_cmt,
-        &with_trailing_challenge,
-        None
-    )
-    .is_err());
+    assert!(
+        ThresholdDealerNode::verify_encryption(&with_trailing_challenge, &ctx, &secret).is_err()
+    );
 
     let mut with_trailing_response = proof;
     with_trailing_response.response.push(0);
-    assert!(ThresholdDealerNode::verify_encryption(
-        &dkg_pk,
-        &enc_cmt,
-        &with_trailing_response,
-        None
-    )
-    .is_err());
+    assert!(
+        ThresholdDealerNode::verify_encryption(&with_trailing_response, &ctx, &secret).is_err()
+    );
 }

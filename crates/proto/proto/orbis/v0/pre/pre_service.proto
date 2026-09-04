@@ -25,14 +25,12 @@ message InlineDocument {
   string policy_id = 4;
   string resource = 5;
   string permission = 6;
-  // Shared point for encryption proof
-  bytes shared_point = 7;
-  // Challenge for encryption proof
-  bytes challenge = 8;
-  // Response for encryption proof
-  bytes response = 9;
-  optional string tier = 10;
-  optional uint64 timestamp = 11;
+  // Challenge for the encryption proof (Schnorr PoK of the encryption randomness).
+  bytes challenge = 7;
+  // Response for the encryption proof.
+  bytes response = 8;
+  optional string tier = 9;
+  optional uint64 timestamp = 10;
 }
 
 message StartPreRequest {

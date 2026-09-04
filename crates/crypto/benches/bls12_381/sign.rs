@@ -57,7 +57,7 @@ impl SignBenchSetup for Bls12381SignBench {
 
         // Recover the full signature
         let full_sig = signer
-            .recover(&sig_shares, t, n, MSG, &[])
+            .recover(&sig_shares, t, n, &aggregate_pk, MSG, &[])
             .unwrap()
             .unwrap();
 

@@ -2239,13 +2239,8 @@ async fn prepare_online_fixtures(
         endpoint.grpc_url.clone(),
         &prepared,
         ring_id.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(reader_identity.clone()),
         true,
-        None,
-        None,
     )
     .await?;
     cli_tool::register_object_to_chain_with_config(
@@ -2381,13 +2376,8 @@ async fn prepare_online_fixtures_in_process(
         endpoint.grpc_url.clone(),
         &prepared,
         ring_id.to_string(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(reader_identity.clone()),
         true,
-        None,
-        None,
     )
     .await?;
 

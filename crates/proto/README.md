@@ -21,7 +21,7 @@ Use paths like `proto::v0::dkg::dkg_service_client::DkgServiceClient`, `proto::v
 - **`DkgService::StartDkg`** — Threshold, peer ids (iroh peer IDs), optional `pss_interval` for automatic PSS refresh cadence.
 - **`PreService::StartPre`** — Reader pubkey, object/namespace, optional derivation/salt, optional validity window.
 - **`SignService::StartSign`** — Message bytes, bulletin derivation (`namespace` + `derivation_id`), optional validity window.
-- **`StoreSecretService::StoreSecret`** — Encrypted document + Chaum–Pedersen proof fields + policy metadata; optional storage proof signature.
+- **`StoreSecretService::StoreSecret`** — Encrypted document + encryption‑proof fields (Schnorr PoK of the encryption randomness) + policy metadata; optional storage proof signature.
 - **`InfoService::GetNodeInfo`** — Public address, peer id, `p2p_address` (`peer_id@host:port`), managed ring count.
 - **`InfoService::GetRingState`** — Current public polynomial hex and last PSS timestamp for a ring.
 
