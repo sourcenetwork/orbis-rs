@@ -212,10 +212,14 @@ async fn test_bulletin_document() {
         .await
         .unwrap();
 
+    // `document` / `proof` must be the real canonical JSON shapes: Vera derives
+    // the on-chain id by parsing them (`GenerateDocumentID`), so placeholder
+    // strings are now rejected with `ErrInvalidDocument`.
     let payload = DocumentPayload {
         ring_id,
-        document: "encrypted-document".to_string(),
-        proof: "proof".to_string(),
+        document: r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6,7],"nonce":[8,9,10,11,12,13]}"#
+            .to_string(),
+        proof: r#"{"challenge":[20,21],"response":[22,23]}"#.to_string(),
         policy_id,
         resource: "resource".to_string(),
         permission: "read".to_string(),

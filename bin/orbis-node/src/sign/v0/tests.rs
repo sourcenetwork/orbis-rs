@@ -32,6 +32,18 @@ use proto::v0::sign::{sign_service_server::SignService, StartSignRequest};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+
+/// Canonical JSON for a well-formed encrypted `Secret`. Document ids are now
+/// derived by *parsing* `DocumentPayload.document` / `.proof`
+/// (`common::blockchain::orbis::generate_document_id`), so placeholder strings no
+/// longer round-trip through the bulletin — every posted fixture needs real shapes.
+const TEST_DOCUMENT_JSON: &str =
+    r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6,7],"nonce":[8,9,10,11,12,13]}"#;
+const TEST_PROOF_JSON: &str = r#"{"challenge":[20,21],"response":[22,23]}"#;
+/// A second, byte-different document body for tamper tests (same shape, different
+/// `encrypted_data`, hence a different canonical id and different serialized bytes).
+const TAMPERED_DOCUMENT_JSON: &str =
+    r#"{"enc_cmt":[1,2,3],"encrypted_data":[99,98,97,96],"nonce":[8,9,10,11,12,13]}"#;
 /// End-to-end test: DKG → Sign message → Verify signature
 ///
 /// This test demonstrates the complete threshold BLS signing flow:
@@ -256,8 +268,8 @@ async fn create_test_document_and_post(
     // Create a test DocumentPayload
     let doc_payload = DocumentPayload {
         ring_id: ring_id.to_string(),
-        document: "test_encrypted_document".to_string(),
-        proof: "test_proof".to_string(),
+        document: TEST_DOCUMENT_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -767,8 +779,8 @@ async fn test_sign_fails_post_not_on_bulletin() {
     // Create a valid BulletinPost but DON'T post it to the bulletin
     let doc_payload = DocumentPayload {
         ring_id: ring_id.clone(),
-        document: "fake_document".to_string(),
-        proof: "test_proof".to_string(),
+        document: TEST_DOCUMENT_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "fake_policy".to_string(),
         resource: "fake_resource".to_string(),
         permission: "read".to_string(),
@@ -883,8 +895,8 @@ async fn test_sign_fails_tampered_payload() {
     // First, create and post a legitimate document
     let original_doc = DocumentPayload {
         ring_id: ring_id.clone(),
-        document: "original_document".to_string(),
-        proof: "test_proof".to_string(),
+        document: TEST_DOCUMENT_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -905,8 +917,8 @@ async fn test_sign_fails_tampered_payload() {
     // Now create a tampered BulletinPost with same ID but different payload
     let tampered_doc = DocumentPayload {
         ring_id: ring_id.clone(),
-        document: "TAMPERED_document".to_string(), // Different content!
-        proof: "test_proof".to_string(),
+        document: TAMPERED_DOCUMENT_JSON.to_string(), // Different content!
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),
@@ -1018,8 +1030,8 @@ async fn test_sign_fails_invalid_ring_id() {
     // Create a document with a fake ring_id that doesn't exist
     let doc_with_fake_ring = DocumentPayload {
         ring_id: "fake_ring_id_that_doesnt_exist_on_bulletin".to_string(),
-        document: "test_document".to_string(),
-        proof: "test_proof".to_string(),
+        document: TEST_DOCUMENT_JSON.to_string(),
+        proof: TEST_PROOF_JSON.to_string(),
         policy_id: "test_policy".to_string(),
         resource: "test_resource".to_string(),
         permission: "read".to_string(),

@@ -41,7 +41,8 @@ impl BenchSetup for Bls12381Bench {
 
         let data = b"benchmark secret payload - 36 bytes!";
         let (enc_cmt, secret, proof) =
-            ThresholdDealerNode::encrypt_secret(&aggregate_pk, data, None, None).unwrap();
+            ThresholdDealerNode::encrypt_secret(&aggregate_pk, data, None, &crate::bench_ctx())
+                .unwrap();
 
         let dealer = ThresholdDealerNode::new();
         let dist_key_shares: Vec<DistKeyShare<Fr>> = secret_shares

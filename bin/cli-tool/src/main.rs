@@ -418,33 +418,19 @@ pub enum SubCommands {
     },
     /// Store a prepared (pre-encrypted) secret - idempotent, safe for retries
     StorePreparedSecret {
-        /// Prepared secret JSON (from prepare-secret command)
+        /// Prepared secret JSON (from prepare-secret command). Carries the policy
+        /// fields the encryption proof is bound to.
         #[clap(long)]
         prepared_json: String,
         /// Ring id of ring to encrypt to
         #[clap(long)]
         ring_id: String,
-        /// Policy to attach to secret
-        #[clap(long)]
-        policy_id: String,
-        /// Resource type of secret
-        #[clap(long)]
-        resource: String,
-        /// Permission to read secret
-        #[clap(long)]
-        permission: String,
         /// A private key to generate a reader did
         #[clap(long, env = "ORBIS_READER_DID_PK", hide_env_values = true)]
         reader_did_pk: Option<String>,
         /// Request a proof
         #[clap(long)]
         with_proof: bool,
-        /// Optional tier
-        #[clap(long)]
-        tier: Option<String>,
-        /// Optional timestamp
-        #[clap(long)]
-        timestamp: Option<u64>,
     },
     /// Store secret by sending it to node (encrypts and stores in one step)
     StoreSecret {
@@ -896,13 +882,8 @@ async fn main() -> Result<()> {
         SubCommands::StorePreparedSecret {
             prepared_json,
             ring_id,
-            policy_id,
-            resource,
-            permission,
             reader_did_pk,
             with_proof,
-            tier,
-            timestamp,
         } => {
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let prepared: PreparedSecret = serde_json::from_str(&prepared_json)
@@ -911,13 +892,8 @@ async fn main() -> Result<()> {
                 network.endpoint.clone(),
                 &prepared,
                 ring_id,
-                policy_id,
-                resource,
-                permission,
                 Some(reader_did_pk),
                 with_proof,
-                tier,
-                timestamp,
             )
             .await?;
         }

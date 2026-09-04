@@ -18,7 +18,7 @@ Verification logic lives in [`src/lib.rs`](src/lib.rs); signing and gRPC utiliti
 | `PreClaims` | PRE: reader pubkey, object/namespace, optional derivation and salt |
 | `SignClaims` | Threshold signing: namespace, derivation bulletin id, message bytes |
 | `DkgClaims` | DKG: threshold, peer ids, optional `pss_interval` (automatic PSS refresh cadence) |
-| `StoreSecretClaims` | Storing encrypted material: ciphertext, commitments, policy fields, Chaum–Pedersen proof fields, optional tier/timestamp/metadata hash |
+| `StoreSecretClaims` | Storing encrypted material: ciphertext, commitment, policy fields, encryption‑proof fields (Schnorr PoK: `challenge`, `response`), optional tier/timestamp |
 
 Use `BearerToken<()>` when you only need the base claims.
 

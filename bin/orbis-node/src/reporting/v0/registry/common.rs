@@ -321,7 +321,10 @@ pub(super) fn require_inline_document_evidence<'a>(
         &evidence.permission,
         evidence.tier.as_deref(),
         timestamp,
-    );
+    )
+    .map_err(|e| {
+        ReportingError::InvalidReport(format!("inline document evidence is malformed: {e}"))
+    })?;
     if expected_object_id != object_id {
         return Err(ReportingError::InvalidReport(
             "inline document evidence does not match object_id".to_string(),

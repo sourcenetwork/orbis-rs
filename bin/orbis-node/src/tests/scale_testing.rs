@@ -255,13 +255,8 @@ async fn test_scale_dkg_pre_sign() {
         endpoint.clone(),
         &prepared,
         ring_id.clone(),
-        POLICY_ID.to_string(),
-        resource.to_string(),
-        permission.to_string(),
         Some(reader_identity.clone()),
         true,
-        None,
-        None,
     )
     .await
     .expect("store PRE secret");

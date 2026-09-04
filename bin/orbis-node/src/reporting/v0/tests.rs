@@ -2485,9 +2485,22 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
 
     let ring_pk_bytes = hex::decode(&ring.ring_pk).unwrap();
     let aggregate_pk = <DkgImpl as Dkg>::PublicKey::from_bytes(&ring_pk_bytes).unwrap();
-    let (_, encrypted_secret, proof) =
-        PreImpl::encrypt_secret(&aggregate_pk, b"reportable invalid PRE proof", None, None)
-            .unwrap();
+    let ciphertext_context = crypto::context::CiphertextContext {
+        ring_pk: ring_pk_bytes.clone(),
+        policy_id: "test-policy".to_string(),
+        resource: "test-resource".to_string(),
+        permission: "test-permission".to_string(),
+        tier: None,
+        timestamp: None,
+        salt: None,
+    };
+    let (_, encrypted_secret, proof) = PreImpl::encrypt_secret(
+        &aggregate_pk,
+        b"reportable invalid PRE proof",
+        None,
+        &ciphertext_context,
+    )
+    .unwrap();
     let secret_bytes = serde_json::to_vec(&encrypted_secret).unwrap();
     let document_payload = DocumentPayload {
         ring_id: ring_id.clone(),

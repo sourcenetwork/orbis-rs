@@ -565,7 +565,8 @@ where
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
-        // 10. Create response structure
+        // 10. Create the coordinator output. The service layer wraps this into a
+        // PreReencryptResponse with the ciphertext-binding context it verified.
         let pre_response = PreResponse {
             xnc_cmt: xnc_cmt_hex,
             secret,

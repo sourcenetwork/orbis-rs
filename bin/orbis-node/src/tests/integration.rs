@@ -304,13 +304,20 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 
     // MANUAL PATH: Encrypt and post directly to bulletin
     let object_id_manual = {
-        let metadata =
-            PreImpl::encode_metadata(&policy_id, &resource, &permission, None, None, None);
+        let ciphertext_context = crypto::context::CiphertextContext {
+            ring_pk: ring_pk_bytes.clone(),
+            policy_id: policy_id.clone(),
+            resource: resource.clone(),
+            permission: permission.clone(),
+            tier: tier.clone(),
+            timestamp,
+            salt: None,
+        };
         let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
             &ring_pk_point,
             b"Hello from manual path!",
             None,
-            Some(&metadata),
+            &ciphertext_context,
         )
         .expect("encrypt secret");
         let payload = DocumentPayload {
@@ -377,13 +384,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret,
         ring_id.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
         true,
-        None,
-        None,
     )
     .await;
 
@@ -395,13 +397,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret_derived.clone(),
         ring_id.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
         false,
-        tier.clone(),
-        timestamp,
     )
     .await;
     let object_id_derived = object_response_derived.object_id.clone();
@@ -642,13 +639,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_secret, // Same prepared data as first call
         ring_id.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
         true,
-        None,
-        None,
     )
     .await;
 
@@ -1022,13 +1014,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         endpoint.clone(),
         &prepared_post_refresh,
         ring_id.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
         Some(did_pk_string.clone()),
         true,
-        None,
-        None,
     )
     .await;
 
@@ -1333,13 +1320,8 @@ async fn store_prepared_secret_expect_success(
     endpoint: String,
     prepared: &cli_tool::PreparedSecret,
     ring_id: String,
-    policy_id: String,
-    resource: String,
-    permission: String,
     reader_did_pk: Option<String>,
     with_proof: bool,
-    tier: Option<String>,
-    timestamp: Option<u64>,
 ) -> cli_tool::StoreSecretResult {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut attempt = 1usize;
@@ -1349,13 +1331,8 @@ async fn store_prepared_secret_expect_success(
             endpoint.clone(),
             prepared,
             ring_id.clone(),
-            policy_id.clone(),
-            resource.clone(),
-            permission.clone(),
             reader_did_pk.clone(),
             with_proof,
-            tier.clone(),
-            timestamp,
         )
         .await
         {

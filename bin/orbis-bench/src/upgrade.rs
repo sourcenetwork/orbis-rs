@@ -421,13 +421,8 @@ async fn prepare_online_fixtures(
         endpoint.grpc_url.clone(),
         &prepared,
         ring_id.to_string(),
-        policy_id.clone(),
-        RESOURCE.to_string(),
-        PERMISSION.to_string(),
         Some(reader_identity.clone()),
         true,
-        None,
-        None,
     )
     .await?;
     cli_tool::register_object_to_chain_with_config(

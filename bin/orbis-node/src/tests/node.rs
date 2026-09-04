@@ -684,7 +684,6 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             policy_id: "policy-id".to_string(),
             resource: "resource".to_string(),
             permission: "read".to_string(),
-            shared_point: Vec::new(),
             challenge: Vec::new(),
             response: Vec::new(),
             with_proof: false,
