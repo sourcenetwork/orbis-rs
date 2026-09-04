@@ -47,6 +47,7 @@ async fn make_test_node_config(
             bulletin_grpc: None,
             chain_rest: None,
             chain_rpc: None,
+            chain_id: None,
             denom: None,
             data_dir: None,
             metrics_addr: None,
