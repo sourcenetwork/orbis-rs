@@ -1213,6 +1213,33 @@ mod divergence {
     }
 
     #[test]
+    fn classify_matching_scheduled_upgrade_is_not_divergent() {
+        // Every ring is effective v0 with the same scheduled v1: the rings are
+        // aligned on one trajectory, so this is not a divergence even though a
+        // pending version bump exists.
+        assert_eq!(
+            classify_divergence(&[
+                ("r1".to_string(), 0, Some(1)),
+                ("r2".to_string(), 0, Some(1)),
+            ]),
+            DivergenceReport::MultiRingSingleVersion
+        );
+    }
+
+    #[test]
+    fn classify_differing_scheduled_targets_is_divergent() {
+        // Same effective version, but the rings are scheduled onto different
+        // next versions → distinct trajectories → divergent.
+        assert_eq!(
+            classify_divergence(&[
+                ("r1".to_string(), 0, Some(1)),
+                ("r2".to_string(), 0, Some(2)),
+            ]),
+            DivergenceReport::Divergent
+        );
+    }
+
+    #[test]
     fn member_ring_versions_filters_non_members_and_unfinalized() {
         let payloads = vec![
             ("r1".to_string(), payload("pk1", &["me", "b"], stable(0))),

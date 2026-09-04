@@ -185,18 +185,36 @@ fn divergence_report_state() -> &'static Mutex<DivergenceReportState> {
 enum DivergenceReport {
     /// Fewer than two member rings — nothing to report.
     Silent,
-    /// Two or more member rings, all on a single protocol version.
+    /// Two or more member rings that share a single `(effective, pending)`
+    /// protocol trajectory — aligned, even when that shared trajectory carries a
+    /// scheduled upgrade that has not activated yet.
     MultiRingSingleVersion,
-    /// Two or more member rings spanning more than one protocol version
-    /// (scheduled-but-not-yet-active upgrades count).
+    /// Two or more member rings whose `(effective, pending)` trajectories are not
+    /// all identical: they sit on different effective versions, or a
+    /// scheduled-but-not-yet-active upgrade applies to some rings and not others.
     Divergent,
 }
 
 /// Distinct protocol versions across `member_rings`, effective plus any pending.
+/// Feeds the human-readable `versions=` log field only; classification uses
+/// [`divergence_trajectories`].
 fn divergence_versions(member_rings: &[(String, u64, Option<u64>)]) -> BTreeSet<u64> {
     member_rings
         .iter()
         .flat_map(|(_, effective, pending)| std::iter::once(*effective).chain(*pending))
+        .collect()
+}
+
+/// Distinct `(effective_version, pending_next_version)` trajectories across
+/// `member_rings`. Rings sharing an identical trajectory — same effective
+/// version and the same (or no) scheduled upgrade — are aligned, not divergent,
+/// even when that shared trajectory has a pending version bump.
+fn divergence_trajectories(
+    member_rings: &[(String, u64, Option<u64>)],
+) -> BTreeSet<(u64, Option<u64>)> {
+    member_rings
+        .iter()
+        .map(|(_, effective, pending)| (*effective, *pending))
         .collect()
 }
 
@@ -205,7 +223,7 @@ fn classify_divergence(member_rings: &[(String, u64, Option<u64>)]) -> Divergenc
     if member_rings.len() < 2 {
         return DivergenceReport::Silent;
     }
-    if divergence_versions(member_rings).len() > 1 {
+    if divergence_trajectories(member_rings).len() > 1 {
         DivergenceReport::Divergent
     } else {
         DivergenceReport::MultiRingSingleVersion
@@ -321,16 +339,22 @@ async fn warn_on_protocol_version_divergence<D>(
     };
 
     // Cheap pre-read gate: skip the per-ring bulletin reads entirely if the check
-    // ran recently. Only one task drives the PSS scheduler, so check-then-act on
-    // the throttle here is race-free; the lock is never held across an `.await`.
+    // ran recently. Reserve the interval — advance `last_check_secs` while still
+    // holding the lock — so overlapping scheduler tasks (e.g. several in-process
+    // nodes in a test sharing this process-global state) cannot both pass the
+    // gate and each run the bulletin read batch. The lock is never held across an
+    // `.await`. `divergence_log_decision` re-stamps `last_check_secs` with the
+    // same `now_secs` after the reads; that is redundant here but keeps that
+    // function self-contained for its own unit tests.
     {
-        let state = divergence_report_state()
+        let mut state = divergence_report_state()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if now_secs.saturating_sub(state.last_check_secs) < PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS
         {
             return;
         }
+        state.last_check_secs = now_secs;
     }
 
     let mut payloads: Vec<(String, RingPayload)> = Vec::with_capacity(ring_index.len());
