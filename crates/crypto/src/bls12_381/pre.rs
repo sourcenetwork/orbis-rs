@@ -599,7 +599,7 @@ impl ThresholdDealerNode {
         // Produce random oracle challenge (ei)
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
-        let ri = Fr::rand(&mut rng); // ri = Random scalar
+        let ri = crate::helpers::sample_nonzero(|| Fr::rand(&mut rng));
         let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
         let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
 

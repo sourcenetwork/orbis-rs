@@ -639,6 +639,16 @@ pub trait Dkg: Send + Sync {
     /// The aggregate public key is the sum of all nodes' constant terms
     /// in their polynomial commitments
     fn compute_aggregate_public_key(&self) -> Result<Self::PublicKey>;
+
+    /// Return whether a public key is the group identity.
+    ///
+    /// Fresh and reshare ceremonies must reject this value because it is not a
+    /// usable PRE/signing key. Refresh delta polynomials are the exception: they
+    /// intentionally have an identity constant term.
+    fn public_key_is_identity(public_key: &Self::PublicKey) -> bool
+    where
+        Self: Sized;
+
     /// Get complaints about malicious nodes
     fn get_complaints(&self) -> &HashMap<u32, Vec<u32>>;
     /// Compute the public polynomial (sum of all commitments)
@@ -924,6 +934,7 @@ pub trait ThresholdSigner {
         shares: &[Self::SigShare],
         t: usize,
         n: usize,
+        group_public_key: &Self::PublicKey,
         msg: &[u8],
         all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Option<Self::Signature>>;

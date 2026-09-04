@@ -121,7 +121,7 @@ where
     }
 
     let sig = signer
-        .recover(&sig_shares, threshold, total, msg, &commitments)?
+        .recover(&sig_shares, threshold, total, agg_pk, msg, &commitments)?
         .expect("signature recovery must succeed");
 
     signer.verify(agg_pk, msg, &sig)?;

@@ -160,6 +160,7 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                             black_box(&fixture.sig_shares),
                             black_box(t),
                             black_box(n),
+                            black_box(&fixture.aggregate_pk),
                             black_box(MSG),
                             black_box(&fixture.commitments),
                         )
@@ -234,6 +235,7 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
                             black_box(&sig_shares),
                             black_box(fixture.t),
                             black_box(fixture.n),
+                            black_box(&fixture.aggregate_pk),
                             black_box(MSG),
                             black_box(&commitments),
                         )

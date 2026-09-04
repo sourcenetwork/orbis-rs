@@ -1,5 +1,5 @@
 use crate::decaf377::dkg::DKGNode;
-use crate::decaf377::sign::{FrostNonceCommitment, ThresholdDecafSigner};
+use crate::decaf377::sign::{FrostNonceCommitment, SchnorrSignature, ThresholdDecafSigner};
 
 use crate::r#trait::{DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
@@ -49,6 +49,59 @@ fn test_signer_creation() {
     assert_eq!(
         ThresholdDecafSigner::name(),
         "threshold-frost-decaf377".to_string()
+    );
+}
+
+#[test]
+fn test_identity_public_key_cannot_verify_forged_signature() {
+    let signer = ThresholdDecafSigner::new();
+    let z = Fr::from(42u64);
+    let forged = SchnorrSignature {
+        // For Y = identity, choosing R = z*G makes zG = R + cY for every
+        // message without knowledge of a secret key.
+        r_point: Element::GENERATOR * z,
+        z,
+    };
+
+    assert!(signer
+        .verify(&Element::default(), b"identity-key forgery", &forged)
+        .is_err());
+    assert!(
+        ThresholdDecafSigner::derive_public_key(&Element::default(), b"derivation", None,).is_err()
+    );
+}
+
+#[test]
+fn test_frost_group_commitment_is_bound_to_public_key() {
+    let signer = ThresholdDecafSigner::new();
+    let share = PriShare {
+        i: 1,
+        v: Fr::from(9u64),
+    };
+    let dks = DistKeyShare {
+        pri_share: share.clone(),
+    };
+    let (commitment, _state) = signer.generate_nonces(&dks).unwrap();
+    let commitments = vec![(share.i, commitment)];
+    let shares = vec![PubShare {
+        i: share.i,
+        v: Fr::from(1u64),
+    }];
+    let pk_a = Element::GENERATOR * Fr::from(3u64);
+    let pk_b = Element::GENERATOR * Fr::from(5u64);
+
+    let sig_a = signer
+        .recover(&shares, 1, 1, &pk_a, b"same message", &commitments)
+        .unwrap()
+        .unwrap();
+    let sig_b = signer
+        .recover(&shares, 1, 1, &pk_b, b"same message", &commitments)
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(
+        sig_a.r_point, sig_b.r_point,
+        "the FROST binding factors must commit to the effective group key"
     );
 }
 

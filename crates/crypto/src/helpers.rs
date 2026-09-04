@@ -1,5 +1,19 @@
 use crate::error::{CryptoError, Result};
+use ark_ff::Zero;
 use ark_serialize::CanonicalSerialize;
+
+/// Draw until the sampler returns a non-zero value.
+///
+/// Protocol proof nonces must never be zero: for a Schnorr-style response
+/// `z = r + c*x`, setting `r = 0` exposes `x` whenever `c` is non-zero.
+pub(crate) fn sample_nonzero<F: Zero>(mut sample: impl FnMut() -> F) -> F {
+    loop {
+        let candidate = sample();
+        if !candidate.is_zero() {
+            return candidate;
+        }
+    }
+}
 /// Generate a random keypair (secret key scalar, public key point).
 ///
 /// Uses OsRng for cryptographic randomness.
@@ -46,5 +60,17 @@ pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8
         Err(CryptoError::SerializationError(
             ark_serialize::SerializationError::InvalidData,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sample_nonzero;
+
+    #[test]
+    fn sample_nonzero_retries_zero() {
+        let mut draws = [0u64, 0, 7].into_iter();
+        assert_eq!(sample_nonzero(|| draws.next().unwrap()), 7);
+        assert!(draws.next().is_none());
     }
 }

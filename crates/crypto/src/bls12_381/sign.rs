@@ -169,6 +169,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         shares: &[Self::SigShare],
         t: usize,
         n: usize,
+        _group_public_key: &Self::PublicKey,
         _msg: &[u8],
         _all_commitments: &[(u32, Self::NonceCommitment)],
     ) -> Result<Option<Self::Signature>> {
