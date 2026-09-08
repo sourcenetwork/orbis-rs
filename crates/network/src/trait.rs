@@ -38,6 +38,13 @@ pub struct NetworkIngressLimits {
     /// Maximum concurrent inbound QUIC connections from one immediate peer (one
     /// endpoint key), across all ALPNs including Gossip.
     pub max_connections_per_peer: usize,
+    /// Slots within `max_concurrent_connections` that only peers an
+    /// [`AuthorizedPeers`] oracle vouches for may occupy. Unauthorized identities
+    /// (a cheap self-issued endpoint key not yet a registered/committee node) are
+    /// capped at `max_concurrent_connections - authorized_connection_reserve`, so
+    /// a Sybil flood cannot deny an authorized peer a slot. `0` (the default)
+    /// disables the reservation; must not exceed `max_concurrent_connections`.
+    pub authorized_connection_reserve: usize,
     /// Maximum accepted-but-not-yet-closed inbound direct streams node-wide. A
     /// stream counts from `accept_bi()` until its handler task ends; the
     /// per-frame read deadline bounds how long a stalled stream holds a slot.
@@ -68,12 +75,27 @@ impl Default for NetworkIngressLimits {
             max_events_per_peer_per_second: 512,
             max_concurrent_connections: 2048,
             max_connections_per_peer: 32,
+            authorized_connection_reserve: 0,
             max_concurrent_streams: 4096,
             max_streams_per_peer: 32,
             max_inbound_request_body_bytes: 192 * 1024 * 1024,
             max_inbound_reply_body_bytes: 64 * 1024 * 1024,
         }
     }
+}
+
+/// Application-supplied oracle for whether an endpoint identity currently holds
+/// an authorized role — a registered / committee node, as opposed to a cheap
+/// self-issued key. Consulted only at inbound *connection* admission: authorized
+/// peers may occupy the `authorized_connection_reserve` slots that unauthorized
+/// identities cannot, so a Sybil flood degrades availability for unknown peers
+/// but never for the committee.
+///
+/// The answer may be briefly stale (e.g. a peer just added by an in-flight
+/// reshare); a stale "not authorized" only means that peer competes in the
+/// shared pool for a short window, which is self-correcting.
+pub trait AuthorizedPeers: Send + Sync {
+    fn is_authorized(&self, peer: &PeerId) -> bool;
 }
 
 /// Bounded reasons why authenticated-peer ingress was dropped before

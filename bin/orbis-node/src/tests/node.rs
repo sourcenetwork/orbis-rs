@@ -136,6 +136,7 @@ async fn make_test_node_config(
         .expect("Failed to create local storage"),
         authz,
         bulletin,
+        authorized_peers: None,
     };
     (config, db_path)
 }
@@ -870,6 +871,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         local_storage,
         authz,
         bulletin,
+        authorized_peers: None,
     };
     let node = init_node(config).await.expect("Node initialization failed");
 

@@ -20,8 +20,8 @@ use crate::iroh::pubsub::IrohPubSub;
 use crate::iroh::router::IrohRouterBuilder;
 use crate::metrics;
 use crate::r#trait::{
-    Connection, Message, Network, NetworkIngressLimits, PeerConnection, PeerId, ProtocolHandler,
-    RouterBuilder as RouterBuilderTrait,
+    AuthorizedPeers, Connection, Message, Network, NetworkIngressLimits, PeerConnection, PeerId,
+    ProtocolHandler, RouterBuilder as RouterBuilderTrait,
 };
 
 /// Configuration for IrohNetwork
@@ -98,6 +98,7 @@ pub struct IrohNetworkBuilder {
     private_routes_only: bool,
     idle_timeout_ms: Option<u32>,
     keep_alive_interval_ms: Option<u64>,
+    authorized_peers: Option<Arc<dyn AuthorizedPeers>>,
 }
 
 impl IrohNetworkBuilder {
@@ -141,6 +142,22 @@ impl IrohNetworkBuilder {
     /// peer, across all ALPNs including Gossip.
     pub fn max_connections_per_peer(mut self, limit: usize) -> Self {
         self.config.ingress_limits.max_connections_per_peer = limit;
+        self
+    }
+
+    /// Reserve `slots` of `max_concurrent_connections` for peers the
+    /// [`AuthorizedPeers`] oracle vouches for. No effect without
+    /// [`Self::authorized_peers`]. Must not exceed `max_concurrent_connections`.
+    pub fn authorized_connection_reserve(mut self, slots: usize) -> Self {
+        self.config.ingress_limits.authorized_connection_reserve = slots;
+        self
+    }
+
+    /// Supply the oracle that decides whether an inbound connection's endpoint
+    /// identity is an authorized (registered / committee) peer, and so may
+    /// occupy the reserved connection slots.
+    pub fn authorized_peers(mut self, oracle: Arc<dyn AuthorizedPeers>) -> Self {
+        self.authorized_peers = Some(oracle);
         self
     }
 
@@ -308,7 +325,10 @@ impl IrohNetworkBuilder {
         let gossip = iroh_gossip::net::Gossip::builder()
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());
-        let ingress = Arc::new(IngressController::new(self.config.ingress_limits)?);
+        let ingress = Arc::new(IngressController::new(
+            self.config.ingress_limits,
+            self.authorized_peers.clone(),
+        )?);
         let pubsub = Arc::new(IrohPubSub::new(
             endpoint.clone(),
             gossip.clone(),

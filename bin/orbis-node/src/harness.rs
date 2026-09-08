@@ -223,6 +223,7 @@ pub async fn spawn_harness_node(
         local_storage,
         authz,
         bulletin: bulletin as Arc<dyn Bulletin + Send + Sync>,
+        authorized_peers: None,
     };
     let node = init_node(config)
         .await

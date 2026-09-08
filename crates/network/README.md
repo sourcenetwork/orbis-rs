@@ -120,7 +120,14 @@ reply is still attacker-controlled input under the MPC threat model):
   lifetime, so an identity that opens connections and keeps them alive with
   transport traffic — never opening a stream — is still bounded (the 5-minute
   idle timeout does not catch this, since transport traffic refreshes it). Any
-  connection refusal closes the connection.
+  connection refusal closes the connection. `authorized_connection_reserve` of
+  the node-wide budget is set aside for peers the optional [`AuthorizedPeers`]
+  oracle vouches for (registered / committee nodes); unauthorized identities —
+  cheap self-issued keys — are capped at `total - reserve`, so a Sybil flood
+  degrades availability for unknown peers but never denies the committee a slot.
+  The oracle answer may be briefly stale for a peer just added by an in-flight
+  reshare; that peer competes in the shared pool until the next refresh, which
+  is self-correcting. Without an oracle the reservation is inert.
 - **Per accepted stream**, at `accept_bi()` in the router:
   `max_concurrent_streams` caps parked inbound streams node-wide,
   `max_streams_per_peer` caps them per immediate endpoint key, and the open

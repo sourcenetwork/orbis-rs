@@ -291,6 +291,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
             local_storage,
             authz,
             bulletin,
+            authorized_peers: None,
         };
 
         let node = init_node(config).await.expect("init_node");
@@ -433,6 +434,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
             local_storage,
             authz,
             bulletin,
+            authorized_peers: None,
         };
 
         let node = init_node(config).await.expect("init_node");

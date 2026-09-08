@@ -696,6 +696,7 @@ async fn iroh_builder_default_config() {
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 512);
     assert_eq!(config.ingress_limits.max_concurrent_connections, 2048);
     assert_eq!(config.ingress_limits.max_connections_per_peer, 32);
+    assert_eq!(config.ingress_limits.authorized_connection_reserve, 0);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 4096);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 32);
     assert_eq!(
@@ -723,6 +724,7 @@ async fn iroh_builder_custom_max_message_size() {
         .max_ingress_events_per_peer_per_second(23)
         .max_concurrent_connections(41)
         .max_connections_per_peer(11)
+        .authorized_connection_reserve(13)
         .max_concurrent_streams(29)
         .max_streams_per_peer(7)
         .max_inbound_request_body_bytes(9 * 1024 * 1024)
@@ -739,6 +741,7 @@ async fn iroh_builder_custom_max_message_size() {
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 23);
     assert_eq!(config.ingress_limits.max_concurrent_connections, 41);
     assert_eq!(config.ingress_limits.max_connections_per_peer, 11);
+    assert_eq!(config.ingress_limits.authorized_connection_reserve, 13);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 29);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 7);
     assert_eq!(
@@ -1817,4 +1820,105 @@ async fn iroh_gossip_connection_consumes_a_connection_lease() {
 
     router1.shutdown().await.unwrap();
     router2.shutdown().await.unwrap();
+}
+
+/// The reserved connection pool keeps a slot for an authorized peer even when a
+/// flood of unauthorized identities has filled the shared portion.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_authorized_connection_reserve_keeps_a_slot_for_the_committee() {
+    use crate::AuthorizedPeers;
+
+    const PROTOCOL: &[u8] = b"test/conn-reserve";
+
+    let flooder = new_test_network().await;
+    let committee = new_test_network().await;
+    let committee_key = committee.local_peer_id().as_bytes().to_vec();
+
+    struct OnlyCommittee(Vec<u8>);
+    impl AuthorizedPeers for OnlyCommittee {
+        fn is_authorized(&self, peer: &PeerId) -> bool {
+            peer.as_bytes() == self.0
+        }
+    }
+
+    // 2 total connection slots, 1 reserved → 1 shared.
+    let server = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_concurrent_connections(2)
+        .authorized_connection_reserve(1)
+        .authorized_peers(Arc::new(OnlyCommittee(committee_key)))
+        .build()
+        .await
+        .expect("build server");
+    let router = server
+        .create_router_builder()
+        .unwrap()
+        .accept(PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
+        .spawn()
+        .expect("spawn server router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // The flooder fills the single shared slot and keeps the connection open.
+    let flood_conn = flooder
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("flooder connect");
+    let flood_stream = flood_conn.open_stream().await.expect("flood stream");
+    flood_stream
+        .send(Message::new(bytes::Bytes::from_static(b"hold"), PROTOCOL))
+        .await
+        .expect("flood send");
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), flood_stream.recv()).await;
+
+    // A second flooder is refused — the remaining slot is the reserve.
+    let flooder2 = new_test_network().await;
+    let denied = flooder2
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("second flooder handshake");
+    let denied_dead = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let opened = denied.open_stream().await;
+            if opened.is_err()
+                || opened
+                    .unwrap()
+                    .send(Message::new(bytes::Bytes::from_static(b"x"), PROTOCOL))
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        denied_dead.is_ok(),
+        "an unauthorized connection must not take the reserved slot"
+    );
+
+    // The authorized committee peer still gets in, from the reserve.
+    let committee_conn = committee
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("committee connect");
+    let committee_stream = committee_conn
+        .open_stream()
+        .await
+        .expect("committee stream");
+    committee_stream
+        .send(Message::new(bytes::Bytes::from_static(b"ping"), PROTOCOL))
+        .await
+        .expect("committee send");
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), committee_stream.recv())
+        .await
+        .expect("committee reply must not be starved by the flood")
+        .expect("echo");
+    assert_eq!(&echoed.data[..], b"ping");
+
+    flood_conn.close().await.unwrap();
+    committee_conn.close().await.unwrap();
+    router.shutdown().await.unwrap();
 }

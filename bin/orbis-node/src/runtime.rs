@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
+use crate::helpers::authorized_peers::{spawn_authorized_peer_refresh, RingAuthorizedPeers};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
@@ -52,6 +53,9 @@ pub(crate) struct NodeConfig {
     pub(crate) local_storage: LocalStorageImpl,
     pub(crate) authz: Arc<dyn Authz>,
     pub(crate) bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// Oracle backing the network layer's reserved inbound-connection capacity.
+    /// `None` in test harnesses that build the network without a reservation.
+    pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
 /// Result of initializing the node (before starting the server)
@@ -66,6 +70,7 @@ pub(crate) struct InitializedNode {
     pub(crate) grpc_concurrency_limit_per_connection: usize,
     pub(crate) grpc_max_concurrent_streams: u32,
     pub(crate) cors_policy: CorsPolicy,
+    pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
 /// Running info-only gRPC server used while the node waits for chain funding.
@@ -176,6 +181,10 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Initialize network for node-to-node communication
         tracing::info!("Initializing network");
+        // Empty up front; a background task in `run_server` rebuilds it from ring
+        // state once the bulletin is available. An empty set just means no
+        // connection slots are reserved yet.
+        let authorized_peers = Arc::new(RingAuthorizedPeers::new());
         let mut network_builder = network::NetworkImpl::builder()
             .secret_key(secret_key)
             .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
@@ -188,6 +197,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             )
             .max_concurrent_connections(constants::NETWORK_MAX_CONCURRENT_CONNECTIONS)
             .max_connections_per_peer(constants::NETWORK_MAX_CONNECTIONS_PER_PEER)
+            .authorized_connection_reserve(constants::NETWORK_AUTHORIZED_CONNECTION_RESERVE)
+            .authorized_peers(authorized_peers.clone())
             .max_concurrent_streams(constants::NETWORK_MAX_CONCURRENT_STREAMS)
             .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER)
             .max_inbound_request_body_bytes(constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES)
@@ -304,6 +315,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 local_storage,
                 authz,
                 bulletin,
+                authorized_peers: Some(authorized_peers),
             };
 
             init_node(config).await
@@ -501,6 +513,7 @@ pub(crate) async fn init_node(
         grpc_concurrency_limit_per_connection: config.args.grpc_concurrency_limit_per_connection,
         grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
         cors_policy: config.cors_policy,
+        authorized_peers: config.authorized_peers,
     })
 }
 
@@ -540,6 +553,17 @@ async fn run_server(
         .dkg_session_state
         .take_soft_stall_receiver()
         .map(|rx| spawn_dkg_soft_stall_worker(node.app_state.clone(), rx));
+
+    // Keep the network layer's authorized-peer set (reserved inbound-connection
+    // capacity for the committee) fresh from ring state.
+    let authorized_peer_refresh = node.authorized_peers.clone().map(|oracle| {
+        spawn_authorized_peer_refresh(
+            oracle,
+            node.app_state.local_storage.clone(),
+            node.app_state.bulletin.clone(),
+            constants::AUTHORIZED_PEER_REFRESH_INTERVAL,
+        )
+    });
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
@@ -653,6 +677,9 @@ async fn run_server(
     }
     if let Some(worker) = dkg_soft_stall_worker {
         worker.shutdown().await;
+    }
+    if let Some(handle) = authorized_peer_refresh {
+        handle.abort();
     }
 
     // Clean shutdown of router
