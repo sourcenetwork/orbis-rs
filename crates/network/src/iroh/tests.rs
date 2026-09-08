@@ -1212,7 +1212,7 @@ async fn iroh_per_frame_rate_limit_bounds_a_single_long_lived_stream() {
         }
     }
     assert!(
-        echoed >= 1 && echoed < SENT,
+        (1..SENT).contains(&echoed),
         "one stream must be frame-rate throttled before all {SENT} frames (echoed {echoed}, rate {RATE})"
     );
 
