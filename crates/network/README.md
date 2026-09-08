@@ -107,33 +107,43 @@ relayed DKG contribution.
 
 ## Ingress and resource behavior
 
-[`NetworkIngressLimits`](src/trait.rs) bounds inbound work with two independent
-admission points (`src/ingress.rs`):
+[`NetworkIngressLimits`](src/trait.rs) bounds inbound work at several
+independent admission points (`src/ingress.rs`), applied to every
+router-accepted stream and to the reply read on every client-opened stream (a
+reply is still attacker-controlled input under the MPC threat model):
 
 - **Per accepted stream**, at `accept_bi()` in the router:
-  `max_concurrent_streams` caps parked inbound streams node-wide and
-  `max_streams_per_peer` caps them per immediate endpoint key. A stream that
-  cannot be admitted is dropped before any byte is read. The lease is held for
-  the whole stream lifetime; the read deadline below bounds how long a stalled
-  stream can hold it.
-- **Per decoded frame**, inside `IrohStreamWrapper::recv` (inbound streams only)
-  and in the Gossip topic receiver: `max_concurrent_work` caps frames whose
-  application work is executing, and `max_events_per_peer_per_second` is charged
-  once per frame — so a single admitted long-lived stream cannot pump unlimited
-  messages without spending its per-peer rate budget. The work lease rides on
-  the returned `Message` / `AuthenticatedMessage` and is released when the
-  application drops it.
+  `max_concurrent_streams` caps parked inbound streams node-wide,
+  `max_streams_per_peer` caps them per immediate endpoint key, and the open
+  itself charges `max_events_per_peer_per_second`, so a peer cannot open streams
+  (or, once at its cap, retry the open) faster than its budget. A stream that
+  cannot be admitted is dropped before any byte is read; after
+  `MAX_CONSECUTIVE_STREAM_REFUSALS` such drops in a row the QUIC connection is
+  closed.
+- **Per `recv()` attempt**, before any bytes are read: one
+  `max_events_per_peer_per_second` tick, so an oversized length, an immediate
+  EOF, or a timed-out partial frame still costs the peer its budget.
+- **Per frame body**, after the length prefix is parsed but before the buffer is
+  allocated: `max_inbound_body_bytes` is a node-wide weighted byte budget. A
+  body that cannot be reserved fails the `recv()` — a flood of large frames
+  cannot commit gigabytes of buffers ahead of `max_concurrent_work`. The
+  reservation rides on the returned `Message` for its whole lifetime, so the
+  budget bounds received-but-unprocessed bytes.
+- **Per decoded frame**: `max_concurrent_work` caps frames whose application
+  work is executing. The work lease rides on the returned `Message` /
+  `AuthenticatedMessage` and is released when the application drops it.
 
 `stream_read_timeout` (`IrohNetworkBuilder::stream_read_timeout_ms`, default
-30 s) is the deadline for reading one complete length-prefixed frame. A partial
-length prefix or a slow/partial body that misses it fails the `recv()` and
-releases the stream slot, so a slow-loris peer cannot pin a slot indefinitely.
-It is set above every application-level response timeout, so it only ever fires
-on a genuinely stalled stream.
+30 s) is the deadline for each read — the length prefix and the body each get
+this long. A slow-loris peer that dribbles either fails the `recv()` and
+releases its stream slot. It is set above every application-level response
+timeout, so it only ever fires on a genuinely stalled stream. A zero value is
+rejected at build time, as is a `max_inbound_body_bytes` below one
+`max_message_size`.
 
 Separately, `max_message_size` (set on the router/connection builder — see
 `RouterBuilder::max_message_size` in `src/trait.rs` and `src/iroh/router.rs`)
-rejects an oversized frame before allocating its payload.
+rejects an oversized frame before reserving or allocating its payload.
 
 The node connection pool is bounded and LRU-evicted. DKG pair streams are
 ceremony-scoped and close after the required share digests are acknowledged; PRE

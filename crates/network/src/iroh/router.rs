@@ -16,6 +16,11 @@ use crate::metrics;
 use crate::r#trait::{PeerId, ProtocolHandler};
 use crate::r#trait::{Router as RouterTrait, RouterBuilder as RouterBuilderTrait};
 
+/// Consecutive stream-admission refusals on one QUIC connection before it is
+/// closed. A peer that keeps opening streams while pinned at its per-peer cap or
+/// stream rate limit is otherwise an unbounded accept/drop loop.
+const MAX_CONSECUTIVE_STREAM_REFUSALS: u32 = 128;
+
 /// Router for composing multiple protocols over a single iroh endpoint
 ///
 /// This router uses iroh's Router builder to handle multiple protocols
@@ -138,20 +143,35 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
         async move {
             let peer_id = PeerId::from_bytes(connection.remote_id().as_bytes());
             let protocol: Arc<[u8]> = Arc::from(connection.alpn());
+            let mut consecutive_refusals: u32 = 0;
 
             // Loop: accept one QUIC stream per request/session, spawn a handler task per stream.
             // This lets concurrent sessions to the same peer run on independent streams
             // with no head-of-line blocking between them.
             while let Ok((send, recv)) = connection.accept_bi().await {
                 // One slot per accepted stream, held for the stream's lifetime
-                // and bounded per peer. Frame-level work admission is charged
+                // and bounded per peer; one peer-rate tick for the open itself.
+                // Frame-level work and receive-byte admission are charged
                 // separately, inside `IrohStreamWrapper::recv`.
-                let stream_lease = match ingress.try_admit_stream(&peer_id) {
-                    Ok(lease) => lease,
+                let stream_lease = match ingress.try_admit_stream(&peer_id).await {
+                    Ok(lease) => {
+                        consecutive_refusals = 0;
+                        lease
+                    }
                     Err(reason) => {
                         metrics::record_ingress_dropped(protocol.as_ref(), reason.as_str());
                         drop(send);
                         drop(recv);
+                        consecutive_refusals += 1;
+                        if consecutive_refusals >= MAX_CONSECUTIVE_STREAM_REFUSALS {
+                            metrics::record_ingress_dropped(
+                                protocol.as_ref(),
+                                "connection_terminated",
+                            );
+                            connection
+                                .close(1u32.into(), b"ingress: repeated stream admission failures");
+                            break;
+                        }
                         continue;
                     }
                 };

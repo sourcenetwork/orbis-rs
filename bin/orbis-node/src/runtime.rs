@@ -186,7 +186,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 args.network_max_ingress_events_per_peer_per_second,
             )
             .max_concurrent_streams(constants::NETWORK_MAX_CONCURRENT_STREAMS)
-            .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER);
+            .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER)
+            .max_inbound_body_bytes(constants::NETWORK_MAX_INBOUND_BODY_BYTES);
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \

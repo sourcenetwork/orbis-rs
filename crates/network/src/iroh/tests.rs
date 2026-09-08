@@ -373,7 +373,9 @@ async fn iroh_direct_stream_and_pubsub_share_the_concurrency_budget() {
     #[async_trait]
     impl ProtocolHandler for HoldingHandler {
         async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
-            let _ = connection.recv().await?;
+            // Retain the message so its frame-admission lease (the single work
+            // permit) stays held while this handler blocks on `release`.
+            let _held = connection.recv().await?;
             let _ = self.started.send(()).await;
             self.release.notified().await;
             Ok(())
@@ -694,6 +696,10 @@ async fn iroh_builder_default_config() {
     assert_eq!(config.ingress_limits.max_concurrent_streams, 4096);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 32);
     assert_eq!(
+        config.ingress_limits.max_inbound_body_bytes,
+        256 * 1024 * 1024
+    );
+    assert_eq!(
         config.stream_read_timeout,
         std::time::Duration::from_secs(30)
     );
@@ -709,6 +715,7 @@ async fn iroh_builder_custom_max_message_size() {
         .max_ingress_events_per_peer_per_second(23)
         .max_concurrent_streams(29)
         .max_streams_per_peer(7)
+        .max_inbound_body_bytes(9 * 1024 * 1024)
         .stream_read_timeout_ms(4_500)
         .build()
         .await
@@ -721,9 +728,40 @@ async fn iroh_builder_custom_max_message_size() {
     assert_eq!(config.ingress_limits.max_concurrent_streams, 29);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 7);
     assert_eq!(
+        config.ingress_limits.max_inbound_body_bytes,
+        9 * 1024 * 1024
+    );
+    assert_eq!(
         config.stream_read_timeout,
         std::time::Duration::from_millis(4_500)
     );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_builder_rejects_zero_read_timeout() {
+    let Err(error) = IrohNetwork::builder()
+        .stream_read_timeout_ms(0)
+        .build()
+        .await
+    else {
+        panic!("a zero read timeout must be rejected at build time");
+    };
+    assert!(matches!(error, crate::NetworkError::InvalidConfig(_)));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_builder_rejects_body_budget_below_one_frame() {
+    let Err(error) = IrohNetwork::builder()
+        .max_message_size(4 * 1024 * 1024)
+        .max_inbound_body_bytes(1024 * 1024)
+        .build()
+        .await
+    else {
+        panic!("body budget below max_message_size must be rejected");
+    };
+    assert!(matches!(error, crate::NetworkError::InvalidConfig(_)));
 }
 
 #[tokio::test]
@@ -870,7 +908,7 @@ async fn iroh_router_builder_max_message_size() {
 
 #[tokio::test]
 #[serial_test::serial]
-async fn iroh_router_builder_limits_concurrent_inbound_streams() {
+async fn iroh_router_builder_limits_concurrent_inbound_work() {
     struct HoldingHandler {
         started: mpsc::Sender<()>,
         release: Arc<Notify>,
@@ -879,8 +917,11 @@ async fn iroh_router_builder_limits_concurrent_inbound_streams() {
     #[async_trait]
     impl ProtocolHandler for HoldingHandler {
         async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            // Frame admission — the single work permit — is taken inside
+            // `recv()`. Signal only after it succeeds, and hold the message so
+            // the permit stays taken while this handler blocks.
+            let _held = connection.recv().await?;
             let _ = self.started.send(()).await;
-            let _ = connection.recv().await;
             self.release.notified().await;
             Ok(())
         }
@@ -943,7 +984,7 @@ async fn iroh_router_builder_limits_concurrent_inbound_streams() {
         tokio::time::timeout(std::time::Duration::from_millis(250), started_rx.recv())
             .await
             .is_err(),
-        "second stream should be dropped while the concurrency permit is held"
+        "second stream's frame should be refused while the work permit is held"
     );
 
     release.notify_waiters();
@@ -1122,18 +1163,20 @@ async fn iroh_partial_frame_read_times_out_and_frees_the_stream_slot() {
 }
 
 /// Every frame — not just the first on a stream — is charged against the sending
-/// peer's one-second frame budget, so one admitted long-lived stream cannot pump
+/// peer's one-second budget, so one admitted long-lived stream cannot pump
 /// unlimited messages for free.
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_per_frame_rate_limit_bounds_a_single_long_lived_stream() {
     const PROTOCOL: &[u8] = b"test/frame-rate";
+    const RATE: usize = 5;
+    const SENT: usize = 12;
 
     let client = new_test_network().await;
     let server = IrohNetwork::builder()
         .bind_addr_v4(loopback())
         .private_routes_only()
-        .max_ingress_events_per_peer_per_second(3)
+        .max_ingress_events_per_peer_per_second(RATE)
         .build()
         .await
         .expect("build server");
@@ -1151,11 +1194,11 @@ async fn iroh_per_frame_rate_limit_bounds_a_single_long_lived_stream() {
         .expect("connect");
     let stream = conn.open_stream().await.expect("open stream");
 
-    // All six frames ride one already-admitted stream. Only the first three in
-    // the window are echoed; the fourth trips the per-peer frame rate limit and
-    // ends the server's handler loop.
+    // All frames ride one already-admitted stream. The peer budget (spent by the
+    // stream open plus one tick per frame) cuts the echo loop off well before
+    // the 12th frame.
     let mut echoed = 0usize;
-    for i in 0..6 {
+    for i in 0..SENT {
         if stream
             .send(Message::new(bytes::Bytes::from(format!("f{i}")), PROTOCOL))
             .await
@@ -1168,11 +1211,115 @@ async fn iroh_per_frame_rate_limit_bounds_a_single_long_lived_stream() {
             _ => break,
         }
     }
-    assert_eq!(
-        echoed, 3,
-        "one stream must not exceed the per-peer frame rate"
+    assert!(
+        echoed >= 1 && echoed < SENT,
+        "one stream must be frame-rate throttled before all {SENT} frames (echoed {echoed}, rate {RATE})"
     );
 
+    conn.close().await.unwrap();
+    router.shutdown().await.unwrap();
+}
+
+/// A flood of large frames cannot commit unbounded buffer memory: the node-wide
+/// receive-byte budget refuses a body it cannot cover while an earlier one is
+/// still in flight, and recovers when that message is dropped.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_receive_byte_budget_refuses_oversized_backlog_and_recovers() {
+    const PROTOCOL: &[u8] = b"test/byte-budget";
+    const FRAME: usize = 256 * 1024;
+
+    struct Parker {
+        entered: mpsc::Sender<()>,
+        release: Arc<Notify>,
+    }
+    #[async_trait]
+    impl ProtocolHandler for Parker {
+        async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            // Holding the message holds its receive-byte reservation.
+            let _held = connection.recv().await?;
+            let _ = self.entered.send(()).await;
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let client = new_test_network().await;
+    let server = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_message_size(FRAME)
+        // Room for exactly one in-flight FRAME-sized body.
+        .max_inbound_body_bytes(FRAME)
+        .build()
+        .await
+        .expect("build server");
+    let (entered_tx, mut entered_rx) = mpsc::channel(4);
+    let release = Arc::new(Notify::new());
+    let router = server
+        .create_router_builder()
+        .unwrap()
+        .accept(
+            PROTOCOL.to_vec(),
+            Arc::new(Parker {
+                entered: entered_tx,
+                release: Arc::clone(&release),
+            }),
+        )
+        .spawn()
+        .expect("spawn server router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let conn = client
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("connect");
+
+    // First large frame is admitted; its handler parks holding the whole budget.
+    let hold = conn.open_stream().await.expect("open hold stream");
+    hold.send(Message::new(bytes::Bytes::from(vec![1u8; FRAME]), PROTOCOL))
+        .await
+        .expect("send frame 1");
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx.recv())
+        .await
+        .expect("handler 1 enters")
+        .expect("handler 1 signal");
+
+    // Second large frame: the body cannot be reserved, so its handler errors and
+    // the server closes the stream rather than buffering another 256 KiB.
+    let blocked = conn.open_stream().await.expect("open blocked stream");
+    blocked
+        .send(Message::new(bytes::Bytes::from(vec![2u8; FRAME]), PROTOCOL))
+        .await
+        .expect("send frame 2");
+    assert!(
+        matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), blocked.recv()).await,
+            Ok(Err(_))
+        ),
+        "a second large frame must be refused while the receive-byte budget is fully reserved"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), entered_rx.recv())
+            .await
+            .is_err(),
+        "the refused frame's handler must not have entered"
+    );
+
+    // Release the first handler; the budget frees and a fresh large frame is admitted.
+    release.notify_waiters();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let after = conn.open_stream().await.expect("open post-release stream");
+    after
+        .send(Message::new(bytes::Bytes::from(vec![3u8; FRAME]), PROTOCOL))
+        .await
+        .expect("send frame 3");
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx.recv())
+        .await
+        .expect("handler 3 enters once the budget frees")
+        .expect("handler 3 signal");
+
+    release.notify_waiters();
     conn.close().await.unwrap();
     router.shutdown().await.unwrap();
 }

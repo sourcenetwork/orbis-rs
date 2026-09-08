@@ -134,9 +134,18 @@ impl IrohNetworkBuilder {
         self
     }
 
-    /// Set the per-frame stream read deadline (milliseconds). A partial length
-    /// prefix or slow/partial body that misses this deadline fails the `recv()`
-    /// and releases the ingress work permit it was holding.
+    /// Set the node-wide byte budget for inbound frame bodies received and not
+    /// yet processed. Must be at least `max_message_size`; enforced in
+    /// [`Self::build`].
+    pub fn max_inbound_body_bytes(mut self, bytes: usize) -> Self {
+        self.config.ingress_limits.max_inbound_body_bytes = bytes;
+        self
+    }
+
+    /// Set the per-read stream deadline (milliseconds). The length prefix and
+    /// the body each get this long to arrive in full; a read that misses it
+    /// fails the `recv()` and releases the stream slot. Must be non-zero;
+    /// enforced in [`Self::build`].
     pub fn stream_read_timeout_ms(mut self, ms: u64) -> Self {
         self.config.stream_read_timeout = Duration::from_millis(ms);
         self
@@ -205,6 +214,18 @@ impl IrohNetworkBuilder {
 
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
+        if self.config.stream_read_timeout.is_zero() {
+            return Err(NetworkError::InvalidConfig(
+                "stream_read_timeout must be non-zero".to_string(),
+            ));
+        }
+        if self.config.ingress_limits.max_inbound_body_bytes < self.config.max_message_size {
+            return Err(NetworkError::InvalidConfig(format!(
+                "max_inbound_body_bytes ({}) must be at least max_message_size ({})",
+                self.config.ingress_limits.max_inbound_body_bytes, self.config.max_message_size
+            )));
+        }
+
         let mut builder = Endpoint::builder();
 
         if let Some(key) = self.secret_key {
@@ -342,6 +363,7 @@ impl Network for IrohNetwork {
             conn,
             self.config.max_message_size,
             self.config.stream_read_timeout,
+            Arc::clone(&self.ingress),
         )))
     }
 
@@ -391,10 +413,16 @@ pub struct IrohPeerConnection {
     protocol: Arc<[u8]>,
     max_message_size: usize,
     read_timeout: Duration,
+    ingress: Arc<IngressController>,
 }
 
 impl IrohPeerConnection {
-    pub fn new(conn: IrohConnection, max_message_size: usize, read_timeout: Duration) -> Self {
+    pub(crate) fn new(
+        conn: IrohConnection,
+        max_message_size: usize,
+        read_timeout: Duration,
+        ingress: Arc<IngressController>,
+    ) -> Self {
         let node_id = conn.remote_id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
         let protocol = Arc::from(conn.alpn());
@@ -404,6 +432,7 @@ impl IrohPeerConnection {
             protocol,
             max_message_size,
             read_timeout,
+            ingress,
         }
     }
 }
@@ -422,9 +451,10 @@ impl PeerConnection for IrohPeerConnection {
             Arc::clone(&self.protocol),
             self.max_message_size,
             self.read_timeout,
-            // Client-opened stream: reading the reply to our own request is not
-            // ingress, so it is not admission-controlled.
-            None,
+            // A reply on a client-opened stream is still attacker-controlled
+            // network input under the MPC threat model, so it is charged against
+            // the same node-wide budgets as any inbound frame.
+            Some(Arc::clone(&self.ingress)),
         )))
     }
 
@@ -518,60 +548,103 @@ impl Connection for IrohStreamWrapper {
     async fn recv(&self) -> Result<Message> {
         let start = Instant::now();
 
+        // Charge the peer's per-second budget for this read attempt up front:
+        // an oversized length, an immediate EOF, or a timed-out partial frame
+        // never yields a decodable frame, but each still costs the peer here.
+        if let Some(ingress) = &self.ingress {
+            if !ingress.charge_peer_rate(&self.peer_id).await {
+                metrics::record_ingress_dropped(
+                    &self.protocol,
+                    crate::IngressDropReason::RateLimit.as_str(),
+                );
+                return Err(NetworkError::Connection(
+                    "inbound frame dropped at ingress: rate_limit".to_string(),
+                ));
+            }
+        }
+
         let mut stream = self.recv_stream.lock().await;
 
-        // One deadline covers the whole frame: a peer that dribbles a partial
-        // length prefix or a partial body can no longer pin this task (and, on
-        // an inbound stream, its ingress permit) indefinitely.
-        let buffer = match tokio::time::timeout(self.read_timeout, async {
-            let mut len_bytes = [0u8; 4];
-            stream.read_exact(&mut len_bytes).await.map_err(|e| {
-                NetworkError::Connection(format!("Failed to read message length: {}", e))
-            })?;
-            let len = u32::from_be_bytes(len_bytes) as usize;
-
-            if len > self.max_message_size {
-                return Err(NetworkError::Connection(format!(
-                    "Message too large: {} bytes (max {})",
-                    len, self.max_message_size
-                )));
-            }
-
-            let mut buffer = vec![0u8; len];
-            stream.read_exact(&mut buffer).await.map_err(|e| {
-                NetworkError::Connection(format!("Failed to read message data: {}", e))
-            })?;
-            Ok(buffer)
-        })
-        .await
-        {
-            Ok(Ok(buffer)) => buffer,
-            Ok(Err(error)) => {
+        // Length prefix. Each read gets its own deadline so a slow-loris peer is
+        // bounded whether it stalls on the header or on the body.
+        let mut len_bytes = [0u8; 4];
+        match tokio::time::timeout(self.read_timeout, stream.read_exact(&mut len_bytes)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
                 metrics::record_recv_error(&self.protocol);
-                return Err(error);
+                return Err(NetworkError::Connection(format!(
+                    "Failed to read message length: {}",
+                    e
+                )));
             }
             Err(_) => {
                 metrics::record_recv_error(&self.protocol);
                 return Err(NetworkError::Timeout(format!(
-                    "stream read did not complete a frame within {:?}",
+                    "stream header read did not complete within {:?}",
                     self.read_timeout
                 )));
             }
+        }
+        let len = u32::from_be_bytes(len_bytes) as usize;
+
+        if len > self.max_message_size {
+            metrics::record_recv_error(&self.protocol);
+            return Err(NetworkError::Connection(format!(
+                "Message too large: {} bytes (max {})",
+                len, self.max_message_size
+            )));
+        }
+
+        // Reserve this body's share of the node-wide receive-byte budget before
+        // allocating the buffer, so many concurrent large frames cannot commit
+        // gigabytes ahead of the work-item cap. The reservation rides on the
+        // returned `Message` and is released when the application drops it.
+        let body_reservation = match &self.ingress {
+            Some(ingress) => match ingress.try_reserve_body(len) {
+                Some(reservation) => Some(Arc::new(reservation)),
+                None => {
+                    metrics::record_ingress_dropped(&self.protocol, "memory_limit");
+                    return Err(NetworkError::Connection(
+                        "inbound frame dropped at ingress: memory_limit".to_string(),
+                    ));
+                }
+            },
+            None => None,
         };
 
-        // Release the read lock before the ingress await; nothing else touches
-        // the recv half concurrently, but there is no reason to hold it.
+        let mut buffer = vec![0u8; len];
+        match tokio::time::timeout(self.read_timeout, stream.read_exact(&mut buffer)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                metrics::record_recv_error(&self.protocol);
+                return Err(NetworkError::Connection(format!(
+                    "Failed to read message data: {}",
+                    e
+                )));
+            }
+            Err(_) => {
+                metrics::record_recv_error(&self.protocol);
+                return Err(NetworkError::Timeout(format!(
+                    "stream body read did not complete within {:?}",
+                    self.read_timeout
+                )));
+            }
+        }
+
+        // Release the read lock before the work-permit acquisition.
         drop(stream);
 
         let ingress_lease = match &self.ingress {
-            Some(ingress) => match ingress.try_admit_frame(&self.peer_id).await {
-                Ok(lease) => Some(Arc::new(lease)),
-                Err(reason) => {
-                    metrics::record_ingress_dropped(&self.protocol, reason.as_str());
-                    return Err(NetworkError::Connection(format!(
-                        "inbound frame dropped at ingress: {}",
-                        reason.as_str()
-                    )));
+            Some(ingress) => match ingress.try_acquire_work() {
+                Some(lease) => Some(Arc::new(lease)),
+                None => {
+                    metrics::record_ingress_dropped(
+                        &self.protocol,
+                        crate::IngressDropReason::ConcurrencyLimit.as_str(),
+                    );
+                    return Err(NetworkError::Connection(
+                        "inbound frame dropped at ingress: concurrency_limit".to_string(),
+                    ));
                 }
             },
             None => None,
@@ -583,6 +656,7 @@ impl Connection for IrohStreamWrapper {
 
         let mut message = Message::new(Bytes::from(buffer), Arc::clone(&self.protocol));
         message.ingress_lease = ingress_lease;
+        message.body_reservation = body_reservation;
         Ok(message)
     }
 

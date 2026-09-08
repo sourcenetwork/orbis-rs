@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::sync::Arc;
 
-use crate::ingress::IngressLease;
+use crate::ingress::{BodyReservation, IngressLease};
 use crate::pubsub::PubSub;
 
 /// Inbound work limits shared by direct protocol streams and PubSub frames.
@@ -31,6 +31,12 @@ pub struct NetworkIngressLimits {
     /// endpoint key). Stops a single unauthenticated identity from occupying a
     /// large share of the node-wide stream budget.
     pub max_streams_per_peer: usize,
+    /// Node-wide budget, in bytes, for inbound direct-stream frame bodies that
+    /// have been received and not yet dropped by the application. Reserved after
+    /// the length prefix is parsed but before the buffer is allocated, so a
+    /// flood of large frames cannot commit gigabytes of buffers ahead of
+    /// `max_concurrent_work`. Must be at least one `max_message_size`.
+    pub max_inbound_body_bytes: usize,
 }
 
 impl Default for NetworkIngressLimits {
@@ -40,6 +46,7 @@ impl Default for NetworkIngressLimits {
             max_events_per_peer_per_second: 512,
             max_concurrent_streams: 4096,
             max_streams_per_peer: 32,
+            max_inbound_body_bytes: 256 * 1024 * 1024,
         }
     }
 }
@@ -86,10 +93,12 @@ pub struct Message {
     pub protocol: Arc<[u8]>,
     /// Holds one unit of shared ingress work capacity for a frame received from
     /// the network, released when the application drops this message (and every
-    /// clone of it). `None` for a message the caller built to send, and for a
-    /// message read on a client-opened stream (reading a reply to our own
-    /// request is not ingress).
+    /// clone of it). `None` for a message the caller built to send.
     pub(crate) ingress_lease: Option<Arc<IngressLease>>,
+    /// Holds this frame body's share of the node-wide receive-byte budget for
+    /// the message's lifetime, so the budget bounds received-but-unprocessed
+    /// bytes. `None` for a message the caller built to send.
+    pub(crate) body_reservation: Option<Arc<BodyReservation>>,
 }
 
 impl Message {
@@ -98,6 +107,7 @@ impl Message {
             data: data.into(),
             protocol: protocol.into(),
             ingress_lease: None,
+            body_reservation: None,
         }
     }
 
@@ -106,6 +116,7 @@ impl Message {
             data: Bytes::from(data),
             protocol: Arc::from(protocol.into_boxed_slice()),
             ingress_lease: None,
+            body_reservation: None,
         }
     }
 }

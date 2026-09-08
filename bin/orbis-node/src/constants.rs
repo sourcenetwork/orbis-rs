@@ -380,6 +380,16 @@ pub const NETWORK_MAX_CONCURRENT_STREAMS: usize = 4096;
 /// streams at most.
 pub const NETWORK_MAX_STREAMS_PER_PEER: usize = 32;
 
+/// Node-wide byte budget for inbound P2P direct-stream frame bodies that have
+/// been received and not yet processed.
+///
+/// Reserved after the length prefix is parsed but before the buffer is
+/// allocated, so a flood of large frames cannot commit gigabytes of buffers
+/// ahead of `NETWORK_MAX_CONCURRENT_INGRESS_WORK`. Must be at least the largest
+/// `max_message_size` any route uses (1 MiB); 256 MiB leaves ample headroom for
+/// committee-scale concurrent traffic.
+pub const NETWORK_MAX_INBOUND_BODY_BYTES: usize = 256 * 1024 * 1024;
+
 /// Deadline for reading one complete length-prefixed frame from a P2P stream.
 ///
 /// Bounds how long a partial length prefix or a slow/partial body can pin an
