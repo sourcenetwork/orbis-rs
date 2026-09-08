@@ -8,16 +8,29 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::sync::Arc;
 
+use crate::ingress::IngressLease;
 use crate::pubsub::PubSub;
 
 /// Inbound work limits shared by direct protocol streams and PubSub frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkIngressLimits {
-    /// Maximum concurrently executing inbound application work across transports.
+    /// Maximum inbound frames whose application work is executing concurrently
+    /// across transports. Charged once per decoded frame (a direct-stream
+    /// message or an authenticated PubSub frame) and released when the
+    /// application finishes with it — not once per stream.
     pub max_concurrent_work: usize,
-    /// Maximum accepted direct streams and PubSub frames from one immediate peer
-    /// per one-second window.
+    /// Maximum decoded direct-stream frames and PubSub frames accepted from one
+    /// immediate peer per one-second window. Charged per frame, so a single
+    /// long-lived stream cannot pump unlimited messages for free.
     pub max_events_per_peer_per_second: usize,
+    /// Maximum accepted-but-not-yet-closed inbound direct streams node-wide. A
+    /// stream counts from `accept_bi()` until its handler task ends; the
+    /// per-frame read deadline bounds how long a stalled stream holds a slot.
+    pub max_concurrent_streams: usize,
+    /// Maximum concurrent inbound direct streams from one immediate peer (one
+    /// endpoint key). Stops a single unauthenticated identity from occupying a
+    /// large share of the node-wide stream budget.
+    pub max_streams_per_peer: usize,
 }
 
 impl Default for NetworkIngressLimits {
@@ -25,6 +38,8 @@ impl Default for NetworkIngressLimits {
         Self {
             max_concurrent_work: 1024,
             max_events_per_peer_per_second: 512,
+            max_concurrent_streams: 4096,
+            max_streams_per_peer: 32,
         }
     }
 }
@@ -69,6 +84,12 @@ impl PeerId {
 pub struct Message {
     pub data: Bytes,
     pub protocol: Arc<[u8]>,
+    /// Holds one unit of shared ingress work capacity for a frame received from
+    /// the network, released when the application drops this message (and every
+    /// clone of it). `None` for a message the caller built to send, and for a
+    /// message read on a client-opened stream (reading a reply to our own
+    /// request is not ingress).
+    pub(crate) ingress_lease: Option<Arc<IngressLease>>,
 }
 
 impl Message {
@@ -76,6 +97,7 @@ impl Message {
         Self {
             data: data.into(),
             protocol: protocol.into(),
+            ingress_lease: None,
         }
     }
 
@@ -83,6 +105,7 @@ impl Message {
         Self {
             data: Bytes::from(data),
             protocol: Arc::from(protocol.into_boxed_slice()),
+            ingress_lease: None,
         }
     }
 }

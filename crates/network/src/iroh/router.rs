@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use iroh::protocol::Router as IrohRouter;
 use iroh::Endpoint;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::{NetworkError, Result};
 use crate::ingress::IngressController;
@@ -40,6 +41,7 @@ pub struct IrohRouterBuilder {
     gossip: Option<iroh_gossip::net::Gossip>,
     handlers: Vec<(Vec<u8>, Arc<dyn ProtocolHandler>)>,
     max_message_size: usize,
+    read_timeout: Duration,
     ingress: Arc<IngressController>,
 }
 
@@ -67,11 +69,13 @@ impl RouterBuilderTrait for IrohRouterBuilder {
             builder = builder.accept(iroh_gossip::ALPN, gossip);
         }
         let max_message_size = self.max_message_size;
+        let read_timeout = self.read_timeout;
 
         for (alpn, handler) in self.handlers {
             let handler_wrapper = IrohProtocolHandlerWrapper {
                 handler,
                 max_message_size,
+                read_timeout,
                 ingress: Arc::clone(&self.ingress),
             };
             builder = builder.accept(alpn, Arc::new(handler_wrapper));
@@ -88,6 +92,7 @@ impl IrohRouterBuilder {
         endpoint: Endpoint,
         gossip: Option<iroh_gossip::net::Gossip>,
         max_message_size: usize,
+        read_timeout: Duration,
         ingress: Arc<IngressController>,
     ) -> Self {
         Self {
@@ -95,6 +100,7 @@ impl IrohRouterBuilder {
             gossip,
             handlers: Vec::new(),
             max_message_size,
+            read_timeout,
             ingress,
         }
     }
@@ -104,6 +110,7 @@ impl IrohRouterBuilder {
 struct IrohProtocolHandlerWrapper {
     handler: Arc<dyn ProtocolHandler>,
     max_message_size: usize,
+    read_timeout: Duration,
     ingress: Arc<IngressController>,
 }
 
@@ -112,6 +119,7 @@ impl std::fmt::Debug for IrohProtocolHandlerWrapper {
         f.debug_struct("IrohProtocolHandlerWrapper")
             .field("handler", &"<ProtocolHandler>")
             .field("max_message_size", &self.max_message_size)
+            .field("read_timeout", &self.read_timeout)
             .finish()
     }
 }
@@ -125,6 +133,7 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
     {
         let handler = Arc::clone(&self.handler);
         let max_message_size = self.max_message_size;
+        let read_timeout = self.read_timeout;
         let ingress = Arc::clone(&self.ingress);
         async move {
             let peer_id = PeerId::from_bytes(connection.remote_id().as_bytes());
@@ -134,7 +143,10 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
             // This lets concurrent sessions to the same peer run on independent streams
             // with no head-of-line blocking between them.
             while let Ok((send, recv)) = connection.accept_bi().await {
-                let lease = match ingress.try_admit(&peer_id).await {
+                // One slot per accepted stream, held for the stream's lifetime
+                // and bounded per peer. Frame-level work admission is charged
+                // separately, inside `IrohStreamWrapper::recv`.
+                let stream_lease = match ingress.try_admit_stream(&peer_id) {
                     Ok(lease) => lease,
                     Err(reason) => {
                         metrics::record_ingress_dropped(protocol.as_ref(), reason.as_str());
@@ -150,12 +162,14 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
                     peer_id.clone(),
                     Arc::clone(&protocol),
                     max_message_size,
+                    read_timeout,
+                    Some(Arc::clone(&ingress)),
                 );
                 let h = Arc::clone(&handler);
                 let handler_peer_id = peer_id.clone();
                 let handler_protocol = Arc::clone(&protocol);
                 tokio::spawn(async move {
-                    let _lease = lease;
+                    let _stream_lease = stream_lease;
                     let _ = h.handle(Box::new(stream)).await.inspect_err(|error| {
                         tracing::error!(
                             peer_id = ?handler_peer_id,

@@ -107,22 +107,37 @@ relayed DKG contribution.
 
 ## Ingress and resource behavior
 
-[`NetworkIngressLimits`](src/trait.rs) bounds inbound work before a direct
-protocol handler runs:
+[`NetworkIngressLimits`](src/trait.rs) bounds inbound work with two independent
+admission points (`src/ingress.rs`):
 
-- `max_concurrent_work` caps concurrently executing ingress work (enforced via
-  a semaphore, see `src/ingress.rs`);
-- `max_events_per_peer_per_second` caps new events from one remote peer.
+- **Per accepted stream**, at `accept_bi()` in the router:
+  `max_concurrent_streams` caps parked inbound streams node-wide and
+  `max_streams_per_peer` caps them per immediate endpoint key. A stream that
+  cannot be admitted is dropped before any byte is read. The lease is held for
+  the whole stream lifetime; the read deadline below bounds how long a stalled
+  stream can hold it.
+- **Per decoded frame**, inside `IrohStreamWrapper::recv` (inbound streams only)
+  and in the Gossip topic receiver: `max_concurrent_work` caps frames whose
+  application work is executing, and `max_events_per_peer_per_second` is charged
+  once per frame — so a single admitted long-lived stream cannot pump unlimited
+  messages without spending its per-peer rate budget. The work lease rides on
+  the returned `Message` / `AuthenticatedMessage` and is released when the
+  application drops it.
+
+`stream_read_timeout` (`IrohNetworkBuilder::stream_read_timeout_ms`, default
+30 s) is the deadline for reading one complete length-prefixed frame. A partial
+length prefix or a slow/partial body that misses it fails the `recv()` and
+releases the stream slot, so a slow-loris peer cannot pin a slot indefinitely.
+It is set above every application-level response timeout, so it only ever fires
+on a genuinely stalled stream.
 
 Separately, `max_message_size` (set on the router/connection builder — see
 `RouterBuilder::max_message_size` in `src/trait.rs` and `src/iroh/router.rs`)
 rejects an oversized frame before allocating its payload.
 
-The router drops excess streams before DKG, PRE, or SIGN deserialization and
-records the corresponding P2P error. The node connection pool is bounded and
-LRU-evicted. DKG pair streams are ceremony-scoped and close after the required
-share digests are acknowledged; PRE and SIGN also use bounded
-request/response streams.
+The node connection pool is bounded and LRU-evicted. DKG pair streams are
+ceremony-scoped and close after the required share digests are acknowledged; PRE
+and SIGN also use bounded request/response streams.
 
 ## Key invariants
 

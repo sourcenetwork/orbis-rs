@@ -348,15 +348,45 @@ pub const NETWORK_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 
 /// Maximum concurrently executing inbound P2P application work items.
 ///
-/// Direct QUIC streams and authenticated Gossip frames share this node-wide
-/// budget. Excess work is dropped before protocol deserialization.
+/// Charged once per decoded frame (a direct-stream message or an authenticated
+/// Gossip frame) and released when the application finishes with it. Direct
+/// streams and Gossip frames share this node-wide budget. Excess work is
+/// dropped before protocol deserialization.
 pub const NETWORK_MAX_CONCURRENT_INGRESS_WORK: usize = 1024;
 
-/// Maximum inbound P2P work items accepted from one immediate peer per second.
+/// Maximum inbound P2P frames accepted from one immediate peer per second.
 ///
-/// Direct streams and Gossip frames count against the same peer budget. DKG,
-/// PRE, and Sign traffic should stay well below this in normal operation.
+/// Charged per decoded frame, so a single long-lived stream cannot pump
+/// unlimited messages without spending this budget. Direct streams and Gossip
+/// frames count against the same peer budget. DKG, PRE, and Sign traffic should
+/// stay well below this in normal operation.
 pub const NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND: usize = 512;
+
+/// Maximum accepted-but-not-yet-closed inbound P2P direct streams node-wide.
+///
+/// A stream counts from `accept_bi()` until its handler task ends;
+/// `NETWORK_STREAM_READ_TIMEOUT_MS` bounds how long a stalled or slow-loris
+/// stream can hold a slot. Sized well above `NETWORK_MAX_CONCURRENT_INGRESS_WORK`
+/// so healthy pipelining is never stream-capped — it exists to bound memory and
+/// file descriptors under a flood.
+pub const NETWORK_MAX_CONCURRENT_STREAMS: usize = 4096;
+
+/// Maximum concurrent inbound P2P direct streams from one immediate peer (one
+/// Iroh endpoint key).
+///
+/// Stops a single unauthenticated endpoint identity from occupying a large share
+/// of the node-wide stream budget while committee authorization is still
+/// pending. Legitimate DKG, PRE, and Sign peers open a handful of concurrent
+/// streams at most.
+pub const NETWORK_MAX_STREAMS_PER_PEER: usize = 32;
+
+/// Deadline for reading one complete length-prefixed frame from a P2P stream.
+///
+/// Bounds how long a partial length prefix or a slow/partial body can pin an
+/// ingress work permit. Set above every application-level response timeout
+/// (`PEER_RESPONSE_TIMEOUT` and friends) so it only ever fires on a genuinely
+/// stalled stream, never pre-empting a slower legitimate exchange.
+pub const NETWORK_STREAM_READ_TIMEOUT_MS: u64 = 30_000;
 
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;

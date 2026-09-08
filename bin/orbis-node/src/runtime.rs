@@ -180,10 +180,13 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .secret_key(secret_key)
             .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
             .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
+            .stream_read_timeout_ms(constants::NETWORK_STREAM_READ_TIMEOUT_MS)
             .max_concurrent_ingress_work(args.network_max_concurrent_ingress_work)
             .max_ingress_events_per_peer_per_second(
                 args.network_max_ingress_events_per_peer_per_second,
-            );
+            )
+            .max_concurrent_streams(constants::NETWORK_MAX_CONCURRENT_STREAMS)
+            .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER);
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \
