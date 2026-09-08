@@ -182,12 +182,16 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
             .stream_read_timeout_ms(constants::NETWORK_STREAM_READ_TIMEOUT_MS)
             .max_concurrent_ingress_work(args.network_max_concurrent_ingress_work)
+            .max_concurrent_reply_ingress_work(constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK)
             .max_ingress_events_per_peer_per_second(
                 args.network_max_ingress_events_per_peer_per_second,
             )
+            .max_concurrent_connections(constants::NETWORK_MAX_CONCURRENT_CONNECTIONS)
+            .max_connections_per_peer(constants::NETWORK_MAX_CONNECTIONS_PER_PEER)
             .max_concurrent_streams(constants::NETWORK_MAX_CONCURRENT_STREAMS)
             .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER)
-            .max_inbound_body_bytes(constants::NETWORK_MAX_INBOUND_BODY_BYTES);
+            .max_inbound_request_body_bytes(constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES)
+            .max_inbound_reply_body_bytes(constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES);
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \

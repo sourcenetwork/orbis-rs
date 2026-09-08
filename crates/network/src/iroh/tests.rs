@@ -692,12 +692,19 @@ async fn iroh_builder_default_config() {
         "Default max message size should be 1MB"
     );
     assert_eq!(config.ingress_limits.max_concurrent_work, 1024);
+    assert_eq!(config.ingress_limits.max_concurrent_reply_work, 1024);
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 512);
+    assert_eq!(config.ingress_limits.max_concurrent_connections, 2048);
+    assert_eq!(config.ingress_limits.max_connections_per_peer, 32);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 4096);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 32);
     assert_eq!(
-        config.ingress_limits.max_inbound_body_bytes,
-        256 * 1024 * 1024
+        config.ingress_limits.max_inbound_request_body_bytes,
+        192 * 1024 * 1024
+    );
+    assert_eq!(
+        config.ingress_limits.max_inbound_reply_body_bytes,
+        64 * 1024 * 1024
     );
     assert_eq!(
         config.stream_read_timeout,
@@ -712,10 +719,14 @@ async fn iroh_builder_custom_max_message_size() {
     let network = IrohNetwork::builder()
         .max_message_size(custom_size)
         .max_concurrent_ingress_work(17)
+        .max_concurrent_reply_ingress_work(19)
         .max_ingress_events_per_peer_per_second(23)
+        .max_concurrent_connections(41)
+        .max_connections_per_peer(11)
         .max_concurrent_streams(29)
         .max_streams_per_peer(7)
-        .max_inbound_body_bytes(9 * 1024 * 1024)
+        .max_inbound_request_body_bytes(9 * 1024 * 1024)
+        .max_inbound_reply_body_bytes(3 * 1024 * 1024)
         .stream_read_timeout_ms(4_500)
         .build()
         .await
@@ -724,12 +735,19 @@ async fn iroh_builder_custom_max_message_size() {
     let config = network.config();
     assert_eq!(config.max_message_size, custom_size);
     assert_eq!(config.ingress_limits.max_concurrent_work, 17);
+    assert_eq!(config.ingress_limits.max_concurrent_reply_work, 19);
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 23);
+    assert_eq!(config.ingress_limits.max_concurrent_connections, 41);
+    assert_eq!(config.ingress_limits.max_connections_per_peer, 11);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 29);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 7);
     assert_eq!(
-        config.ingress_limits.max_inbound_body_bytes,
+        config.ingress_limits.max_inbound_request_body_bytes,
         9 * 1024 * 1024
+    );
+    assert_eq!(
+        config.ingress_limits.max_inbound_reply_body_bytes,
+        3 * 1024 * 1024
     );
     assert_eq!(
         config.stream_read_timeout,
@@ -753,15 +771,158 @@ async fn iroh_builder_rejects_zero_read_timeout() {
 #[tokio::test]
 #[serial_test::serial]
 async fn iroh_builder_rejects_body_budget_below_one_frame() {
+    // Request pool below one frame.
     let Err(error) = IrohNetwork::builder()
         .max_message_size(4 * 1024 * 1024)
-        .max_inbound_body_bytes(1024 * 1024)
+        .max_inbound_request_body_bytes(1024 * 1024)
+        .max_inbound_reply_body_bytes(4 * 1024 * 1024)
         .build()
         .await
     else {
-        panic!("body budget below max_message_size must be rejected");
+        panic!("request body budget below max_message_size must be rejected");
     };
     assert!(matches!(error, crate::NetworkError::InvalidConfig(_)));
+
+    // Reply pool below one frame is rejected too.
+    let Err(error) = IrohNetwork::builder()
+        .max_message_size(4 * 1024 * 1024)
+        .max_inbound_request_body_bytes(4 * 1024 * 1024)
+        .max_inbound_reply_body_bytes(1024 * 1024)
+        .build()
+        .await
+    else {
+        panic!("reply body budget below max_message_size must be rejected");
+    };
+    assert!(matches!(error, crate::NetworkError::InvalidConfig(_)));
+}
+
+/// A route-level `max_message_size` override above the receive-byte budget is
+/// caught when the router spawns, not left to fail every large frame at `recv()`.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_router_rejects_message_size_above_body_budget() {
+    let network = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_message_size(1024 * 1024)
+        .max_inbound_request_body_bytes(8 * 1024 * 1024)
+        .build()
+        .await
+        .expect("build network");
+
+    let spawn_result = network
+        .create_router_builder()
+        .unwrap()
+        .max_message_size(16 * 1024 * 1024) // above the 8 MiB request body pool
+        .accept(
+            b"test/oversize".to_vec(),
+            Arc::new(trait_tests::EchoHandler),
+        )
+        .spawn();
+
+    let Err(error) = spawn_result else {
+        panic!("router max_message_size above the body budget must be rejected");
+    };
+    assert!(matches!(error, crate::NetworkError::InvalidConfig(_)));
+}
+
+/// An inbound request handler that holds its request work permit while it awaits
+/// a reply must not starve that reply: replies draw on a separate budget.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_reply_work_budget_is_independent_of_request_budget() {
+    const HOLD_PROTOCOL: &[u8] = b"test/hold-request";
+    const ECHO_PROTOCOL: &[u8] = b"test/echo-reply";
+
+    // `node` accepts one inbound request at a time and also acts as a client.
+    let node = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_concurrent_ingress_work(1)
+        .build()
+        .await
+        .expect("build node");
+    let peer = new_test_network().await;
+
+    struct Parker {
+        entered: mpsc::Sender<()>,
+        release: Arc<Notify>,
+    }
+    #[async_trait]
+    impl ProtocolHandler for Parker {
+        async fn handle(&self, connection: Box<dyn Connection>) -> Result<()> {
+            let _held = connection.recv().await?; // holds the single request permit
+            let _ = self.entered.send(()).await;
+            self.release.notified().await;
+            Ok(())
+        }
+    }
+
+    let (entered_tx, mut entered_rx) = mpsc::channel(2);
+    let release = Arc::new(Notify::new());
+    let node_router = node
+        .create_router_builder()
+        .unwrap()
+        .accept(
+            HOLD_PROTOCOL.to_vec(),
+            Arc::new(Parker {
+                entered: entered_tx,
+                release: Arc::clone(&release),
+            }),
+        )
+        .spawn()
+        .expect("spawn node router");
+    let peer_router = peer
+        .create_router_builder()
+        .unwrap()
+        .accept(ECHO_PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
+        .spawn()
+        .expect("spawn peer router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // An external client pins `node`'s single request permit.
+    let pin = peer
+        .connect(&peer_addr(&node), HOLD_PROTOCOL)
+        .await
+        .expect("connect to hold protocol");
+    let pin_stream = pin.open_stream().await.expect("open hold stream");
+    pin_stream
+        .send(Message::new(
+            bytes::Bytes::from_static(b"pin"),
+            HOLD_PROTOCOL,
+        ))
+        .await
+        .expect("send pin request");
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered_rx.recv())
+        .await
+        .expect("request handler enters")
+        .expect("request handler signal");
+
+    // With the request budget exhausted, `node` can still read a reply to its
+    // own outbound request — that read uses the separate reply budget.
+    let out = node
+        .connect(&peer_addr(&peer), ECHO_PROTOCOL)
+        .await
+        .expect("connect to echo peer");
+    let out_stream = out.open_stream().await.expect("open echo stream");
+    out_stream
+        .send(Message::new(
+            bytes::Bytes::from_static(b"reply please"),
+            ECHO_PROTOCOL,
+        ))
+        .await
+        .expect("send echo request");
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), out_stream.recv())
+        .await
+        .expect("reply must not be starved by the held request permit")
+        .expect("reply frame");
+    assert_eq!(&echoed.data[..], b"reply please");
+
+    release.notify_waiters();
+    out.close().await.unwrap();
+    pin.close().await.unwrap();
+    node_router.shutdown().await.unwrap();
+    peer_router.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -1249,8 +1410,8 @@ async fn iroh_receive_byte_budget_refuses_oversized_backlog_and_recovers() {
         .bind_addr_v4(loopback())
         .private_routes_only()
         .max_message_size(FRAME)
-        // Room for exactly one in-flight FRAME-sized body.
-        .max_inbound_body_bytes(FRAME)
+        // Room for exactly one in-flight FRAME-sized inbound-request body.
+        .max_inbound_request_body_bytes(FRAME)
         .build()
         .await
         .expect("build server");
@@ -1427,4 +1588,233 @@ async fn iroh_per_peer_stream_cap_refuses_excess_concurrent_streams() {
 
     conn.close().await.unwrap();
     router.shutdown().await.unwrap();
+}
+
+/// A peer that opens streams past its per-second stream-open rate has its QUIC
+/// connection closed on the first such refusal — reconnecting would only reset
+/// the per-connection refusal streak, not the peer-level limiter.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_stream_open_rate_refusal_closes_the_connection() {
+    const PROTOCOL: &[u8] = b"test/open-rate-close";
+
+    let client = new_test_network().await;
+    let server = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_ingress_events_per_peer_per_second(2)
+        .build()
+        .await
+        .expect("build server");
+    let router = server
+        .create_router_builder()
+        .unwrap()
+        .accept(PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
+        .spawn()
+        .expect("spawn server router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let conn = client
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("connect");
+
+    // Opens 1 and 2 are within budget; opening and writing a 3rd in the same
+    // window trips the stream-open rate and the server closes the connection.
+    let mut streams = Vec::new();
+    for i in 0..3 {
+        let stream = conn.open_stream().await.expect("open stream");
+        let _ = stream
+            .send(Message::new(bytes::Bytes::from(format!("s{i}")), PROTOCOL))
+            .await;
+        streams.push(stream);
+    }
+
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if conn.open_stream().await.is_err() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "a stream-open rate refusal must close the QUIC connection, not just drop the stream"
+    );
+
+    router.shutdown().await.unwrap();
+}
+
+/// An inbound QUIC connection is admission-controlled even if the peer never
+/// opens an application stream: past the per-peer connection cap, the excess
+/// connection is closed, and the slot recovers when an earlier one closes.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_inbound_connection_cap_refuses_and_recovers() {
+    const PROTOCOL: &[u8] = b"test/conn-cap";
+
+    let client = new_test_network().await;
+    let server = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_connections_per_peer(1)
+        .build()
+        .await
+        .expect("build server");
+    let router = server
+        .create_router_builder()
+        .unwrap()
+        .accept(PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
+        .spawn()
+        .expect("spawn server router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // First connection is admitted and usable — no stream needed for it to
+    // count.
+    let first = client
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("first connect");
+    let echo_stream = first
+        .open_stream()
+        .await
+        .expect("open stream on first conn");
+    echo_stream
+        .send(Message::new(bytes::Bytes::from_static(b"ping"), PROTOCOL))
+        .await
+        .expect("send on first conn");
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), echo_stream.recv())
+        .await
+        .expect("first connection works")
+        .expect("echo");
+    assert_eq!(&echoed.data[..], b"ping");
+
+    // A second concurrent connection from the same endpoint is refused and
+    // closed: any use of it fails.
+    let second = client
+        .connect(&peer_addr(&server), PROTOCOL)
+        .await
+        .expect("second connect handshake");
+    let second_dead = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let opened = second.open_stream().await;
+            if opened.is_err()
+                || opened
+                    .unwrap()
+                    .send(Message::new(bytes::Bytes::from_static(b"x"), PROTOCOL))
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        second_dead.is_ok(),
+        "a second connection past the per-peer cap must be closed"
+    );
+
+    // Closing the first frees the slot; a fresh connection is admitted.
+    first.close().await.unwrap();
+    let third = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(conn) = client.connect(&peer_addr(&server), PROTOCOL).await {
+                let stream = conn.open_stream().await;
+                if let Ok(stream) = stream {
+                    if stream
+                        .send(Message::new(bytes::Bytes::from_static(b"pong"), PROTOCOL))
+                        .await
+                        .is_ok()
+                    {
+                        if let Ok(Ok(msg)) =
+                            tokio::time::timeout(std::time::Duration::from_secs(2), stream.recv())
+                                .await
+                        {
+                            return msg.data;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    })
+    .await
+    .expect("a fresh connection is admitted once the slot frees");
+    assert_eq!(&third[..], b"pong");
+
+    router.shutdown().await.unwrap();
+}
+
+/// A Gossip-ALPN connection consumes the same per-peer connection lease as a
+/// direct connection — the raw Gossip handler is wrapped for admission.
+#[tokio::test]
+#[serial_test::serial]
+async fn iroh_gossip_connection_consumes_a_connection_lease() {
+    const PROTOCOL: &[u8] = b"test/gossip-lease";
+
+    let net1 = IrohNetwork::builder()
+        .bind_addr_v4(loopback())
+        .private_routes_only()
+        .max_connections_per_peer(1)
+        .build()
+        .await
+        .expect("build net1");
+    let net2 = new_test_network().await;
+    let router1 = net1
+        .create_router_builder()
+        .unwrap()
+        .accept(PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
+        .spawn()
+        .expect("spawn net1 router");
+    let router2 = net2
+        .create_router_builder()
+        .unwrap()
+        .spawn()
+        .expect("spawn net2 router");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // net2 joins a topic bootstrapping off net1 → one inbound Gossip connection
+    // at net1, which takes net2's only per-peer connection slot.
+    let topic_id = TopicId::new([44u8; 32]);
+    let _topic = net2
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![peer_addr(&net1)])
+        .await
+        .expect("subscribe");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // A direct connection from the same endpoint is now refused (its slot is
+    // held by the Gossip connection).
+    let direct = net2
+        .connect(&peer_addr(&net1), PROTOCOL)
+        .await
+        .expect("direct handshake");
+    let direct_dead = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let opened = direct.open_stream().await;
+            if opened.is_err()
+                || opened
+                    .unwrap()
+                    .send(Message::new(bytes::Bytes::from_static(b"x"), PROTOCOL))
+                    .await
+                    .is_err()
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(
+        direct_dead.is_ok(),
+        "the Gossip connection must consume net2's per-peer connection slot"
+    );
+
+    router1.shutdown().await.unwrap();
+    router2.shutdown().await.unwrap();
 }

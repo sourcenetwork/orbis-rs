@@ -10,15 +10,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::{NetworkError, Result};
-use crate::ingress::IngressController;
+use crate::ingress::{IngressController, StreamAdmitReason};
 use crate::iroh::base::IrohStreamWrapper;
 use crate::metrics;
 use crate::r#trait::{PeerId, ProtocolHandler};
 use crate::r#trait::{Router as RouterTrait, RouterBuilder as RouterBuilderTrait};
 
-/// Consecutive stream-admission refusals on one QUIC connection before it is
-/// closed. A peer that keeps opening streams while pinned at its per-peer cap or
-/// stream rate limit is otherwise an unbounded accept/drop loop.
+/// Consecutive *concurrency* stream-admission refusals (global / per-peer cap)
+/// on one QUIC connection before it is closed. Those refusals are transient —
+/// a slot frees and the next open succeeds — so a moderate streak is tolerated.
+/// A stream-open *rate* refusal is not transient (the peer is over its
+/// per-second budget), so it closes the connection immediately instead.
 const MAX_CONSECUTIVE_STREAM_REFUSALS: u32 = 128;
 
 /// Router for composing multiple protocols over a single iroh endpoint
@@ -66,12 +68,32 @@ impl RouterBuilderTrait for IrohRouterBuilder {
     }
 
     fn spawn(self: Box<Self>) -> Result<Box<dyn RouterTrait>> {
+        // A route-level `max_message_size` override (via `RouterBuilder::
+        // max_message_size`) can raise the accepted inbound frame size after the
+        // network was built. Re-check it here: an inbound-request frame the
+        // request receive-byte pool can never reserve would always fail
+        // mid-`recv()`.
+        let body_budget = self.ingress.max_inbound_request_body_bytes();
+        if self.max_message_size > body_budget {
+            return Err(NetworkError::InvalidConfig(format!(
+                "router max_message_size ({}) exceeds the inbound-request receive-byte pool ({})",
+                self.max_message_size, body_budget
+            )));
+        }
+
         let mut builder = IrohRouter::builder(self.endpoint.clone());
         if let Some(gossip) = self.gossip.clone() {
             // Gossip owns long-lived mesh connections, so its raw ALPN handler
-            // cannot use the per-application-work wrapper below. Authenticated
-            // PubSub frames use the same ingress controller in IrohTopic::recv.
-            builder = builder.accept(iroh_gossip::ALPN, gossip);
+            // cannot use the per-application-work wrapper below. It is wrapped
+            // only for connection-level admission; authenticated PubSub frames
+            // use the same ingress controller in IrohTopic::recv.
+            builder = builder.accept(
+                iroh_gossip::ALPN,
+                Arc::new(GossipIngressGuard {
+                    gossip,
+                    ingress: Arc::clone(&self.ingress),
+                }),
+            );
         }
         let max_message_size = self.max_message_size;
         let read_timeout = self.read_timeout;
@@ -143,6 +165,20 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
         async move {
             let peer_id = PeerId::from_bytes(connection.remote_id().as_bytes());
             let protocol: Arc<[u8]> = Arc::from(connection.alpn());
+
+            // One connection lease for this whole accept future — i.e. for the
+            // connection's lifetime, since the `accept_bi()` loop below exits
+            // only when the connection closes. Bounds identities that keep
+            // connections alive with transport traffic but open no streams.
+            let _connection_lease = match ingress.try_admit_connection(&peer_id).await {
+                Ok(lease) => lease,
+                Err(reason) => {
+                    metrics::record_ingress_dropped(protocol.as_ref(), reason.as_str());
+                    connection.close(1u32.into(), b"ingress: connection admission refused");
+                    return Ok(());
+                }
+            };
+
             let mut consecutive_refusals: u32 = 0;
 
             // Loop: accept one QUIC stream per request/session, spawn a handler task per stream.
@@ -162,14 +198,21 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
                         metrics::record_ingress_dropped(protocol.as_ref(), reason.as_str());
                         drop(send);
                         drop(recv);
-                        consecutive_refusals += 1;
-                        if consecutive_refusals >= MAX_CONSECUTIVE_STREAM_REFUSALS {
+                        // A stream-open rate refusal means the peer is over its
+                        // per-second budget and reconnecting would only reset the
+                        // per-connection streak, not the peer-level limiter — so
+                        // close now, bounding wasted accept work to ~one refusal
+                        // per connection attempt.
+                        let terminate = matches!(reason, StreamAdmitReason::Rate) || {
+                            consecutive_refusals += 1;
+                            consecutive_refusals >= MAX_CONSECUTIVE_STREAM_REFUSALS
+                        };
+                        if terminate {
                             metrics::record_ingress_dropped(
                                 protocol.as_ref(),
                                 "connection_terminated",
                             );
-                            connection
-                                .close(1u32.into(), b"ingress: repeated stream admission failures");
+                            connection.close(1u32.into(), b"ingress: stream admission refused");
                             break;
                         }
                         continue;
@@ -183,7 +226,8 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
                     Arc::clone(&protocol),
                     max_message_size,
                     read_timeout,
-                    Some(Arc::clone(&ingress)),
+                    Arc::clone(&ingress),
+                    true,
                 );
                 let h = Arc::clone(&handler);
                 let handler_peer_id = peer_id.clone();
@@ -202,6 +246,50 @@ impl iroh::protocol::ProtocolHandler for IrohProtocolHandlerWrapper {
             }
 
             Ok(())
+        }
+    }
+}
+
+/// Wraps the native Gossip ALPN handler so an inbound Gossip connection is
+/// admission-controlled like any other. `Gossip::accept` hands the connection to
+/// its actor and returns immediately, so the connection lease is held by a
+/// side task that lives exactly as long as the connection.
+struct GossipIngressGuard {
+    gossip: iroh_gossip::net::Gossip,
+    ingress: Arc<IngressController>,
+}
+
+impl std::fmt::Debug for GossipIngressGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GossipIngressGuard").finish()
+    }
+}
+
+impl iroh::protocol::ProtocolHandler for GossipIngressGuard {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> std::result::Result<(), iroh::protocol::AcceptError> {
+        let peer_id = PeerId::from_bytes(connection.remote_id().as_bytes());
+        let lease = match self.ingress.try_admit_connection(&peer_id).await {
+            Ok(lease) => lease,
+            Err(reason) => {
+                metrics::record_ingress_dropped(iroh_gossip::ALPN, reason.as_str());
+                connection.close(1u32.into(), b"ingress: gossip connection refused");
+                return Ok(());
+            }
+        };
+        let watch = connection.clone();
+        tokio::spawn(async move {
+            let _lease = lease;
+            watch.closed().await;
+        });
+        self.gossip.accept(connection).await
+    }
+
+    async fn shutdown(&self) {
+        if let Err(error) = self.gossip.shutdown().await {
+            tracing::warn!(%error, "error while shutting down gossip");
         }
     }
 }

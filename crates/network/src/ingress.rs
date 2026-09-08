@@ -2,20 +2,33 @@
 //!
 //! Independent limits, deliberately kept separate:
 //!
+//! * [`IngressController::try_admit_connection`] — one slot per accepted inbound
+//!   QUIC connection, held for the connection's whole lifetime by the router's
+//!   per-connection handler (direct ALPNs and the wrapped Gossip ALPN alike),
+//!   plus one *connection-open*-rate tick. Bounds how many connections one
+//!   identity — and the node — can keep alive without ever opening a stream.
 //! * [`IngressController::try_admit_stream`] — one slot per accepted inbound
-//!   QUIC stream, held for the stream's whole lifetime, and one peer-rate tick
-//!   for the open itself. Bounds how many streams can be parked in `recv()` at
-//!   once, node-wide and per immediate peer, and the rate at which a peer may
-//!   open them.
-//! * [`IngressController::charge_peer_rate`] — one peer-rate tick per `recv()`
-//!   attempt, charged before any bytes are read so malformed, oversized, and
-//!   timed-out frames that never decode still cost the peer its budget.
-//! * [`IngressController::try_reserve_body`] — a weighted receive-byte budget,
-//!   reserved after the length prefix is parsed but before the body buffer is
-//!   allocated, so a flood of large frames cannot commit gigabytes ahead of the
-//!   work-item cap.
-//! * [`IngressController::try_acquire_work`] — one slot per *decoded frame*,
-//!   held only while the application processes it. Bounds real work.
+//!   QUIC stream, held for the stream's whole lifetime, plus one
+//!   *stream-open*-rate tick. Bounds how many streams can be parked in `recv()`
+//!   at once (node-wide and per immediate peer) and the rate at which a peer
+//!   opens them.
+//! * [`IngressController::try_reserve_request_body`] /
+//!   [`IngressController::try_reserve_reply_body`] — weighted receive-byte
+//!   budgets, reserved after the length prefix is parsed but before the body
+//!   buffer is allocated, so a flood of large frames cannot commit gigabytes
+//!   ahead of the work-item caps. Requests and replies draw on **separate**
+//!   pools so a stalled-request backlog cannot deny an MPC reply its buffer.
+//! * [`IngressController::allow_frame`] — one *decoded-frame*-rate tick, charged
+//!   only once the whole body has been read. A distinct limiter from the
+//!   stream-open rate (so a one-frame request is not double-charged), and
+//!   charging after arrival prevents a peer from pre-paying `recv()` calls in
+//!   idle windows and then bursting frames using banked tokens.
+//! * [`IngressController::try_acquire_request_work`] /
+//!   [`IngressController::try_acquire_reply_work`] — one work slot per decoded
+//!   frame, held only while the application processes it. Inbound requests and
+//!   the replies read on client-opened streams draw on **separate** budgets, so
+//!   a request handler that fans out and awaits replies cannot starve those
+//!   replies of the capacity it is itself holding.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -68,20 +81,42 @@ impl StreamAdmitReason {
     }
 }
 
-/// RAII ownership of one accepted inbound stream slot: one node-wide stream
-/// permit plus one unit of this peer's concurrent-stream budget. Both are
-/// returned when the stream's handler task ends.
-#[derive(Debug)]
-pub(crate) struct StreamLease {
-    _global: OwnedSemaphorePermit,
-    peer: PeerId,
-    per_peer: Arc<StdMutex<HashMap<PeerId, usize>>>,
+/// Why a newly accepted inbound QUIC connection was refused. Every variant
+/// closes the connection immediately — there is nothing to keep open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionAdmitReason {
+    /// The node-wide inbound-connection budget is exhausted.
+    Global,
+    /// This immediate peer already holds the maximum inbound connections.
+    PerPeer,
+    /// This immediate peer is opening connections faster than its budget.
+    Rate,
 }
 
-impl Drop for StreamLease {
+impl ConnectionAdmitReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "connection_limit",
+            Self::PerPeer => "per_peer_connection_limit",
+            Self::Rate => "connection_rate_limit",
+        }
+    }
+}
+
+/// RAII ownership of one node-wide semaphore permit plus one unit of a per-peer
+/// count. Both are returned when the lease is dropped — for a stream, when its
+/// handler task ends; for a connection, when the connection closes.
+#[derive(Debug)]
+pub(crate) struct PeerScopedLease {
+    _global: OwnedSemaphorePermit,
+    peer: PeerId,
+    counts: Arc<StdMutex<HashMap<PeerId, usize>>>,
+}
+
+impl Drop for PeerScopedLease {
     fn drop(&mut self) {
         let mut counts = self
-            .per_peer
+            .counts
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if let Some(open) = counts.get_mut(&self.peer) {
@@ -93,19 +128,65 @@ impl Drop for StreamLease {
     }
 }
 
+/// Which peer-scoped cap a [`admit_peer_scoped`] call hit.
+enum PeerScopedRefusal {
+    Global,
+    PerPeer,
+}
+
+/// Take one node-wide permit, then one per-peer slot. The global permit is
+/// taken first, so an early return from the per-peer check drops it.
+fn admit_peer_scoped(
+    global: &Arc<Semaphore>,
+    counts: &Arc<StdMutex<HashMap<PeerId, usize>>>,
+    peer: &PeerId,
+    per_peer_max: usize,
+) -> Result<PeerScopedLease, PeerScopedRefusal> {
+    let permit = Arc::clone(global)
+        .try_acquire_owned()
+        .map_err(|_| PeerScopedRefusal::Global)?;
+    {
+        let mut counts = counts.lock().unwrap_or_else(|poison| poison.into_inner());
+        let open = counts.entry(peer.clone()).or_insert(0);
+        if *open >= per_peer_max {
+            return Err(PeerScopedRefusal::PerPeer);
+        }
+        *open += 1;
+    }
+    Ok(PeerScopedLease {
+        _global: permit,
+        peer: peer.clone(),
+        counts: Arc::clone(counts),
+    })
+}
+
 /// One admission controller shared by every direct ALPN handler and PubSub topic.
 pub(crate) struct IngressController {
     limits: NetworkIngressLimits,
-    /// Bounds inbound frames whose application work is currently executing.
-    work_permits: Arc<Semaphore>,
+    /// Bounds inbound-request frames whose application work is executing.
+    request_work_permits: Arc<Semaphore>,
+    /// Bounds reply frames (read on client-opened streams) whose application
+    /// work is executing. Separate from `request_work_permits` so a request
+    /// handler awaiting replies cannot starve them.
+    reply_work_permits: Arc<Semaphore>,
+    /// Bounds accepted-but-not-yet-closed inbound QUIC connections node-wide.
+    connection_permits: Arc<Semaphore>,
     /// Bounds accepted-but-not-yet-closed inbound streams node-wide.
     stream_permits: Arc<Semaphore>,
-    /// Weighted budget (in bytes) for inbound frame bodies received and not yet
-    /// dropped by the application.
-    body_bytes: Arc<Semaphore>,
-    peer_rate_limiters: Mutex<HashMap<PeerId, FixedWindowRateLimiter>>,
+    /// Weighted byte budget for inbound-request frame bodies received and not
+    /// yet dropped by the application.
+    request_body_bytes: Arc<Semaphore>,
+    /// Weighted byte budget for reply frame bodies (client-opened streams).
+    /// Separate pool from `request_body_bytes` — sized so its `min(len,..)`
+    /// combined ceiling is still the operator-configured total — so a backlog of
+    /// stalled inbound requests cannot deny an incoming MPC reply its buffer.
+    reply_body_bytes: Arc<Semaphore>,
+    /// Per-peer connection-open / stream-open / decoded-frame rate limiters.
+    peer_rate_limiters: Mutex<HashMap<PeerId, PeerLimiters>>,
     /// Concurrent inbound stream count per immediate peer.
     peer_stream_counts: Arc<StdMutex<HashMap<PeerId, usize>>>,
+    /// Concurrent inbound connection count per immediate peer.
+    peer_connection_counts: Arc<StdMutex<HashMap<PeerId, usize>>>,
 }
 
 impl IngressController {
@@ -119,9 +200,24 @@ impl IngressController {
                 "max_concurrent_work must be at least 1".to_string(),
             ));
         }
+        if limits.max_concurrent_reply_work == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_concurrent_reply_work must be at least 1".to_string(),
+            ));
+        }
         if limits.max_events_per_peer_per_second == 0 {
             return Err(NetworkError::InvalidConfig(
                 "max_events_per_peer_per_second must be at least 1".to_string(),
+            ));
+        }
+        if limits.max_concurrent_connections == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_concurrent_connections must be at least 1".to_string(),
+            ));
+        }
+        if limits.max_connections_per_peer == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_connections_per_peer must be at least 1".to_string(),
             ));
         }
         if limits.max_concurrent_streams == 0 {
@@ -134,104 +230,168 @@ impl IngressController {
                 "max_streams_per_peer must be at least 1".to_string(),
             ));
         }
-        if limits.max_inbound_body_bytes == 0 {
+        if limits.max_inbound_request_body_bytes == 0 {
             return Err(NetworkError::InvalidConfig(
-                "max_inbound_body_bytes must be at least 1".to_string(),
+                "max_inbound_request_body_bytes must be at least 1".to_string(),
             ));
         }
-        let body_bytes = limits.max_inbound_body_bytes.min(Semaphore::MAX_PERMITS);
+        if limits.max_inbound_reply_body_bytes == 0 {
+            return Err(NetworkError::InvalidConfig(
+                "max_inbound_reply_body_bytes must be at least 1".to_string(),
+            ));
+        }
+        let request_body_bytes = limits
+            .max_inbound_request_body_bytes
+            .min(Semaphore::MAX_PERMITS);
+        let reply_body_bytes = limits
+            .max_inbound_reply_body_bytes
+            .min(Semaphore::MAX_PERMITS);
         Ok(Self {
             limits,
-            work_permits: Arc::new(Semaphore::new(limits.max_concurrent_work)),
+            request_work_permits: Arc::new(Semaphore::new(limits.max_concurrent_work)),
+            reply_work_permits: Arc::new(Semaphore::new(limits.max_concurrent_reply_work)),
+            connection_permits: Arc::new(Semaphore::new(limits.max_concurrent_connections)),
             stream_permits: Arc::new(Semaphore::new(limits.max_concurrent_streams)),
-            body_bytes: Arc::new(Semaphore::new(body_bytes)),
+            request_body_bytes: Arc::new(Semaphore::new(request_body_bytes)),
+            reply_body_bytes: Arc::new(Semaphore::new(reply_body_bytes)),
             peer_rate_limiters: Mutex::new(HashMap::new()),
             peer_stream_counts: Arc::new(StdMutex::new(HashMap::new())),
+            peer_connection_counts: Arc::new(StdMutex::new(HashMap::new())),
+        })
+    }
+
+    /// The largest inbound-request frame body this controller's request
+    /// receive-byte pool can ever reserve. The router validates route-level
+    /// `max_message_size` overrides against this.
+    pub(crate) fn max_inbound_request_body_bytes(&self) -> usize {
+        self.limits.max_inbound_request_body_bytes
+    }
+
+    /// Admit one newly accepted inbound QUIC connection without queueing. Held
+    /// for the whole connection lifetime by the router's per-connection handler.
+    ///
+    /// The peer's per-second connection-open budget is charged first — before
+    /// the caps — so a peer that reconnects in a tight loop still pays for each
+    /// attempt. Every refusal closes the connection.
+    pub(crate) async fn try_admit_connection(
+        &self,
+        peer_id: &PeerId,
+    ) -> Result<PeerScopedLease, ConnectionAdmitReason> {
+        if !self
+            .allow(peer_id, |limiters| limiters.connection_opens.allow())
+            .await
+        {
+            return Err(ConnectionAdmitReason::Rate);
+        }
+        admit_peer_scoped(
+            &self.connection_permits,
+            &self.peer_connection_counts,
+            peer_id,
+            self.limits.max_connections_per_peer,
+        )
+        .map_err(|refusal| match refusal {
+            PeerScopedRefusal::Global => ConnectionAdmitReason::Global,
+            PeerScopedRefusal::PerPeer => ConnectionAdmitReason::PerPeer,
         })
     }
 
     /// Admit one newly accepted inbound QUIC stream without queueing.
     ///
-    /// The peer's per-second budget is charged first — before the caps — so a
-    /// peer that is refused for being at its stream cap still pays for the open
-    /// attempt, and a peer opening streams too fast is rejected outright. The
-    /// node-wide permit is taken next, the per-peer slot last, so an early
-    /// return from the per-peer check drops (and thereby releases) the node-wide
-    /// permit.
+    /// The peer's per-second stream-open budget is charged first — before the
+    /// caps — so a peer that is refused for being at its stream cap still pays
+    /// for the open attempt, and a peer opening streams too fast is rejected
+    /// outright.
     pub(crate) async fn try_admit_stream(
         &self,
         peer_id: &PeerId,
-    ) -> Result<StreamLease, StreamAdmitReason> {
-        if !self.charge_peer_rate(peer_id).await {
+    ) -> Result<PeerScopedLease, StreamAdmitReason> {
+        if !self.allow_stream_open(peer_id).await {
             return Err(StreamAdmitReason::Rate);
         }
-
-        let global = Arc::clone(&self.stream_permits)
-            .try_acquire_owned()
-            .map_err(|_| StreamAdmitReason::Global)?;
-
-        {
-            let mut counts = self
-                .peer_stream_counts
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            let open = counts.entry(peer_id.clone()).or_insert(0);
-            if *open >= self.limits.max_streams_per_peer {
-                return Err(StreamAdmitReason::PerPeer);
-            }
-            *open += 1;
-        }
-
-        Ok(StreamLease {
-            _global: global,
-            peer: peer_id.clone(),
-            per_peer: Arc::clone(&self.peer_stream_counts),
+        admit_peer_scoped(
+            &self.stream_permits,
+            &self.peer_stream_counts,
+            peer_id,
+            self.limits.max_streams_per_peer,
+        )
+        .map_err(|refusal| match refusal {
+            PeerScopedRefusal::Global => StreamAdmitReason::Global,
+            PeerScopedRefusal::PerPeer => StreamAdmitReason::PerPeer,
         })
     }
 
-    /// Admit one decoded inbound frame without queueing: charge the peer rate,
-    /// then take a work permit. Used by the PubSub topic path, where a frame is
-    /// already fully materialized by Gossip and there is nothing to size a
-    /// receive-byte reservation against.
+    /// Admit one decoded inbound frame without queueing: charge the decoded-frame
+    /// rate, then take a request work permit. Used by the PubSub topic path,
+    /// where a frame is already fully materialized by Gossip and there is nothing
+    /// to size a receive-byte reservation against.
     pub(crate) async fn try_admit_frame(
         &self,
         peer_id: &PeerId,
     ) -> Result<IngressLease, IngressDropReason> {
-        if !self.charge_peer_rate(peer_id).await {
+        if !self.allow_frame(peer_id).await {
             return Err(IngressDropReason::RateLimit);
         }
-        self.try_acquire_work()
+        self.try_acquire_request_work()
             .ok_or(IngressDropReason::ConcurrencyLimit)
     }
 
-    /// Charge one unit of the peer's per-second activity budget. Returns `false`
-    /// when the peer is over budget for the current window. Every inbound
-    /// `recv()` attempt and every inbound stream open charges once.
-    pub(crate) async fn charge_peer_rate(&self, peer_id: &PeerId) -> bool {
-        self.allow_peer(peer_id).await
+    /// Charge one unit of the peer's per-second stream-open budget.
+    pub(crate) async fn allow_stream_open(&self, peer_id: &PeerId) -> bool {
+        self.allow(peer_id, |limiters| limiters.stream_opens.allow())
+            .await
     }
 
-    /// Take one node-wide work permit for a frame whose application work is
-    /// about to run. `None` when the budget is exhausted.
-    pub(crate) fn try_acquire_work(&self) -> Option<IngressLease> {
-        Arc::clone(&self.work_permits)
+    /// Charge one unit of the peer's per-second decoded-frame budget. Call only
+    /// once the whole frame body has been read, so tokens cannot be banked.
+    pub(crate) async fn allow_frame(&self, peer_id: &PeerId) -> bool {
+        self.allow(peer_id, |limiters| limiters.frames.allow())
+            .await
+    }
+
+    /// Take one work permit for an inbound-request frame about to be processed.
+    pub(crate) fn try_acquire_request_work(&self) -> Option<IngressLease> {
+        Self::acquire(&self.request_work_permits)
+    }
+
+    /// Take one work permit for a reply frame (read on a client-opened stream)
+    /// about to be processed.
+    pub(crate) fn try_acquire_reply_work(&self) -> Option<IngressLease> {
+        Self::acquire(&self.reply_work_permits)
+    }
+
+    fn acquire(semaphore: &Arc<Semaphore>) -> Option<IngressLease> {
+        Arc::clone(semaphore)
             .try_acquire_owned()
             .ok()
             .map(|permit| IngressLease { _permit: permit })
     }
 
-    /// Reserve `len` bytes of the node-wide receive-body budget. `None` when the
-    /// budget is exhausted (the caller must then not allocate the body). A
-    /// zero-length body reserves nothing but still yields a reservation.
-    pub(crate) fn try_reserve_body(&self, len: usize) -> Option<BodyReservation> {
+    /// Reserve `len` bytes of the inbound-request receive-body pool. `None` when
+    /// the pool is exhausted (the caller must then not allocate the body).
+    pub(crate) fn try_reserve_request_body(&self, len: usize) -> Option<BodyReservation> {
+        Self::reserve(&self.request_body_bytes, len)
+    }
+
+    /// Reserve `len` bytes of the reply receive-body pool. Separate from the
+    /// request pool so a stalled-request backlog cannot starve replies of buffer.
+    pub(crate) fn try_reserve_reply_body(&self, len: usize) -> Option<BodyReservation> {
+        Self::reserve(&self.reply_body_bytes, len)
+    }
+
+    fn reserve(semaphore: &Arc<Semaphore>, len: usize) -> Option<BodyReservation> {
+        // A zero-length body reserves nothing but still yields a reservation.
         let permits = u32::try_from(len).ok()?;
-        Arc::clone(&self.body_bytes)
+        Arc::clone(semaphore)
             .try_acquire_many_owned(permits)
             .ok()
             .map(|permit| BodyReservation { _permit: permit })
     }
 
-    async fn allow_peer(&self, peer_id: &PeerId) -> bool {
+    async fn allow(
+        &self,
+        peer_id: &PeerId,
+        charge: impl FnOnce(&mut PeerLimiters) -> bool,
+    ) -> bool {
         let mut limiters = self.peer_rate_limiters.lock().await;
         if !limiters.contains_key(peer_id) && limiters.len() >= MAX_TRACKED_RATE_LIMIT_PEERS {
             let now = Instant::now();
@@ -240,7 +400,7 @@ impl IngressController {
             if limiters.len() >= MAX_TRACKED_RATE_LIMIT_PEERS {
                 let least_recently_seen = limiters
                     .iter()
-                    .min_by_key(|(_, limiter)| limiter.last_seen)
+                    .min_by_key(|(_, limiter)| limiter.last_seen())
                     .map(|(peer, _)| peer.clone());
                 if let Some(peer) = least_recently_seen {
                     limiters.remove(&peer);
@@ -249,10 +409,43 @@ impl IngressController {
         }
 
         let limit = self.limits.max_events_per_peer_per_second;
-        limiters
-            .entry(peer_id.clone())
-            .or_insert_with(|| FixedWindowRateLimiter::new(limit, Duration::from_secs(1)))
-            .allow()
+        charge(
+            limiters
+                .entry(peer_id.clone())
+                .or_insert_with(|| PeerLimiters::new(limit)),
+        )
+    }
+}
+
+/// Per-peer fixed-window limiters: connection opens, stream opens, decoded
+/// frames — each an independent per-second budget.
+struct PeerLimiters {
+    connection_opens: FixedWindowRateLimiter,
+    stream_opens: FixedWindowRateLimiter,
+    frames: FixedWindowRateLimiter,
+}
+
+impl PeerLimiters {
+    fn new(limit: usize) -> Self {
+        let one_second = Duration::from_secs(1);
+        Self {
+            connection_opens: FixedWindowRateLimiter::new(limit, one_second),
+            stream_opens: FixedWindowRateLimiter::new(limit, one_second),
+            frames: FixedWindowRateLimiter::new(limit, one_second),
+        }
+    }
+
+    fn last_seen(&self) -> Instant {
+        self.connection_opens
+            .last_seen
+            .max(self.stream_opens.last_seen)
+            .max(self.frames.last_seen)
+    }
+
+    fn is_idle(&self, now: Instant, idle_ttl: Duration) -> bool {
+        self.connection_opens.is_idle(now, idle_ttl)
+            && self.stream_opens.is_idle(now, idle_ttl)
+            && self.frames.is_idle(now, idle_ttl)
     }
 }
 
@@ -329,10 +522,17 @@ mod tests {
     ) -> NetworkIngressLimits {
         NetworkIngressLimits {
             max_concurrent_work: work,
+            // Same as `work` unless a test overrides it via struct-update syntax.
+            max_concurrent_reply_work: work,
             max_events_per_peer_per_second: rate,
+            // Connection caps reuse the stream cap knobs unless a test overrides.
+            max_concurrent_connections: streams,
+            max_connections_per_peer: per_peer,
             max_concurrent_streams: streams,
             max_streams_per_peer: per_peer,
-            max_inbound_body_bytes: body,
+            max_inbound_request_body_bytes: body,
+            // Same as the request pool unless a test overrides it.
+            max_inbound_reply_body_bytes: body,
         }
     }
 
@@ -404,21 +604,136 @@ mod tests {
         );
     }
 
-    #[test]
-    fn body_reservation_bounds_total_inflight_bytes() {
-        let controller = IngressController::new(limits(4, 1024, 8, 8, 100)).expect("valid limits");
+    #[tokio::test]
+    async fn connection_admission_enforces_per_peer_then_global_caps() {
+        // 3 connections node-wide, 2 per peer; rate high enough not to interfere.
+        let controller = IngressController::new(NetworkIngressLimits {
+            max_concurrent_connections: 3,
+            max_connections_per_peer: 2,
+            ..limits(4, 1024, 64, 64, MIB)
+        })
+        .expect("valid limits");
+        let a = PeerId::from_bytes(&[1; 32]);
+        let b = PeerId::from_bytes(&[2; 32]);
 
-        let first = controller.try_reserve_body(60).expect("first 60 bytes fit");
-        assert!(
-            controller.try_reserve_body(60).is_none(),
-            "only 40 of 100 bytes remain"
+        let a1 = controller.try_admit_connection(&a).await.expect("a conn 1");
+        let _a2 = controller.try_admit_connection(&a).await.expect("a conn 2");
+        assert_eq!(
+            controller.try_admit_connection(&a).await.unwrap_err(),
+            ConnectionAdmitReason::PerPeer
         );
-        // A body the budget cannot cover under any circumstance is refused.
-        assert!(controller.try_reserve_body(101).is_none());
-        drop(first);
-        let _second = controller
-            .try_reserve_body(60)
-            .expect("budget frees when the first reservation drops");
+        let _b1 = controller.try_admit_connection(&b).await.expect("b conn 1");
+        assert_eq!(
+            controller.try_admit_connection(&b).await.unwrap_err(),
+            ConnectionAdmitReason::Global
+        );
+
+        drop(a1);
+        let _a3 = controller
+            .try_admit_connection(&a)
+            .await
+            .expect("a conn after release");
+    }
+
+    #[tokio::test]
+    async fn connection_admission_rate_limits_opens() {
+        let controller = IngressController::new(NetworkIngressLimits {
+            max_concurrent_connections: 64,
+            max_connections_per_peer: 64,
+            ..limits(4, 2, 64, 64, MIB)
+        })
+        .expect("valid limits");
+        let peer = PeerId::from_bytes(&[3; 32]);
+
+        let _c1 = controller
+            .try_admit_connection(&peer)
+            .await
+            .expect("open 1");
+        let _c2 = controller
+            .try_admit_connection(&peer)
+            .await
+            .expect("open 2");
+        assert_eq!(
+            controller.try_admit_connection(&peer).await.unwrap_err(),
+            ConnectionAdmitReason::Rate
+        );
+        // The connection-open limiter is independent of the stream-open one.
+        assert!(controller.allow_stream_open(&peer).await);
+    }
+
+    #[test]
+    fn request_and_reply_work_budgets_are_independent() {
+        // One request permit, four reply permits.
+        let controller = IngressController::new(NetworkIngressLimits {
+            max_concurrent_reply_work: 4,
+            ..limits(1, 1024, 8, 8, MIB)
+        })
+        .expect("valid limits");
+
+        // The single request permit can be fully held...
+        let _request = controller
+            .try_acquire_request_work()
+            .expect("request work permit");
+        assert!(
+            controller.try_acquire_request_work().is_none(),
+            "request budget is exhausted"
+        );
+
+        // ...without starving replies, which draw on their own budget.
+        let _r1 = controller.try_acquire_reply_work().expect("reply permit 1");
+        let _r2 = controller.try_acquire_reply_work().expect("reply permit 2");
+        let _r3 = controller.try_acquire_reply_work().expect("reply permit 3");
+        let _r4 = controller.try_acquire_reply_work().expect("reply permit 4");
+        assert!(
+            controller.try_acquire_reply_work().is_none(),
+            "reply budget is independently bounded"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_open_and_frame_rates_are_separate_limiters() {
+        // Rate 1: one stream open AND one frame are both allowed in a window.
+        let controller = IngressController::new(limits(4, 1, 8, 8, MIB)).expect("valid limits");
+        let peer = PeerId::from_bytes(&[5; 32]);
+
+        assert!(controller.allow_stream_open(&peer).await, "first open");
+        assert!(
+            controller.allow_frame(&peer).await,
+            "a one-frame request is not double-charged by the open"
+        );
+        // Second of each in the same window is refused.
+        assert!(!controller.allow_stream_open(&peer).await);
+        assert!(!controller.allow_frame(&peer).await);
+    }
+
+    #[test]
+    fn request_and_reply_body_pools_bound_bytes_independently() {
+        // Request pool 100 bytes, reply pool 50 bytes.
+        let controller = IngressController::new(NetworkIngressLimits {
+            max_inbound_reply_body_bytes: 50,
+            ..limits(4, 1024, 8, 8, 100)
+        })
+        .expect("valid limits");
+
+        // Fill the request pool completely.
+        let req = controller
+            .try_reserve_request_body(100)
+            .expect("first 100 request bytes fit");
+        assert!(
+            controller.try_reserve_request_body(1).is_none(),
+            "request pool is exhausted"
+        );
+        // A reply still gets its buffer from the separate reply pool.
+        let reply = controller
+            .try_reserve_reply_body(50)
+            .expect("reply pool is untouched by the request backlog");
+        assert!(controller.try_reserve_reply_body(1).is_none());
+
+        drop(req);
+        drop(reply);
+        let _again = controller
+            .try_reserve_request_body(100)
+            .expect("request pool frees when its reservation drops");
     }
 
     #[tokio::test]
@@ -452,6 +767,22 @@ mod tests {
             limits(1, 2, 0, 4, MIB),
             limits(1, 2, 8, 0, MIB),
             limits(1, 2, 8, 4, 0),
+            NetworkIngressLimits {
+                max_concurrent_reply_work: 0,
+                ..limits(1, 2, 8, 4, MIB)
+            },
+            NetworkIngressLimits {
+                max_inbound_reply_body_bytes: 0,
+                ..limits(1, 2, 8, 4, MIB)
+            },
+            NetworkIngressLimits {
+                max_concurrent_connections: 0,
+                ..limits(1, 2, 8, 4, MIB)
+            },
+            NetworkIngressLimits {
+                max_connections_per_peer: 0,
+                ..limits(1, 2, 8, 4, MIB)
+            },
         ] {
             let Err(error) = IngressController::new(bad) else {
                 panic!("zero limit must be rejected: {bad:?}");

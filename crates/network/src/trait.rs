@@ -14,15 +14,30 @@ use crate::pubsub::PubSub;
 /// Inbound work limits shared by direct protocol streams and PubSub frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkIngressLimits {
-    /// Maximum inbound frames whose application work is executing concurrently
-    /// across transports. Charged once per decoded frame (a direct-stream
-    /// message or an authenticated PubSub frame) and released when the
+    /// Maximum inbound-request frames whose application work is executing
+    /// concurrently across transports. Charged once per decoded frame (a direct
+    /// request message or an authenticated PubSub frame) and released when the
     /// application finishes with it — not once per stream.
     pub max_concurrent_work: usize,
+    /// Maximum reply frames (read on client-opened streams) whose application
+    /// work is executing concurrently. A separate budget from
+    /// `max_concurrent_work` so a request handler that fans out sub-requests and
+    /// awaits their replies cannot deadlock by holding the only capacity those
+    /// replies need.
+    pub max_concurrent_reply_work: usize,
     /// Maximum decoded direct-stream frames and PubSub frames accepted from one
     /// immediate peer per one-second window. Charged per frame, so a single
-    /// long-lived stream cannot pump unlimited messages for free.
+    /// long-lived stream cannot pump unlimited messages for free. Also sizes the
+    /// per-peer connection-open and stream-open rate windows.
     pub max_events_per_peer_per_second: usize,
+    /// Maximum accepted-but-not-yet-closed inbound QUIC connections node-wide. A
+    /// connection counts for its whole lifetime, so this bounds identities that
+    /// hold connections open (kept alive by QUIC transport traffic) without ever
+    /// opening an application stream.
+    pub max_concurrent_connections: usize,
+    /// Maximum concurrent inbound QUIC connections from one immediate peer (one
+    /// endpoint key), across all ALPNs including Gossip.
+    pub max_connections_per_peer: usize,
     /// Maximum accepted-but-not-yet-closed inbound direct streams node-wide. A
     /// stream counts from `accept_bi()` until its handler task ends; the
     /// per-frame read deadline bounds how long a stalled stream holds a slot.
@@ -31,22 +46,32 @@ pub struct NetworkIngressLimits {
     /// endpoint key). Stops a single unauthenticated identity from occupying a
     /// large share of the node-wide stream budget.
     pub max_streams_per_peer: usize,
-    /// Node-wide budget, in bytes, for inbound direct-stream frame bodies that
-    /// have been received and not yet dropped by the application. Reserved after
-    /// the length prefix is parsed but before the buffer is allocated, so a
-    /// flood of large frames cannot commit gigabytes of buffers ahead of
-    /// `max_concurrent_work`. Must be at least one `max_message_size`.
-    pub max_inbound_body_bytes: usize,
+    /// Node-wide byte budget for inbound-request frame bodies received and not
+    /// yet dropped by the application. Reserved after the length prefix is
+    /// parsed but before the buffer is allocated, so a flood of large frames
+    /// cannot commit gigabytes of buffers ahead of `max_concurrent_work`. Must
+    /// be at least one `max_message_size`.
+    pub max_inbound_request_body_bytes: usize,
+    /// Node-wide byte budget for reply frame bodies (read on client-opened
+    /// streams). A separate pool from `max_inbound_request_body_bytes` — the two
+    /// sum to the operator's intended total — so a backlog of stalled inbound
+    /// requests cannot deny an incoming MPC reply its receive buffer. Must be at
+    /// least one `max_message_size`.
+    pub max_inbound_reply_body_bytes: usize,
 }
 
 impl Default for NetworkIngressLimits {
     fn default() -> Self {
         Self {
             max_concurrent_work: 1024,
+            max_concurrent_reply_work: 1024,
             max_events_per_peer_per_second: 512,
+            max_concurrent_connections: 2048,
+            max_connections_per_peer: 32,
             max_concurrent_streams: 4096,
             max_streams_per_peer: 32,
-            max_inbound_body_bytes: 256 * 1024 * 1024,
+            max_inbound_request_body_bytes: 192 * 1024 * 1024,
+            max_inbound_reply_body_bytes: 64 * 1024 * 1024,
         }
     }
 }
