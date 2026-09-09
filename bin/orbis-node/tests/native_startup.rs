@@ -484,7 +484,13 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .all(|polynomial| polynomial == &polynomials[0]));
 
     for node in &mut nodes {
-        node.stop().await;
+        if signing_only {
+            node.stop().await;
+        } else {
+            assert!(node.0.try_wait().unwrap().is_none());
+            node.0.kill().unwrap();
+            assert!(!node.0.wait().unwrap().success());
+        }
     }
     for index in 0..nodes.len() {
         let directory = base.path().join(format!("node-{index}"));
