@@ -2,7 +2,7 @@ use defra_core::signing::{self, SigningConfig, SigningKeyType};
 use defra_node::{EmbeddedNode, P2PConfig};
 use std::{
     net::{IpAddr, Ipv4Addr},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -11,17 +11,18 @@ pub struct Peers {
     source: EmbeddedNode,
     target: EmbeddedNode,
     signer_did: String,
+    path: PathBuf,
 }
 
-fn config() -> P2PConfig {
+fn config(path: &Path) -> P2PConfig {
     P2PConfig {
         port: 0,
         bind_addr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         relay_mode: defra_p2p::iroh::IrohRelayModeConfig::Disabled,
         discovery: defra_p2p::iroh::IrohDiscoveryConfig::Disabled,
         max_concurrent_multipath_paths: None,
-        secret_key_path: None,
-        load_persisted_collections: false,
+        secret_key_path: Some(path.join("p2p.key")),
+        load_persisted_collections: true,
         max_concurrent_dag_fetches: defra_p2p::sync::DEFAULT_MAX_CONCURRENT_DAG_FETCHES,
         max_concurrent_push_tasks: defra_p2p::sync::DEFAULT_MAX_CONCURRENT_PUSH_TASKS,
         max_doc_sync_request_doc_ids: defra_p2p::sync::DEFAULT_MAX_DOC_SYNC_REQUEST_DOC_IDS,
@@ -69,13 +70,13 @@ impl Peers {
         let source = EmbeddedNode::builder()
             .data_path(path.join("source"))
             .with_node_identity_did(&signer_did)
-            .with_p2p(config())
+            .with_p2p(config(&path.join("source")))
             .build()
             .await
             .unwrap();
         let target = EmbeddedNode::builder()
             .data_path(path.join("target"))
-            .with_p2p(config())
+            .with_p2p(config(&path.join("target")))
             .build()
             .await
             .unwrap();
@@ -125,6 +126,7 @@ impl Peers {
             source,
             target,
             signer_did,
+            path: path.to_owned(),
         }
     }
 
@@ -143,7 +145,62 @@ impl Peers {
     }
 
     pub async fn verify_replication(&self) {
-        let created = self.create("over QUIC").await;
+        self.verify_document("over QUIC", 1).await;
+    }
+
+    pub async fn verify_restart(self) -> Self {
+        let Self {
+            source,
+            target,
+            signer_did,
+            path,
+        } = self;
+        target.shutdown().await;
+        drop(target);
+        let target = EmbeddedNode::builder()
+            .data_path(path.join("target"))
+            .with_p2p(config(&path.join("target")))
+            .build()
+            .await
+            .unwrap();
+        let restored = target.execute("query { NetworkSigned { name } }").await;
+        assert!(restored.errors.is_empty(), "{:?}", restored.errors);
+        assert_eq!(
+            restored.data.unwrap()["NetworkSigned"],
+            serde_json::json!([{ "name": "over QUIC" }])
+        );
+        source
+            .p2p()
+            .unwrap()
+            .connect_peer(&address(&target).await)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while target
+                .p2p()
+                .unwrap()
+                .connected_peers()
+                .await
+                .unwrap()
+                .is_empty()
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("reconnected Defra receiver");
+        let peers = Self {
+            source,
+            target,
+            signer_did,
+            path,
+        };
+        peers.verify_document("after restart", 2).await;
+        peers
+    }
+
+    async fn verify_document(&self, name: &str, count: usize) {
+        let created = self.create(name).await;
         assert!(created.errors.is_empty(), "{:?}", created.errors);
         let data = created.data.unwrap();
         let id = data["add_NetworkSigned"][0]["_docID"].as_str().unwrap();
@@ -156,10 +213,9 @@ impl Peers {
                 assert!(response.errors.is_empty(), "{:?}", response.errors);
                 let data = response.data.unwrap();
                 let docs = data["NetworkSigned"].as_array().unwrap();
-                if !docs.is_empty() {
-                    assert_eq!(docs.len(), 1);
-                    assert_eq!(docs[0]["_docID"], id);
-                    assert_eq!(docs[0]["name"], "over QUIC");
+                if let Some(doc) = docs.iter().find(|doc| doc["_docID"] == id) {
+                    assert_eq!(docs.len(), count);
+                    assert_eq!(doc["name"], name);
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -191,10 +247,15 @@ impl Peers {
         for node in [&self.source, &self.target] {
             let response = node.execute("query { NetworkSigned { name } }").await;
             assert!(response.errors.is_empty(), "{:?}", response.errors);
-            assert_eq!(
-                response.data.unwrap()["NetworkSigned"],
-                serde_json::json!([{"name": "over QUIC"}])
-            );
+            let data = response.data.unwrap();
+            let mut names: Vec<_> = data["NetworkSigned"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|doc| doc["name"].as_str().unwrap())
+                .collect();
+            names.sort_unstable();
+            assert_eq!(names, ["after restart", "over QUIC"]);
         }
     }
 

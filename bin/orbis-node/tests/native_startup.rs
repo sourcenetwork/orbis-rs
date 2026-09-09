@@ -632,6 +632,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     assert_eq!(defra_signature, signature.to_bytes().unwrap());
     let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
     peers.verify_replication().await;
+    let peers = peers.verify_restart().await;
     let created = documents.create("signed").await.expect("signed document");
     documents.verify(&created, defra.signer_did()).await;
     assert_eq!(documents.count().await, 1);
