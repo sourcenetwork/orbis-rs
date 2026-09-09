@@ -6,8 +6,7 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_MESSAGE_BYTES, MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES,
-        MAX_STORE_SECRET_REQUEST_BYTES, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        MAX_STORE_SECRET_REQUEST_BYTES,
     },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
@@ -24,7 +23,7 @@ use crate::{
     sign::v0::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
-    Args, InitializedNode, NodeConfig,
+    Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
@@ -122,21 +121,7 @@ async fn make_test_node_config(
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-            network_max_concurrent_reply_ingress_work:
-                crate::constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
-            network_max_ingress_events_per_peer_per_second:
-                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
-            network_max_concurrent_connections:
-                crate::constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
-            network_max_connections_per_peer: crate::constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
-            network_max_concurrent_streams: crate::constants::NETWORK_MAX_CONCURRENT_STREAMS,
-            network_max_streams_per_peer: crate::constants::NETWORK_MAX_STREAMS_PER_PEER,
-            network_max_inbound_request_body_bytes:
-                crate::constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
-            network_max_inbound_reply_body_bytes:
-                crate::constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
-            network_stream_read_timeout_ms: crate::constants::NETWORK_STREAM_READ_TIMEOUT_MS,
+            network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy: CorsPolicy::Disabled,
         node_key: "test-node-key".to_string(),
@@ -204,20 +189,7 @@ fn node_info_test_args(
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-        network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-        network_max_concurrent_reply_ingress_work:
-            crate::constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
-        network_max_ingress_events_per_peer_per_second:
-            NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
-        network_max_concurrent_connections: crate::constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
-        network_max_connections_per_peer: crate::constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
-        network_max_concurrent_streams: crate::constants::NETWORK_MAX_CONCURRENT_STREAMS,
-        network_max_streams_per_peer: crate::constants::NETWORK_MAX_STREAMS_PER_PEER,
-        network_max_inbound_request_body_bytes:
-            crate::constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
-        network_max_inbound_reply_body_bytes:
-            crate::constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
-        network_stream_read_timeout_ms: crate::constants::NETWORK_STREAM_READ_TIMEOUT_MS,
+        network_ingress: NetworkIngressArgs::default(),
     }
 }
 
@@ -884,21 +856,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-            network_max_concurrent_reply_ingress_work:
-                crate::constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
-            network_max_ingress_events_per_peer_per_second:
-                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
-            network_max_concurrent_connections:
-                crate::constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
-            network_max_connections_per_peer: crate::constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
-            network_max_concurrent_streams: crate::constants::NETWORK_MAX_CONCURRENT_STREAMS,
-            network_max_streams_per_peer: crate::constants::NETWORK_MAX_STREAMS_PER_PEER,
-            network_max_inbound_request_body_bytes:
-                crate::constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
-            network_max_inbound_reply_body_bytes:
-                crate::constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
-            network_stream_read_timeout_ms: crate::constants::NETWORK_STREAM_READ_TIMEOUT_MS,
+            network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy,
         node_key: "test-node-key".to_string(),
