@@ -201,8 +201,17 @@ pub async fn spawn_harness_node(
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
         network_max_concurrent_ingress_work: constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+        network_max_concurrent_reply_ingress_work:
+            constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
         network_max_ingress_events_per_peer_per_second:
             constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        network_max_concurrent_connections: constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
+        network_max_connections_per_peer: constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
+        network_max_concurrent_streams: constants::NETWORK_MAX_CONCURRENT_STREAMS,
+        network_max_streams_per_peer: constants::NETWORK_MAX_STREAMS_PER_PEER,
+        network_max_inbound_request_body_bytes: constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
+        network_max_inbound_reply_body_bytes: constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
+        network_stream_read_timeout_ms: constants::NETWORK_STREAM_READ_TIMEOUT_MS,
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`

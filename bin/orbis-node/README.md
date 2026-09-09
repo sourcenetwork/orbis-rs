@@ -17,7 +17,7 @@ The **`orbis-node`** binary is the **ring node**: it exposes **gRPC** APIs for o
 Ingress limits are applied in two places:
 
 - The gRPC server caps per-connection request concurrency and HTTP/2 streams in [`src/runtime.rs`](src/runtime.rs).
-- The P2P router caps inbound concurrent streams per protocol and per-peer stream rate before DKG/PRE/Sign handlers run; values live in [`src/constants.rs`](src/constants.rs).
+- The P2P router applies connection-, stream-, frame-, byte-, and work-level admission before DKG/PRE/Sign handlers run; defaults live in [`src/constants.rs`](src/constants.rs) and most are overridable via `--network-*` flags / `ORBIS_NETWORK_*` env vars (see CLI reference).
 
 ## Workspace crates
 
@@ -49,8 +49,16 @@ From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 - **`--loki-url`** — optional Loki log shipping.
 - **`--runtime-base-path`** — base directory for runtime files. The database is stored as `<PATH>/dbs/orbis.<backend>` (`orbis.redb` with the default backend), and the node public key is written to `<PATH>/public_key.txt`.
 - **`--reshare-interval-secs`** — how often the PSS scheduler wakes to check rings (`0` disables scheduler ticks; ring-level `pss_interval` still comes from bulletin).
-- **`--network-max-concurrent-ingress-work`** — node-wide cap on concurrently executing inbound P2P work items shared by direct QUIC streams and Gossip frames (default `1024`). Raise on a node provisioned to take on more work; minimum `1` (a value below `1` is rejected during argument parsing).
-- **`--network-max-ingress-events-per-peer-per-second`** — per-immediate-peer cap on inbound P2P work items per second, across direct streams and Gossip frames (default `512`). Raise on a node provisioned to take on more work; minimum `1` (a value below `1` is rejected during argument parsing).
+- **P2P ingress limits** — every flag below has a matching `ORBIS_<UPPER_SNAKE>` environment variable (CLI arg wins, then env, then the [`src/constants.rs`](src/constants.rs) default). Each `usize` limit rejects `0` during argument parsing. The `authorized_reserve_percent` Sybil-defense ratio is deliberately *not* exposed — it is a protocol-wide security parameter, not a per-machine capacity choice.
+  - **`--network-max-concurrent-ingress-work`** — node-wide cap on concurrently executing inbound *request* P2P work items shared by direct QUIC streams and Gossip frames (default `1024`).
+  - **`--network-max-concurrent-reply-ingress-work`** — separate node-wide cap for *reply* work items read on client-opened streams (default `1024`), so a request handler awaiting replies can never starve them.
+  - **`--network-max-ingress-events-per-peer-per-second`** — per-immediate-peer cap on inbound P2P frames per second, across direct streams and Gossip frames (default `512`).
+  - **`--network-max-concurrent-connections`** / **`--network-max-connections-per-peer`** — node-wide and per-endpoint-key caps on accepted-but-open inbound QUIC connections (defaults `2048` / `32`).
+  - **`--network-max-concurrent-streams`** / **`--network-max-streams-per-peer`** — node-wide and per-endpoint-key caps on accepted-but-open inbound direct streams (defaults `4096` / `32`).
+  - **`--network-max-inbound-request-body-bytes`** / **`--network-max-inbound-reply-body-bytes`** — node-wide receive-byte budgets for request and reply frame bodies, separate pools (defaults `192 MiB` / `64 MiB`). Each must be at least the largest route `max_message_size`, checked at startup.
+  - **`--network-stream-read-timeout-ms`** — per-read deadline for one length-prefixed frame (default `30000`). Rejected below `MIN_NETWORK_STREAM_READ_TIMEOUT_MS` (`2 x PEER_RESPONSE_TIMEOUT`) so it can only ever fire on a genuinely stalled stream.
+
+  Raise the node-wide caps on a node provisioned to take on more work; the per-peer caps bound a single endpoint identity's share and should be raised only with reason.
 
 Password and node identity: see **`constants`**, **`get_password`**, **`get_network_key_secret`**, **`derive_secret_key_bytes`** in the same module.
 
