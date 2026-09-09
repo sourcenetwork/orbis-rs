@@ -15,6 +15,9 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+#[cfg(test)]
+mod tests;
+
 pub struct NativeBulletin {
     reader: HubClient,
     trusted: ConsensusPublicKey,
@@ -132,8 +135,7 @@ impl NativeBulletin {
             }
             if !sent {
                 // A transport error can follow acceptance; only certified execution clears the journal.
-                let _ = writer.submit_pending().await;
-                sent = true;
+                sent = writer.submit_pending().await.is_ok();
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }

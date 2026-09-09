@@ -37,11 +37,17 @@ async fn receipt(reader: &HubClient, id: B256, trusted: &ConsensusPublicKey) {
     .await
     .unwrap();
 }
-async fn submit(client: &HubClient, worker: &BlsSigner, trusted: &ConsensusPublicKey, call: Bytes) {
+async fn submit(
+    client: &HubClient,
+    worker: &BlsSigner,
+    trusted: &ConsensusPublicKey,
+    call: Bytes,
+) -> B256 {
     let wire = worker.sign_native_tx(HUB_ADDRESS, call).unwrap();
     let id = NativeTx::decode_wire(&wire).unwrap().tx_id().0;
     assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
     receipt(client, id, trusted).await;
+    id
 }
 fn open(
     url: &str,
@@ -326,13 +332,14 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert_eq!(restored, derivation);
     config.nonce = [2; 32];
     let pending_id = config.id(root.0, &actor).unwrap();
-    submit(
+    let creation = submit(
         &client,
         &worker,
         &trusted,
         encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
     )
     .await;
+    receipt(&HubClient::new(&reader_url), creation, &trusted).await;
     let cancel = serde_json::to_vec(&RingCancellationPayload {
         ring_id: pending_id.clone(),
     })
