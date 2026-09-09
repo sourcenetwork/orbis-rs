@@ -696,7 +696,7 @@ async fn iroh_builder_default_config() {
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 512);
     assert_eq!(config.ingress_limits.max_concurrent_connections, 2048);
     assert_eq!(config.ingress_limits.max_connections_per_peer, 32);
-    assert_eq!(config.ingress_limits.authorized_connection_reserve, 0);
+    assert_eq!(config.ingress_limits.authorized_reserve_percent, 0);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 4096);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 32);
     assert_eq!(
@@ -724,7 +724,7 @@ async fn iroh_builder_custom_max_message_size() {
         .max_ingress_events_per_peer_per_second(23)
         .max_concurrent_connections(41)
         .max_connections_per_peer(11)
-        .authorized_connection_reserve(13)
+        .authorized_reserve_percent(30)
         .max_concurrent_streams(29)
         .max_streams_per_peer(7)
         .max_inbound_request_body_bytes(9 * 1024 * 1024)
@@ -741,7 +741,7 @@ async fn iroh_builder_custom_max_message_size() {
     assert_eq!(config.ingress_limits.max_events_per_peer_per_second, 23);
     assert_eq!(config.ingress_limits.max_concurrent_connections, 41);
     assert_eq!(config.ingress_limits.max_connections_per_peer, 11);
-    assert_eq!(config.ingress_limits.authorized_connection_reserve, 13);
+    assert_eq!(config.ingress_limits.authorized_reserve_percent, 30);
     assert_eq!(config.ingress_limits.max_concurrent_streams, 29);
     assert_eq!(config.ingress_limits.max_streams_per_peer, 7);
     assert_eq!(
@@ -1842,12 +1842,12 @@ async fn iroh_authorized_connection_reserve_keeps_a_slot_for_the_committee() {
         }
     }
 
-    // 2 total connection slots, 1 reserved → 1 shared.
+    // 2 total connection slots, 50% reserved → 1 reserved, 1 shared.
     let server = IrohNetwork::builder()
         .bind_addr_v4(loopback())
         .private_routes_only()
         .max_concurrent_connections(2)
-        .authorized_connection_reserve(1)
+        .authorized_reserve_percent(50)
         .authorized_peers(Arc::new(OnlyCommittee(committee_key)))
         .build()
         .await

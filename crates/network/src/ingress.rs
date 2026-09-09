@@ -7,9 +7,6 @@
 //!   per-connection handler (direct ALPNs and the wrapped Gossip ALPN alike),
 //!   plus one *connection-open*-rate tick. Bounds how many connections one
 //!   identity — and the node — can keep alive without ever opening a stream.
-//!   `authorized_connection_reserve` of the node-wide budget is set aside for
-//!   peers an [`crate::AuthorizedPeers`] oracle vouches for, so a flood of cheap
-//!   self-issued identities cannot deny the committee a connection slot.
 //! * [`IngressController::try_admit_stream`] — one slot per accepted inbound
 //!   QUIC stream, held for the stream's whole lifetime, plus one
 //!   *stream-open*-rate tick. Bounds how many streams can be parked in `recv()`
@@ -32,6 +29,13 @@
 //!   the replies read on client-opened streams draw on **separate** budgets, so
 //!   a request handler that fans out and awaits replies cannot starve those
 //!   replies of the capacity it is itself holding.
+//!
+//! `authorized_reserve_percent` of every shared inbound budget — connections,
+//! streams, request work permits, and request body bytes — is held back for
+//! peers an [`crate::AuthorizedPeers`] oracle vouches for: an unauthorized peer
+//! must take a slot from the matching `shared_*` pool *as well as* the full
+//! pool, so a flood of cheap self-issued identities cannot starve the committee
+//! of any one ingress resource.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -45,19 +49,24 @@ use crate::r#trait::{AuthorizedPeers, IngressDropReason, NetworkIngressLimits, P
 const MAX_TRACKED_RATE_LIMIT_PEERS: usize = 8192;
 const RATE_LIMIT_PEER_IDLE_TTL: Duration = Duration::from_secs(60);
 
-/// RAII ownership of one global ingress work permit, released when the
-/// application finishes with the frame it was admitted for.
+/// RAII ownership of one request work permit, released when the application
+/// finishes with the frame it was admitted for. `_shared` additionally holds a
+/// slot in the non-reserved work pool for an unauthorized peer's frame.
 #[derive(Debug)]
 pub(crate) struct IngressLease {
     _permit: OwnedSemaphorePermit,
+    _shared: Option<OwnedSemaphorePermit>,
 }
 
-/// RAII ownership of the node-wide receive-byte budget for one inbound frame
-/// body. Held for the lifetime of the resulting [`crate::Message`] so the budget
+/// RAII ownership of the receive-byte budget for one inbound request-frame body.
+/// Held for the lifetime of the resulting [`crate::Message`] so the budget
 /// bounds bytes *received and not yet processed*, not merely bytes in transit.
+/// `_shared` additionally holds bytes in the non-reserved body pool for an
+/// unauthorized peer's frame.
 #[derive(Debug)]
 pub(crate) struct BodyReservation {
     _permit: OwnedSemaphorePermit,
+    _shared: Option<OwnedSemaphorePermit>,
 }
 
 /// Why a newly accepted inbound stream was refused before any frame was read.
@@ -68,6 +77,9 @@ pub(crate) struct BodyReservation {
 pub(crate) enum StreamAdmitReason {
     /// The node-wide concurrent inbound-stream budget is exhausted.
     Global,
+    /// The shared (non-reserved) portion of the stream budget is exhausted and
+    /// this peer is not vouched for by the authorized-peers oracle.
+    Unauthorized,
     /// This immediate peer already holds the maximum concurrent inbound streams.
     PerPeer,
     /// This immediate peer is opening streams faster than its per-second budget.
@@ -78,6 +90,7 @@ impl StreamAdmitReason {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Global => "stream_limit",
+            Self::Unauthorized => "unauthorized_stream_limit",
             Self::PerPeer => "per_peer_stream_limit",
             Self::Rate => "stream_rate_limit",
         }
@@ -145,6 +158,17 @@ enum PeerScopedRefusal {
     PerPeer,
 }
 
+/// Outcome of trying to take an unauthorized peer's slot in a shared pool.
+enum SharedSlot {
+    /// The peer is authorized — no shared slot is taken (it uses the reserve).
+    Reserved,
+    /// The peer is unauthorized and a shared slot was taken; hold it alongside
+    /// the full-pool permit.
+    Acquired(OwnedSemaphorePermit),
+    /// The peer is unauthorized and the shared pool is exhausted.
+    Exhausted,
+}
+
 /// Take one node-wide permit, then one per-peer slot. The global permit is
 /// taken first, so an early return from the per-peer check drops it (and, with
 /// it, the caller's already-acquired `shared` permit).
@@ -185,14 +209,18 @@ pub(crate) struct IngressController {
     reply_work_permits: Arc<Semaphore>,
     /// Bounds accepted-but-not-yet-closed inbound QUIC connections node-wide.
     connection_permits: Arc<Semaphore>,
-    /// The non-reserved portion of `connection_permits`
-    /// (`max_concurrent_connections - authorized_connection_reserve`). An
-    /// unauthorized inbound connection must take a slot here as well, so the
-    /// reserve stays available for authorized peers under a Sybil flood.
-    shared_connection_permits: Arc<Semaphore>,
     /// Optional oracle: is this endpoint identity an authorized peer? `None`
     /// treats every peer as authorized (no reservation enforced).
     authorized_peers: Option<Arc<dyn AuthorizedPeers>>,
+    /// The non-reserved portion of each budget below
+    /// (`budget * (100 - authorized_reserve_percent) / 100`). An unauthorized
+    /// peer must take a slot from the matching `shared_*` pool *as well as* the
+    /// full pool, so `authorized_reserve_percent` of every budget stays
+    /// available to authorized peers under a Sybil flood.
+    shared_connection_permits: Arc<Semaphore>,
+    shared_stream_permits: Arc<Semaphore>,
+    shared_request_work_permits: Arc<Semaphore>,
+    shared_request_body_bytes: Arc<Semaphore>,
     /// Bounds accepted-but-not-yet-closed inbound streams node-wide.
     stream_permits: Arc<Semaphore>,
     /// Weighted byte budget for inbound-request frame bodies received and not
@@ -245,10 +273,10 @@ impl IngressController {
                 "max_connections_per_peer must be at least 1".to_string(),
             ));
         }
-        if limits.authorized_connection_reserve > limits.max_concurrent_connections {
+        if limits.authorized_reserve_percent > 100 {
             return Err(NetworkError::InvalidConfig(format!(
-                "authorized_connection_reserve ({}) must not exceed max_concurrent_connections ({})",
-                limits.authorized_connection_reserve, limits.max_concurrent_connections
+                "authorized_reserve_percent ({}) must be 0..=100",
+                limits.authorized_reserve_percent
             )));
         }
         if limits.max_concurrent_streams == 0 {
@@ -277,16 +305,28 @@ impl IngressController {
         let reply_body_bytes = limits
             .max_inbound_reply_body_bytes
             .min(Semaphore::MAX_PERMITS);
-        let shared_connections = limits
-            .max_concurrent_connections
-            .saturating_sub(limits.authorized_connection_reserve);
+        // Non-reserved portion of a budget: `budget - budget * percent / 100`.
+        // `percent == 0` yields exactly `budget` (the reservation is inert). The
+        // `u128` widen keeps the large byte budgets from overflowing.
+        let shared = |budget: usize| {
+            let reserve =
+                (budget as u128 * limits.authorized_reserve_percent as u128 / 100) as usize;
+            budget - reserve
+        };
         Ok(Self {
             limits,
             request_work_permits: Arc::new(Semaphore::new(limits.max_concurrent_work)),
             reply_work_permits: Arc::new(Semaphore::new(limits.max_concurrent_reply_work)),
             connection_permits: Arc::new(Semaphore::new(limits.max_concurrent_connections)),
-            shared_connection_permits: Arc::new(Semaphore::new(shared_connections)),
             authorized_peers,
+            shared_connection_permits: Arc::new(Semaphore::new(shared(
+                limits.max_concurrent_connections,
+            ))),
+            shared_stream_permits: Arc::new(Semaphore::new(shared(limits.max_concurrent_streams))),
+            shared_request_work_permits: Arc::new(Semaphore::new(shared(
+                limits.max_concurrent_work,
+            ))),
+            shared_request_body_bytes: Arc::new(Semaphore::new(shared(request_body_bytes))),
             stream_permits: Arc::new(Semaphore::new(limits.max_concurrent_streams)),
             request_body_bytes: Arc::new(Semaphore::new(request_body_bytes)),
             reply_body_bytes: Arc::new(Semaphore::new(reply_body_bytes)),
@@ -323,11 +363,7 @@ impl IngressController {
             return Err(ConnectionAdmitReason::Rate);
         }
 
-        let authorized = self
-            .authorized_peers
-            .as_ref()
-            .is_none_or(|oracle| oracle.is_authorized(peer_id));
-        let shared = if authorized {
+        let shared = if self.is_authorized(peer_id) {
             None
         } else {
             Some(
@@ -355,7 +391,8 @@ impl IngressController {
     /// The peer's per-second stream-open budget is charged first — before the
     /// caps — so a peer that is refused for being at its stream cap still pays
     /// for the open attempt, and a peer opening streams too fast is rejected
-    /// outright.
+    /// outright. An unauthorized peer must also take a slot from the shared
+    /// stream pool, so the reserved portion stays for authorized peers.
     pub(crate) async fn try_admit_stream(
         &self,
         peer_id: &PeerId,
@@ -363,12 +400,23 @@ impl IngressController {
         if !self.allow_stream_open(peer_id).await {
             return Err(StreamAdmitReason::Rate);
         }
+
+        let shared = if self.is_authorized(peer_id) {
+            None
+        } else {
+            Some(
+                Arc::clone(&self.shared_stream_permits)
+                    .try_acquire_owned()
+                    .map_err(|_| StreamAdmitReason::Unauthorized)?,
+            )
+        };
+
         admit_peer_scoped(
             &self.stream_permits,
             &self.peer_stream_counts,
             peer_id,
             self.limits.max_streams_per_peer,
-            None,
+            shared,
         )
         .map_err(|refusal| match refusal {
             PeerScopedRefusal::Global => StreamAdmitReason::Global,
@@ -379,7 +427,9 @@ impl IngressController {
     /// Admit one decoded inbound frame without queueing: charge the decoded-frame
     /// rate, then take a request work permit. Used by the PubSub topic path,
     /// where a frame is already fully materialized by Gossip and there is nothing
-    /// to size a receive-byte reservation against.
+    /// to size a receive-byte reservation against. `peer_id` is the immediate
+    /// Gossip relay — in a healthy committee mesh a committee member — so the
+    /// reserve heuristically covers relayed committee traffic.
     pub(crate) async fn try_admit_frame(
         &self,
         peer_id: &PeerId,
@@ -387,8 +437,15 @@ impl IngressController {
         if !self.allow_frame(peer_id).await {
             return Err(IngressDropReason::RateLimit);
         }
-        self.try_acquire_request_work()
+        self.try_acquire_request_work(peer_id)
             .ok_or(IngressDropReason::ConcurrencyLimit)
+    }
+
+    /// `true` when no oracle is configured, or the oracle vouches for `peer_id`.
+    pub(crate) fn is_authorized(&self, peer_id: &PeerId) -> bool {
+        self.authorized_peers
+            .as_ref()
+            .is_none_or(|oracle| oracle.is_authorized(peer_id))
     }
 
     /// Charge one unit of the peer's per-second stream-open budget.
@@ -405,42 +462,82 @@ impl IngressController {
     }
 
     /// Take one work permit for an inbound-request frame about to be processed.
-    pub(crate) fn try_acquire_request_work(&self) -> Option<IngressLease> {
-        Self::acquire(&self.request_work_permits)
+    /// An unauthorized peer also spends a slot from the shared work pool.
+    pub(crate) fn try_acquire_request_work(&self, peer_id: &PeerId) -> Option<IngressLease> {
+        let shared = match self.shared_slot(&self.shared_request_work_permits, peer_id, 1) {
+            SharedSlot::Reserved => None,
+            SharedSlot::Acquired(permit) => Some(permit),
+            SharedSlot::Exhausted => return None,
+        };
+        let permit = Arc::clone(&self.request_work_permits)
+            .try_acquire_owned()
+            .ok()?;
+        Some(IngressLease {
+            _permit: permit,
+            _shared: shared,
+        })
     }
 
     /// Take one work permit for a reply frame (read on a client-opened stream)
-    /// about to be processed.
+    /// about to be processed. Replies are our own solicited traffic — no reserve.
     pub(crate) fn try_acquire_reply_work(&self) -> Option<IngressLease> {
-        Self::acquire(&self.reply_work_permits)
-    }
-
-    fn acquire(semaphore: &Arc<Semaphore>) -> Option<IngressLease> {
-        Arc::clone(semaphore)
+        Arc::clone(&self.reply_work_permits)
             .try_acquire_owned()
             .ok()
-            .map(|permit| IngressLease { _permit: permit })
+            .map(|permit| IngressLease {
+                _permit: permit,
+                _shared: None,
+            })
     }
 
     /// Reserve `len` bytes of the inbound-request receive-body pool. `None` when
-    /// the pool is exhausted (the caller must then not allocate the body).
-    pub(crate) fn try_reserve_request_body(&self, len: usize) -> Option<BodyReservation> {
-        Self::reserve(&self.request_body_bytes, len)
+    /// the pool is exhausted (the caller must then not allocate the body). An
+    /// unauthorized peer also spends `len` bytes of the shared body pool.
+    pub(crate) fn try_reserve_request_body(
+        &self,
+        peer_id: &PeerId,
+        len: usize,
+    ) -> Option<BodyReservation> {
+        let permits = u32::try_from(len).ok()?;
+        let shared = match self.shared_slot(&self.shared_request_body_bytes, peer_id, permits) {
+            SharedSlot::Reserved => None,
+            SharedSlot::Acquired(permit) => Some(permit),
+            SharedSlot::Exhausted => return None,
+        };
+        let permit = Arc::clone(&self.request_body_bytes)
+            .try_acquire_many_owned(permits)
+            .ok()?;
+        Some(BodyReservation {
+            _permit: permit,
+            _shared: shared,
+        })
     }
 
     /// Reserve `len` bytes of the reply receive-body pool. Separate from the
     /// request pool so a stalled-request backlog cannot starve replies of buffer.
     pub(crate) fn try_reserve_reply_body(&self, len: usize) -> Option<BodyReservation> {
-        Self::reserve(&self.reply_body_bytes, len)
-    }
-
-    fn reserve(semaphore: &Arc<Semaphore>, len: usize) -> Option<BodyReservation> {
-        // A zero-length body reserves nothing but still yields a reservation.
         let permits = u32::try_from(len).ok()?;
-        Arc::clone(semaphore)
+        Arc::clone(&self.reply_body_bytes)
             .try_acquire_many_owned(permits)
             .ok()
-            .map(|permit| BodyReservation { _permit: permit })
+            .map(|permit| BodyReservation {
+                _permit: permit,
+                _shared: None,
+            })
+    }
+
+    /// The shared-pool slot an unauthorized peer must also hold. `Reserved` for
+    /// an authorized peer (it draws straight from the full pool); `Acquired` /
+    /// `Exhausted` for an unauthorized one.
+    fn shared_slot(&self, shared: &Arc<Semaphore>, peer_id: &PeerId, permits: u32) -> SharedSlot {
+        if self.is_authorized(peer_id) {
+            SharedSlot::Reserved
+        } else {
+            match Arc::clone(shared).try_acquire_many_owned(permits) {
+                Ok(permit) => SharedSlot::Acquired(permit),
+                Err(_) => SharedSlot::Exhausted,
+            }
+        }
     }
 
     async fn allow(
@@ -585,7 +682,7 @@ mod tests {
             max_concurrent_connections: streams,
             max_connections_per_peer: per_peer,
             // Reservation off unless a test opts in via struct-update syntax.
-            authorized_connection_reserve: 0,
+            authorized_reserve_percent: 0,
             max_concurrent_streams: streams,
             max_streams_per_peer: per_peer,
             max_inbound_request_body_bytes: body,
@@ -741,12 +838,12 @@ mod tests {
             [authorized.as_bytes().to_vec()].into_iter().collect(),
         ));
 
-        // 4 total connection slots, 2 reserved for authorized peers → 2 shared.
+        // 4 total connection slots, 50% reserved → 2 reserved, 2 shared.
         let controller = IngressController::new(
             NetworkIngressLimits {
                 max_concurrent_connections: 4,
                 max_connections_per_peer: 64,
-                authorized_connection_reserve: 2,
+                authorized_reserve_percent: 50,
                 ..limits(4, 1024, 64, 64, MIB)
             },
             Some(oracle),
@@ -791,15 +888,90 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn authorized_reserve_protects_stream_body_and_work_pools() {
+        struct Allowlist(Vec<u8>);
+        impl AuthorizedPeers for Allowlist {
+            fn is_authorized(&self, peer: &PeerId) -> bool {
+                peer.as_bytes() == self.0
+            }
+        }
+        let vip = PeerId::from_bytes(&[7; 32]);
+        let sybil = PeerId::from_bytes(&[9; 32]);
+        let oracle: Arc<dyn AuthorizedPeers> = Arc::new(Allowlist(vip.as_bytes().to_vec()));
+
+        // 4 of each pool, 50% reserved → 2 shared, 2 reserved. Rate/per-peer
+        // high enough not to interfere.
+        let controller = IngressController::new(
+            NetworkIngressLimits {
+                max_concurrent_streams: 4,
+                max_concurrent_work: 4,
+                max_inbound_request_body_bytes: 4,
+                max_streams_per_peer: 64,
+                authorized_reserve_percent: 50,
+                ..limits(4, 4096, 64, 64, 4)
+            },
+            Some(oracle),
+        )
+        .expect("valid limits");
+
+        // Streams: two unauthorized fill the shared portion; a third is refused
+        // while the reserve still has room; the VIP takes the reserve.
+        let _s1 = controller
+            .try_admit_stream(&sybil)
+            .await
+            .expect("sybil stream 1");
+        let _s2 = controller
+            .try_admit_stream(&sybil)
+            .await
+            .expect("sybil stream 2");
+        assert_eq!(
+            controller.try_admit_stream(&sybil).await.unwrap_err(),
+            StreamAdmitReason::Unauthorized
+        );
+        let _sv = controller.try_admit_stream(&vip).await.expect("vip stream");
+
+        // Request work permits: same shape.
+        let _w1 = controller
+            .try_acquire_request_work(&sybil)
+            .expect("sybil work 1");
+        let _w2 = controller
+            .try_acquire_request_work(&sybil)
+            .expect("sybil work 2");
+        assert!(
+            controller.try_acquire_request_work(&sybil).is_none(),
+            "unauthorized work is capped at the shared portion"
+        );
+        assert!(
+            controller.try_acquire_request_work(&vip).is_some(),
+            "the VIP draws work from the reserve"
+        );
+
+        // Request body bytes: same shape (1 byte each of a 4-byte pool).
+        let _b1 = controller
+            .try_reserve_request_body(&sybil, 1)
+            .expect("sybil body 1");
+        let _b2 = controller
+            .try_reserve_request_body(&sybil, 1)
+            .expect("sybil body 2");
+        assert!(
+            controller.try_reserve_request_body(&sybil, 1).is_none(),
+            "unauthorized body bytes are capped at the shared portion"
+        );
+        assert!(
+            controller.try_reserve_request_body(&vip, 1).is_some(),
+            "the VIP draws body bytes from the reserve"
+        );
+    }
+
     #[test]
-    fn new_rejects_reserve_exceeding_total_connections() {
+    fn new_rejects_reserve_percent_over_100() {
         let bad = NetworkIngressLimits {
-            max_concurrent_connections: 4,
-            authorized_connection_reserve: 5,
+            authorized_reserve_percent: 101,
             ..limits(4, 1024, 64, 64, MIB)
         };
         let Err(error) = IngressController::new(bad, None) else {
-            panic!("reserve exceeding the total must be rejected");
+            panic!("a reserve percent over 100 must be rejected");
         };
         assert!(matches!(error, NetworkError::InvalidConfig(_)));
     }
@@ -816,12 +988,15 @@ mod tests {
         )
         .expect("valid limits");
 
+        // No oracle → every peer is authorized → the shared gate is a no-op.
+        let peer = PeerId::from_bytes(&[0; 32]);
+
         // The single request permit can be fully held...
         let _request = controller
-            .try_acquire_request_work()
+            .try_acquire_request_work(&peer)
             .expect("request work permit");
         assert!(
-            controller.try_acquire_request_work().is_none(),
+            controller.try_acquire_request_work(&peer).is_none(),
             "request budget is exhausted"
         );
 
@@ -864,13 +1039,14 @@ mod tests {
             None,
         )
         .expect("valid limits");
+        let peer = PeerId::from_bytes(&[0; 32]);
 
         // Fill the request pool completely.
         let req = controller
-            .try_reserve_request_body(100)
+            .try_reserve_request_body(&peer, 100)
             .expect("first 100 request bytes fit");
         assert!(
-            controller.try_reserve_request_body(1).is_none(),
+            controller.try_reserve_request_body(&peer, 1).is_none(),
             "request pool is exhausted"
         );
         // A reply still gets its buffer from the separate reply pool.
@@ -882,7 +1058,7 @@ mod tests {
         drop(req);
         drop(reply);
         let _again = controller
-            .try_reserve_request_body(100)
+            .try_reserve_request_body(&peer, 100)
             .expect("request pool frees when its reservation drops");
     }
 

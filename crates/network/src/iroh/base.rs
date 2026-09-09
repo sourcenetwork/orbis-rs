@@ -145,17 +145,18 @@ impl IrohNetworkBuilder {
         self
     }
 
-    /// Reserve `slots` of `max_concurrent_connections` for peers the
+    /// Reserve `percent` (0..=100) of every shared inbound budget — connections,
+    /// streams, request work permits, request body bytes — for peers the
     /// [`AuthorizedPeers`] oracle vouches for. No effect without
-    /// [`Self::authorized_peers`]. Must not exceed `max_concurrent_connections`.
-    pub fn authorized_connection_reserve(mut self, slots: usize) -> Self {
-        self.config.ingress_limits.authorized_connection_reserve = slots;
+    /// [`Self::authorized_peers`].
+    pub fn authorized_reserve_percent(mut self, percent: usize) -> Self {
+        self.config.ingress_limits.authorized_reserve_percent = percent;
         self
     }
 
     /// Supply the oracle that decides whether an inbound connection's endpoint
     /// identity is an authorized (registered / committee) peer, and so may
-    /// occupy the reserved connection slots.
+    /// occupy the reserved capacity.
     pub fn authorized_peers(mut self, oracle: Arc<dyn AuthorizedPeers>) -> Self {
         self.authorized_peers = Some(oracle);
         self
@@ -654,7 +655,7 @@ impl Connection for IrohStreamWrapper {
         // pools. The reservation rides on the returned `Message` and is released
         // when the application drops it.
         let reserved = if self.inbound {
-            self.ingress.try_reserve_request_body(len)
+            self.ingress.try_reserve_request_body(&self.peer_id, len)
         } else {
             self.ingress.try_reserve_reply_body(len)
         };
@@ -704,7 +705,7 @@ impl Connection for IrohStreamWrapper {
         }
 
         let work = if self.inbound {
-            self.ingress.try_acquire_request_work()
+            self.ingress.try_acquire_request_work(&self.peer_id)
         } else {
             self.ingress.try_acquire_reply_work()
         };

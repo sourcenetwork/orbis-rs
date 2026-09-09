@@ -120,14 +120,7 @@ reply is still attacker-controlled input under the MPC threat model):
   lifetime, so an identity that opens connections and keeps them alive with
   transport traffic — never opening a stream — is still bounded (the 5-minute
   idle timeout does not catch this, since transport traffic refreshes it). Any
-  connection refusal closes the connection. `authorized_connection_reserve` of
-  the node-wide budget is set aside for peers the optional [`AuthorizedPeers`]
-  oracle vouches for (registered / committee nodes); unauthorized identities —
-  cheap self-issued keys — are capped at `total - reserve`, so a Sybil flood
-  degrades availability for unknown peers but never denies the committee a slot.
-  The oracle answer may be briefly stale for a peer just added by an in-flight
-  reshare; that peer competes in the shared pool until the next refresh, which
-  is self-correcting. Without an oracle the reservation is inert.
+  connection refusal closes the connection.
 - **Per accepted stream**, at `accept_bi()` in the router:
   `max_concurrent_streams` caps parked inbound streams node-wide,
   `max_streams_per_peer` caps them per immediate endpoint key, and the open
@@ -160,14 +153,38 @@ reply is still attacker-controlled input under the MPC threat model):
   `Message` / `AuthenticatedMessage` and is released when the application drops
   it.
 
+### Reserved capacity for authorized peers
+
+`authorized_reserve_percent` (0..=100, default 0 = inert;
+`IrohNetworkBuilder::authorized_reserve_percent`) is held back in **every**
+shared inbound budget above — `max_concurrent_connections`,
+`max_concurrent_streams`, `max_concurrent_work`, `max_inbound_request_body_bytes`
+— for peers the optional [`AuthorizedPeers`] oracle vouches for (registered /
+committee nodes, supplied via `IrohNetworkBuilder::authorized_peers`). An
+unauthorized identity — a cheap self-issued key — must take a slot from the
+matching `shared_*` sub-pool (`budget * (100 - percent) / 100`) as well as the
+full pool, so a Sybil flood cannot starve the committee of connections, streams,
+work permits, *or* body bytes — refusing at any one pool while the others held
+capacity was the gap the connection-only reserve left. Authorization is sampled
+at each admission (per connection, per stream, per frame), so a peer removed
+from the set loses reserve access on its *next* admission; an already-held lease
+persists until that connection/stream closes. The Gossip frame path keys the
+reserve on the immediate relay — in a healthy committee mesh, a committee
+member. The oracle answer may be briefly stale for a peer just added by an
+in-flight reshare — orbis-node's oracle folds in the node's own
+`NodeInfo.whitelisted_ring_ids` so a ceremony whose ring exists on-chain but has
+not finished is covered, and a failed refresh keeps the last-known-good set.
+Without an oracle every reservation is inert.
+
 `stream_read_timeout` (`IrohNetworkBuilder::stream_read_timeout_ms`, default
 30 s) is the deadline for each read — the length prefix and the body each get
 this long. A slow-loris peer that dribbles either fails the `recv()` and
 releases its stream slot. It is set above every application-level response
 timeout, so it only ever fires on a genuinely stalled stream. A zero value is
 rejected at build time, as is either receive-byte pool below one
-`max_message_size` — and `RouterBuilder::spawn` re-checks a route-level
-`max_message_size` override against the request pool.
+`max_message_size`, or an `authorized_reserve_percent` above 100 — and
+`RouterBuilder::spawn` re-checks a route-level `max_message_size` override
+against the request pool.
 
 Separately, `max_message_size` (set on the router/connection builder — see
 `RouterBuilder::max_message_size` in `src/trait.rs` and `src/iroh/router.rs`)

@@ -197,7 +197,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             )
             .max_concurrent_connections(constants::NETWORK_MAX_CONCURRENT_CONNECTIONS)
             .max_connections_per_peer(constants::NETWORK_MAX_CONNECTIONS_PER_PEER)
-            .authorized_connection_reserve(constants::NETWORK_AUTHORIZED_CONNECTION_RESERVE)
+            .authorized_reserve_percent(constants::NETWORK_AUTHORIZED_RESERVE_PERCENT)
             .authorized_peers(authorized_peers.clone())
             .max_concurrent_streams(constants::NETWORK_MAX_CONCURRENT_STREAMS)
             .max_streams_per_peer(constants::NETWORK_MAX_STREAMS_PER_PEER)
@@ -559,6 +559,7 @@ async fn run_server(
     let authorized_peer_refresh = node.authorized_peers.clone().map(|oracle| {
         spawn_authorized_peer_refresh(
             oracle,
+            node.app_state.node_key.clone(),
             node.app_state.local_storage.clone(),
             node.app_state.bulletin.clone(),
             constants::AUTHORIZED_PEER_REFRESH_INTERVAL,

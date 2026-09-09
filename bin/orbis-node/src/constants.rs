@@ -383,14 +383,19 @@ pub const NETWORK_MAX_CONCURRENT_CONNECTIONS: usize = 2048;
 /// Iroh endpoint key), across every ALPN including Gossip.
 pub const NETWORK_MAX_CONNECTIONS_PER_PEER: usize = 32;
 
-/// Slots within `NETWORK_MAX_CONCURRENT_CONNECTIONS` reserved for peers the
-/// authorized-peer oracle vouches for (current / pending committee members).
+/// Percent of every shared inbound budget — concurrent connections, concurrent
+/// streams, request-frame work permits, request-frame body bytes — held back for
+/// peers the authorized-peer oracle vouches for (current / pending committee
+/// members).
 ///
 /// Unauthorized identities — cheap self-issued endpoint keys not yet registered
-/// as nodes — are capped at `total - reserve`, so a Sybil flood degrades
-/// availability for unknown peers but never denies the committee a connection
-/// slot. 512 of 2048 covers a large committee with reconnect churn.
-pub const NETWORK_AUTHORIZED_CONNECTION_RESERVE: usize = 512;
+/// as nodes — are capped at `budget * (100 - percent) / 100` in each pool.
+/// Legitimate P2P traffic is committee-to-committee (clients use gRPC, not this
+/// layer), so the "unauthorized" pool is really scratch space for unauthenticated
+/// internet noise: 90% leaves it only ~205 connections / ~410 streams / ~19 MiB
+/// request-body — enough for a peer mid-onboarding or a brief oracle-refresh lag,
+/// nowhere near enough for a Sybil flood to touch the committee's capacity.
+pub const NETWORK_AUTHORIZED_RESERVE_PERCENT: usize = 90;
 
 /// How often the authorized-peer set is rebuilt from the local ring index and
 /// the bulletin. A peer newly added by an in-flight reshare is briefly outside
