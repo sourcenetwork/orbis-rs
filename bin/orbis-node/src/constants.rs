@@ -445,6 +445,18 @@ pub const NETWORK_MAX_INBOUND_REPLY_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// stalled stream, never pre-empting a slower legitimate exchange.
 pub const NETWORK_STREAM_READ_TIMEOUT_MS: u64 = 30_000;
 
+/// Maximum size of a single encoded point-to-point protocol frame (`iroh`
+/// `max_message_size`), enforced on both `send` and `recv`.
+///
+/// The PRE/Sign wire codec ([`crate::helpers::wire`], MessagePack) keeps
+/// `Vec<u8>` fields 1:1, so a maximal request is the [`MAX_SIGN_MESSAGE_BYTES`]
+/// signed message (1 MiB) plus the FROST commitment list, the auth context, and
+/// a JWT — comfortably under this 2 MiB ceiling. Kept well below both receive-
+/// byte pools above. (Before the MessagePack switch, JSON inflated a 1 MiB
+/// message to 2-4 MiB and every such request failed at the peer boundary
+/// despite being accepted by the gRPC API.)
+pub const NETWORK_MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
+
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
 

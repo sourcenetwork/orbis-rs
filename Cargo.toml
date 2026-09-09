@@ -71,6 +71,7 @@ base64 = "0.22"
 did-key = "0.2.1"
 project-root = "0.2.2"
 bincode = "1.3"
+rmp-serde = "1"
 
 # Metrics
 prometheus = { version = "0.13", default-features = false, features = ["process"] }

@@ -187,6 +187,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         let authorized_peers = Arc::new(RingAuthorizedPeers::new());
         let mut network_builder = network::NetworkImpl::builder()
             .secret_key(secret_key)
+            .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
             .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
             .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
             .stream_read_timeout_ms(constants::NETWORK_STREAM_READ_TIMEOUT_MS)
