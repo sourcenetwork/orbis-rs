@@ -270,3 +270,13 @@ interval with `NodeDemerits::effective_points` when displaying the current score
 This covers fresh BLS rings, graceful restart, member replacement, offline reports
 and live policy checks. Crash/power-loss recovery, other fault evidence types and
 other curves require their own checks.
+
+The Defra signing scenario uses the actual Defra client against three Orbis
+processes and native Vera. It checks denial before an ACP grant, a verified
+threshold signature after the grant, and denial after revocation. It shares the
+DKG setup and stops before the PRE and resharing portions of the broader fixture.
+
+```sh
+HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+  --test native_startup native_defra_signing -- --ignored
+```

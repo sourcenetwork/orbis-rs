@@ -220,6 +220,18 @@ async fn submit(
 #[ignore = "requires a built hubd supplied through HUBD_BINARY"]
 #[cfg(feature = "bls12-381")]
 async fn native_distributed_threshold_workflows() {
+    distributed_threshold_workflows(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[cfg(feature = "bls12-381")]
+async fn native_defra_signing() {
+    distributed_threshold_workflows(true).await;
+}
+
+#[cfg(feature = "bls12-381")]
+async fn distributed_threshold_workflows(signing_only: bool) {
     use alloy_primitives::B256;
     use authn::jwt_builder::{create_authenticated_request, JwtSigner};
     use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
@@ -505,7 +517,54 @@ async fn native_distributed_threshold_workflows() {
         .await
         .unwrap();
     confirmed(&client, registered.transaction_hash, &trusted).await;
-    let reader = JwtSigner::new();
+    let reader_seed = [91u8; 32];
+    let reader = JwtSigner::from_key_pair(did_key::generate::<did_key::Ed25519KeyPair>(Some(
+        &reader_seed,
+    )));
+    let public_key = crypto::GroupAffine::from_bytes(&hex::decode(&ring_pk).unwrap()).unwrap();
+    let metadata = crypto::SignImpl::encode_metadata(&policy, "key", "sign");
+    let derived_key = crypto::SignImpl::derive_public_key(
+        &public_key,
+        derivation.derivation.as_bytes(),
+        Some(&metadata),
+    )
+    .unwrap();
+    let service_identity = std::sync::Arc::new(
+        defra_identity::RawIdentity::from_ed25519(
+            defra_crypto::Ed25519PrivateKey::from_bytes(
+                &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        defra_identity::Identity::did(service_identity.as_ref())
+            .unwrap()
+            .to_string(),
+        reader.did_uri
+    );
+    let defra = std::sync::Arc::new(
+        defra_orbis::OrbisClient::new(
+            format!("http://{}", addresses[1]),
+            derivation_id.clone(),
+            derived_key.to_bytes().unwrap(),
+            service_identity,
+        )
+        .await
+        .unwrap(),
+    );
+    let defra_sign = || {
+        let defra = std::sync::Arc::clone(&defra);
+        tokio::task::spawn_blocking(move || {
+            defra_core::signing::RemoteSigner::sign_sync(
+                defra.as_ref(),
+                b"native Vera threshold signing",
+                None,
+            )
+        })
+    };
+
     let message = b"native Vera threshold signing".to_vec();
     let sign_request = || {
         create_authenticated_request(
@@ -529,6 +588,7 @@ async fn native_distributed_threshold_workflows() {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
+    assert!(defra_sign().await.unwrap().is_err());
     let granted = client
         .native_set_relationship(
             &worker,
@@ -546,19 +606,17 @@ async fn native_distributed_threshold_workflows() {
         .await
         .unwrap()
         .into_inner();
-    let public_key = crypto::GroupAffine::from_bytes(&hex::decode(&ring_pk).unwrap()).unwrap();
-    let metadata = crypto::SignImpl::encode_metadata(&policy, "key", "sign");
-    let derived_key = crypto::SignImpl::derive_public_key(
-        &public_key,
-        derivation.derivation.as_bytes(),
-        Some(&metadata),
-    )
-    .unwrap();
     let signature =
         crypto::SignaturePoint::from_bytes(&hex::decode(signed.signature).unwrap()).unwrap();
     crypto::SignImpl::new()
         .verify(&derived_key, &message, &signature)
         .unwrap();
+    let defra_signature = defra_sign()
+        .await
+        .unwrap()
+        .expect("Defra threshold signature");
+    assert_eq!(defra_signature, signature.to_bytes().unwrap());
+
     let revoked = client
         .native_delete_relationship(
             &worker,
@@ -575,6 +633,10 @@ async fn native_distributed_threshold_workflows() {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
+    assert!(defra_sign().await.unwrap().is_err());
+    if signing_only {
+        return;
+    }
     use ark_ec::{AffineRepr, CurveGroup};
     use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
     use proto::v0::{
