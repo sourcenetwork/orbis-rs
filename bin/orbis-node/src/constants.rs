@@ -442,8 +442,16 @@ pub const NETWORK_MAX_INBOUND_REPLY_BODY_BYTES: usize = 64 * 1024 * 1024;
 /// Bounds how long a partial length prefix or a slow/partial body can pin an
 /// ingress work permit. Set above every application-level response timeout
 /// (`PEER_RESPONSE_TIMEOUT` and friends) so it only ever fires on a genuinely
-/// stalled stream, never pre-empting a slower legitimate exchange.
+/// stalled stream, never pre-empting a slower legitimate exchange. Operator
+/// default for `--network-stream-read-timeout-ms`.
 pub const NETWORK_STREAM_READ_TIMEOUT_MS: u64 = 30_000;
+
+/// Floor accepted for `--network-stream-read-timeout-ms`. The per-read deadline
+/// must stay above every application-level response timeout
+/// (`PEER_RESPONSE_TIMEOUT` and friends) or it pre-empts a slow-but-healthy
+/// exchange instead of only catching a stalled stream; this is
+/// `2 x PEER_RESPONSE_TIMEOUT`. A lower value is rejected at startup.
+pub const MIN_NETWORK_STREAM_READ_TIMEOUT_MS: u64 = PEER_RESPONSE_TIMEOUT.as_secs() * 2 * 1_000;
 
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;

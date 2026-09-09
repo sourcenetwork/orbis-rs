@@ -17,7 +17,7 @@ mod store_secret;
 #[cfg(feature = "unsafe-testing")]
 mod unsafe_testing;
 
-pub use helpers::launch::Args;
+pub use helpers::launch::{Args, NetworkIngressArgs};
 pub use runtime::run;
 #[cfg(test)]
 pub(crate) use runtime::{
