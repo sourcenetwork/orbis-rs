@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod authorized_peers;
 pub mod create_routers;
 pub mod encrypted_document;
 pub mod identity;

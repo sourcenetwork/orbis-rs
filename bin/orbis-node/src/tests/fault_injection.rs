@@ -271,6 +271,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
             local_storage,
             authz,
             bulletin,
+            authorized_peers: None,
         };
 
         let node = init_node(config).await.expect("init_node");
