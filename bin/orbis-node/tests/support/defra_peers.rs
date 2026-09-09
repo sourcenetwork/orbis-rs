@@ -1,3 +1,6 @@
+#[path = "defra_peer_forgery.rs"]
+mod forgery;
+
 use defra_core::signing::{self, SigningConfig, SigningKeyType};
 use defra_node::{EmbeddedNode, P2PConfig};
 use std::{
@@ -146,6 +149,7 @@ impl Peers {
 
     pub async fn verify_replication(&self) {
         self.verify_document("over QUIC", 1).await;
+        self.verify_forgery().await;
     }
 
     pub async fn verify_restart(self) -> Self {

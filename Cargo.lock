@@ -11,26 +11,6 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 [[package]]
 name = "acp"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
-dependencies = [
- "async-lock",
- "async-trait",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "parking_lot",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "thiserror 2.0.18",
- "tracing",
- "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
-]
-
-[[package]]
-name = "acp"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "async-lock",
@@ -47,6 +27,26 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+]
+
+[[package]]
+name = "acp"
+version = "0.5.0"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "thiserror 2.0.18",
+ "tracing",
+ "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
 ]
 
 [[package]]
@@ -1901,19 +1901,19 @@ dependencies = [
 [[package]]
 name = "blockstore"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-trait",
  "bytes",
  "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "lru 0.16.4",
  "multihash",
  "multihash-codetable",
  "parking_lot",
  "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3028,14 +3028,14 @@ dependencies = [
 [[package]]
 name = "crdt"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-trait",
  "bytes",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_json",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3194,18 +3194,19 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "aes-gcm",
  "blst",
  "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
  "ed25519-dalek 2.2.0",
  "hex",
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "k256",
  "multibase",
+ "multihash",
  "p256 0.13.2",
  "rand 0.8.6",
  "serde",
@@ -3221,19 +3222,18 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "aes-gcm",
  "blst",
  "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "ed25519-dalek 2.2.0",
  "hex",
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "k256",
  "multibase",
- "multihash",
  "p256 0.13.2",
  "rand 0.8.6",
  "serde",
@@ -3350,7 +3350,7 @@ dependencies = [
 [[package]]
 name = "cursor"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3542,13 +3542,13 @@ dependencies = [
 [[package]]
 name = "datastore"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-lock",
  "async-trait",
  "bytes",
  "cid",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -3557,9 +3557,9 @@ dependencies = [
 [[package]]
 name = "db"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "anyhow",
  "async-lock",
  "async-trait",
@@ -3570,14 +3570,14 @@ dependencies = [
  "ciborium",
  "cid",
  "crdt",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "datastore",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "events",
  "futures",
  "hex",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "kms",
  "lens",
  "multihash",
@@ -3586,12 +3586,12 @@ dependencies = [
  "query",
  "rand 0.8.6",
  "reqwest 0.12.28",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_bytes",
  "serde_json",
  "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "telemetry",
  "thiserror 2.0.18",
  "tokio",
@@ -3626,31 +3626,6 @@ dependencies = [
 [[package]]
 name = "defra-core"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
-dependencies = [
- "async-trait",
- "bytes",
- "ciborium",
- "cid",
- "ipld-core",
- "multibase",
- "multihash",
- "rand 0.8.6",
- "serde",
- "serde_bytes",
- "serde_ipld_dagcbor",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "defra-core"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "async-trait",
@@ -3673,29 +3648,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "defra-core"
+version = "0.5.0"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "ciborium",
+ "cid",
+ "ipld-core",
+ "multibase",
+ "multihash",
+ "rand 0.8.6",
+ "serde",
+ "serde_bytes",
+ "serde_ipld_dagcbor",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "defra-http"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "async-stream",
  "async-trait",
  "axum",
  "base64 0.22.1",
  "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "db",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "defra-version",
  "events",
  "futures",
  "hex",
  "hyper 1.9.0",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "lens",
  "query",
  "rand 0.8.6",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_json",
  "telemetry",
@@ -3710,18 +3710,18 @@ dependencies = [
 [[package]]
 name = "defra-node"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "anyhow",
  "async-trait",
  "blockstore",
  "db",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "defra-http",
  "defra-p2p-adapter",
  "events",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "kms",
  "lens",
  "p2p",
@@ -3729,10 +3729,10 @@ dependencies = [
  "rand 0.8.6",
  "replication-filter",
  "reqwest 0.12.28",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_json",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "telemetry",
  "thiserror 2.0.18",
  "tokio",
@@ -3743,30 +3743,30 @@ dependencies = [
 [[package]]
 name = "defra-p2p-adapter"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "async-trait",
  "blockstore",
  "bytes",
  "chrono",
  "cid",
  "db",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "defra-http",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "events",
  "hex",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "lens",
  "p2p",
  "replication-filter",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
  "serde_json",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "tokio",
  "tracing",
  "zeroize",
@@ -3775,7 +3775,7 @@ dependencies = [
 [[package]]
 name = "defra-version"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "serde",
 ]
@@ -4034,24 +4034,6 @@ dependencies = [
 [[package]]
 name = "document"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "multibase",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "document"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "base64 0.22.1",
@@ -4067,6 +4049,24 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
+name = "document"
+version = "0.5.0"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ciborium",
+ "cid",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "multibase",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "uuid",
 ]
@@ -4434,13 +4434,13 @@ dependencies = [
 [[package]]
 name = "events"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-channel",
  "async-trait",
  "bytes",
  "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "parking_lot",
  "thiserror 2.0.18",
  "tracing",
@@ -6085,11 +6085,11 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "identity"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "base64 0.22.1",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
  "hex",
  "k256",
  "p256 0.13.2",
@@ -6101,11 +6101,11 @@ dependencies = [
 [[package]]
 name = "identity"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "base64 0.22.1",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "hex",
  "k256",
  "p256 0.13.2",
@@ -6899,9 +6899,9 @@ dependencies = [
 [[package]]
 name = "kms"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "async-channel",
  "async-lock",
  "async-trait",
@@ -6909,10 +6909,10 @@ dependencies = [
  "bytes",
  "ciborium",
  "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "futures",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "rand 0.8.6",
  "serde",
  "serde_bytes",
@@ -6993,7 +6993,7 @@ checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 [[package]]
 name = "lens"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -8297,13 +8297,13 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orbis"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "base64 0.22.1",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "hex",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "prost 0.14.3",
  "serde_json",
  "sha2 0.10.9",
@@ -8372,13 +8372,13 @@ dependencies = [
  "common",
  "commonware-codec",
  "crypto 0.0.1",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "db",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "defra-node",
  "did-key",
  "dirs",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "futures",
  "getrandom 0.2.17",
  "hex",
@@ -8389,7 +8389,7 @@ dependencies = [
  "hub-harness",
  "hyper 1.9.0",
  "hyper-util",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "iroh",
  "k256",
  "lazy_static",
@@ -8405,12 +8405,12 @@ dependencies = [
  "rand 0.9.4",
  "rand_core 0.6.4",
  "rpassword",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "tempfile",
  "test-support",
  "thiserror 1.0.69",
@@ -8487,9 +8487,9 @@ dependencies = [
 [[package]]
 name = "p2p"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -8499,12 +8499,12 @@ dependencies = [
  "chrono",
  "ciborium",
  "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "futures",
  "hex",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "ipld-core",
  "iroh",
  "iroh-gossip",
@@ -8522,7 +8522,7 @@ dependencies = [
  "serde_ipld_dagcbor",
  "serde_json",
  "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -9373,9 +9373,9 @@ dependencies = [
 [[package]]
 name = "query"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "async-graphql",
  "async-lock",
  "async-trait",
@@ -9386,18 +9386,18 @@ dependencies = [
  "ciborium",
  "cid",
  "cursor",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "futures",
  "graphql-parser",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "lens",
  "regex",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -9810,11 +9810,11 @@ dependencies = [
 [[package]]
 name = "replication-filter"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "p2p",
  "query",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "serde_json",
 ]
 
@@ -10558,10 +10558,10 @@ dependencies = [
 [[package]]
 name = "schema"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
  "multihash",
  "serde",
  "serde_ipld_dagcbor",
@@ -10574,10 +10574,10 @@ dependencies = [
 [[package]]
 name = "schema"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "multihash",
  "serde",
  "serde_ipld_dagcbor",
@@ -11394,37 +11394,6 @@ dependencies = [
 [[package]]
 name = "storage"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
-dependencies = [
- "async-lock",
- "async-trait",
- "bm25",
- "bytes",
- "chrono",
- "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "futures",
- "getrandom 0.2.17",
- "hex",
- "parking_lot",
- "regolith",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
- "serde",
- "serde_json",
- "telemetry",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "web-time",
- "zeroize",
-]
-
-[[package]]
-name = "storage"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "async-trait",
@@ -11446,6 +11415,37 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "storage"
+version = "0.5.0"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "bm25",
+ "bytes",
+ "chrono",
+ "cid",
+ "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "parking_lot",
+ "regolith",
+ "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
+ "serde",
+ "serde_json",
+ "telemetry",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "web-time",
  "zeroize",
 ]
 
@@ -11673,7 +11673,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 [[package]]
 name = "telemetry"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "tracing",
 ]
@@ -13410,12 +13410,12 @@ dependencies = [
 [[package]]
 name = "zanzibar"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737#3681abaf1f0e5d0c946ba429c4b4276028142737"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
 dependencies = [
  "async-lock",
  "async-trait",
  "futures",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=3681abaf1f0e5d0c946ba429c4b4276028142737)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
  "parking_lot",
  "serde",
  "serde_json",
@@ -13426,12 +13426,12 @@ dependencies = [
 [[package]]
 name = "zanzibar"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac#4da37c6cb896f95409b801feb5892b6b8fcc45ac"
+source = "git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185#634718a2161667970778374482ff1d828dfa3185"
 dependencies = [
  "async-lock",
  "async-trait",
  "futures",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=4da37c6cb896f95409b801feb5892b6b8fcc45ac)",
+ "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=634718a2161667970778374482ff1d828dfa3185)",
  "parking_lot",
  "serde",
  "serde_json",
