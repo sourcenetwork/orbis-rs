@@ -871,6 +871,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         )
         .await;
     }
+    assert!(Command::new("kill")
+        .args(["-STOP", &incoming.0.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
     nodes.push(incoming);
     infos.push(info);
     addresses.push(addr);
@@ -929,6 +934,42 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap(),
     )
     .await;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let started = (0..nodes.len() - 1).any(|index| {
+                fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                    .unwrap()
+                    .contains("forwarding pending reshare to canonical next-committee leader")
+            });
+            if started {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("current members start reshare while incoming member is paused");
+    let pending = client
+        .read_threshold_ring(&derivation.ring_id, previous.revision.block_height, &trusted)
+        .await
+        .unwrap()
+        .record
+        .unwrap();
+    assert!(pending.current_settings().pending_reshare.is_some());
+    for node in &mut nodes {
+        assert!(node.0.try_wait().unwrap().is_none());
+        node.0.kill().unwrap();
+        assert!(!node.0.wait().unwrap().success());
+    }
+    for index in 0..nodes.len() {
+        let directory = base.path().join(format!("node-{index}"));
+        let log = directory.join("reshare-restart.log");
+        let bind = infos[index].p2p_address.split_once('@').unwrap().1;
+        nodes[index] =
+            Node::start_bound(&directory, &addresses[index], &controller_key, &log, bind);
+        let recovered = nodes[index].ready(&addresses[index], &log).await;
+        assert_eq!(recovered.node_key, infos[index].node_key);
+    }
     tokio::time::timeout(Duration::from_secs(75), async {
         loop {
             let current = client
@@ -959,7 +1000,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     .unwrap_or_else(|_| {
         let mut output = String::new();
         for index in 0..nodes.len() {
-            for name in ["node.log", "restart.log"] {
+            for name in ["node.log", "restart.log", "reshare-restart.log"] {
                 if let Ok(log) =
                     fs::read_to_string(base.path().join(format!("node-{index}/{name}")))
                 {
@@ -1072,7 +1113,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     .unwrap_or_else(|_| {
         let mut output = String::new();
         for index in 2..nodes.len() {
-            for name in ["node.log", "restart.log"] {
+            for name in ["node.log", "restart.log", "reshare-restart.log"] {
                 if let Ok(log) =
                     fs::read_to_string(base.path().join(format!("node-{index}/{name}")))
                 {
