@@ -42,7 +42,7 @@ pub struct NetworkIngressLimits {
     /// concurrent streams, request-frame work permits, and request-frame body
     /// bytes — reserved for peers an [`AuthorizedPeers`] oracle vouches for.
     /// Unauthorized identities (a cheap self-issued endpoint key not yet a
-    /// registered/committee node) are capped at `budget * (100 - percent) / 100`
+    /// registered/committee node) are capped at `budget - budget * percent / 100`
     /// in each pool, so a Sybil flood cannot starve an authorized peer of any
     /// ingress resource. `0` (the default) disables every reservation; `100`
     /// admits unauthorized peers to nothing.
@@ -88,10 +88,19 @@ impl Default for NetworkIngressLimits {
 
 /// Application-supplied oracle for whether an endpoint identity currently holds
 /// an authorized role — a registered / committee node, as opposed to a cheap
-/// self-issued key. Consulted only at inbound *connection* admission: authorized
-/// peers may occupy the `authorized_connection_reserve` slots that unauthorized
-/// identities cannot, so a Sybil flood degrades availability for unknown peers
-/// but never for the committee.
+/// self-issued key. Consulted through `IngressController::is_authorized` at every
+/// inbound admission point that carries a reserve: connection admission, stream
+/// admission, and request-frame work and body-byte reservation. An authorized
+/// peer draws on the slice of each budget held back by
+/// `authorized_reserve_percent`; an unauthorized one must additionally take a
+/// slot in the matching shared pool, so a Sybil flood degrades availability for
+/// unknown peers but never for the committee.
+///
+/// The answer is sampled fresh at each of those points, so a refresh can change
+/// an established connection's capacity classification: streams and frames on it
+/// admitted after the change are judged by the new answer. Only the connection
+/// lease itself is fixed — it is classified once at accept and not re-evaluated
+/// for the connection's lifetime.
 ///
 /// The answer may be briefly stale (e.g. a peer just added by an in-flight
 /// reshare); a stale "not authorized" only means that peer competes in the

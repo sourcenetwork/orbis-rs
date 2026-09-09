@@ -1870,7 +1870,15 @@ async fn iroh_authorized_connection_reserve_keeps_a_slot_for_the_committee() {
         .send(Message::new(bytes::Bytes::from_static(b"hold"), PROTOCOL))
         .await
         .expect("flood send");
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), flood_stream.recv()).await;
+    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), flood_stream.recv())
+        .await
+        .expect("flood echo did not arrive before timeout")
+        .expect("flood echo recv failed");
+    assert_eq!(
+        &echoed.data[..],
+        b"hold",
+        "flooder must be admitted and occupy the shared slot before the reserve is probed"
+    );
 
     // A second flooder is refused — the remaining slot is the reserve.
     let flooder2 = new_test_network().await;

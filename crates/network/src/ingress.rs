@@ -213,7 +213,7 @@ pub(crate) struct IngressController {
     /// treats every peer as authorized (no reservation enforced).
     authorized_peers: Option<Arc<dyn AuthorizedPeers>>,
     /// The non-reserved portion of each budget below
-    /// (`budget * (100 - authorized_reserve_percent) / 100`). An unauthorized
+    /// (`budget - budget * authorized_reserve_percent / 100`). An unauthorized
     /// peer must take a slot from the matching `shared_*` pool *as well as* the
     /// full pool, so `authorized_reserve_percent` of every budget stays
     /// available to authorized peers under a Sybil flood.

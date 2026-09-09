@@ -162,7 +162,7 @@ shared inbound budget above — `max_concurrent_connections`,
 — for peers the optional [`AuthorizedPeers`] oracle vouches for (registered /
 committee nodes, supplied via `IrohNetworkBuilder::authorized_peers`). An
 unauthorized identity — a cheap self-issued key — must take a slot from the
-matching `shared_*` sub-pool (`budget * (100 - percent) / 100`) as well as the
+matching `shared_*` sub-pool (`budget - budget * percent / 100`) as well as the
 full pool, so a Sybil flood cannot starve the committee of connections, streams,
 work permits, *or* body bytes — refusing at any one pool while the others held
 capacity was the gap the connection-only reserve left. Authorization is sampled

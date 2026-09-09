@@ -389,7 +389,7 @@ pub const NETWORK_MAX_CONNECTIONS_PER_PEER: usize = 32;
 /// members).
 ///
 /// Unauthorized identities — cheap self-issued endpoint keys not yet registered
-/// as nodes — are capped at `budget * (100 - percent) / 100` in each pool.
+/// as nodes — are capped at `budget - budget * percent / 100` in each pool.
 /// Legitimate P2P traffic is committee-to-committee (clients use gRPC, not this
 /// layer), so the "unauthorized" pool is really scratch space for unauthenticated
 /// internet noise: 90% leaves it only ~205 connections / ~410 streams / ~19 MiB
