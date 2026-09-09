@@ -20,8 +20,8 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
-hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "fa4065be8aadaf181afa6f4e525f9c7bf58f1900", optional = true }
-hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "fa4065be8aadaf181afa6f4e525f9c7bf58f1900", optional = true }
+hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "55d34bd2a6c0ade2700771ef50b6f403f4f04f4a", optional = true }
+hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "55d34bd2a6c0ade2700771ef50b6f403f4f04f4a", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true }
@@ -40,8 +40,8 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "fa4065be8aadaf181afa6f4e525f9c7bf58f1900" }
-hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "fa4065be8aadaf181afa6f4e525f9c7bf58f1900" }
+hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "55d34bd2a6c0ade2700771ef50b6f403f4f04f4a" }
+hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "55d34bd2a6c0ade2700771ef50b6f403f4f04f4a" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true
