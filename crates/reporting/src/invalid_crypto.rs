@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::dkg::v0::messages::SignedDkgCommitment;
-use crate::reporting::v0::error::{ReportingError, Result};
+use crate::error::{ReportingError, Result};
+use crate::SignedDkgCommitment;
 
 use super::codec::{write_bytes, write_string, Decoder};
 use super::dkg::{

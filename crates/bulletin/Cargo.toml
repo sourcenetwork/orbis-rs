@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+orbis-reporting = { path = "../reporting" }
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
 common = { path = "../common" }
@@ -17,14 +18,33 @@ hex = { workspace = true }
 backoff = { version = "0.4", features = ["tokio"] }
 tokio = { workspace = true }
 
+commonware-codec = { version = "2026.9.0", optional = true }
+url = { version = "2.5", optional = true }
+hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69", optional = true }
+hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69", optional = true }
+alloy-primitives = { version = "1", optional = true }
+k256 = { workspace = true, optional = true }
+local-storage = { path = "../local-storage", optional = true }
+zeroize = { workspace = true, optional = true }
+
 [features]
 default = ["vera"]
 vera = []
+native = ["dep:commonware-codec", "dep:url", "dep:hub-client", "dep:hub-domain", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
 dummy = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]
 
+[[test]]
+name = "native_service"
+required-features = ["native"]
+
 [dev-dependencies]
+hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
+hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
+blst = "0.3"
+commonware-math = "2026.9.0"
+tempfile.workspace = true
 serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
 # Vera-backend tests use the Docker integration harness (VeraTestContainer).

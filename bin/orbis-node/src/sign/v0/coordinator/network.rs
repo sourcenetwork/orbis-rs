@@ -38,6 +38,20 @@ where
         message: SignMessage,
         request_id: &str,
     ) -> Result<Option<AuthenticatedSignMessage>> {
+        tokio::time::timeout(
+            PEER_RESPONSE_TIMEOUT,
+            self.exchange(peer_id_str, message, request_id),
+        )
+        .await
+        .map_err(|_| SignError::Timeout(format!("Peer exchange timed out for {peer_id_str}")))?
+    }
+
+    async fn exchange(
+        &self,
+        peer_id_str: &str,
+        message: SignMessage,
+        request_id: &str,
+    ) -> Result<Option<AuthenticatedSignMessage>> {
         let expects_nonce_response = match &message {
             SignMessage::NonceRequest(_) => true,
             SignMessage::SignRequest(_) => false,
@@ -74,21 +88,12 @@ where
                 ))
             })?;
 
-        // Wait for response on the same stream with timeout
-        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, stream.recv())
-            .await
-            .map_err(|_| {
-                SignError::Timeout(format!(
-                    "Timed out waiting for response from peer {}",
-                    peer_id_str
-                ))
-            })?
-            .map_err(|e| {
-                SignError::NetworkCommunication(format!(
-                    "Failed to receive response from peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
+        let response_msg = stream.recv().await.map_err(|e| {
+            SignError::NetworkCommunication(format!(
+                "Failed to receive response from peer {}: {}",
+                peer_id_str, e
+            ))
+        })?;
 
         // Deserialize response
         let response: SignMessage = serde_json::from_slice(&response_msg.data).map_err(|e| {

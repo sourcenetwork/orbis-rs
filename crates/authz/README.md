@@ -2,7 +2,7 @@
 
 Async **authorization** behind a small trait: given opaque **`permission`** bytes and a **`subject`** (caller identity string), decide whether access is allowed.
 
-The default implementation talks to **Vera** over the shared **`common`** blockchain client and evaluates **ACP** (access-control policy) membership. A **dummy** allow-all backend exists only for tests.
+The default implementation talks to **Vera** over the shared **`common`** service client and evaluates **ACP** (access-control policy) membership. A **dummy** allow-all backend exists only for tests.
 
 ## `Authz` trait
 
@@ -11,17 +11,48 @@ Defined in [`src/trait.rs`](src/trait.rs):
 ```rust
 #[async_trait]
 pub trait Authz: Send + Sync {
-    async fn check(&self, permission: Vec<u8>, subject: &String) -> Result<bool>;
+    async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool>;
+    async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool>;
+    async fn current_anchor(&self) -> Result<String>;
+    async fn anchor_time(&self, anchor: &str) -> Result<u64>;
 }
 ```
 
-Callers serialize their intent into **`permission`**; the implementation defines the encoding. For Vera, that encoding is JSON for [`AccessCheckRequest`](src/vera/mod.rs).
+Callers serialize their intent into **`permission`**; the implementation defines the encoding. For Vera, that encoding is JSON for [`AccessCheckRequest`](src/request.rs).
+
+## Native authorization
+
+The `native` feature exposes `native::NativeAuth`. Connect it with a service
+endpoint, independently provisioned consensus key and deployment root, and an
+explicit maximum evidence age. Connection verifies the first revision against
+that root. Current checks verify bounded permission proofs locally, enforce the
+age limit (with at most 15 seconds of future clock drift), and reject revision
+regression.
+
+Anchors bind the deployment root, exact revision and certified digest.
+`check_at` verifies that revision and its permission evidence; it returns an error
+if the service cannot provide evidence for the selected historical state. It
+never substitutes current authorization. `anchor_time` verifies the same anchor
+before returning its timestamp. Historical-state retention remains a service
+qualification requirement.
+
+Requests reject unknown and duplicate fields. Timestamp/window pairing and
+inclusion retain the existing consumer behavior; tier remains metadata and does
+not select a different policy evaluator. This library is not yet selected by
+node startup.
+
+The focused service fixture requires a built native node:
+
+```bash
+HUBD_BINARY=/path/to/hubd cargo test -p authz --features native --test native_service -- --ignored
+```
 
 ## Feature flags
 
 | Feature | Default | Purpose |
 |---------|---------|---------|
 | `vera` | **yes** | [`VeraAuth`](src/vera/mod.rs) and re-export **`AuthzImpl`** = `VeraAuth`. |
+| `native` | no | Certified current checks and exact revision anchors. |
 | `test-helpers` | no | [`dummy::DummyAuthZ`](src/dummy/mod.rs) — always returns **`true`**; **not for production**. |
 
 Disable defaults only if you wire another `Authz` implementation at the application layer:

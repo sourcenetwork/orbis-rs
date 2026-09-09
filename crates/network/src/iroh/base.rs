@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use iroh::endpoint::{
-    Connection as IrohConnection, RecvStream, SendStream, TransportConfig, VarInt,
+    Connection as IrohConnection, QuicTransportConfig, RecvStream, SendStream, VarInt,
 };
 use iroh::{Endpoint, EndpointAddr, SecretKey};
 use std::collections::HashMap;
@@ -178,34 +178,38 @@ impl IrohNetworkBuilder {
 
     /// Build the IrohNetwork instance
     pub async fn build(self) -> Result<IrohNetwork> {
-        let mut builder = Endpoint::builder();
+        let mut builder = Endpoint::builder(iroh::endpoint::presets::N0);
 
         if let Some(key) = self.secret_key {
             builder = builder.secret_key(key);
         }
 
         if let Some(addr) = self.bind_addr_v4 {
-            builder = builder.bind_addr_v4(addr);
+            builder = builder
+                .bind_addr(addr)
+                .map_err(|e| NetworkError::Connection(e.to_string()))?;
         }
 
         if self.private_routes_only {
             builder = builder
                 .relay_mode(iroh::RelayMode::Disabled)
-                .clear_discovery();
+                .clear_address_lookup();
         }
 
         if self.idle_timeout_ms.is_some() || self.keep_alive_interval_ms.is_some() {
-            let mut transport = TransportConfig::default();
+            let mut transport = QuicTransportConfig::builder();
             if let Some(ms) = self.idle_timeout_ms {
-                transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
+                transport = transport.max_idle_timeout(Some(VarInt::from_u32(ms).into()));
             }
             if let Some(ms) = self.keep_alive_interval_ms {
-                transport.keep_alive_interval(Some(std::time::Duration::from_millis(ms)));
+                transport = transport.keep_alive_interval(std::time::Duration::from_millis(ms));
             }
-            builder = builder.transport_config(transport);
+            builder = builder.transport_config(transport.build());
         }
 
+        let static_provider = iroh::address_lookup::memory::MemoryLookup::new();
         let endpoint = builder
+            .address_lookup(static_provider.clone())
             .bind()
             .await
             .map_err(|e| NetworkError::Connection(format!("Failed to bind endpoint: {}", e)))?;
@@ -213,8 +217,6 @@ impl IrohNetworkBuilder {
         let node_id = endpoint.id();
         let peer_id = PeerId::from_bytes(node_id.as_bytes());
 
-        let static_provider = iroh::discovery::static_provider::StaticProvider::new();
-        endpoint.discovery().add(static_provider.clone());
         let gossip = iroh_gossip::net::Gossip::builder()
             .max_message_size(self.config.max_message_size)
             .spawn(endpoint.clone());

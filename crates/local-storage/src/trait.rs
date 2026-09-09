@@ -19,6 +19,8 @@ pub enum LocalStorageKeys {
     NodeSecretKey,
     /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
+    /// Independent native submission key, encrypted at rest.
+    NativeWorkerKey(String),
 }
 
 pub trait LocalStorage {

@@ -237,6 +237,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
+                vera_config: None,
                 addr: grpc_bind.clone(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
@@ -255,6 +256,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 runtime_base_path: None,
                 reshare_interval_secs,
                 network_private_routes_only: false,
+                network_bind_addr: None,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],

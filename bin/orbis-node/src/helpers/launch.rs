@@ -182,6 +182,9 @@ impl CorsPolicy {
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
 pub struct Args {
+    /// Native Vera endpoint and independently provisioned deployment trust (JSON file).
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["authz_grpc", "bulletin_grpc", "chain_rpc", "chain_rest", "chain_id", "denom", "fee_granter", "chain_gas_multiplier", "allow_insecure_rpc"])]
+    pub vera_config: Option<PathBuf>,
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
@@ -264,6 +267,9 @@ pub struct Args {
     /// supplying an address does not guarantee that address is dialable.
     #[arg(long, default_value_t = false)]
     pub network_private_routes_only: bool,
+    /// Bind the peer UDP socket to a specific local IPv4 address and port.
+    #[arg(long)]
+    pub network_bind_addr: Option<std::net::SocketAddrV4>,
     /// Hex-encoded public key of the external controller allowed to update node info.
     #[arg(long)]
     pub node_controller_key: String,
@@ -468,6 +474,16 @@ pub fn derive_secret_key_bytes(input: &str) -> Result<[u8; 32], String> {
     // Hash the input with SHA-256
     let hash = Sha256::digest(trimmed.as_bytes());
     Ok(hash.into())
+}
+
+/// Report a concrete bound route when available; wildcard sockets are not destinations.
+pub(crate) fn network_peer_address(network: &dyn Network) -> String {
+    let peer = hex::encode(network.local_peer_id().as_bytes());
+    network
+        .bound_addresses()
+        .into_iter()
+        .find(|addr| !addr.ip().is_unspecified())
+        .map_or_else(|| peer.clone(), |addr| format!("{peer}@{addr}"))
 }
 
 pub fn get_network_key_secret(
@@ -823,6 +839,34 @@ pub fn get_node_signer(
 mod tests {
     use super::*;
     use clap::{error::ErrorKind, Parser};
+
+    #[tokio::test]
+    async fn peer_route_omits_wildcard_and_reports_concrete_bind() {
+        for ip in [
+            std::net::Ipv4Addr::UNSPECIFIED,
+            std::net::Ipv4Addr::LOCALHOST,
+        ] {
+            let network = network::NetworkImpl::builder()
+                .bind_addr_v4(std::net::SocketAddrV4::new(ip, 0))
+                .private_routes_only()
+                .build()
+                .await
+                .unwrap();
+            let route = network_peer_address(&network);
+            let peer = hex::encode(network.local_peer_id().as_bytes());
+            if ip.is_unspecified() {
+                assert_eq!(route, peer);
+            } else {
+                let socket: std::net::SocketAddr = route
+                    .strip_prefix(&format!("{peer}@"))
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(socket.ip(), ip);
+                assert_ne!(socket.port(), 0);
+            }
+        }
+    }
 
     fn minimal_args() -> Args {
         Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])

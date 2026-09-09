@@ -12,6 +12,7 @@ members = [
     "crates/authz",
     "crates/common",
     "crates/bulletin",
+    "crates/reporting",
     "crates/test-support",
 ]
 
@@ -47,8 +48,8 @@ sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
 
 # Networking
-iroh = "0.95"
-iroh-gossip = "0.95"
+iroh = "1.0.1"
+iroh-gossip = "0.101.0"
 bytes = "1.5"
 
 # Enable alloc feature for form_urlencoded to fix compatibility with did-key

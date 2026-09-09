@@ -3,6 +3,8 @@ use thiserror::Error;
 /// Bulletin related errors
 #[derive(Error, Debug)]
 pub enum BulletinError {
+    #[error("Native service error: {0}")]
+    NativeError(String),
     #[error("Chain error: {0}")]
     ChainError(String),
     #[error("Parsing Error: {0}")]

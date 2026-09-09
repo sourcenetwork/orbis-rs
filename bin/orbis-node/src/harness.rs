@@ -176,6 +176,7 @@ pub async fn spawn_harness_node(
     let peer_addr = format!("{local_address}@{p2p_socket}");
 
     let args = Args {
+        vera_config: None,
         addr: params.grpc_addr.clone(),
         cors_allow_origins: vec![],
         cors_permissive: false,
@@ -194,6 +195,7 @@ pub async fn spawn_harness_node(
         runtime_base_path: None,
         reshare_interval_secs: params.pss_poll_interval_secs,
         network_private_routes_only: false,
+        network_bind_addr: None,
         node_controller_key: params.node_controller_key,
         node_peer_id: None,
         node_whitelisted_policy_ids: vec![params.policy_id],

@@ -1,4 +1,6 @@
 pub mod error;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod r#trait;
 pub use r#trait::{BulletinKind, BulletinWriteKind};
 
@@ -17,3 +19,5 @@ compile_error!("Features 'vera' and 'dummy' are mutually exclusive. Use --no-def
 pub use dummy::DummyBulletin as BulletinImpl;
 #[cfg(feature = "vera")]
 pub use vera::VeraBulletin as BulletinImpl;
+
+pub mod reporting;

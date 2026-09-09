@@ -181,3 +181,92 @@ cargo test -p orbis-node
 ```
 
 Integration tests may require Docker (see **`common`** crate **`IntegrationTestNetwork`**). **`fault-injection`** tests exercise blocked peers.
+
+## Native Vera service
+
+Build with `cargo build -p orbis-node --features native`, then start with
+`--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
+The configuration selects native authorization and bulletin operations. Supply the
+controller public key as 33 hex-encoded bytes. Existing connection and fee options
+cannot be combined with `--vera-config`.
+
+```json
+{
+  "endpoint": "http://127.0.0.1:8545",
+  "deployment_id": 9001,
+  "deployment_root": "<32-byte genesis digest, hex without prefix>",
+  "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
+  "max_evidence_age_secs": 30,
+  "request_timeout_secs": 30
+}
+```
+
+Provision the deployment ID, genesis digest and consensus key through the operator's
+trusted deployment configuration. The consensus key is separate from Orbis's node
+and threshold service keys. Startup verifies the first certified revision against
+the configured genesis digest before opening the submission journal. Current reads
+reject stale evidence; the two time bounds default to 30 seconds. Configurations
+reject unknown and duplicate fields and are limited to 16 KiB.
+
+Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
+file holding its encryption password. Existing encrypted node keys retain their
+identity; early native raw keys are normalized to the stored hex format. New keys
+are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
+worker journal together when backing up or restoring a node. The journal retains
+uncertain submissions for recovery on the next write.
+
+Native startup registers the node with Vera or verifies the existing controller and
+peer identity. Controller-owned allow-list changes require explicit authenticated
+updates. Startup does not wait for funding. `public_key.txt` and the info service's
+`public_address` field contain the compressed node public key in native mode.
+
+The focused startup fixture launches the actual Orbis binary against four local
+Vera members and checks certified registration and identity/journal persistence
+across restart:
+
+```sh
+HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+  --test native_startup native_startup_registers_and_preserves_identity_on_restart -- --ignored
+```
+
+This fixture does not qualify distributed DKG, signing, or decryption. Migration of
+existing ring and encrypted-record identifiers requires a separate migration plan.
+
+For a group using direct peer routes, bind each node to a reachable local IPv4
+interface with `--network-bind-addr <ip:port>`. Local development can use
+`--network-bind-addr 127.0.0.1:0`. The info service includes a bound socket in
+`p2p_address` only when its IP is concrete; a wildcard bind returns the peer
+identity alone. An operator must publish the reachable route through the node's
+authenticated controller update. Binding an interface does not configure NAT
+forwarding or make a private address reachable from other networks.
+
+The distributed threshold fixture uses three separate Orbis processes and a 2-of-3
+BLS ring. It completes DKG through native Vera, gracefully restarts every node
+with the same encrypted store and peer binding, and checks the recovered public
+polynomials and identities. It then verifies a threshold signature, stores an
+encrypted document, and decrypts it through PRE. Signing and decryption are denied
+before their respective ACP grants and after revocation. The fixture then admits
+a new participant through authenticated controller and policy updates. Scheduled
+resharing replaces a member while retaining the ring public key. With only two
+members online, the incoming share must participate in signing and decrypting the
+document stored before the transition.
+The remaining members also co-sign an offline report. A certified fault-score
+query verifies its effect on the unavailable member and the absence of penalties
+for healthy members.
+
+```sh
+HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+  --test native_startup native_distributed_threshold_workflows -- --ignored
+```
+
+Signing and PRE apply their 10-second peer deadline to connection setup, sending
+and receiving together. This keeps unresponsive peers within the background
+collection window so timeout observations reach reporting.
+
+`HubClient::read_threshold_node_demerits` returns the stored score or certified
+absence with its revision and timestamp. Apply the ring's configured reset
+interval with `NodeDemerits::effective_points` when displaying the current score.
+
+This covers fresh BLS rings, graceful restart, member replacement, offline reports
+and live policy checks. Crash/power-loss recovery, other fault evidence types and
+other curves require their own checks.

@@ -1,4 +1,7 @@
 pub mod error;
+#[cfg(feature = "native")]
+pub mod native;
+pub mod request;
 pub mod r#trait;
 
 #[cfg(feature = "vera")]

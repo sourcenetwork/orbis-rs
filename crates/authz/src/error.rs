@@ -3,6 +3,8 @@ use thiserror::Error;
 /// Authorization related errors
 #[derive(Error, Debug)]
 pub enum AuthZError {
+    #[error("Native authorization: {0}")]
+    Native(String),
     #[error("Authentication failure")]
     Authentication,
 

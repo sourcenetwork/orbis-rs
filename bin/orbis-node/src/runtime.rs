@@ -1,3 +1,6 @@
+#[cfg(feature = "native")]
+mod native;
+
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
@@ -5,7 +8,8 @@ use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, resolve_runtime_base_path, Args, CorsPolicy,
+    get_network_key_secret, get_password, network_peer_address, resolve_runtime_base_path, Args,
+    CorsPolicy,
 };
 use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
 use crate::store_secret::StoreSecretServiceImpl;
@@ -56,6 +60,7 @@ pub(crate) struct NodeConfig {
 
 /// Result of initializing the node (before starting the server)
 pub(crate) struct InitializedNode {
+    native_identity: Option<String>,
     pub(crate) app_state: Arc<AppState<DkgImpl>>,
     pub(crate) router: Box<dyn Router>,
     pub(crate) grpc_addr: SocketAddr,
@@ -68,7 +73,7 @@ pub(crate) struct InitializedNode {
     pub(crate) cors_policy: CorsPolicy,
 }
 
-/// Running info-only gRPC server used while the node waits for chain funding.
+/// Status shared with the info service during initialization.
 #[derive(Clone)]
 struct BootstrapStatus(Arc<AtomicI32>);
 
@@ -107,6 +112,21 @@ impl BootstrapInfoServer {
 
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "native")]
+    let native_config = args
+        .vera_config
+        .as_deref()
+        .map(native::Config::load)
+        .transpose()?;
+    #[cfg(not(feature = "native"))]
+    if args.vera_config.is_some() {
+        return Err("native Vera support requires building with --features native".into());
+    }
+    let (authz_name, bulletin_name) = if args.vera_config.is_some() {
+        ("native Vera".to_owned(), "native Vera".to_owned())
+    } else {
+        (AuthzImpl::name(), BulletinImpl::name())
+    };
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -123,8 +143,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         pre_impl = PreImpl::name(),
         sign_impl = SignImpl::name(),
         local_storage_impl = LocalStorageImpl::name(),
-        authz_impl = AuthzImpl::name(),
-        bulletin_impl = BulletinImpl::name(),
+        authz_impl = authz_name,
+        bulletin_impl = bulletin_name,
         network_impl = NetworkImpl::name(),
     );
 
@@ -148,8 +168,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
         tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
         tracing::info!("Local-storage implementation: {}", LocalStorageImpl::name());
-        tracing::info!("Authz implementation: {}", AuthzImpl::name());
-        tracing::info!("Bulletin implementation: {}", BulletinImpl::name());
+        tracing::info!("Authz implementation: {}", authz_name);
+        tracing::info!("Bulletin implementation: {}", bulletin_name);
         tracing::info!("Network implementation: {}", NetworkImpl::name());
 
         // Get password for encrypting ring key shares.
@@ -184,6 +204,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             .max_ingress_events_per_peer_per_second(
                 args.network_max_ingress_events_per_peer_per_second,
             );
+        if let Some(addr) = args.network_bind_addr {
+            network_builder = network_builder.bind_addr_v4(addr);
+        }
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \
@@ -197,6 +220,19 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
+        #[cfg(feature = "native")]
+        if let Some(config) = native_config {
+            return native::run(
+                config,
+                args,
+                cors_policy,
+                network,
+                local_storage,
+                runtime_base_path,
+                shutdown_rx,
+            )
+            .await;
+        }
         let authz_chain_config = ChainConfigBuilder::default()
             .chain_id(args.chain_id.clone())
             .grpc_url(args.authz_grpc.clone())
@@ -336,11 +372,22 @@ pub(crate) fn start_bootstrap_info_server(
     local_storage: LocalStorageImpl,
     cors_policy: CorsPolicy,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
+    start_bootstrap_info_server_with_identity(grpc_addr, network, local_storage, cors_policy, None)
+}
+
+fn start_bootstrap_info_server_with_identity(
+    grpc_addr: SocketAddr,
+    network: Arc<dyn Network>,
+    local_storage: LocalStorageImpl,
+    cors_policy: CorsPolicy,
+    native_identity: Option<String>,
+) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
-    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
+    let mut info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
+    info_service.native_identity = native_identity;
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -370,9 +417,7 @@ pub(crate) async fn shutdown_bootstrap_after_init(
     init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
 ) -> Result<InitializedNode, Box<dyn std::error::Error>> {
     if init_result.is_ok() {
-        tracing::info!(
-            "Funding and bulletin initialization complete; stopping bootstrap info service"
-        );
+        tracing::info!("Backend initialization complete; stopping bootstrap info service");
     } else {
         tracing::info!("Node initialization failed; stopping bootstrap info service");
     }
@@ -444,23 +489,14 @@ pub(crate) async fn init_node(
         .transpose()?;
 
     // Get the local peer ID and address
-    let local_peer_id = config.network.local_peer_id();
     let local_address = config
         .network
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
-    // Get the bound socket address (host:port) for the connection string
-    let bound_addrs = config.network.bound_addresses();
-    let socket_addr = bound_addrs
-        .first()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-
     tracing::info!("Network initialized");
-    let peer_id_hex = hex::encode(local_peer_id.as_bytes());
-    let connection_string = format!("{}@{}", peer_id_hex, socket_addr);
-    tracing::info!(connection = %connection_string, "Iroh connection string (peer_id@host:port)");
+    let connection_string = network_peer_address(config.network.as_ref());
+    tracing::info!(connection = %connection_string, "Iroh peer route");
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
@@ -484,6 +520,11 @@ pub(crate) async fn init_node(
     );
 
     Ok(InitializedNode {
+        native_identity: config
+            .args
+            .vera_config
+            .as_ref()
+            .map(|_| config.node_key.clone()),
         app_state: app_state_arc,
         router,
         grpc_addr,
@@ -504,12 +545,17 @@ async fn run_server(
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
+    let (authz_name, bulletin_name) = if node.native_identity.is_some() {
+        ("native Vera".to_owned(), "native Vera".to_owned())
+    } else {
+        (AuthzImpl::name(), BulletinImpl::name())
+    };
     metrics::record_build_info(
         &PreImpl::name(),
         &SignImpl::name(),
         &LocalStorageImpl::name(),
-        &AuthzImpl::name(),
-        &BulletinImpl::name(),
+        &authz_name,
+        &bulletin_name,
         &NetworkImpl::name(),
     );
 
@@ -549,7 +595,8 @@ async fn run_server(
     }
 
     // The info service is version-independent.
-    let info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone());
+    let mut info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone());
+    info_service.native_identity = node.native_identity;
 
     // Start gRPC server. One set of services is registered per supported protocol version.
     // When v1 is added: add a `1 => { ... }` arm below and the v1 endpoints appear automatically.

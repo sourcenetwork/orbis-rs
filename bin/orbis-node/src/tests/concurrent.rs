@@ -257,6 +257,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
+                vera_config: None,
                 addr: grpc_bind.clone(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
@@ -275,6 +276,7 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 runtime_base_path: None,
                 reshare_interval_secs: 0,
                 network_private_routes_only: false,
+                network_bind_addr: None,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
@@ -399,6 +401,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
+                vera_config: None,
                 addr: grpc_bind.clone(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
@@ -417,6 +420,7 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 runtime_base_path: None,
                 reshare_interval_secs: 0,
                 network_private_routes_only: false,
+                network_bind_addr: None,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],

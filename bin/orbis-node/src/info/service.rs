@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::launch::get_node_signer;
+use crate::helpers::launch::{get_node_signer, network_peer_address};
 use crate::info::error::InfoError;
 use crate::ring_state::{RingIndexEntry, RingPolyState};
 use common::blockchain::ChainConfigBuilder;
@@ -25,6 +25,7 @@ where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
     pub state: Arc<AppState<D>>,
+    pub(crate) native_identity: Option<String>,
 }
 
 impl<D> InfoServiceImpl<D>
@@ -35,6 +36,7 @@ where
     pub fn new(state: impl Into<Arc<AppState<D>>>) -> Self {
         Self {
             state: state.into(),
+            native_identity: None,
         }
     }
 }
@@ -52,6 +54,7 @@ where
             self.state.network.as_ref(),
             self.state.local_storage.clone(),
             NodeStatus::Ready as i32,
+            self.native_identity.as_deref(),
         )?))
     }
 
@@ -71,26 +74,24 @@ fn get_node_info_response(
     network: &dyn Network,
     local_storage: LocalStorageImpl,
     status: i32,
+    native_identity: Option<&str>,
 ) -> Result<GetNodeInfoResponse, Status> {
     // Get the peer ID from the network
     let peer_id = hex::encode(network.local_peer_id().as_bytes());
 
-    // Get the P2P connection string (peer_id@host:port)
-    let socket_addr = network
-        .bound_addresses()
-        .first()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| "0.0.0.0:0".to_string());
-    let p2p_address = format!("{}@{}", peer_id, socket_addr);
+    let p2p_address = network_peer_address(network);
 
     let managed_ring_count = managed_ring_count(&local_storage)?;
 
-    // Get the signer address and node key from local storage
-    let config = ChainConfigBuilder::default().build();
-    let signer = get_node_signer(local_storage, config)
-        .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?;
-    let public_address = signer.address();
-    let node_key = signer.public_key_hex();
+    let (public_address, node_key) = match native_identity {
+        Some(key) => (key.to_owned(), key.to_owned()),
+        None => {
+            let config = ChainConfigBuilder::default().build();
+            let signer = get_node_signer(local_storage, config)
+                .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?;
+            (signer.address(), signer.public_key_hex())
+        }
+    };
 
     Ok(GetNodeInfoResponse {
         public_address,
@@ -130,11 +131,12 @@ fn get_ring_state_response(
     })
 }
 
-/// InfoService used during node bootstrap, before chain funding and bulletin initialization.
+/// InfoService available while backend initialization is in progress.
 pub struct BootstrapInfoServiceImpl {
     pub network: Arc<dyn Network>,
     pub local_storage: LocalStorageImpl,
     pub status: Arc<AtomicI32>,
+    pub(crate) native_identity: Option<String>,
 }
 
 impl BootstrapInfoServiceImpl {
@@ -148,6 +150,7 @@ impl BootstrapInfoServiceImpl {
             network,
             local_storage,
             status,
+            native_identity: None,
         }
     }
 }
@@ -162,6 +165,7 @@ impl InfoService for BootstrapInfoServiceImpl {
             self.network.as_ref(),
             self.local_storage.clone(),
             self.status.load(Ordering::SeqCst),
+            self.native_identity.as_deref(),
         )?))
     }
 
@@ -170,7 +174,7 @@ impl InfoService for BootstrapInfoServiceImpl {
         _request: Request<GetRingStateRequest>,
     ) -> Result<Response<GetRingStateResponse>, Status> {
         Err(Status::failed_precondition(
-            "node is waiting for funding; only GetNodeInfo is available",
+            "node is initializing; only GetNodeInfo is available",
         ))
     }
 }

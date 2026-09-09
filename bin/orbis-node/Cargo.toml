@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+orbis-reporting = { path = "../../crates/reporting" }
 network = { path = "../../crates/network" }
 crypto = { path = "../../crates/crypto", default-features = false }
 local-storage = { path = "../../crates/local-storage", default-features = false }
@@ -47,7 +48,15 @@ hyper = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
+hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69", optional = true }
+hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69", optional = true }
+commonware-codec = { version = "2026.9.0", optional = true }
+k256 = { workspace = true, optional = true }
+
 [dev-dependencies]
+alloy-primitives = "1"
+hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
+hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
 bs58 = "0.5"
 serial_test = "3.2.0"
@@ -63,7 +72,12 @@ tempfile = { workspace = true }
 # Docker Compose integration-test harness (Vera + orbis-node containers).
 test-support = { path = "../../crates/test-support" }
 
+[[test]]
+name = "native_startup"
+required-features = ["native"]
+
 [features]
+native = ["authz/native", "bulletin/native", "local-storage/redb", "dep:hub-client", "dep:hub-domain", "dep:commonware-codec", "dep:k256"]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
 decaf377 = ["crypto/decaf377", "cli-tool?/decaf377", "common/decaf377", "bulletin/decaf377"]

@@ -4,6 +4,79 @@ A small async abstraction over typed Orbis bulletin objects: **read** rings by a
 
 The default backend is Vera `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
+## Native service client
+
+The `native` feature exposes `native::NativeVeraClient` for signed
+node registration/controller commands, fresh-ring creation, confirmation and
+cancellation, and certified reads. Open it with an independently provisioned
+deployment root and consensus key, a worker journal
+directory, and the existing encrypted Orbis `RedbStorage`. The node signing key
+must already exist. Worker keys use separate encrypted entries.
+
+Call `prepare_node_registration` or `prepare_node_command` to persist a command,
+`submit_pending` to send its exact bytes, then `confirm_pending` to verify execution. A missing
+receipt or transport error leaves the command pending. On restart, use
+`pending_id` and confirm or resubmit before preparing another command. Inspect the
+receipt's success: rejected commands consume the worker sequence but leave the
+node's command sequence unchanged. Controller commands use the next sequence
+returned by `read` and an explicit expiry.
+
+`read_node_info` produces the payload used by peer routing after verifying the
+record against the configured consensus key and caller's minimum revision.
+Callers remain responsible for their freshness requirement.
+
+`prepare_ring_command` uses an actor's delegation to the client's `worker_did`.
+`prepare_ring_participant_request` signs fresh-DKG confirmation or cancellation
+with the node identity. Ring operations share the same durable pending slot and
+receipt recovery. `read_ring_info` and `ring_finalization_status` adapt certified
+state to existing Orbis DKG types. Cancelled/conflicting records map to not-found
+for the DKG protocol; `read_ring` exposes the terminal record for inspection.
+
+`prepare_ring_reshare` and `prepare_ring_report` persist aggregate authorizations
+from the existing threshold signers. The report path uses shared canonical IDs,
+snapshot hashes and bounded large-request delivery.
+
+`prepare_document` and `prepare_key_derivation` use an actor's
+`orbis:object:store` delegation to the worker. `read_object` verifies a document
+or derivation at a minimum revision and returns the payload used by the existing
+PRE/signing protocols. IDs preserve the current Rust consumer encoding, including
+canonical ciphertext/proof fields and optional document tier/timestamp. Admission
+registers the metadata; the threshold protocols must still validate encryption
+proofs and the requesting actor's ACP permission before use.
+
+`NativeBulletin::connect` implements the `Bulletin` trait over this client. Supply
+an independent reader endpoint, a maximum evidence age and a request deadline.
+Connection verifies the configured deployment root. Reads verify fresh,
+monotonic revisions without waiting for the writer mutex. Writes recover the
+existing journaled submission before allocating another sequence; errors or
+cancellation retain unresolved bytes. Node registrations, confirmations,
+cancellations and object posts recognize already-applied state. Node metadata
+changes still require explicit controller commands. Object posts delegate from
+the configured node identity to its worker.
+
+Report and reshare calls keep their completed signed request in the journal until
+the next distinct write. An exact retry reads its certified receipt, including
+after restart, without advancing the worker sequence again. Reshare retries match
+the originally signed ring sequence. A different write acknowledges the retained
+request before preparing its own. This is a single retained completion, not an
+unbounded history of previous calls. Use `NativeVeraClient`'s explicit
+prepare/submit/confirm interface to retain receipt IDs when older outcomes must
+remain addressable across subsequent writes.
+
+The focused service fixture covers a failed submission followed by journal
+recovery, controller allow-list enforcement, fresh-ring confirmation, document
+and derivation posts, cancellation, duplicate calls and restart:
+
+```bash
+HUBD_BINARY=/path/to/hubd cargo test -p bulletin --features native --test native_service -- --ignored
+```
+
+Node startup can select this backend with `--vera-config`; see the node README.
+The report/reshare recovery fixture uses supplied aggregate signatures and checks
+lost-reply recovery, service restart and exact retries against certified state.
+Distributed resharing, report co-signing, fault qualification and historical
+authorization availability remain required before deployment.
+
 ## `Bulletin` trait
 
 Defined in [`src/trait.rs`](src/trait.rs):
