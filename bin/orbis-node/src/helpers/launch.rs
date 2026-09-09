@@ -53,6 +53,25 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     Ok(parsed)
 }
 
+/// Parse `--network-stream-read-timeout-ms`. The per-read stream deadline has to
+/// stay above every application-level response timeout (`PEER_RESPONSE_TIMEOUT`
+/// and friends); at or below that range it would pre-empt a slow-but-healthy
+/// exchange instead of only catching a genuinely stalled stream. Reject anything
+/// below `MIN_NETWORK_STREAM_READ_TIMEOUT_MS` here so it surfaces as a clear
+/// parse error rather than a late startup failure.
+fn parse_stream_read_timeout_ms(value: &str) -> Result<u64, String> {
+    let parsed: u64 = value
+        .parse()
+        .map_err(|_| format!("invalid value {value:?}: not a non-negative integer"))?;
+    let floor = crate::constants::MIN_NETWORK_STREAM_READ_TIMEOUT_MS;
+    if parsed < floor {
+        return Err(format!(
+            "invalid value {value:?}: must be at least {floor} ms, above every application response timeout"
+        ));
+    }
+    Ok(parsed)
+}
+
 /// Parse and normalize a serialized browser origin for `--cors-allow-origin`.
 ///
 /// An origin contains only a scheme, host, and optional port. Paths, queries,
@@ -288,27 +307,172 @@ pub struct Args {
         default_value_t = crate::constants::GRPC_MAX_CONCURRENT_STREAMS
     )]
     pub grpc_max_concurrent_streams: u32,
-    /// Maximum concurrently executing inbound P2P application work items.
-    /// Direct QUIC streams and authenticated Gossip frames share this
-    /// node-wide budget; excess work is dropped before protocol
-    /// deserialization. Raise this on a node provisioned to take on more
-    /// work. Must be at least 1.
+    /// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets. Each
+    /// field is a `--network-*` flag with a matching `ORBIS_NETWORK_*` env var;
+    /// see [`NetworkIngressArgs`].
+    #[command(flatten)]
+    pub network_ingress: NetworkIngressArgs,
+}
+
+/// Operator-tunable P2P (QUIC/Iroh) inbound ingress admission budgets, grouped
+/// under one `--help` heading and flattened into [`Args`].
+///
+/// Every field also reads an `ORBIS_NETWORK_*` environment variable (CLI arg
+/// wins, then env, then the [`crate::constants`] default), and every `usize`
+/// limit rejects `0` during argument parsing.
+///
+/// The `authorized_reserve_percent` Sybil-defense ratio is deliberately *not*
+/// here: it is a protocol-wide security parameter, not a per-machine capacity
+/// choice, and scaling these budgets up keeps that ratio — the actual defense —
+/// intact.
+#[derive(clap::Args, Debug, Clone)]
+#[command(next_help_heading = "P2P ingress limits")]
+pub struct NetworkIngressArgs {
+    /// Max concurrently executing inbound *request* work items — direct QUIC
+    /// streams and authenticated Gossip frames share this node-wide budget.
+    /// Raise it on a node provisioned to take on more work.
     #[arg(
-        long,
+        long = "network-max-concurrent-ingress-work",
+        env = "ORBIS_NETWORK_MAX_CONCURRENT_INGRESS_WORK",
         default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
         value_parser = parse_positive_usize
     )]
-    pub network_max_concurrent_ingress_work: usize,
-    /// Maximum inbound P2P work items accepted from one immediate peer per
-    /// second. Direct streams and Gossip frames count against the same peer
-    /// budget. Raise this on a node provisioned to take on more work. Must
-    /// be at least 1.
+    pub max_concurrent_ingress_work: usize,
+    /// Max concurrently executing *reply*-frame work items (replies read on
+    /// client-opened streams). A separate budget from
+    /// `--network-max-concurrent-ingress-work` so a request handler awaiting
+    /// replies cannot starve them.
     #[arg(
-        long,
+        long = "network-max-concurrent-reply-ingress-work",
+        env = "ORBIS_NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK",
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
+        value_parser = parse_positive_usize
+    )]
+    pub max_concurrent_reply_ingress_work: usize,
+    /// Max inbound P2P frames accepted from one immediate peer per second,
+    /// across direct streams and Gossip frames.
+    #[arg(
+        long = "network-max-ingress-events-per-peer-per-second",
+        env = "ORBIS_NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND",
         default_value_t = crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
         value_parser = parse_positive_usize
     )]
-    pub network_max_ingress_events_per_peer_per_second: usize,
+    pub max_ingress_events_per_peer_per_second: usize,
+    /// Node-wide cap on accepted-but-not-yet-closed inbound QUIC connections. A
+    /// connection counts for its whole lifetime, so this bounds identities that
+    /// hold connections open without ever opening a stream. Raise it on a node
+    /// provisioned for more peers.
+    #[arg(
+        long = "network-max-concurrent-connections",
+        env = "ORBIS_NETWORK_MAX_CONCURRENT_CONNECTIONS",
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
+        value_parser = parse_positive_usize
+    )]
+    pub max_concurrent_connections: usize,
+    /// Cap on concurrent inbound QUIC connections from one immediate peer,
+    /// across every ALPN including Gossip. Bounds a single endpoint identity's
+    /// share — raise it only with reason.
+    #[arg(
+        long = "network-max-connections-per-peer",
+        env = "ORBIS_NETWORK_MAX_CONNECTIONS_PER_PEER",
+        default_value_t = crate::constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
+        value_parser = parse_positive_usize
+    )]
+    pub max_connections_per_peer: usize,
+    /// Node-wide cap on accepted-but-not-yet-closed inbound direct streams.
+    /// Bounds memory and file descriptors under a flood; sized well above the
+    /// work budget so healthy pipelining is never stream-capped. Raise it on a
+    /// bigger node.
+    #[arg(
+        long = "network-max-concurrent-streams",
+        env = "ORBIS_NETWORK_MAX_CONCURRENT_STREAMS",
+        default_value_t = crate::constants::NETWORK_MAX_CONCURRENT_STREAMS,
+        value_parser = parse_positive_usize
+    )]
+    pub max_concurrent_streams: usize,
+    /// Cap on concurrent inbound direct streams from one immediate peer. Bounds
+    /// a single endpoint identity's share while committee authorization is still
+    /// pending.
+    #[arg(
+        long = "network-max-streams-per-peer",
+        env = "ORBIS_NETWORK_MAX_STREAMS_PER_PEER",
+        default_value_t = crate::constants::NETWORK_MAX_STREAMS_PER_PEER,
+        value_parser = parse_positive_usize
+    )]
+    pub max_streams_per_peer: usize,
+    /// Node-wide receive-byte budget for inbound-*request* frame bodies received
+    /// and not yet processed. Reserved before the buffer is allocated. Must be
+    /// at least the largest route `max_message_size` (checked at startup). Raise
+    /// it on a bigger node.
+    #[arg(
+        long = "network-max-inbound-request-body-bytes",
+        env = "ORBIS_NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES",
+        default_value_t = crate::constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
+        value_parser = parse_positive_usize
+    )]
+    pub max_inbound_request_body_bytes: usize,
+    /// Node-wide receive-byte budget for *reply* frame bodies (client-opened
+    /// streams). A separate pool from the request budget so a stalled-request
+    /// backlog cannot deny an MPC reply its buffer. Must be at least the largest
+    /// route `max_message_size` (checked at startup).
+    #[arg(
+        long = "network-max-inbound-reply-body-bytes",
+        env = "ORBIS_NETWORK_MAX_INBOUND_REPLY_BODY_BYTES",
+        default_value_t = crate::constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
+        value_parser = parse_positive_usize
+    )]
+    pub max_inbound_reply_body_bytes: usize,
+    /// Deadline for reading one complete length-prefixed frame from a P2P
+    /// stream (milliseconds). Bounds how long a partial prefix or a slow body
+    /// can pin a work permit. A value below `MIN_NETWORK_STREAM_READ_TIMEOUT_MS`
+    /// (`2 x PEER_RESPONSE_TIMEOUT`) is rejected so it can only fire on a
+    /// genuinely stalled stream.
+    #[arg(
+        long = "network-stream-read-timeout-ms",
+        env = "ORBIS_NETWORK_STREAM_READ_TIMEOUT_MS",
+        default_value_t = crate::constants::NETWORK_STREAM_READ_TIMEOUT_MS,
+        value_parser = parse_stream_read_timeout_ms
+    )]
+    pub stream_read_timeout_ms: u64,
+}
+
+impl Default for NetworkIngressArgs {
+    fn default() -> Self {
+        Self {
+            max_concurrent_ingress_work: crate::constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
+            max_concurrent_reply_ingress_work:
+                crate::constants::NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK,
+            max_ingress_events_per_peer_per_second:
+                crate::constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+            max_concurrent_connections: crate::constants::NETWORK_MAX_CONCURRENT_CONNECTIONS,
+            max_connections_per_peer: crate::constants::NETWORK_MAX_CONNECTIONS_PER_PEER,
+            max_concurrent_streams: crate::constants::NETWORK_MAX_CONCURRENT_STREAMS,
+            max_streams_per_peer: crate::constants::NETWORK_MAX_STREAMS_PER_PEER,
+            max_inbound_request_body_bytes:
+                crate::constants::NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES,
+            max_inbound_reply_body_bytes: crate::constants::NETWORK_MAX_INBOUND_REPLY_BODY_BYTES,
+            stream_read_timeout_ms: crate::constants::NETWORK_STREAM_READ_TIMEOUT_MS,
+        }
+    }
+}
+
+impl NetworkIngressArgs {
+    /// Apply every P2P ingress dial to a network builder in one call, so
+    /// `runtime.rs` never re-lists the setters and a new dial lands in exactly
+    /// one place.
+    pub fn apply(&self, builder: network::IrohNetworkBuilder) -> network::IrohNetworkBuilder {
+        builder
+            .stream_read_timeout_ms(self.stream_read_timeout_ms)
+            .max_concurrent_ingress_work(self.max_concurrent_ingress_work)
+            .max_concurrent_reply_ingress_work(self.max_concurrent_reply_ingress_work)
+            .max_ingress_events_per_peer_per_second(self.max_ingress_events_per_peer_per_second)
+            .max_concurrent_connections(self.max_concurrent_connections)
+            .max_connections_per_peer(self.max_connections_per_peer)
+            .max_concurrent_streams(self.max_concurrent_streams)
+            .max_streams_per_peer(self.max_streams_per_peer)
+            .max_inbound_request_body_bytes(self.max_inbound_request_body_bytes)
+            .max_inbound_reply_body_bytes(self.max_inbound_reply_body_bytes)
+    }
 }
 
 /// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.
