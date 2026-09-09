@@ -54,11 +54,16 @@ commonware-codec = { version = "2026.9.0", optional = true }
 k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
 did-key.workspace = true
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3eee73e1d2d99722fd26d8c9940506532f1d7853" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3eee73e1d2d99722fd26d8c9940506532f1d7853" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3eee73e1d2d99722fd26d8c9940506532f1d7853" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3eee73e1d2d99722fd26d8c9940506532f1d7853" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
 alloy-primitives = "1"
 hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
 hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }

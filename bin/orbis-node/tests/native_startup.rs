@@ -1,3 +1,7 @@
+#[cfg(feature = "bls12-381")]
+#[path = "support/defra_documents.rs"]
+mod defra_documents;
+
 use commonware_codec::Encode;
 use hub_client::HubClient;
 use hub_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
@@ -554,6 +558,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .await
         .unwrap(),
     );
+    let documents =
+        defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
     let defra_sign = || {
         let defra = std::sync::Arc::clone(&defra);
         tokio::task::spawn_blocking(move || {
@@ -589,6 +595,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         tonic::Code::Unauthenticated
     );
     assert!(defra_sign().await.unwrap().is_err());
+    assert!(documents.create("denied").await.is_err());
+    assert_eq!(documents.count().await, 0);
     let granted = client
         .native_set_relationship(
             &worker,
@@ -616,6 +624,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap()
         .expect("Defra threshold signature");
     assert_eq!(defra_signature, signature.to_bytes().unwrap());
+    let created = documents.create("signed").await.expect("signed document");
+    documents.verify(&created, defra.signer_did()).await;
+    assert_eq!(documents.count().await, 1);
+    let documents = documents.reopen().await;
+    documents.verify(&created, defra.signer_did()).await;
+    assert_eq!(documents.count().await, 1);
 
     let revoked = client
         .native_delete_relationship(
@@ -634,6 +648,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         tonic::Code::Unauthenticated
     );
     assert!(defra_sign().await.unwrap().is_err());
+    assert!(documents.create("revoked").await.is_err());
+    assert_eq!(documents.count().await, 1);
+    documents.verify(&created, defra.signer_did()).await;
     if signing_only {
         return;
     }
