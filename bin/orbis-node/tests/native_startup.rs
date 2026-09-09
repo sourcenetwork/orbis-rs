@@ -1,4 +1,8 @@
 #[cfg(feature = "bls12-381")]
+#[path = "support/defra_peers.rs"]
+mod defra_peers;
+
+#[cfg(feature = "bls12-381")]
 #[path = "support/defra_documents.rs"]
 mod defra_documents;
 
@@ -223,6 +227,7 @@ async fn submit(
 #[tokio::test]
 #[ignore = "requires a built hubd supplied through HUBD_BINARY"]
 #[cfg(feature = "bls12-381")]
+#[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
     distributed_threshold_workflows(false).await;
 }
@@ -230,6 +235,7 @@ async fn native_distributed_threshold_workflows() {
 #[tokio::test]
 #[ignore = "requires a built hubd supplied through HUBD_BINARY"]
 #[cfg(feature = "bls12-381")]
+#[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
     distributed_threshold_workflows(true).await;
 }
@@ -624,6 +630,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap()
         .expect("Defra threshold signature");
     assert_eq!(defra_signature, signature.to_bytes().unwrap());
+    let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
+    peers.verify_replication().await;
     let created = documents.create("signed").await.expect("signed document");
     documents.verify(&created, defra.signer_did()).await;
     assert_eq!(documents.count().await, 1);
@@ -659,6 +667,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     assert!(documents.create("revoked").await.is_err());
     assert_eq!(documents.count().await, 1);
     documents.verify(&created, defra.signer_did()).await;
+    peers.verify_revocation().await;
+    peers.shutdown().await;
     if signing_only {
         return;
     }

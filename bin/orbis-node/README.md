@@ -277,7 +277,10 @@ creation in Regolith after the grant, persisted signature verification after
 reopening the database, and rejection of new documents after revocation. A second
 store rejects a forged signature with recomputed content IDs, merges the genuine
 document, and preserves its queried contents and signature after reopen. Blocks
-are transferred directly to the merge handler; this does not test peer transport.
+are transferred directly to the merge handler for the forgery check. Two embedded
+Defra nodes also replicate an Orbis-signed GraphQL mutation over loopback Iroh/QUIC,
+verify the received history signatures, and reject a new mutation after revocation.
+Relay and discovery are disabled for this local transport scenario.
 It shares the
 DKG setup and stops before the PRE and resharing portions of the broader fixture.
 
