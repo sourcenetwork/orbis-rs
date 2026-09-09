@@ -8220,6 +8220,7 @@ dependencies = [
  "authn",
  "authz",
  "base64 0.22.1",
+ "blockstore",
  "bs58 0.5.1",
  "bulletin",
  "bytes",

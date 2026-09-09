@@ -274,7 +274,11 @@ other curves require their own checks.
 The Defra signing scenario uses the actual Defra client against three Orbis
 processes and native Vera. It checks denial before an ACP grant, signed-document
 creation in Regolith after the grant, persisted signature verification after
-reopening the database, and rejection of new documents after revocation. It shares the
+reopening the database, and rejection of new documents after revocation. A second
+store rejects a forged signature with recomputed content IDs, merges the genuine
+document, and preserves its queried contents and signature after reopen. Blocks
+are transferred directly to the merge handler; this does not test peer transport.
+It shares the
 DKG setup and stops before the PRE and resharing portions of the broader fixture.
 
 ```sh

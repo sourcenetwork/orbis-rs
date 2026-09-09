@@ -627,6 +627,14 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let created = documents.create("signed").await.expect("signed document");
     documents.verify(&created, defra.signer_did()).await;
     assert_eq!(documents.count().await, 1);
+    documents.verify_contents().await;
+    let replica =
+        defra_documents::Documents::new(&base.path().join("replica"), defra.clone()).await;
+    documents.replicate_to(&replica, &created).await;
+    replica.verify(&created, defra.signer_did()).await;
+    let replica = replica.reopen().await;
+    replica.verify_contents().await;
+    replica.verify(&created, defra.signer_did()).await;
     let documents = documents.reopen().await;
     documents.verify(&created, defra.signer_did()).await;
     assert_eq!(documents.count().await, 1);

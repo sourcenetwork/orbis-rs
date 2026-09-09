@@ -54,6 +54,7 @@ commonware-codec = { version = "2026.9.0", optional = true }
 k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
 defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737", default-features = false, features = ["native"] }
 defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }
 defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "3681abaf1f0e5d0c946ba429c4b4276028142737" }

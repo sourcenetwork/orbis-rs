@@ -1,3 +1,6 @@
+#[path = "defra_replication.rs"]
+mod replication;
+
 use defra_core::{
     block::{Block, Signature},
     signing::{self, SigningConfig, SigningKeyType},
