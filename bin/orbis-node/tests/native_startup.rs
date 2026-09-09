@@ -287,6 +287,17 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let url = cluster.node(0).rpc_url();
     let client = HubClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
+    let headers = acp_light_client::header_sync::HeaderChain::connect(
+        &url.replacen("http://", "ws://", 1),
+        acp_light_client::ProofClient::new(&url, &hex::encode(trusted.encode())).unwrap(),
+    )
+    .await
+    .unwrap();
+    headers
+        .wait_for_height(first.height + 1, Duration::from_secs(15))
+        .await
+        .unwrap();
+    assert!(headers.fresh_state().unwrap().height > first.height);
     let root: B256 = first.parent_hash.parse().unwrap();
     let controller = k256::ecdsa::SigningKey::from_slice(&[34; 32]).unwrap();
     let controller_key = hex::encode(controller.verifying_key().to_sec1_bytes());

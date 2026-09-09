@@ -54,19 +54,20 @@ commonware-codec = { version = "2026.9.0", optional = true }
 k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
-defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185", default-features = false, features = ["p2p"] }
-defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185", default-features = false, features = ["iroh-transport"] }
-defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185", default-features = false, features = ["native"] }
-defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "015c5603604cfdbe54947a65c1d7ff3336de55e3" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
 did-key.workspace = true
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "634718a2161667970778374482ff1d828dfa3185" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "a326c68d7154625a9047dfe3636a41228796c316" }
 alloy-primitives = "1"
 hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
 hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "e68cc631ec4d0b5a703055d201d7c5d3cadd6d69" }
