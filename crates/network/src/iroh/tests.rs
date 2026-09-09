@@ -1780,16 +1780,23 @@ async fn iroh_gossip_connection_consumes_a_connection_lease() {
         .expect("spawn net2 router");
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // net2 joins a topic bootstrapping off net1 → one inbound Gossip connection
-    // at net1, which takes net2's only per-peer connection slot.
+    // net1 joins the topic so a real Gossip neighbor link can form; net2 then
+    // joins bootstrapping off net1, which dials net1's Gossip ALPN → one inbound
+    // Gossip connection at net1 that takes net2's only per-peer connection slot.
     let topic_id = TopicId::new([44u8; 32]);
-    let _topic = net2
+    let net1_topic = net1
+        .pubsub()
+        .expect("pubsub enabled")
+        .subscribe(topic_id, vec![])
+        .await
+        .expect("net1 subscribe");
+    let _net2_topic = net2
         .pubsub()
         .expect("pubsub enabled")
         .subscribe(topic_id, vec![peer_addr(&net1)])
         .await
-        .expect("subscribe");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        .expect("net2 subscribe");
+    wait_for_neighbor(&net1_topic).await;
 
     // A direct connection from the same endpoint is now refused (its slot is
     // held by the Gossip connection).
