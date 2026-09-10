@@ -70,6 +70,9 @@ jobs:
 
       - name: Run cross-commit upgrade gate
         shell: bash
+        # The harness auto-selects --fresh-target-chain when HEAD's
+        # docker/VERA_REF differs from the pinned baseline's (the baseline
+        # chain otherwise cannot verify the target's threshold signatures).
         run: |
           scripts/test-upgrade-unit.sh
           scripts/test-upgrade.sh \

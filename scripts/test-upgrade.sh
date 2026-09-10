@@ -12,6 +12,9 @@ CRYPTO=both
 OUTPUT=
 KEEP_ON_FAILURE=0
 DRY_RUN=0
+# auto: enable when the target's docker/VERA_REF differs from the baseline's.
+FRESH_TARGET_CHAIN=auto
+TO_VERA_REF_OVERRIDE=
 TEMP_ROOT=
 FROM_CONTEXT=
 TO_CONTEXT=
@@ -31,10 +34,25 @@ Options:
   --output <directory>                Evidence directory
   --keep-on-failure                   Leave the failed Compose project running
   --dry-run                           Resolve inputs without building or starting Docker
+  --fresh-target-chain               Rebuild SourceHub from the target revision's
+                                     docker/VERA_REF and re-run `prepare` on the
+                                     target stack (no chain-state migration).
+  --no-fresh-target-chain            Force the Orbis-only cutover even when the
+                                     baseline and target docker/VERA_REF differ.
+  --to-vera-ref <git-ref>            Explicit target SourceHub ref; implies
+                                     --fresh-target-chain.
   -h, --help                          Show this help
 
 Both committed revisions must contain the upgrade-driver v1 contract. WORKTREE
 is accepted only for --to and includes committed, modified, and untracked files.
+
+By default the shared SourceHub container is never recreated during the
+cutover, so the target Orbis nodes are exercised against the baseline chain.
+When docker/VERA_REF differs between the two revisions the baseline chain
+cannot verify the target's threshold signatures; --fresh-target-chain (the
+default in that case) tears the whole stack down, brings SourceHub up on the
+target ref, and re-runs `prepare` before `verify`. This does not test that
+baseline chain state survives an upgrade.
 EOF
 }
 
@@ -76,6 +94,20 @@ while [[ $# -gt 0 ]]; do
     --dry-run)
       DRY_RUN=1
       shift
+      ;;
+    --fresh-target-chain)
+      FRESH_TARGET_CHAIN=1
+      shift
+      ;;
+    --no-fresh-target-chain)
+      FRESH_TARGET_CHAIN=0
+      shift
+      ;;
+    --to-vera-ref)
+      [[ $# -ge 2 ]] || die "--to-vera-ref requires a value"
+      TO_VERA_REF_OVERRIDE=$2
+      FRESH_TARGET_CHAIN=1
+      shift 2
       ;;
     -h|--help)
       usage
@@ -137,6 +169,7 @@ OUTPUT=$(cd "$OUTPUT" && pwd)
 echo "baseline: $FROM_REF -> $FROM_SHA"
 echo "target:   $TO_REF -> $TO_DESCRIPTION"
 echo "crypto:   $CRYPTO"
+echo "fresh target chain: $FRESH_TARGET_CHAIN"
 echo "evidence: $OUTPUT"
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -246,6 +279,39 @@ VERA_REF=$(tr -d '[:space:]' <"$FROM_CONTEXT/docker/VERA_REF")
 VERA_TAG_HASH=$(printf '%s' "$VERA_REF" | shasum -a 256 | awk '{print $1}')
 VERA_IMAGE="orbis-upgrade-sourcehub:${VERA_TAG_HASH:0:12}"
 
+# Resolve the target SourceHub ref. Default the mode to "fresh target chain"
+# whenever it differs from the baseline, since the baseline chain then cannot
+# verify the target's threshold signatures.
+if [[ -n "$TO_VERA_REF_OVERRIDE" ]]; then
+  TARGET_VERA_REF_INPUT=$TO_VERA_REF_OVERRIDE
+elif [[ -f "$TO_CONTEXT/docker/VERA_REF" ]]; then
+  TARGET_VERA_REF_INPUT=$(tr -d '[:space:]' <"$TO_CONTEXT/docker/VERA_REF")
+else
+  TARGET_VERA_REF_INPUT=
+fi
+
+if [[ "$FRESH_TARGET_CHAIN" == auto ]]; then
+  if [[ -n "$TARGET_VERA_REF_INPUT" && "$TARGET_VERA_REF_INPUT" != "$VERA_REF" ]]; then
+    FRESH_TARGET_CHAIN=1
+    echo "note: docker/VERA_REF differs (baseline=$VERA_REF target=$TARGET_VERA_REF_INPUT);" \
+      "enabling --fresh-target-chain" >&2
+  else
+    FRESH_TARGET_CHAIN=0
+  fi
+fi
+
+TO_VERA_REF=$VERA_REF
+TO_VERA_IMAGE=$VERA_IMAGE
+if [[ "$FRESH_TARGET_CHAIN" -eq 1 ]]; then
+  [[ -n "$TARGET_VERA_REF_INPUT" ]] \
+    || die "fresh target chain requested but target has no docker/VERA_REF (pass --to-vera-ref)"
+  [[ -f "$TO_CONTEXT/docker/Dockerfile.vera-integration" ]] \
+    || die "target revision does not contain docker/Dockerfile.vera-integration"
+  TO_VERA_REF=$TARGET_VERA_REF_INPUT
+  TO_VERA_TAG_HASH=$(printf '%s' "$TO_VERA_REF" | shasum -a 256 | awk '{print $1}')
+  TO_VERA_IMAGE="orbis-upgrade-sourcehub:${TO_VERA_TAG_HASH:0:12}"
+fi
+
 run_phase() {
   local label=$1
   shift
@@ -274,6 +340,15 @@ run_phase build-sourcehub docker build \
   "$FROM_CONTEXT/docker"
 docker image inspect --format '{{.Id}}' "$VERA_IMAGE" \
   >"$VERA_BUILD_OUTPUT/image-id.txt"
+if [[ "$FRESH_TARGET_CHAIN" -eq 1 && "$TO_VERA_IMAGE" != "$VERA_IMAGE" ]]; then
+  run_phase build-sourcehub-target docker build \
+    --file "$TO_CONTEXT/docker/Dockerfile.vera-integration" \
+    --tag "$TO_VERA_IMAGE" \
+    --build-arg "VERA_REF=$TO_VERA_REF" \
+    "$TO_CONTEXT/docker"
+  docker image inspect --format '{{.Id}}' "$TO_VERA_IMAGE" \
+    >"$VERA_BUILD_OUTPUT/target-image-id.txt"
+fi
 CURRENT_OUTPUT=
 
 if [[ "$CRYPTO" == both ]]; then
@@ -302,6 +377,9 @@ run_crypto_upgrade() {
     printf 'CRYPTO=%q\n' "$crypto"
     printf 'VERA_REF=%q\n' "$VERA_REF"
     printf 'VERA_IMAGE=%q\n' "$VERA_IMAGE"
+    printf 'FRESH_TARGET_CHAIN=%q\n' "$FRESH_TARGET_CHAIN"
+    printf 'TO_VERA_REF=%q\n' "$TO_VERA_REF"
+    printf 'TO_VERA_IMAGE=%q\n' "$TO_VERA_IMAGE"
     printf 'BASELINE_IMAGE=%q\n' "$from_image"
     printf 'TARGET_IMAGE=%q\n' "$to_image"
     printf 'COMPOSE_PROJECT=%q\n' "$CURRENT_PROJECT"
@@ -319,6 +397,7 @@ run_crypto_upgrade() {
     "$TO_CONTEXT"
   {
     printf 'VERA_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$VERA_IMAGE")"
+    printf 'TO_VERA_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$TO_VERA_IMAGE")"
     printf 'BASELINE_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$from_image")"
     printf 'TARGET_IMAGE_ID=%q\n' "$(docker image inspect --format '{{.Id}}' "$to_image")"
   } >>"$CURRENT_OUTPUT/resolved-refs.env"
@@ -352,21 +431,55 @@ run_crypto_upgrade() {
 
   export ORBIS_UPGRADE_IMAGE=$to_image
   CURRENT_IMAGE=$to_image
-  compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
-  run_phase start-target compose up --detach --no-deps --force-recreate \
-    --wait --wait-timeout 600 "${NODE_SERVICES[@]}"
-  [[ "$(compose ps --quiet sourcehub)" == "$sourcehub_container" ]] \
-    || die "SourceHub was recreated during the Orbis-only cutover"
-  for service in "${NODE_SERVICES[@]}"; do
-    local baseline_container target_container baseline_key
-    baseline_key="BASELINE_${service//-/_}"
-    baseline_container=$(sed -n "s/^${baseline_key}=//p" "$CURRENT_OUTPUT/container-ids.env")
-    target_container=$(compose ps --quiet "$service")
-    [[ -n "$target_container" && "$target_container" != "$baseline_container" ]] \
-      || die "$service was not recreated with the target image"
-    printf 'TARGET_%s=%q\n' "${service//-/_}" "$target_container" \
+
+  if [[ "$FRESH_TARGET_CHAIN" -eq 1 ]]; then
+    # No chain-state migration: SourceHub keeps no volume, so tear the whole
+    # baseline stack down, bring the target stack up on the target SourceHub
+    # ref plus target Orbis images, and re-run `prepare` so the fixtures
+    # describe target-chain state before `verify` exercises the reshare.
+    cp "$CURRENT_OUTPUT/fixture-v1.json" \
+      "$CURRENT_OUTPUT/fixture-v1.baseline.json" 2>/dev/null || true
+    export ORBIS_UPGRADE_VERA_IMAGE=$TO_VERA_IMAGE
+    run_phase teardown-baseline-stack \
+      compose --profile driver down --volumes --remove-orphans
+    compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
+    run_phase start-target compose up --detach --wait --wait-timeout 600 \
+      sourcehub "${NODE_SERVICES[@]}"
+    local target_sourcehub_container
+    target_sourcehub_container=$(compose ps --quiet sourcehub)
+    [[ -n "$target_sourcehub_container" ]] \
+      || die "target SourceHub container was not created"
+    [[ "$target_sourcehub_container" != "$sourcehub_container" ]] \
+      || die "SourceHub was not recreated for the fresh target chain"
+    printf 'TARGET_VERA_CONTAINER=%q\n' "$target_sourcehub_container" \
       >>"$CURRENT_OUTPUT/container-ids.env"
-  done
+    for service in "${NODE_SERVICES[@]}"; do
+      printf 'TARGET_%s=%q\n' "${service//-/_}" "$(compose ps --quiet "$service")" \
+        >>"$CURRENT_OUTPUT/container-ids.env"
+    done
+    run_phase prepare-target compose run --rm --no-deps driver prepare \
+      --manifest /artifacts/fixture-v1.json \
+      --baseline-sha "$TO_SHA" \
+      --crypto "$crypto" \
+      --sourcehub-ref "$TO_VERA_REF"
+  else
+    compose config >"$CURRENT_OUTPUT/compose-rendered-target.yaml"
+    run_phase start-target compose up --detach --no-deps --force-recreate \
+      --wait --wait-timeout 600 "${NODE_SERVICES[@]}"
+    [[ "$(compose ps --quiet sourcehub)" == "$sourcehub_container" ]] \
+      || die "SourceHub was recreated during the Orbis-only cutover"
+    for service in "${NODE_SERVICES[@]}"; do
+      local baseline_container target_container baseline_key
+      baseline_key="BASELINE_${service//-/_}"
+      baseline_container=$(sed -n "s/^${baseline_key}=//p" "$CURRENT_OUTPUT/container-ids.env")
+      target_container=$(compose ps --quiet "$service")
+      [[ -n "$target_container" && "$target_container" != "$baseline_container" ]] \
+        || die "$service was not recreated with the target image"
+      printf 'TARGET_%s=%q\n' "${service//-/_}" "$target_container" \
+        >>"$CURRENT_OUTPUT/container-ids.env"
+    done
+  fi
+
   run_phase verify-target compose run --rm --no-deps driver verify \
     --manifest /artifacts/fixture-v1.json \
     --result /artifacts/verification-v1.json \
