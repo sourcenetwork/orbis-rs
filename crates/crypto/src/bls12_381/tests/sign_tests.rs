@@ -4,9 +4,11 @@ use crate::bls12_381::sign::{hash_to_g2, ThresholdBlsSigner};
 use crate::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective, G2Projective};
-use ark_ec::Group;
-use ark_std::UniformRand;
+use ark_ec::{CurveGroup, Group};
+use ark_ff::{Field, PrimeField};
+use ark_std::{UniformRand, Zero};
 use rand_core::OsRng;
+use sha2::{Digest, Sha512};
 
 // ============================================================================
 // Generic suite — runs all trait-level signing tests
@@ -53,17 +55,120 @@ fn test_signer_creation() {
 
 #[test]
 fn test_hash_to_g2_deterministic() {
+    let (_, pk) = random_keypair();
     let msg = b"test message";
-    let h1 = hash_to_g2(msg).unwrap();
-    let h2 = hash_to_g2(msg).unwrap();
+    let h1 = hash_to_g2(&pk, msg).unwrap();
+    let h2 = hash_to_g2(&pk, msg).unwrap();
     assert_eq!(h1, h2, "Hash should be deterministic");
 }
 
 #[test]
 fn test_hash_to_g2_different_messages() {
-    let h1 = hash_to_g2(b"message 1").unwrap();
-    let h2 = hash_to_g2(b"message 2").unwrap();
+    let (_, pk) = random_keypair();
+    let h1 = hash_to_g2(&pk, b"message 1").unwrap();
+    let h2 = hash_to_g2(&pk, b"message 2").unwrap();
     assert_ne!(h1, h2, "Different messages should hash to different points");
+}
+
+#[test]
+fn test_hash_to_g2_binds_public_key() {
+    let (_, pk_a) = random_keypair();
+    let (_, pk_b) = random_keypair();
+    let msg = b"same message";
+
+    let h_a = hash_to_g2(&pk_a, msg).unwrap();
+    let h_b = hash_to_g2(&pk_b, msg).unwrap();
+
+    assert_ne!(h_a, h_b, "The augmented hash must bind the public key");
+}
+
+fn random_keypair() -> (Fr, G1Affine) {
+    let sk = Fr::rand(&mut OsRng);
+    let pk = (G1Projective::generator() * sk).into_affine();
+    (sk, pk)
+}
+
+fn public_derivation_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
+    let mut hasher = Sha512::new();
+    hasher.update(b"sign-derivation-v1");
+    hasher.update(derivation);
+    if let Some(meta) = metadata {
+        hasher.update(b"\x00");
+        hasher.update((meta.len() as u64).to_le_bytes());
+        hasher.update(meta);
+    }
+    Fr::from_le_bytes_mod_order(&hasher.finalize())
+}
+
+#[test]
+fn test_signature_cannot_be_scaled_between_derived_keys() {
+    let n = 3;
+    let t = 2;
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
+            <DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
+        },
+        n,
+        t,
+    )
+    .unwrap();
+    let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let signer = ThresholdBlsSigner::new();
+    let message = b"attacker-chosen message";
+    let attacker_derivation = b"attacker-derivation";
+    let victim_derivation = b"victim-derivation";
+
+    let attacker_shares: Vec<_> = secret_shares
+        .iter()
+        .take(t)
+        .map(|share| {
+            signer
+                .sign(
+                    &DistKeyShare {
+                        pri_share: share.clone(),
+                    },
+                    message,
+                    &pub_poly,
+                    None,
+                    &[],
+                    Some(attacker_derivation),
+                    None,
+                )
+                .unwrap()
+        })
+        .collect();
+    let attacker_pk =
+        ThresholdBlsSigner::derive_public_key(&aggregate_pk, attacker_derivation, None).unwrap();
+    let victim_pk =
+        ThresholdBlsSigner::derive_public_key(&aggregate_pk, victim_derivation, None).unwrap();
+    let attacker_signature = signer
+        .recover(&attacker_shares, t, n, &attacker_pk, message, &[])
+        .unwrap()
+        .unwrap();
+    signer
+        .verify(&attacker_pk, message, &attacker_signature)
+        .unwrap();
+
+    // This is the exact public related-key conversion that succeeds against
+    // the old NUL construction: sigma_v = (d_v / d_a) * sigma_a.
+    let d_a = public_derivation_scalar(attacker_derivation, None);
+    let d_v = public_derivation_scalar(victim_derivation, None);
+    assert!(!d_a.is_zero() && !d_v.is_zero());
+    let ratio = d_v * d_a.inverse().unwrap();
+    let scaled_attacker_pk = (G1Projective::from(attacker_pk) * ratio).into_affine();
+    assert_eq!(
+        scaled_attacker_pk, victim_pk,
+        "The public ratio must map the attacker key to the victim key"
+    );
+    let converted_signature =
+        G2Point::from((G2Projective::from(*attacker_signature.inner()) * ratio).into_affine());
+
+    assert!(
+        signer
+            .verify(&victim_pk, message, &converted_signature)
+            .is_err(),
+        "A signature scaled from another derived key must not verify"
+    );
 }
 
 #[test]

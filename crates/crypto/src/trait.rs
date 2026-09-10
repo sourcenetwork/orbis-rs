@@ -925,8 +925,13 @@ pub trait ThresholdSigner {
     /// Domain-separated name for the protocol
     fn name() -> String;
 
-    /// Hash a message to the signing group (BLS only; FROST returns Err)
-    fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature>;
+    /// Hash a public-key-augmented message to the signing group (BLS only;
+    /// FROST returns Err).
+    ///
+    /// The public key is part of the hash input so signatures made by publicly
+    /// related keys cannot be converted from one key to another by scaling the
+    /// signature point.
+    fn hash_message(&self, pk: &Self::PublicKey, msg: &[u8]) -> Result<Self::Signature>;
 
     /// Generate nonce commitments and secret signing state for Round 1
     fn generate_nonces(
@@ -942,8 +947,10 @@ pub trait ThresholdSigner {
     ///
     /// When `metadata` is also provided, it is folded into the derivation scalar:
     /// `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`.
-    /// The metadata is thus cryptographically bound to every signature share — the existing
-    /// verification equation (BLS pairing / FROST check) serves as the binding proof.
+    /// The metadata is thus cryptographically bound to every signature share. BLS additionally
+    /// hashes the effective public key with the message (the augmented ciphersuite), preventing
+    /// signatures from being converted between publicly related derived keys. FROST binds the
+    /// effective public key into its transcript challenge.
     fn sign(
         &self,
         dist_key_share: &Self::DistKeyShare,

@@ -355,7 +355,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         "threshold-frost-decaf377".to_string()
     }
 
-    fn hash_message(&self, _msg: &[u8]) -> Result<Self::Signature> {
+    fn hash_message(&self, _pk: &Self::PublicKey, _msg: &[u8]) -> Result<Self::Signature> {
         Err(CryptoError::InvalidSignature)
     }
 

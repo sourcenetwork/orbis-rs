@@ -24,7 +24,7 @@ use ark_std::collections::HashSet;
 use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
-/// Domain separation tag for BLS signatures (IETF standard)
+/// Domain separation tag for public-key-augmented BLS signatures.
 /// Format: "BLS_SIG_" || curve || "_" || hash || "_" || map || "_" || variant
 const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
 
@@ -57,8 +57,8 @@ impl ThresholdSigner for ThresholdBlsSigner {
         "threshold-bls-g2".to_string()
     }
 
-    fn hash_message(&self, msg: &[u8]) -> Result<Self::Signature> {
-        hash_to_g2(msg)
+    fn hash_message(&self, pk: &Self::PublicKey, msg: &[u8]) -> Result<Self::Signature> {
+        hash_to_g2(pk, msg)
     }
 
     fn generate_nonces(
@@ -72,7 +72,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
         &self,
         dist_key_share: &Self::DistKeyShare,
         msg: &[u8],
-        _pub_poly: &Self::PubPoly,
+        pub_poly: &Self::PubPoly,
         _signing_state: Option<&Self::SigningState>,
         _all_commitments: &[(u32, Self::NonceCommitment)],
         derivation: Option<&[u8]>,
@@ -86,23 +86,33 @@ impl ThresholdSigner for ThresholdBlsSigner {
             return Err(CryptoError::InvalidSignatureShare);
         }
 
-        // Apply derivation (with optional metadata binding): s_i' = d * s_i
-        let ski_eff = if let Some(deriv) = derivation {
+        // Apply derivation (with optional metadata binding): s_i' = d * s_i.
+        // Every share hashes the same effective aggregate public key into the
+        // message, following the augmented BLS construction. This prevents a
+        // signature under d_a * PK from being scaled into one under d_b * PK.
+        let aggregate_pk = pub_poly.eval(0);
+        let (ski_eff, effective_pk) = if let Some(deriv) = derivation {
             let d = derive_sign_scalar(deriv, metadata);
             if d.is_zero() {
                 return Err(CryptoError::SigningError(
                     "Zero derivation scalar".to_string(),
                 ));
             }
-            ski * d
+            (
+                ski * d,
+                (G1Projective::from(aggregate_pk) * d).into_affine(),
+            )
         } else {
-            ski
+            (ski, aggregate_pk)
         };
+        if effective_pk.is_zero() {
+            return Err(CryptoError::InvalidSignature);
+        }
 
-        // Hash message to G2
-        let h_msg = hash_to_g2(msg)?;
+        // Augmented BLS hashes PK || message using the AUG ciphersuite DST.
+        let h_msg = hash_to_g2(&effective_pk, msg)?;
 
-        // Compute signature share: sig_i = s_i' * H(msg)
+        // Compute signature share: sig_i = s_i' * H(PK' || msg)
         let sig_share: G2Affine = (G2Projective::from(*h_msg.inner()) * ski_eff).into_affine();
 
         Ok(PubShare {
@@ -120,28 +130,33 @@ impl ThresholdSigner for ThresholdBlsSigner {
         derivation: Option<&[u8]>,
         metadata: Option<&[u8]>,
     ) -> Result<()> {
-        // Get the public key share for this index, applying derivation (with optional metadata
-        // binding) if present: pk_i' = d * pk_i
+        // Get the public key share and aggregate public key, applying derivation
+        // (with optional metadata binding) if present.
         let pk_share_base = pub_poly.eval(sig_share.i);
-        let pk_share: G1Affine = if let Some(deriv) = derivation {
+        let aggregate_pk = pub_poly.eval(0);
+        let (pk_share, effective_pk): (G1Affine, G1Affine) = if let Some(deriv) = derivation {
             let d = derive_sign_scalar(deriv, metadata);
-            (G1Projective::from(pk_share_base) * d).into()
+            (
+                (G1Projective::from(pk_share_base) * d).into(),
+                (G1Projective::from(aggregate_pk) * d).into(),
+            )
         } else {
-            pk_share_base
+            (pk_share_base, aggregate_pk)
         };
 
         // Validate points are not identity
-        if pk_share.is_zero() {
+        if pk_share.is_zero() || effective_pk.is_zero() {
             return Err(CryptoError::InvalidSignatureShare);
         }
         if sig_share.v.is_zero() {
             return Err(CryptoError::InvalidSignatureShare);
         }
 
-        // Hash message to G2
-        let h_msg = hash_to_g2(msg)?;
+        // All shares are checked against H(effective aggregate PK || message),
+        // not against a share-specific hash input.
+        let h_msg = hash_to_g2(&effective_pk, msg)?;
 
-        // Verify: e(pk_share', H(msg)) == e(G1_gen, sig_share)
+        // Verify: e(pk_share', H(PK' || msg)) == e(G1_gen, sig_share)
         let g1_gen = G1Affine::generator();
 
         let lhs = Bls12_381::pairing(pk_share, *h_msg.inner());
@@ -196,10 +211,10 @@ impl ThresholdSigner for ThresholdBlsSigner {
             return Err(CryptoError::InvalidSignature);
         }
 
-        // Hash message to G2
-        let h_msg = hash_to_g2(msg)?;
+        // Hash the canonical public-key encoding together with the message.
+        let h_msg = hash_to_g2(pk, msg)?;
 
-        // Verify: e(pk, H(msg)) == e(G1_gen, sig)
+        // Verify: e(pk, H(pk || msg)) == e(G1_gen, sig)
         let g1_gen = G1Affine::generator();
 
         let lhs = Bls12_381::pairing(*pk, *h_msg.inner());
@@ -249,15 +264,26 @@ impl ThresholdSigner for ThresholdBlsSigner {
     }
 }
 
-/// Hash a message to G2 using IETF-standard hash-to-curve
+/// Hash an augmented `public_key || message` input to G2.
 ///
-/// This implements the full IETF hash-to-curve specification for BLS12-381 G2:
+/// This implements the BLS message-augmentation construction with the
+/// BLS12-381 G2 AUG ciphersuite:
+/// - Prefixes the message with the canonical compressed public key
 /// - Suite: BLS12381G2_XMD:SHA-256_SSWU_RO_
 /// - Uses the Simplified SWU map with isogeny
 /// - Produces points with unknown discrete logarithm
 ///
-/// Reference: <https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-hash-to-curve>
-pub fn hash_to_g2(msg: &[u8]) -> Result<G2Point> {
+/// Reference: <https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-bls-signature#section-3.2>
+pub fn hash_to_g2(pk: &G1Affine, msg: &[u8]) -> Result<G2Point> {
+    if pk.is_zero() {
+        return Err(CryptoError::InvalidSignature);
+    }
+
+    let mut augmented_message = Vec::new();
+    pk.serialize_compressed(&mut augmented_message)
+        .map_err(|_| CryptoError::InvalidSignature)?;
+    augmented_message.extend_from_slice(msg);
+
     // Create the IETF-compliant hasher for BLS12-381 G2
     // This uses:
     // - SHA-256 for the hash function
@@ -269,7 +295,7 @@ pub fn hash_to_g2(msg: &[u8]) -> Result<G2Point> {
     let hasher = G2Hasher::new(BLS_SIG_DOMAIN).map_err(|_| CryptoError::InvalidSignature)?;
 
     let point: G2Affine = hasher
-        .hash(msg)
+        .hash(&augmented_message)
         .map_err(|_| CryptoError::InvalidSignature)?;
 
     // The IETF hash-to-curve guarantees the output is a valid curve point
