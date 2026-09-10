@@ -25,8 +25,11 @@ use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
 /// Domain separation tag for public-key-augmented BLS signatures.
-/// Format: "BLS_SIG_" || curve || "_" || hash || "_" || map || "_" || variant
-const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_";
+/// Format: "BLS_SIG_" || curve || "_" || hash || "_" || map || "_" || variant.
+/// `AUG_` is the IETF message-augmentation ciphersuite: the signer's public key
+/// is prepended to the message before hash-to-curve, so a signature can never be
+/// scaled from one publicly-related derived key onto another.
+const BLS_SIG_DOMAIN: &[u8] = b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_";
 
 /// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
 const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
@@ -54,7 +57,7 @@ impl ThresholdSigner for ThresholdBlsSigner {
     }
 
     fn name() -> String {
-        "threshold-bls-g2".to_string()
+        "threshold-bls-g2-aug-v1".to_string()
     }
 
     fn hash_message(&self, pk: &Self::PublicKey, msg: &[u8]) -> Result<Self::Signature> {

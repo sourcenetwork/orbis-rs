@@ -53,7 +53,7 @@ pub use decaf377::sign::SchnorrSignature as SignaturePoint;
 pub use decaf377::sign::ThresholdDecafSigner as SignImpl;
 
 #[cfg(feature = "bls12-381")]
-pub const THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_nul";
+pub const THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_aug_v1";
 
 #[cfg(feature = "decaf377")]
 pub const THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";

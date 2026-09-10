@@ -50,7 +50,10 @@ fn test_all_sign() {
 
 #[test]
 fn test_signer_creation() {
-    assert_eq!(ThresholdBlsSigner::name(), "threshold-bls-g2".to_string());
+    assert_eq!(
+        ThresholdBlsSigner::name(),
+        "threshold-bls-g2-aug-v1".to_string()
+    );
 }
 
 #[test]
