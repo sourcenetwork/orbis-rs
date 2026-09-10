@@ -247,7 +247,7 @@ fn invalid_crypto_response_sign_payload_round_trips() {
             derivation: None,
             metadata: Some(vec![6, 7]),
             sig_share: vec![8, 9],
-            crypto_backend: "threshold-bls-g2".to_string(),
+            crypto_backend: "threshold-bls-g2-aug-v1".to_string(),
         },
         response_signature: vec![42; 64],
     };
