@@ -154,6 +154,7 @@ pub async fn spawn_harness_node(
     // `with_ip_addr` addressing needs the default discovery.
     let unshaped_network = NetworkImpl::builder()
         .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+        .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
         .build()
         .await
         .map_err(|error| anyhow::anyhow!("network: {error}"))?;

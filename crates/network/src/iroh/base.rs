@@ -596,7 +596,23 @@ impl Connection for IrohStreamWrapper {
         let start = Instant::now();
         let message_size = message.data.len();
 
-        let len = message.data.len() as u32;
+        // Reject an oversized frame here rather than emit a length prefix the
+        // peer is guaranteed to reject at `recv` (`len > max_message_size`),
+        // wasting a stream round-trip. The `u32` prefix is also the hard ceiling.
+        if message_size > self.max_message_size {
+            metrics::record_send_error(&self.protocol);
+            return Err(NetworkError::Connection(format!(
+                "Message too large: {} bytes (max {})",
+                message_size, self.max_message_size
+            )));
+        }
+        let len = u32::try_from(message_size).map_err(|_| {
+            metrics::record_send_error(&self.protocol);
+            NetworkError::Connection(format!(
+                "Message too large: {} bytes exceeds the u32 length prefix",
+                message_size
+            ))
+        })?;
         let len_bytes = len.to_be_bytes();
 
         let mut stream = self.send_stream.lock().await;

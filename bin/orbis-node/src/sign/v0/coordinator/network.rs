@@ -1,6 +1,7 @@
 use super::SignCoordinator;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::helpers::response_manager::ResponseStoreOutcome;
+use crate::helpers::wire;
 use crate::sign::v0::error::{Result, SignError};
 use crate::sign::v0::messages::SignMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
@@ -61,7 +62,7 @@ where
                 ))
             })?;
 
-        let message_data = serde_json::to_vec(&message)
+        let message_data = wire::encode(&message)
             .map_err(|e| SignError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
         stream
@@ -91,7 +92,7 @@ where
             })?;
 
         // Deserialize response
-        let response: SignMessage = serde_json::from_slice(&response_msg.data).map_err(|e| {
+        let response: SignMessage = wire::decode(&response_msg.data).map_err(|e| {
             SignError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 

@@ -10,6 +10,7 @@
 //! - `GenericProtocolHandler<C>` — the single `ProtocolHandler` impl that
 //!   drives the loop for any `C: MessageCoordinator`.
 
+use crate::helpers::wire;
 use async_trait::async_trait;
 use network::error::Result as NetworkResult;
 use network::{Connection, Message, PeerId, ProtocolHandler};
@@ -79,7 +80,7 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
                 break;
             };
 
-            let message: C::Msg = match serde_json::from_slice(&network_message.data) {
+            let message: C::Msg = match wire::decode(&network_message.data) {
                 Ok(msg) => msg,
                 Err(e) => {
                     tracing::error!(
@@ -90,7 +91,7 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
                     let err_msg = self
                         .coordinator
                         .make_error("unknown", format!("Failed to deserialize message: {}", e));
-                    if let Ok(data) = serde_json::to_vec(&err_msg).inspect_err(|error| {
+                    if let Ok(data) = wire::encode(&err_msg).inspect_err(|error| {
                         tracing::error!(
                             peer_id = ?peer_id,
                             error = %error,
@@ -128,7 +129,7 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
 
             match self.coordinator.route_message(message, &peer_id).await {
                 Ok(Some(response)) => {
-                    if let Ok(data) = serde_json::to_vec(&response).inspect_err(|error| {
+                    if let Ok(data) = wire::encode(&response).inspect_err(|error| {
                         tracing::error!(
                             peer_id = ?peer_id,
                             error = %error,
@@ -151,7 +152,7 @@ impl<C: MessageCoordinator> ProtocolHandler for GenericProtocolHandler<C> {
                 Err(e) => {
                     tracing::error!(error = %e, "{}: Coordinator error", proto);
                     let err_msg = self.coordinator.make_error(&msg_id, e.to_string());
-                    if let Ok(data) = serde_json::to_vec(&err_msg).inspect_err(|error| {
+                    if let Ok(data) = wire::encode(&err_msg).inspect_err(|error| {
                         tracing::error!(
                             peer_id = ?peer_id,
                             error = %error,

@@ -194,6 +194,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
                 .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
                 .authorized_reserve_percent(constants::NETWORK_AUTHORIZED_RESERVE_PERCENT)
+                .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
                 .authorized_peers(authorized_peers.clone()),
         );
         if args.network_private_routes_only {
