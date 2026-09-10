@@ -26,9 +26,9 @@ sha2 = { workspace = true }
 rpassword = "7.3"
 bs58 = "0.5"
 
-hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "b2a38bc99dc1ce3473dc51196baa1d15aa76cef6", optional = true }
+hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "48123ec2699c13e6087f915c1081790b7a1a5723", optional = true }
 alloy-primitives = { version = "1", optional = true }
-hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "b2a38bc99dc1ce3473dc51196baa1d15aa76cef6", optional = true }
+hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "48123ec2699c13e6087f915c1081790b7a1a5723", optional = true }
 local-storage = { path = "../../crates/local-storage", default-features = false, features = ["redb"], optional = true }
 zeroize = { workspace = true, optional = true }
 
@@ -48,8 +48,8 @@ name = "native_admin"
 required-features = ["native"]
 
 [dev-dependencies]
-hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "b2a38bc99dc1ce3473dc51196baa1d15aa76cef6" }
-hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "b2a38bc99dc1ce3473dc51196baa1d15aa76cef6" }
+hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "48123ec2699c13e6087f915c1081790b7a1a5723" }
+hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "48123ec2699c13e6087f915c1081790b7a1a5723" }
 commonware-codec = "2026.9.0"
 k256.workspace = true
 tempfile.workspace = true
