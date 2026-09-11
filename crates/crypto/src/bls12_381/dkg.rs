@@ -213,12 +213,15 @@ impl Dkg for DKGNode {
 
         self.polynomial_coeffs = coeffs;
 
-        // Commit: C_i = a_i * G
+        // Commit: C_i = a_i * G. The coefficients are secret (the constant
+        // term is this node's DKG share; the rest blind it), so this must be
+        // constant-time — see bls12_381::ct.
+        let generator = G1Affine::from(G1Projective::generator());
         self.commitment.coefficients = self
             .polynomial_coeffs
             .iter()
-            .map(|coeff| (G1Projective::generator() * coeff).into())
-            .collect();
+            .map(|coeff| crate::bls12_381::ct::ct_mul_g1(&generator, coeff))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(())
     }
