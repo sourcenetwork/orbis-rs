@@ -56,54 +56,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         rdr_proof: &ReaderKeyProof,
         derivation: Option<&[u8]>,
     ) -> Result<Self::ReencryptReply> {
-        // Input validation
-        if scrt.enc_cmt.is_empty() {
-            return Err(CryptoError::ElGamalError(
-                "Empty commitment in secret".to_string(),
-            ));
-        }
-
-        let idx = dist_key_share.pri_share.i;
-        let ski = dist_key_share.pri_share.v;
-
-        // Validate index is positive
-        if idx == 0 {
-            return Err(CryptoError::ElGamalError(format!(
-                "Invalid share index: {} (must not be 0)",
-                idx
-            )));
-        }
-
-        // Reject any rdr_pk the caller cannot prove knowledge of, before doing
-        // anything with it — see `ReaderKeyProof`'s docs for why this is
-        // required (xnc_ski = ski*(rdr_pk + enc_cmt) is otherwise linear and
-        // unauthenticated in rdr_pk).
-        Self::verify_reader_key(rdr_pk, rdr_proof)?;
-
-        // Unmarshal the commitment
-        let enc_cmt = Self::decompress_point(&scrt.enc_cmt)?;
-
-        // Compute derivation scalar if provided
-        let derivation_scalar = derivation.map(Self::derive_capability_scalar);
-
-        // Reject zero derivation scalar (same as encrypt_secret)
-        if let Some(ref d) = derivation_scalar {
-            if *d == Fr::zero() {
-                return Err(CryptoError::ElGamalError(
-                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
-                ));
-            }
-        }
-
-        // Compute re-encrypted share with optional derivation
-        let (xnc_ski, chlgi, proofi) =
-            Self::reencrypt_internal(idx, &ski, rdr_pk, &enc_cmt, derivation_scalar)?;
-
-        Ok(ReencryptReply {
-            share: PubShare { i: idx, v: xnc_ski },
-            challenge: chlgi,
-            proof: proofi,
-        })
+        self.reencrypt_commitment(dist_key_share, &scrt.enc_cmt, rdr_pk, rdr_proof, derivation)
     }
 
     fn verify(
@@ -485,6 +438,66 @@ impl ThresholdDealer for ThresholdDealerNode {
 }
 
 impl ThresholdDealerNode {
+    /// Re-encrypt a validated Decaf ciphertext commitment without an AES envelope.
+    /// The caller must authenticate its chain origin and authorize release first.
+    pub fn reencrypt_commitment(
+        &self,
+        dist_key_share: &DistKeyShare<Fr>,
+        enc_cmt_bytes: &[u8],
+        rdr_pk: &Element,
+        rdr_proof: &ReaderKeyProof,
+        derivation: Option<&[u8]>,
+    ) -> Result<ReencryptReply<Fr, Element>> {
+        // Input validation
+        if enc_cmt_bytes.is_empty() {
+            return Err(CryptoError::ElGamalError(
+                "Empty commitment in secret".to_string(),
+            ));
+        }
+
+        let idx = dist_key_share.pri_share.i;
+        let ski = dist_key_share.pri_share.v;
+
+        // Validate index is positive
+        if idx == 0 {
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid share index: {} (must not be 0)",
+                idx
+            )));
+        }
+
+        // Reject any rdr_pk the caller cannot prove knowledge of, before doing
+        // anything with it — see `ReaderKeyProof`'s docs for why this is
+        // required (xnc_ski = ski*(rdr_pk + enc_cmt) is otherwise linear and
+        // unauthenticated in rdr_pk).
+        Self::verify_reader_key(rdr_pk, rdr_proof)?;
+
+        // Unmarshal the commitment
+        let enc_cmt = Self::decompress_point(&enc_cmt_bytes)?;
+
+        // Compute derivation scalar if provided
+        let derivation_scalar = derivation.map(Self::derive_capability_scalar);
+
+        // Reject zero derivation scalar (same as encrypt_secret)
+        if let Some(ref d) = derivation_scalar {
+            if *d == Fr::zero() {
+                return Err(CryptoError::ElGamalError(
+                    "Derivation produced zero scalar: use different derivation bytes".to_string(),
+                ));
+            }
+        }
+
+        // Compute re-encrypted share with optional derivation
+        let (xnc_ski, chlgi, proofi) =
+            Self::reencrypt_internal(idx, &ski, rdr_pk, &enc_cmt, derivation_scalar)?;
+
+        Ok(ReencryptReply {
+            share: PubShare { i: idx, v: xnc_ski },
+            challenge: chlgi,
+            proof: proofi,
+        })
+    }
+
     /// Generate a new keypair for encryption/decryption (test-only).
     #[cfg(any(test, feature = "test-helpers"))]
     pub fn generate_keypair() -> (Fr, Element) {
@@ -495,7 +508,7 @@ impl ThresholdDealerNode {
     }
 
     /// Derive a capability scalar from derivation bytes.
-    fn derive_capability_scalar(derivation: &[u8]) -> Fr {
+    pub fn derive_capability_scalar(derivation: &[u8]) -> Fr {
         let mut hasher = Sha512::new();
         hasher.update(DERIVATION_DOMAIN);
         hasher.update(derivation);

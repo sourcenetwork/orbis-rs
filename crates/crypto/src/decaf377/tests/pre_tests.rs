@@ -73,6 +73,102 @@ fn test_threshold_dealer_creation() {
     assert_eq!(ThresholdDealerNode::name(), "elgamal/decaf377");
 }
 
+#[test]
+fn direct_commitment_pre_recovers_the_original_shared_point() {
+    let (n, t) = (3, 2);
+    let mut coordinator = DKGCoordinator::new(
+        |id, threshold, total_nodes, session_id, role| {
+            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+                role,
+            )
+        },
+        n,
+        t,
+    )
+    .unwrap();
+    let (ring_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
+    let dealer = ThresholdDealerNode::new();
+    let (reader_sk, reader_pk) = ThresholdDealerNode::generate_keypair();
+    let proof = ThresholdDealerNode::prove_reader_key(&reader_sk, &reader_pk).unwrap();
+    let esk = Fr::rand(&mut OsRng);
+    let epk = Element::GENERATOR * esk;
+    for derivation in [None, Some(b"canonical-address-fixture".as_slice())] {
+        let effective_pk = match derivation {
+            Some(path) => ring_pk * ThresholdDealerNode::derive_capability_scalar(path),
+            None => ring_pk,
+        };
+        let mut replies = Vec::new();
+        for share in secret_shares.iter().take(t) {
+            let reply = dealer
+                .reencrypt_commitment(
+                    &DistKeyShare {
+                        pri_share: share.clone(),
+                    },
+                    &epk.vartime_compress().0,
+                    &reader_pk,
+                    &proof,
+                    derivation,
+                )
+                .unwrap();
+            dealer
+                .verify(&reader_pk, &pub_poly, &epk, &reply, derivation)
+                .unwrap();
+            assert!(dealer
+                .verify(
+                    &reader_pk,
+                    &pub_poly,
+                    &(epk + Element::GENERATOR),
+                    &reply,
+                    derivation
+                )
+                .is_err());
+            assert!(dealer
+                .verify(
+                    &(reader_pk + Element::GENERATOR),
+                    &pub_poly,
+                    &epk,
+                    &reply,
+                    derivation
+                )
+                .is_err());
+            assert!(dealer
+                .verify(&reader_pk, &pub_poly, &epk, &reply, Some(b"wrong-address"))
+                .is_err());
+            replies.push(reply.share.clone());
+        }
+        let result = dealer.recover(&replies, t, n).unwrap().unwrap();
+        assert_eq!(result - effective_pk * reader_sk, effective_pk * esk);
+    }
+    let share = DistKeyShare {
+        pri_share: secret_shares[0].clone(),
+    };
+    assert!(dealer
+        .reencrypt_commitment(&share, &[0; 31], &reader_pk, &proof, None)
+        .is_err());
+    assert!(dealer
+        .reencrypt_commitment(
+            &share,
+            &Element::default().vartime_compress().0,
+            &reader_pk,
+            &proof,
+            None
+        )
+        .is_err());
+    assert!(dealer
+        .reencrypt_commitment(
+            &share,
+            &epk.vartime_compress().0,
+            &(reader_pk + Element::GENERATOR),
+            &proof,
+            None
+        )
+        .is_err());
+}
+
 /// — decaf377's `reencrypt_internal` uses the identical linear
 /// `effective_ski * (rdr_pk + enc_cmt)` structure with no proof of knowledge of
 /// `rdr_pk`'s discrete log, so the forged-reader-key attack applied here too
