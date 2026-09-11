@@ -11,6 +11,12 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 zeroize = { workspace = true }
 ark-bls12-381 = { version = "0.4", optional = true }
+# Constant-time scalar multiplication for the handful of BLS12-381 group
+# operations that multiply a secret scalar by a point (arkworks' own
+# short-Weierstrass point addition branches on the operands, so it cannot be
+# used to build a constant-time ladder — see bls12_381/ct.rs).
+blstrs = { version = "0.7", optional = true }
+group = { version = "0.13", optional = true }
 decaf377 = { version = "0.10", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
@@ -32,7 +38,7 @@ proptest = "1.6.0"
 [features]
 default = ["bls12-381"]
 test-helpers = []
-bls12-381 = ["dep:ark-bls12-381"]
+bls12-381 = ["dep:ark-bls12-381", "dep:blstrs", "dep:group"]
 decaf377 = ["dep:decaf377"]
 
 [[bench]]
