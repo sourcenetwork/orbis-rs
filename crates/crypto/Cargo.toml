@@ -26,6 +26,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+sha3 = "0.10"
 criterion = { version = "0.5", features = ["html_reports"] }
 proptest = "1.6.0"
 
@@ -52,3 +53,7 @@ required-features = ["test-helpers"]
 
 [lints]
 workspace = true
+
+[[example]]
+name = "lakey_pre"
+required-features = ["decaf377"]
