@@ -349,6 +349,8 @@ where
 
         match context {
             SignContext::Policy(_) => Ok(None),
+            #[cfg(feature = "decaf377")]
+            SignContext::ShielddAuditRegistration(_) => Ok(None),
             SignContext::Bulletin { object_id } => {
                 let document = self
                     .read_document_payload_for_sign_report(object_id)
@@ -609,6 +611,26 @@ where
         context: SignContext,
         options: SigningOptions,
     ) -> Result<Vec<u8>> {
+        #[cfg(feature = "decaf377")]
+        if let SignContext::ShielddAuditRegistration(ctx) = &context {
+            let validated = crate::lakey::certificate::validate(
+                &self.app_state,
+                self.routes.version,
+                ctx,
+                Some(&message),
+                None,
+            )
+            .await
+            .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+            if hex::decode(&validated.ring.ring_pk).ok().as_ref() != Some(&ring.ring_pk_bytes)
+                || validated.ring.peer_node_keys != ring.peer_node_keys
+                || validated.ring.threshold as usize != ring.threshold
+            {
+                return Err(SignError::Unauthorized(
+                    "registration committee changed".into(),
+                ));
+            }
+        }
         // 1. Load the public polynomial and (when self_in_list) the local dist_key_share
         //    from a SINGLE atomic read of RingShareBundle — same TOCTOU fix as PRE.
         //
@@ -743,6 +765,8 @@ where
         // instead of the derived key.
         let (derivation, metadata) = match &context {
             SignContext::Bulletin { .. } => (None, None),
+            #[cfg(feature = "decaf377")]
+            SignContext::ShielddAuditRegistration(_) => (None, None),
             SignContext::Policy(ctx) => {
                 let key_derivation = &ctx.key_derivation;
                 let derivation = Some(key_derivation.derivation.clone().into_bytes());
@@ -816,6 +840,26 @@ where
         // If we are part of the signing set, compute our own share locally before
         // deciding how many verified shares we still need from the network.
         if should_attempt_local_share {
+            #[cfg(feature = "decaf377")]
+            if let SignContext::ShielddAuditRegistration(ctx) = &context {
+                let validated = crate::lakey::certificate::validate(
+                    &self.app_state,
+                    self.routes.version,
+                    ctx,
+                    Some(&message),
+                    None,
+                )
+                .await
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                if hex::decode(&validated.ring.ring_pk).ok().as_ref() != Some(&ring.ring_pk_bytes)
+                    || validated.ring.peer_node_keys != ring.peer_node_keys
+                    || validated.ring.threshold as usize != ring.threshold
+                {
+                    return Err(SignError::Unauthorized(
+                        "registration committee changed".into(),
+                    ));
+                }
+            }
             if let Some(dist_key_share) = local_dist_key_share {
                 if let Ok(sig_share) = signer
                     .sign(

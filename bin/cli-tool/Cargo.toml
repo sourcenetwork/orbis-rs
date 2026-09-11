@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+zeroize = { workspace = true }
 clap = { version = "4.4.18", features = ["derive", "env"] }
 tokio = { workspace = true }
 tonic = { workspace = true }
@@ -34,3 +35,8 @@ decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "orbis-audit"
+path = "src/bin/orbis-audit.rs"
+required-features = ["decaf377"]

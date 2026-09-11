@@ -17,3 +17,6 @@ compile_error!("Features 'vera' and 'dummy' are mutually exclusive. Use --no-def
 pub use dummy::DummyBulletin as BulletinImpl;
 #[cfg(feature = "vera")]
 pub use vera::VeraBulletin as BulletinImpl;
+
+#[cfg(feature = "decaf377")]
+pub mod lakey;

@@ -253,6 +253,19 @@ where
         // Auth check first — fail fast before burning a nonce.
         let mut staged_sign_bundle: Option<RingShareBundle> = None;
         let authoritative_ring_pk_hex = match &context {
+            #[cfg(feature = "decaf377")]
+            SignContext::ShielddAuditRegistration(ctx) => {
+                let validated = crate::lakey::certificate::validate(
+                    &self.app_state,
+                    self.routes.version,
+                    ctx,
+                    None,
+                    Some("shieldd_registration_nonce"),
+                )
+                .await
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                Some(validated.ring.ring_pk)
+            }
             SignContext::Policy(ctx) => {
                 let (token_string, derivation_id, valid_window) =
                     (&ctx.token_string, &ctx.derivation_id, &ctx.valid_window);
@@ -457,6 +470,10 @@ where
         let context_key = match &context {
             SignContext::Bulletin { object_id } => format!("bulletin:{object_id}"),
             SignContext::Policy(ctx) => ctx.derivation_id.clone(),
+            #[cfg(feature = "decaf377")]
+            SignContext::ShielddAuditRegistration(ctx) => ctx
+                .nonce_context()
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?,
             SignContext::RingReshareUpdate(ctx) => {
                 ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?
             }
@@ -804,6 +821,24 @@ where
             metadata,
             report_binding,
         } = match &context {
+            #[cfg(feature = "decaf377")]
+            SignContext::ShielddAuditRegistration(ctx) => {
+                let validated = crate::lakey::certificate::validate(
+                    &self.app_state,
+                    self.routes.version,
+                    ctx,
+                    Some(&message),
+                    None,
+                )
+                .await
+                .map_err(|error| SignError::Unauthorized(error.to_string()))?;
+                SignRequestAuthorization {
+                    ring_pk_hex: validated.ring.ring_pk,
+                    derivation: None,
+                    metadata: None,
+                    report_binding: None,
+                }
+            }
             SignContext::Bulletin { object_id } => {
                 self.authorize_bulletin_sign_request(&message, object_id)
                     .await?
@@ -887,6 +922,10 @@ where
             let expected_context_key = match &context {
                 SignContext::Bulletin { object_id } => format!("bulletin:{object_id}"),
                 SignContext::Policy(ctx) => ctx.derivation_id.clone(),
+                #[cfg(feature = "decaf377")]
+                SignContext::ShielddAuditRegistration(ctx) => ctx
+                    .nonce_context()
+                    .map_err(|error| SignError::Unauthorized(error.to_string()))?,
                 SignContext::RingReshareUpdate(ctx) => {
                     ring_reshare_update_context_key(&*self.app_state.bulletin, &ctx.statement)?
                 }

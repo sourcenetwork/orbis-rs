@@ -3,6 +3,8 @@ syntax = "proto3";
 package orbis.v0.sign;
 
 service SignService {
+  rpc SignShielddAuditRegistration(SignShielddAuditRegistrationRequest) returns (StartSignResponse);
+  rpc EvaluateShielddAuditKey(EvaluateShielddAuditKeyRequest) returns (EvaluateShielddAuditKeyResponse);
   rpc StartSign(StartSignRequest) returns (StartSignResponse);
 }
 
@@ -26,4 +28,18 @@ message StartSignResponse {
   int64 created_at = 3;
   // Hex-encoded recovered threshold signature
   string signature = 4;
+}
+
+message EvaluateShielddAuditKeyRequest {
+  bytes identity_json = 1;
+  bytes session = 2;
+}
+
+message EvaluateShielddAuditKeyResponse {
+  bytes evaluation_json = 1;
+}
+
+message SignShielddAuditRegistrationRequest {
+  bytes registration_json = 1;
+  bytes evaluations_json = 2;
 }

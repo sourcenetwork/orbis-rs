@@ -5,6 +5,8 @@
 pub mod context;
 pub mod error;
 pub mod helpers;
+#[cfg(feature = "decaf377")]
+pub mod lakey;
 pub mod r#trait;
 
 #[cfg(feature = "bls12-381")]

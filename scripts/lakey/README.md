@@ -2,7 +2,9 @@
 
 This example tests whether LaKey can derive independent Decaf377 key shares
 from fixed per-node master state and pass those shares into existing Orbis PRE.
-It changes no production library, node API, or authorization behavior.
+For node integration, authenticated registration, provisioning and recovery, see
+[the node integration guide](../../docs/lakey.md). The commands below exercise
+the synthetic reference harness; they are not deployment provisioning.
 
 Each node retains 512 master scalar shares (16 KiB, plus a file header),
 independent of the number of identities. Four synthetic identities distinguish

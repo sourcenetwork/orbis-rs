@@ -13,6 +13,8 @@ message ReencryptShielddRequest {
   string object_id = 2;
   bytes rdr_pk = 3;
   ReaderKeyProof rdr_pk_proof = 4;
+  // Same fresh session on all five MPC nodes for this selection.
+  bytes session = 5;
 }
 
 // One verifiable share; the auditor verifies and combines a threshold locally.
@@ -22,7 +24,7 @@ message ReencryptShielddResponse {
   bytes share = 3;
   bytes challenge = 4;
   bytes proof = 5;
-  bytes public_polynomial = 6;
+  bytes public_share = 6;
   bytes ring_public_key = 7;
   uint32 threshold = 8;
 }

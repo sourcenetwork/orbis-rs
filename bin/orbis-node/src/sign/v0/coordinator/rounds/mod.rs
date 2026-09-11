@@ -109,6 +109,10 @@ fn sign_reporting_scopes(
         // while validating or signing a report, do not recursively create
         // reports about report failures.
         SignContext::Report(_) => None,
+        #[cfg(feature = "decaf377")]
+        SignContext::ShielddAuditRegistration(_) => {
+            Some(("sign", CommitteeScope::Current, CommitteeScope::Current))
+        }
         SignContext::RefreshHealthCheck(_) => Some((
             "pss_refresh",
             CommitteeScope::Current,

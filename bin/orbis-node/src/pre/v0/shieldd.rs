@@ -1,24 +1,22 @@
 //! Per-node PRE for selections resolved by the node's chosen Shieldd verifier.
+use crate::helpers::shieldd_sdk::invoke;
 use crate::{
     app_state::AppState,
     helpers::{
         auth::{current_unix_time, extract_and_validate_jwt, request_actor},
         protocol_version::read_ring_for_route,
     },
-    ring_state::RingShareBundle,
 };
 use authn::PreClaims;
 use authz::vera::AccessCheckRequest;
-use crypto::r#trait::{DistKeyShare, Dkg, PriShare, PubPoly, ReaderKeyProof, ThresholdDealer};
+use crypto::lakey::{Identity, Operation, PreShare, WorkerRequest};
+use crypto::r#trait::{Dkg, PubShare, ReaderKeyProof, ReencryptReply, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, PubPolyImpl, ScalarField};
 use proto::v0::pre::{ReencryptShielddRequest, ReencryptShielddResponse};
 use serde::Deserialize;
-use std::{process::Stdio, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{Request, Response, Status};
 
 const MAX_SELECTION: usize = 64 * 1024;
-const MAX_RESPONSE: u64 = 1024 * 1024;
 static CONCURRENCY: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
 #[derive(Deserialize)]
@@ -45,56 +43,31 @@ struct Selection {
 struct AcceptedSelection {
     selection: Selection,
     epk: [u8; 32],
-    derivation: Option<Vec<u8>>,
+    identity: Identity,
     object_id: String,
 }
 
-async fn invoke(executable: &str, args: &[&str], input: &[u8]) -> Result<Vec<u8>, Status> {
-    let mut child = tokio::process::Command::new(executable)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| Status::unavailable("Shieldd verifier unavailable"))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| Status::internal("verifier stdin unavailable"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Status::internal("verifier stdout unavailable"))?;
-    let work = async {
-        stdin
-            .write_all(input)
-            .await
-            .map_err(|_| Status::unavailable("verifier input failed"))?;
-        drop(stdin);
-        let mut bytes = Vec::new();
-        stdout
-            .take(MAX_RESPONSE + 1)
-            .read_to_end(&mut bytes)
-            .await
-            .map_err(|_| Status::unavailable("verifier output failed"))?;
-        if bytes.len() as u64 > MAX_RESPONSE {
-            return Err(Status::resource_exhausted("verifier output too large"));
-        }
-        let status = child
-            .wait()
-            .await
-            .map_err(|_| Status::unavailable("verifier wait failed"))?;
-        if !status.success() {
-            return Err(Status::failed_precondition(
-                "transaction verification or acceptance unavailable",
-            ));
-        }
-        Ok(bytes)
-    };
-    tokio::time::timeout(Duration::from_secs(90), work)
-        .await
-        .map_err(|_| Status::deadline_exceeded("Shieldd verification timed out"))?
+fn validate_session(
+    token: &authn::BearerToken<PreClaims>,
+    req: &ReencryptShielddRequest,
+) -> Result<[u8; 32], Status> {
+    let session: [u8; 32] = req
+        .session
+        .as_slice()
+        .try_into()
+        .map_err(|_| Status::invalid_argument("LaKey session must be 32 bytes"))?;
+    if session == [0; 32] {
+        return Err(Status::invalid_argument("missing LaKey session"));
+    }
+    super::helpers::validate_pre_claims(
+        token,
+        &req.rdr_pk,
+        &req.object_id,
+        &None,
+        &Some(hex::encode(session)),
+    )
+    .map_err(|_| Status::permission_denied("PRE session or request claims mismatch"))?;
+    Ok(session)
 }
 
 pub async fn reencrypt<D>(
@@ -118,6 +91,8 @@ where
     {
         return Err(Status::invalid_argument("invalid Shieldd selection size"));
     }
+    let session = validate_session(&token, &req)?;
+    let session_binding = Some(hex::encode(session));
     if token.subject_id.as_deref().is_none_or(str::is_empty) {
         return Err(Status::permission_denied(
             "Shieldd PRE requires an approved intermediary",
@@ -136,7 +111,7 @@ where
         .map_err(|_| Status::permission_denied("invalid reader proof"))?;
     let selection: Selection = serde_json::from_slice(&req.selection_json)
         .map_err(|_| Status::invalid_argument("invalid Shieldd selection"))?;
-    if selection.version != 1 || selection.policy.ring_id.len() > 1024 {
+    if selection.version != 2 || selection.policy.ring_id.len() > 1024 {
         return Err(Status::invalid_argument("unsupported Shieldd selection"));
     }
     let ring = read_ring_for_route(&*state.bulletin, &selection.policy.ring_id, version)
@@ -171,7 +146,7 @@ where
     let capabilities: Capabilities =
         serde_json::from_slice(&invoke(&executable, &["disclosure", "capabilities"], &[]).await?)
             .map_err(|_| Status::failed_precondition("invalid verifier capabilities"))?;
-    if capabilities.protocol != 1 || capabilities.audit_ciphertext_version != 1 {
+    if capabilities.protocol != 1 || capabilities.audit_ciphertext_version != 2 {
         return Err(Status::failed_precondition("incompatible Shieldd verifier"));
     }
     let bytes = invoke(
@@ -182,23 +157,28 @@ where
     .await?;
     let accepted: AcceptedSelection = serde_json::from_slice(&bytes)
         .map_err(|_| Status::failed_precondition("invalid accepted selection"))?;
-    if accepted.selection.version != 1
+    if accepted.selection.version != 2
         || accepted.object_id != req.object_id
         || accepted.selection.policy.ring_id != selection.policy.ring_id
     {
         return Err(Status::failed_precondition("accepted selection mismatch"));
     }
-    if accepted.derivation.is_some() {
+    if accepted.identity.ring != selection.policy.ring_id || accepted.identity.encode().is_err() {
         return Err(Status::failed_precondition(
-            "named-person PRE requires authenticated transaction association",
+            "invalid accepted LaKey identity",
+        ));
+    }
+    if session == [0; 32] || ring.threshold != 3 || ring.peer_node_keys.len() != 5 {
+        return Err(Status::failed_precondition(
+            "LaKey requires a fresh session and a five-node committee",
         ));
     }
     super::helpers::validate_pre_claims(
         &token,
         &req.rdr_pk,
         &accepted.object_id,
-        &accepted.derivation,
         &None,
+        &session_binding,
     )
     .map_err(|_| Status::permission_denied("request claims mismatch"))?;
     let policy = accepted.selection.policy;
@@ -215,7 +195,7 @@ where
     .map_err(|_| Status::internal("invalid access request"))?;
     if !state
         .authz
-        .check(permission, &actor)
+        .check(permission.clone(), &actor)
         .await
         .map_err(|_| Status::unavailable("ACP unavailable"))?
     {
@@ -223,20 +203,8 @@ where
     }
     let ring_key =
         hex::decode(&ring.ring_pk).map_err(|_| Status::failed_precondition("invalid ring key"))?;
-    let ring_point = GroupAffine::from_bytes(&ring_key)
+    let _ring_point = GroupAffine::from_bytes(&ring_key)
         .map_err(|_| Status::failed_precondition("invalid ring key"))?;
-    let bundle = RingShareBundle::load(&state.local_storage, &ring_point)
-        .map_err(|_| Status::unavailable("ring share unavailable"))?;
-    let polynomial_bytes = hex::decode(&bundle.public_polynomial)
-        .map_err(|_| Status::failed_precondition("invalid ring polynomial"))?;
-    let polynomial = PubPolyImpl::from_bytes(&polynomial_bytes)
-        .map_err(|_| Status::failed_precondition("invalid ring polynomial"))?;
-    if polynomial.eval(0) != ring_point
-        || polynomial.commits.len() != ring.threshold as usize
-        || ring.threshold == 0
-    {
-        return Err(Status::failed_precondition("ring polynomial mismatch"));
-    }
     // Verification can outlast a token or an intermediary's ring membership.
     let fresh_token = authn::resolve_jwt_did::<PreClaims>(
         &raw_token,
@@ -255,35 +223,94 @@ where
         .is_some_and(|ids| ids.contains(&fresh_token.issuer_id))
         || !current_ring.peer_node_keys.contains(&state.node_key)
         || current_ring.ring_pk != ring.ring_pk
+        || current_ring.peer_node_keys != ring.peer_node_keys
         || current_ring.threshold != ring.threshold
     {
         return Err(Status::permission_denied(
             "ring authorization changed during verification",
         ));
     }
-    let pri_share = PriShare::<ScalarField>::from_bytes(&bundle.share_bytes)
-        .map_err(|_| Status::failed_precondition("invalid ring share"))?;
-    let dealer = PreImpl::new();
-    let reply = dealer
-        .reencrypt_commitment(
-            &DistKeyShare { pri_share },
-            &accepted.epk,
-            &reader,
-            &proof,
-            accepted.derivation.as_deref(),
-        )
-        .map_err(|_| Status::failed_precondition("Shieldd PRE failed"))?;
+    let index =
+        crate::helpers::identity::determine_session_node_id(&state.node_key, &ring.peer_node_keys)
+            .ok_or_else(|| Status::permission_denied("node is not in LaKey committee"))?;
+    let output = crate::lakey::worker::invoke(
+        &WorkerRequest {
+            identity: accepted.identity,
+            session,
+            operation: Operation::Pre {
+                epk: accepted.epk,
+                reader: req.rdr_pk,
+                reader_proof: proof,
+            },
+        },
+        index,
+    )
+    .await
+    .map_err(|_| Status::unavailable("LaKey derivation or PRE unavailable"))?;
+    let share: PreShare = serde_json::from_slice(&output)
+        .map_err(|_| Status::failed_precondition("invalid LaKey PRE output"))?;
+    if share.index != index {
+        return Err(Status::failed_precondition("LaKey PRE index mismatch"));
+    }
+    let public_share = GroupAffine::from_bytes(&share.public_share)
+        .map_err(|_| Status::failed_precondition("invalid LaKey public share"))?;
+    let reply = ReencryptReply {
+        share: PubShare {
+            i: index,
+            v: GroupAffine::from_bytes(&share.ciphertext_share)
+                .map_err(|_| Status::failed_precondition("invalid LaKey ciphertext share"))?,
+        },
+        challenge: ScalarField::from_bytes(&share.challenge)
+            .map_err(|_| Status::failed_precondition("invalid LaKey challenge"))?,
+        proof: ScalarField::from_bytes(&share.proof)
+            .map_err(|_| Status::failed_precondition("invalid LaKey proof"))?,
+    };
     let epk = GroupAffine::from_bytes(&accepted.epk)
         .map_err(|_| Status::failed_precondition("invalid accepted EPK"))?;
-    dealer
+    PreImpl::new()
         .verify(
             &reader,
-            &polynomial,
+            &PubPolyImpl {
+                commits: vec![public_share],
+            },
             &epk,
             &reply,
-            accepted.derivation.as_deref(),
+            None,
         )
-        .map_err(|_| Status::failed_precondition("ring share does not match polynomial"))?;
+        .map_err(|_| Status::failed_precondition("invalid LaKey PRE evidence"))?;
+    let fresh_token = authn::resolve_jwt_did::<PreClaims>(
+        &raw_token,
+        current_unix_time().map_err(Status::internal)?,
+        crate::constants::MAX_TOKEN_LIFETIME_SECS,
+        crate::constants::MAX_JWT_BYTES,
+        crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .map_err(|_| Status::unauthenticated("PRE authentication expired during derivation"))?;
+    let current_ring = read_ring_for_route(&*state.bulletin, &selection.policy.ring_id, version)
+        .await
+        .map_err(Status::failed_precondition)?;
+    if current_ring.peer_node_keys != ring.peer_node_keys
+        || current_ring.ring_pk != ring.ring_pk
+        || current_ring.threshold != ring.threshold
+        || !current_ring
+            .trusted_auth_relay_dids
+            .as_ref()
+            .is_some_and(|ids| ids.contains(&fresh_token.issuer_id))
+    {
+        return Err(Status::permission_denied(
+            "ring authorization changed during derivation",
+        ));
+    }
+    if !state
+        .authz
+        .check(permission, &actor)
+        .await
+        .map_err(|_| Status::unavailable("ACP unavailable after derivation"))?
+    {
+        return Err(Status::permission_denied(
+            "ACP denied release of PRE result",
+        ));
+    }
     Ok(Response::new(ReencryptShielddResponse {
         accepted_selection_json: bytes,
         share_index: reply.share.i,
@@ -296,8 +323,50 @@ where
             .map_err(|_| Status::internal("challenge encoding failed"))?,
         proof: CryptoSerialize::to_bytes(&reply.proof)
             .map_err(|_| Status::internal("proof encoding failed"))?,
-        public_polynomial: polynomial_bytes,
+        public_share: share.public_share,
         ring_public_key: ring_key,
         threshold: ring.threshold,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_binding_rejects_substitution_before_mpc() {
+        let mut request = ReencryptShielddRequest {
+            object_id: "accepted-object".into(),
+            rdr_pk: vec![7; 32],
+            session: vec![1; 32],
+            ..Default::default()
+        };
+        let token = authn::BearerToken {
+            issuer_id: "intermediary".into(),
+            subject_id: Some("auditor".into()),
+            issued_time: 1,
+            expiration_time: 2,
+            not_before: None,
+            jwt_id: "nonce".into(),
+            claims: PreClaims {
+                object_id: request.object_id.clone(),
+                rdr_pk: request.rdr_pk.clone(),
+                derivation: None,
+                salt: Some(hex::encode(&request.session)),
+            },
+        };
+        assert_eq!(validate_session(&token, &request).unwrap(), [1; 32]);
+        request.session = vec![2; 32];
+        assert!(validate_session(&token, &request).is_err());
+        request.session = vec![0; 32];
+        assert!(validate_session(&token, &request).is_err());
+        request.session = vec![1; 31];
+        assert!(validate_session(&token, &request).is_err());
+        request.session = vec![1; 32];
+        let mut unsigned = token.clone();
+        unsigned.claims.salt = None;
+        assert!(validate_session(&unsigned, &request).is_err());
+        request.object_id.push('x');
+        assert!(validate_session(&token, &request).is_err());
+    }
 }

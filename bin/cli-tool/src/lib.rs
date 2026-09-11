@@ -24,3 +24,6 @@ pub use commands::{
     transfer_node_controller_with_config, update_node_peer_id, update_node_peer_id_with_config,
     DkgResult, NodeInfoResult, PreparedSecret, SignResult, StoreSecretResult,
 };
+
+#[cfg(feature = "decaf377")]
+pub mod lakey;

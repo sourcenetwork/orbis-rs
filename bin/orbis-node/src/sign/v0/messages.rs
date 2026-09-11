@@ -98,6 +98,8 @@ pub struct RefreshHealthCheckContext {
 /// - `RefreshHealthCheck`: post-refresh diagnostic signing with no persisted result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SignContext {
+    #[cfg(feature = "decaf377")]
+    ShielddAuditRegistration(Box<crate::lakey::certificate::RegistrationContext>),
     /// Message bytes are a serialized `BulletinPost` verified against the chain.
     /// The object ID lets nonce responders resolve and gate the authoritative ring.
     Bulletin { object_id: String },

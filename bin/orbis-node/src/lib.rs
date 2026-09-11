@@ -6,6 +6,8 @@ mod error;
 pub mod harness;
 mod helpers;
 mod info;
+#[cfg(feature = "decaf377")]
+mod lakey;
 mod metrics;
 mod pre;
 mod pss;

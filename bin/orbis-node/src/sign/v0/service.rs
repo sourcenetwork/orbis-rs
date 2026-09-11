@@ -74,6 +74,104 @@ where
         + Sync
         + 'static,
 {
+    async fn sign_shieldd_audit_registration(
+        &self,
+        request: Request<proto::v0::sign::SignShielddAuditRegistrationRequest>,
+    ) -> Result<Response<StartSignResponse>, Status> {
+        #[cfg(not(feature = "decaf377"))]
+        {
+            let _ = request;
+            Err(Status::unimplemented(
+                "Shieldd registration requires Decaf377",
+            ))
+        }
+        #[cfg(feature = "decaf377")]
+        {
+            if request.get_ref().registration_json.len() > 65536
+                || request.get_ref().evaluations_json.len() > 65536
+            {
+                return Err(Status::resource_exhausted("registration request too large"));
+            }
+            let (token_string, _) = extract_and_validate_jwt::<SignClaims, _>(
+                &request,
+                current_unix_time().map_err(Status::internal)?,
+            )
+            .map_err(Status::unauthenticated)?;
+            let request = request.into_inner();
+            let context = crate::lakey::certificate::RegistrationContext {
+                token_string,
+                registration_json: request.registration_json,
+                evaluations: serde_json::from_slice(&request.evaluations_json)
+                    .map_err(|_| Status::invalid_argument("invalid registration evaluations"))?,
+            };
+            let validated = crate::lakey::certificate::validate(
+                &self.state,
+                self.routes.version,
+                &context,
+                None,
+                Some("shieldd_registration"),
+            )
+            .await
+            .map_err(|_| {
+                Status::failed_precondition("registration certificate validation failed")
+            })?;
+            let routes = resolve_node_routes(&self.state.bulletin, &validated.ring.peer_node_keys)
+                .await
+                .map_err(Status::failed_precondition)?;
+            let peer_ids = peer_ids_from_routes(&routes);
+            validate_all_peer_ids(&peer_ids).map_err(|_| {
+                Status::failed_precondition("invalid registration committee routes")
+            })?;
+            let poly = RingPolyState::load_from_ring_pk_hex(
+                &self.state.local_storage,
+                &validated.ring.ring_pk,
+            )
+            .map_err(|_| Status::unavailable("root signing state unavailable"))?;
+            let ring = RingConfig {
+                ring_id: validated.statement.ring_id,
+                ring_pk_bytes: validated.statement.ring_public_key.to_vec(),
+                total_participants: peer_ids.len(),
+                peer_ids,
+                peer_node_keys: validated.ring.peer_node_keys,
+                threshold: validated.ring.threshold as usize,
+                public_polynomial_hex: poly.public_polynomial,
+            };
+            let result = SignCoordinator::<D, S>::with_routes(self.state.clone(), self.routes)
+                .initiate_signing(
+                    rand::random::<u64>().to_string(),
+                    ring,
+                    validated.statement.message,
+                    SignContext::ShielddAuditRegistration(Box::new(context)),
+                    SigningOptions::default(),
+                )
+                .await?;
+            let result: crate::sign::v0::coordinator::SignResponse =
+                serde_json::from_slice(&result)
+                    .map_err(|_| Status::internal("invalid certificate signing result"))?;
+            Ok(Response::new(StartSignResponse {
+                status: "completed".into(),
+                message: "Registration keys certified".into(),
+                created_at: current_unix_time().map_err(Status::internal)? as i64,
+                signature: result.signature,
+            }))
+        }
+    }
+
+    async fn evaluate_shieldd_audit_key(
+        &self,
+        request: Request<proto::v0::sign::EvaluateShielddAuditKeyRequest>,
+    ) -> Result<Response<proto::v0::sign::EvaluateShielddAuditKeyResponse>, Status> {
+        #[cfg(feature = "decaf377")]
+        {
+            crate::lakey::service::evaluate(&self.state, self.routes.version, request).await
+        }
+        #[cfg(not(feature = "decaf377"))]
+        {
+            let _ = request;
+            Err(Status::unimplemented("Shieldd audit keys require Decaf377"))
+        }
+    }
+
     #[tracing::instrument(skip_all, fields(request))]
     async fn start_sign(
         &self,

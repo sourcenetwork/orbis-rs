@@ -6,7 +6,7 @@ from pathlib import Path
 
 p = argparse.ArgumentParser()
 p.add_argument("upstream", type=Path)
-p.add_argument("--mode", choices=["init", "derive", "refresh"], required=True)
+p.add_argument("--mode", choices=["init", "derive", "refresh", "derive-node", "init-node"], required=True)
 args = p.parse_args()
 args.log2q, args.stat = 32, 128
 revision = subprocess.check_output(["git", "-C", str(args.upstream), "rev-parse", "HEAD"], text=True).strip()
@@ -37,7 +37,14 @@ def identity_matrix(identity):
             a[i][j] = int.from_bytes(data[off:off+4], "little") & ((1<<log2q)-1)
     return a
 '''
-if args.mode == "init":
+if args.mode in {"init", "init-node"}:
+    if args.mode == "init-node":
+        body += """
+from Compiler.library import runtime_error_if
+tags = [sint.get_input_from(i).reveal() for i in range(5)]
+for tag in tags[1:]:
+    runtime_error_if(tag != tags[0], "LaKey initialization session mismatch")
+"""
     body += '''
 start_timer(1)
 k = Array(m, sint)
@@ -46,6 +53,21 @@ for i in range(m):
 k.write_to_file(position=0)
 stop_timer(1)
 print_ln("Master shares initialized; no clear key output")
+'''
+elif args.mode == "derive-node":
+    body += '''
+from Compiler.library import public_input, runtime_error_if
+tags = [sint.get_input_from(i).reveal() for i in range(5)]
+for tag in tags[1:]:
+    runtime_error_if(tag != tags[0], "LaKey session mismatch")
+k = Array(m, sint)
+k.read_from_file(0)
+a = Matrix(l, m, cint)
+for i in range(l):
+    for j in range(m):
+        a[i][j] = public_input()
+derived = eval(a, k)
+sint.write_to_file([derived], position=m)
 '''
 else:
     body += '''
@@ -75,7 +97,7 @@ stop_timer(3)
 sint.write_to_file(derived, position=m)
 print_ln("Four transient derived shares written per node; no clear key output")
 '''
-name = f"poc_lakey_{args.mode}"
+name = {"derive-node": "lakey_derive_node", "init-node": "lakey_init_node"}.get(args.mode, f"poc_lakey_{args.mode}")
 path = args.upstream / "Programs/Source" / (name + ".mpc")
 path.write_text(prefix + source + body)
 print(name)

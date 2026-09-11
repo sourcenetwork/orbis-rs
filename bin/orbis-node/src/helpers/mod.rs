@@ -12,5 +12,7 @@ pub mod response_manager;
 pub mod ring;
 pub mod wire;
 
+#[cfg(feature = "decaf377")]
+pub(crate) mod shieldd_sdk;
 #[cfg(test)]
 pub mod test_helpers;
