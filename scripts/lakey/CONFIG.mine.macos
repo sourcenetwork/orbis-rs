@@ -1,0 +1,4 @@
+MY_CFLAGS = -I/opt/homebrew/include -I/opt/homebrew/opt/openssl@3/include
+MY_LDLIBS = -L/opt/homebrew/lib -L/opt/homebrew/opt/openssl@3/lib
+GDEBUG =
+MY_CFLAGS += -DNO_MIXED_CIRCUITS
