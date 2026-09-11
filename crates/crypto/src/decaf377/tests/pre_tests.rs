@@ -142,6 +142,18 @@ fn direct_commitment_pre_recovers_the_original_shared_point() {
         }
         let result = dealer.recover(&replies, t, n).unwrap().unwrap();
         assert_eq!(result - effective_pk * reader_sk, effective_pk * esk);
+        if let Some(path) = derivation {
+            let scalar = ThresholdDealerNode::derive_capability_scalar(path);
+            let recovered_master = (result - effective_pk * reader_sk) * scalar.inverse().unwrap();
+            assert_eq!(recovered_master, ring_pk * esk);
+            let other_scalar =
+                ThresholdDealerNode::derive_capability_scalar(b"other-known-address");
+            let converted_child =
+                (result - effective_pk * reader_sk) * (other_scalar * scalar.inverse().unwrap());
+            assert_eq!(converted_child, (ring_pk * other_scalar) * esk);
+            let independent_esk = Fr::rand(&mut OsRng);
+            assert_ne!(recovered_master, ring_pk * independent_esk);
+        }
     }
     let share = DistKeyShare {
         pri_share: secret_shares[0].clone(),

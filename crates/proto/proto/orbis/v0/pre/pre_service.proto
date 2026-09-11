@@ -4,6 +4,27 @@ package orbis.v0.pre;
 
 service PreService {
   rpc StartPre(StartPreRequest) returns (StartPreResponse);
+  rpc ReencryptShieldd(ReencryptShielddRequest) returns (ReencryptShielddResponse);
+}
+
+// Every node resolves this selection through its independently configured chain verifier.
+message ReencryptShielddRequest {
+  bytes selection_json = 1;
+  string object_id = 2;
+  bytes rdr_pk = 3;
+  ReaderKeyProof rdr_pk_proof = 4;
+}
+
+// One verifiable share; the auditor verifies and combines a threshold locally.
+message ReencryptShielddResponse {
+  bytes accepted_selection_json = 1;
+  uint32 share_index = 2;
+  bytes share = 3;
+  bytes challenge = 4;
+  bytes proof = 5;
+  bytes public_polynomial = 6;
+  bytes ring_public_key = 7;
+  uint32 threshold = 8;
 }
 
 message TimestampRange {

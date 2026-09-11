@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_actor};
+use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_pre_actor};
 use crate::helpers::identity::validate_all_peer_ids;
 use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
 use crate::helpers::ring::RingConfig;
@@ -121,6 +121,21 @@ where
         + Sync
         + 'static,
 {
+    async fn reencrypt_shieldd(
+        &self,
+        request: Request<proto::v0::pre::ReencryptShielddRequest>,
+    ) -> Result<Response<proto::v0::pre::ReencryptShielddResponse>, Status> {
+        #[cfg(feature = "decaf377")]
+        {
+            super::shieldd::reencrypt(&self.state, self.routes.version, request).await
+        }
+        #[cfg(not(feature = "decaf377"))]
+        {
+            let _ = request;
+            Err(Status::unimplemented("Shieldd PRE requires Decaf377"))
+        }
+    }
+
     #[tracing::instrument(skip_all, fields(request))]
     async fn start_pre(
         &self,
@@ -211,7 +226,7 @@ where
             permission: doc.permission.clone(),
             tier: doc.tier.clone(),
         });
-        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+        let actor_id = request_pre_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
         check_policy_access(
             &*self.state.authz,

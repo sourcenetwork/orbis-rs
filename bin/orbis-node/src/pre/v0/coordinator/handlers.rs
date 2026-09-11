@@ -1,6 +1,6 @@
 use super::PreCoordinator;
 use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFETIME_SECS};
-use crate::helpers::auth::request_actor;
+use crate::helpers::auth::request_pre_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
     build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
@@ -153,7 +153,7 @@ where
             permission: doc.permission.clone(),
             tier: doc.tier.clone(),
         });
-        let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
+        let actor_id = request_pre_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
 
         // Note: We do NOT validate from_node_id here because the reencrypt request initiator

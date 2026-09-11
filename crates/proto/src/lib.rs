@@ -50,6 +50,12 @@ mod tests {
 
     #[tonic::async_trait]
     impl pre::pre_service_server::PreService for Services {
+        async fn reencrypt_shieldd(
+            &self,
+            _: tonic::Request<pre::ReencryptShielddRequest>,
+        ) -> Result<tonic::Response<pre::ReencryptShielddResponse>, tonic::Status> {
+            unreachable!()
+        }
         async fn start_pre(
             &self,
             _: tonic::Request<pre::StartPreRequest>,

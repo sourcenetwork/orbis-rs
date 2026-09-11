@@ -49,3 +49,50 @@ pub fn request_actor<C>(
         .map(str::to_string)
         .map_err(|error| error.to_string())
 }
+
+/// Rings with configured relays require delegation for PRE; signing keeps its own policy.
+pub fn request_pre_actor<C>(
+    token: &BearerToken<C>,
+    trusted_relay_issuers: Option<&[String]>,
+) -> Result<String, String> {
+    if trusted_relay_issuers.is_some() && token.subject_id.as_deref().is_none_or(str::is_empty) {
+        return Err("protected PRE requires an approved intermediary".to_owned());
+    }
+    request_actor(token, trusted_relay_issuers)
+}
+
+#[cfg(test)]
+mod pre_tests {
+    use super::*;
+
+    #[test]
+    fn protected_pre_requires_delegation_without_changing_signing() {
+        let mut token = BearerToken {
+            issuer_id: "did:key:auditor".into(),
+            subject_id: None,
+            issued_time: 1,
+            expiration_time: 2,
+            not_before: None,
+            jwt_id: "nonce".into(),
+            claims: (),
+        };
+        let relays = vec!["did:key:intermediary".into()];
+        assert!(request_pre_actor(&token, Some(&relays)).is_err());
+        assert_eq!(
+            request_actor(&token, Some(&relays)).unwrap(),
+            "did:key:auditor"
+        );
+        assert_eq!(request_pre_actor(&token, None).unwrap(), "did:key:auditor");
+        token.subject_id = Some("did:key:auditor".into());
+        assert!(request_pre_actor(&token, Some(&relays)).is_err());
+        token.issuer_id = "did:key:intermediary".into();
+        assert_eq!(
+            request_pre_actor(&token, Some(&relays)).unwrap(),
+            "did:key:auditor"
+        );
+        assert!(request_pre_actor(&token, Some(&[])).is_err());
+        token.subject_id = None;
+        assert!(request_pre_actor(&token, Some(&relays)).is_err());
+        assert!(request_pre_actor(&token, Some(&[])).is_err());
+    }
+}
