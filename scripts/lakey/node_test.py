@@ -32,6 +32,10 @@ class LocalStateTest(unittest.TestCase):
         self.artifacts[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     def binary(self,body): self.write("malicious-shamir-party.x", "#!/usr/bin/env python3\n"+body)
     def derive(self): return node.derive(self.config,[1]*(16*512),"01"*32)
+    def test_timeout_fits_worker_budget(self):
+        self.binary("raise AssertionError('must not execute')\n")
+        self.config["timeout_seconds"] = 91
+        with self.assertRaisesRegex(ValueError, "invalid MPC timeout"): self.derive()
     def test_failed_execution_marks_changed_master(self):
         self.binary("from pathlib import Path\np=Path('Persistence/Transactions-P0.data')\nb=bytearray(p.read_bytes()); b[8]=1; p.write_bytes(b); raise SystemExit(1)\n")
         with self.assertRaises(Exception): self.derive()

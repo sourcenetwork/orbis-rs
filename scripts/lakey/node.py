@@ -104,7 +104,7 @@ def validate_environment(config, program=PROGRAM, require_master=True):
     if "peers" not in artifacts:
         raise ValueError("MPC peers must be pinned")
     timeout = config["timeout_seconds"]
-    if not 1 <= timeout <= 3600:
+    if not 1 <= timeout <= 90:
         raise ValueError("invalid MPC timeout")
     return root, state, executable, peers, node, count, threshold, timeout
 

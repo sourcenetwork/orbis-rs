@@ -124,3 +124,7 @@ On macOS ARM, against Orbis base `4f9d23c6`:
 
 No live Orbis node API, ACP, Shieldd transaction circuit, browser/WASM, release
 build, or production deployment check ran for this example-only PR.
+
+The configured MPC timeout must be between 1 and 90 seconds, inside the worker’s
+120-second bound and the client’s 150-second RPC bound. Timeout failures retain
+the existing interrupted-state recovery requirements.
