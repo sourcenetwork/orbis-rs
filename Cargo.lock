@@ -11,27 +11,6 @@ checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
 [[package]]
 name = "acp"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "async-lock",
- "async-trait",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "parking_lot",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "storage 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "thiserror 2.0.18",
- "tracing",
- "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
-]
-
-[[package]]
-name = "acp"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=82738ab8dcf184905bbddad37ba8204b2749f62e#82738ab8dcf184905bbddad37ba8204b2749f62e"
 dependencies = [
  "async-lock",
@@ -72,15 +51,15 @@ dependencies = [
 [[package]]
 name = "acp-light-client"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/backbone.git?rev=f195b160115edf7fd8c48ace27c026846f4de883#f195b160115edf7fd8c48ace27c026846f4de883"
+source = "git+https://github.com/sourcenetwork/backbone.git?rev=2e49956ca0e0b3027ff7f403084da80409af724f#2e49956ca0e0b3027ff7f403084da80409af724f"
 dependencies = [
  "alloy-primitives",
  "commonware-codec",
  "eyre",
  "futures",
  "hex",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
- "hub-permission 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
+ "hub-domain",
+ "hub-permission",
  "parking_lot",
  "reqwest 0.12.28",
  "serde",
@@ -89,21 +68,6 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "tracing",
 ]
-
-[[package]]
-name = "addr2line"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5d307320b3181d6d7954e663bd7c774a838b8220fe0593c86d9fb09f498b4b"
-dependencies = [
- "gimli",
-]
-
-[[package]]
-name = "adler2"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aead"
@@ -1527,7 +1491,7 @@ dependencies = [
  "did-key",
  "hex",
  "hub-client",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-domain",
  "hub-harness",
  "serde",
  "serde_json",
@@ -1659,21 +1623,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backtrace"
-version = "0.3.76"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb531853791a215d7c62a30daf0dde835f381ab5de4589cfe7c649d2cbe92bd6"
-dependencies = [
- "addr2line",
- "cfg-if",
- "libc",
- "miniz_oxide",
- "object",
- "rustc-demangle",
- "windows-link",
-]
-
-[[package]]
 name = "base-x"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1769,7 +1718,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "regex",
@@ -2056,8 +2005,8 @@ dependencies = [
  "crypto 0.0.1",
  "hex",
  "hub-client",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
  "hub-harness",
  "k256",
  "local-storage",
@@ -2275,7 +2224,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
 dependencies = [
  "ciborium-io",
- "half 2.7.1",
+ "half",
 ]
 
 [[package]]
@@ -2288,7 +2237,7 @@ dependencies = [
  "multihash",
  "serde",
  "serde_bytes",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
 ]
 
 [[package]]
@@ -2381,8 +2330,8 @@ dependencies = [
  "futures",
  "hex",
  "hub-client",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
  "hub-harness",
  "k256",
  "local-storage",
@@ -3235,34 +3184,6 @@ dependencies = [
 [[package]]
 name = "crypto"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "aes-gcm",
- "blst",
- "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "ed25519-dalek 2.2.0",
- "hex",
- "hkdf 0.12.4",
- "hmac 0.12.1",
- "k256",
- "multibase",
- "multihash",
- "p256 0.13.2",
- "rand 0.8.6",
- "serde",
- "serde_bytes",
- "sha2 0.10.9",
- "subtle",
- "thiserror 2.0.18",
- "unsigned-varint 0.8.0",
- "x25519-dalek 2.0.1",
- "zeroize",
-]
-
-[[package]]
-name = "crypto"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=82738ab8dcf184905bbddad37ba8204b2749f62e#82738ab8dcf184905bbddad37ba8204b2749f62e"
 dependencies = [
  "aes-gcm",
@@ -3282,7 +3203,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.18",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
  "x25519-dalek 2.0.1",
  "zeroize",
 ]
@@ -3309,7 +3230,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror 2.0.18",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
  "x25519-dalek 2.0.1",
  "zeroize",
 ]
@@ -3688,30 +3609,6 @@ dependencies = [
  "once_cell",
  "rand_core 0.6.4",
  "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "defra-core"
-version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "async-trait",
- "cid",
- "ipld-core",
- "multibase",
- "multicodec",
- "multihash",
- "rand 0.8.6",
- "serde",
- "serde_bytes",
- "serde_ipld_dagcbor",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
  "zeroize",
 ]
 
@@ -4122,28 +4019,6 @@ dependencies = [
  "libc",
  "once_cell",
  "winapi",
-]
-
-[[package]]
-name = "document"
-version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "multibase",
- "multicodec",
- "multihash",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]
@@ -4568,28 +4443,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "failure"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d32e9bd16cc02eae7db7ef620b392808b89f6a5e16bb3497d159c6b92a0f4f86"
-dependencies = [
- "backtrace",
- "failure_derive",
-]
-
-[[package]]
-name = "failure_derive"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa4da3c766cd7a0db8242e326e9e4e081edd567072893ed320008189715366a4"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "synstructure 0.12.6",
-]
-
-[[package]]
 name = "fast_chemail"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5006,12 +4859,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gimli"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
-
-[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5132,12 +4979,6 @@ dependencies = [
  "tokio-util",
  "tracing",
 ]
-
-[[package]]
-name = "half"
-version = "1.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
 
 [[package]]
 name = "half"
@@ -5491,7 +5332,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 [[package]]
 name = "hub-app"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -5504,10 +5345,10 @@ dependencies = [
  "futures",
  "hub-backend",
  "hub-consensus",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-domain",
  "hub-executor",
  "hub-genesis",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-modules",
  "hub-qmdb",
  "parking_lot",
  "thiserror 2.0.18",
@@ -5517,7 +5358,7 @@ dependencies = [
 [[package]]
 name = "hub-backend"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -5529,8 +5370,8 @@ dependencies = [
  "commonware-storage",
  "commonware-utils",
  "futures",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-permission 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-modules",
+ "hub-permission",
  "hub-qmdb",
  "hub-traits",
  "thiserror 2.0.18",
@@ -5538,9 +5379,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hub-cli"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "hub-client"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=8d34d9c426bd6aef7e92891f2af1c6d14f9b3028)",
  "alloy-consensus",
@@ -5557,10 +5406,10 @@ dependencies = [
  "base64 0.22.1",
  "borsh",
  "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-permission 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
+ "hub-modules",
+ "hub-permission",
  "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=8d34d9c426bd6aef7e92891f2af1c6d14f9b3028)",
  "k256",
  "rand 0.8.6",
@@ -5578,7 +5427,7 @@ dependencies = [
 [[package]]
 name = "hub-config"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -5592,7 +5441,7 @@ dependencies = [
 [[package]]
 name = "hub-consensus"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -5600,7 +5449,7 @@ dependencies = [
  "commonware-cryptography",
  "futures",
  "hub-config",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-domain",
  "hub-executor",
  "hub-qmdb",
  "hub-traits",
@@ -5611,7 +5460,7 @@ dependencies = [
 [[package]]
 name = "hub-crypto"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "ark-bls12-381 0.4.0",
@@ -5628,62 +5477,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "unsigned-varint 0.8.0",
-]
-
-[[package]]
-name = "hub-crypto"
-version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6#b2a38bc99dc1ce3473dc51196baa1d15aa76cef6"
-dependencies = [
- "alloy-primitives",
- "ark-bls12-381 0.4.0",
- "ark-ec 0.4.2",
- "ark-ff 0.4.2",
- "ark-serialize 0.4.2",
- "base64 0.22.1",
- "blst",
- "borsh",
- "decaf377",
- "k256",
- "multibase",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
 ]
 
 [[package]]
 name = "hub-domain"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
-dependencies = [
- "alloy-consensus",
- "alloy-evm",
- "alloy-primitives",
- "alloy-rlp",
- "borsh",
- "bytes",
- "commonware-codec",
- "commonware-consensus",
- "commonware-cryptography",
- "commonware-glue",
- "commonware-parallel",
- "commonware-utils",
- "futures",
- "hex",
- "jmt",
- "parking_lot",
- "serde",
- "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "hub-domain"
-version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6#b2a38bc99dc1ce3473dc51196baa1d15aa76cef6"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-consensus",
  "alloy-evm",
@@ -5709,7 +5509,7 @@ dependencies = [
 [[package]]
 name = "hub-executor"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=8d34d9c426bd6aef7e92891f2af1c6d14f9b3028)",
  "alloy-consensus",
@@ -5720,9 +5520,9 @@ dependencies = [
  "commonware-codec",
  "futures",
  "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
+ "hub-modules",
  "hub-overlay",
  "hub-qmdb",
  "hub-state",
@@ -5739,7 +5539,7 @@ dependencies = [
 [[package]]
 name = "hub-genesis"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-evm",
  "commonware-codec",
@@ -5747,8 +5547,8 @@ dependencies = [
  "commonware-glue",
  "commonware-utils",
  "hex",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-domain",
+ "hub-modules",
  "serde",
  "serde_json",
 ]
@@ -5756,7 +5556,7 @@ dependencies = [
 [[package]]
 name = "hub-harness"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5769,7 +5569,8 @@ dependencies = [
  "commonware-utils",
  "eyre",
  "hex",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-cli",
+ "hub-modules",
  "hub-node",
  "parking_lot",
  "rand 0.8.6",
@@ -5785,7 +5586,7 @@ dependencies = [
 [[package]]
 name = "hub-indexer"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "parking_lot",
@@ -5796,7 +5597,7 @@ dependencies = [
 [[package]]
 name = "hub-jsonrpc"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -5804,11 +5605,11 @@ dependencies = [
  "commonware-cryptography",
  "hex",
  "hub-backend",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-domain",
  "hub-executor",
  "hub-indexer",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-permission 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-modules",
+ "hub-permission",
  "hub-traits",
  "jsonrpsee",
  "jsonrpsee-server",
@@ -5825,7 +5626,7 @@ dependencies = [
 [[package]]
 name = "hub-modules"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=8d34d9c426bd6aef7e92891f2af1c6d14f9b3028)",
  "alloy-primitives",
@@ -5836,10 +5637,10 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
  "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=8d34d9c426bd6aef7e92891f2af1c6d14f9b3028)",
  "imbl",
- "orbis-reporting 0.0.1 (git+https://github.com/sourcenetwork/orbis-rs?rev=47df2a5367c64309595b631ad95156e8fe931b32)",
+ "orbis-reporting 0.0.1 (git+https://github.com/sourcenetwork/orbis-rs?rev=d189e0965d387c9b371a464340bf936ab35bee7f)",
  "prost 0.14.3",
  "serde",
  "serde_json",
@@ -5849,35 +5650,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-modules"
-version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6#b2a38bc99dc1ce3473dc51196baa1d15aa76cef6"
-dependencies = [
- "acp 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "alloy-primitives",
- "alloy-sol-types",
- "async-trait",
- "borsh",
- "bs58 0.5.1",
- "bytes",
- "futures",
- "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "imbl",
- "orbis-reporting 0.0.1 (git+https://github.com/sourcenetwork/orbis-rs?rev=47df2a5367c64309595b631ad95156e8fe931b32)",
- "prost 0.14.3",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
-]
-
-[[package]]
 name = "hub-node"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -5904,13 +5679,13 @@ dependencies = [
  "hub-backend",
  "hub-config",
  "hub-consensus",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
  "hub-executor",
  "hub-genesis",
  "hub-indexer",
  "hub-jsonrpc",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-modules",
  "hub-qmdb",
  "hub-traits",
  "parking_lot",
@@ -5926,7 +5701,7 @@ dependencies = [
 [[package]]
 name = "hub-overlay"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "hub-qmdb",
@@ -5936,7 +5711,7 @@ dependencies = [
 [[package]]
 name = "hub-permission"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -5944,9 +5719,9 @@ dependencies = [
  "commonware-cryptography",
  "commonware-storage",
  "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
+ "hub-modules",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5954,29 +5729,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "hub-permission"
-version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6#b2a38bc99dc1ce3473dc51196baa1d15aa76cef6"
-dependencies = [
- "alloy-primitives",
- "bytes",
- "commonware-codec",
- "commonware-cryptography",
- "commonware-storage",
- "hex",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
- "hub-modules 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=b2a38bc99dc1ce3473dc51196baa1d15aa76cef6)",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "zanzibar 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
-]
-
-[[package]]
 name = "hub-qmdb"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "thiserror 2.0.18",
@@ -5985,7 +5740,7 @@ dependencies = [
 [[package]]
 name = "hub-state"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "anyhow",
  "borsh",
@@ -5997,7 +5752,7 @@ dependencies = [
 [[package]]
 name = "hub-traits"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "alloy-primitives",
  "hub-qmdb",
@@ -6288,22 +6043,6 @@ name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
-
-[[package]]
-name = "identity"
-version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "base64 0.22.1",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "hex",
- "k256",
- "p256 0.13.2",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
-]
 
 [[package]]
 name = "identity"
@@ -7010,7 +6749,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-server"
 version = "0.24.10"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "futures-util",
  "http 1.4.0",
@@ -7519,15 +7258,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
-name = "miniz_oxide"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
-dependencies = [
- "adler2",
-]
-
-[[package]]
 name = "mio"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7591,24 +7321,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "multicodec"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f287a558ce2cac6f63944876d2f76ae2254a17fbe174c82967e76e0aab3379ed"
-dependencies = [
- "failure",
- "serde",
- "unsigned-varint 0.2.3",
-]
-
-[[package]]
 name = "multihash"
 version = "0.19.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "577c63b00ad74d57e8c9aa870b5fccebf2fd64a308a5aee9f1bb88e4aea19447"
 dependencies = [
  "serde",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
 ]
 
 [[package]]
@@ -7648,7 +7367,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
@@ -8238,15 +7957,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object"
-version = "0.37.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8606,8 +8316,8 @@ dependencies = [
  "hex",
  "http-body-util",
  "hub-client",
- "hub-crypto 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
- "hub-domain 0.1.0 (git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723)",
+ "hub-crypto",
+ "hub-domain",
  "hub-harness",
  "hyper 1.9.0",
  "hyper-util",
@@ -8662,7 +8372,7 @@ dependencies = [
 [[package]]
 name = "orbis-reporting"
 version = "0.0.1"
-source = "git+https://github.com/sourcenetwork/orbis-rs?rev=47df2a5367c64309595b631ad95156e8fe931b32#47df2a5367c64309595b631ad95156e8fe931b32"
+source = "git+https://github.com/sourcenetwork/orbis-rs?rev=d189e0965d387c9b371a464340bf936ab35bee7f#d189e0965d387c9b371a464340bf936ab35bee7f"
 dependencies = [
  "hex",
  "serde",
@@ -8748,7 +8458,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "unsigned-varint 0.8.0",
+ "unsigned-varint",
  "uuid",
 ]
 
@@ -9488,7 +9198,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -9509,7 +9219,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -9522,7 +9232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -10522,12 +10232,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustc-demangle"
-version = "0.1.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
-
-[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10777,22 +10481,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "schema"
-version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "cid",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "multihash",
- "serde",
- "serde_ipld_dagcbor",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -11075,16 +10763,6 @@ checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
 dependencies = [
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "serde_cbor"
-version = "0.11.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2bef2ebfde456fb76bbcf9f59315333decc4fda0b2b44b420243c11e0f5ec1f5"
-dependencies = [
- "half 1.8.3",
- "serde",
 ]
 
 [[package]]
@@ -11634,33 +11312,6 @@ dependencies = [
 [[package]]
 name = "storage"
 version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "async-trait",
- "bm25",
- "chrono",
- "cid",
- "crypto 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "defra-core 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "document 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "futures",
- "getrandom 0.2.17",
- "hex",
- "parking_lot",
- "schema 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "serde",
- "serde_cbor",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "storage"
-version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=82738ab8dcf184905bbddad37ba8204b2749f62e#82738ab8dcf184905bbddad37ba8204b2749f62e"
 dependencies = [
  "async-lock",
@@ -11847,18 +11498,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
 dependencies = [
  "futures-core",
-]
-
-[[package]]
-name = "synstructure"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f36bdaa60a83aca3921b5259d5400cbf5e90fc51931376a9bd4a0eb79aa7210f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
- "unicode-xid",
 ]
 
 [[package]]
@@ -12065,7 +11704,7 @@ dependencies = [
 [[package]]
 name = "test-infra"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/hub.rs?rev=48123ec2699c13e6087f915c1081790b7a1a5723#48123ec2699c13e6087f915c1081790b7a1a5723"
+source = "git+https://github.com/sourcenetwork/hub.rs?rev=8f1db8a4202dc64639752e2be37ef0294bd79b28#8f1db8a4202dc64639752e2be37ef0294bd79b28"
 dependencies = [
  "eyre",
  "futures",
@@ -12852,12 +12491,6 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
-name = "unsigned-varint"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7f0023a96687fe169081e8adce3f65e3874426b7886e9234d490af2dc077959"
 
 [[package]]
 name = "unsigned-varint"
@@ -13731,23 +13364,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "synstructure 0.13.2",
-]
-
-[[package]]
-name = "zanzibar"
-version = "0.5.0"
-source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd#6bca51ca97a4652773ad3fea1790e482015312bd"
-dependencies = [
- "async-lock",
- "async-trait",
- "futures",
- "identity 0.5.0 (git+https://github.com/sourcenetwork/defradb.rs?rev=6bca51ca97a4652773ad3fea1790e482015312bd)",
- "parking_lot",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
+ "synstructure",
 ]
 
 [[package]]
@@ -13820,7 +13437,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
- "synstructure 0.13.2",
+ "synstructure",
 ]
 
 [[package]]
