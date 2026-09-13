@@ -1,13 +1,6 @@
 use anyhow::{bail, ensure, Context, Result};
 use bulletin::native::{decode_node_signing_key, NativeConfig};
 use clap::{Parser, Subcommand};
-use hub_client::{
-    nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, SignedNodeRequest},
-    rings::encode_ring_command,
-    rings::RingCommand,
-    HubClient, NativeWorker, HUB_ADDRESS,
-};
-use hub_domain::NativeTx;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     redb::RedbStorage,
@@ -19,6 +12,13 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vera_client::{
+    nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, SignedNodeRequest},
+    rings::encode_ring_command,
+    rings::RingCommand,
+    NativeWorker, VeraClient, HUB_ADDRESS,
+};
+use vera_domain::NativeTx;
 use zeroize::Zeroizing;
 
 #[derive(Parser)]
@@ -212,7 +212,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
-    let client = HubClient::new(&config.endpoint);
+    let client = VeraClient::new(&config.endpoint);
     let first = client.read_finalized_revision(1, &config.trusted).await?;
     ensure!(
         first.parent_hash.trim_start_matches("0x") == hex::encode(config.root),

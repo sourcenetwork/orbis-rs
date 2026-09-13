@@ -23,7 +23,7 @@ async fn completion_retries_failed_submission_without_replacing_pending_request(
         )
         .unwrap();
     let mut writer = NativeVeraClient::open(
-        HubClient::new(&url),
+        VeraClient::new(&url),
         ConsensusPublicKey::generator(),
         [7; 32],
         9001,
@@ -92,7 +92,7 @@ async fn completion_retries_failed_submission_without_replacing_pending_request(
         }
     });
     let backend = NativeBulletin {
-        reader: HubClient::new(&url),
+        reader: VeraClient::new(&url),
         trusted: writer.trusted,
         namespace: writer.deployment_label(),
         writer: Mutex::new(writer),

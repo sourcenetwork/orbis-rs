@@ -1,13 +1,5 @@
 use alloy_primitives::B256;
 use commonware_codec::Encode;
-use hub_client::{
-    create_scoped_bearer_token,
-    nodes::{sign_node_request, NodeCommand, NodeInfo, NodeRequest, NodeTarget},
-    rings::{ReportingConfig, RingCommand, RingConfig},
-    BlsSigner, DelegationScope, HubClient,
-};
-use hub_domain::ConsensusPublicKey;
-use hub_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 use k256::ecdsa::SigningKey;
 use serde_json::{json, Value};
 use std::{
@@ -15,6 +7,14 @@ use std::{
     process::Output,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vera_client::{
+    create_scoped_bearer_token,
+    nodes::{sign_node_request, NodeCommand, NodeInfo, NodeRequest, NodeTarget},
+    rings::{ReportingConfig, RingCommand, RingConfig},
+    BlsSigner, DelegationScope, VeraClient,
+};
+use vera_domain::ConsensusPublicKey;
+use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 
 async fn admin(base: &Path, args: &[&str], success: bool) -> Value {
     let output: Output = tokio::time::timeout(
@@ -49,7 +49,7 @@ async fn admin(base: &Path, args: &[&str], success: bool) -> Value {
     }
 }
 
-async fn receipt(client: &HubClient, id: B256, trusted: &ConsensusPublicKey) {
+async fn receipt(client: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = client.read_receipt(id, trusted).await.unwrap() {
@@ -145,7 +145,7 @@ async fn native_admin_controls_nodes_with_signed_current_authority() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let root: B256 = client
         .read_finalized_revision(1, &trusted)
         .await
@@ -334,7 +334,7 @@ async fn native_admin_provisions_ring_and_recovers_exact_results() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let client = HubClient::new(cluster.node(0).rpc_url());
+    let client = VeraClient::new(cluster.node(0).rpc_url());
     let root: B256 = client
         .read_finalized_revision(1, &trusted)
         .await
@@ -355,7 +355,7 @@ async fn native_admin_provisions_ring_and_recovers_exact_results() {
     let identity = admin(base, &["worker"], true).await;
     let authority = SigningKey::from_slice(&[31; 32]).unwrap();
     let node_key = hex::encode(authority.verifying_key().to_sec1_bytes());
-    let actor = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         authority.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();

@@ -1,7 +1,7 @@
 use super::*;
 use defra_core::block::{Block, CrdtDelta};
 use defra_p2p::{
-    iroh::{IrohEndpointConfig, IrohTransport, parse_public_peer_addr, spawn_endpoint},
+    iroh::{parse_public_peer_addr, spawn_endpoint, IrohEndpointConfig, IrohTransport},
     message::PushLogRequest,
     transport::P2PTransport,
 };

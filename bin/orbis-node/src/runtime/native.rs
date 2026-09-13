@@ -1,9 +1,9 @@
 use super::*;
 use authz::native::NativeAuth;
 use bulletin::native::{decode_node_signing_key, NativeBulletin, NativeVeraClient};
-use hub_client::HubClient;
 use local_storage::r#trait::LocalStorageKeys;
 use std::{fs, path::Path};
+use vera_client::VeraClient;
 use zeroize::Zeroizing;
 
 pub(super) use bulletin::native::NativeConfig as Config;
@@ -61,14 +61,14 @@ pub(super) async fn run(
     let initialization = async move {
         let (authz, bulletin) = tokio::time::timeout(config.timeout, async {
             let authz = NativeAuth::connect(
-                HubClient::new(&config.endpoint),
+                VeraClient::new(&config.endpoint),
                 config.trusted,
                 config.root,
                 config.maximum_age,
             )
             .await?;
             let writer = NativeVeraClient::open(
-                HubClient::new(&config.endpoint),
+                VeraClient::new(&config.endpoint),
                 config.trusted,
                 config.root,
                 config.deployment_id,
@@ -77,7 +77,7 @@ pub(super) async fn run(
             )?;
             let bulletin = NativeBulletin::connect(
                 writer,
-                HubClient::new(&config.endpoint),
+                VeraClient::new(&config.endpoint),
                 config.maximum_age,
                 config.timeout,
             )

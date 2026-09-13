@@ -1,7 +1,7 @@
 use commonware_codec::DecodeExt;
-use hub_domain::ConsensusPublicKey;
 use serde::Deserialize;
 use std::{fs, io::Read, path::Path, time::Duration};
+use vera_domain::ConsensusPublicKey;
 
 const MAX_CONFIG_BYTES: u64 = 16 * 1024;
 
@@ -95,7 +95,7 @@ mod tests {
         let valid = serde_json::json!({
             "endpoint": "http://127.0.0.1:8545", "deployment_id": 9001,
             "deployment_root": hex::encode([7; 32]),
-            "consensus_key": hex::encode(hub_harness::cluster::KeySet::builder().seed(9001).build().unwrap().epoch_info().output.public().public().encode()),
+            "consensus_key": hex::encode(vera_harness::cluster::KeySet::builder().seed(9001).build().unwrap().epoch_info().output.public().public().encode()),
         });
         fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
         assert!(NativeConfig::load(&path).is_ok());

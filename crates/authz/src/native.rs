@@ -6,18 +6,18 @@ use crate::{
     request::AccessCheckRequest,
 };
 use async_trait::async_trait;
-use hub_client::{
-    AccessRequest, Actor, HubClient, ModuleId, Object, Operation, PERMISSION_LIMITS,
-    RECORD_PROOF_BYTES,
-};
-use hub_domain::{ConsensusPublicKey, LightBlock};
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
+use vera_client::{
+    AccessRequest, Actor, ModuleId, Object, Operation, VeraClient, PERMISSION_LIMITS,
+    RECORD_PROOF_BYTES,
+};
+use vera_domain::{ConsensusPublicKey, LightBlock};
 
 pub struct NativeAuth {
-    client: HubClient,
+    client: VeraClient,
     trusted: ConsensusPublicKey,
     root: String,
     minimum: AtomicU64,
@@ -37,7 +37,7 @@ fn now() -> Result<u64> {
 impl NativeAuth {
     /// Bind consensus trust to the configured genesis before serving requests.
     pub async fn connect(
-        client: HubClient,
+        client: VeraClient,
         trusted: ConsensusPublicKey,
         root: [u8; 32],
         maximum_age: u64,

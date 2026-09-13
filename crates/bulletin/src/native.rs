@@ -8,40 +8,40 @@ pub use config::NativeConfig;
 use std::path::Path;
 
 use alloy_primitives::{Bytes, B256};
-use hub_client::{
-    nodes::{encode_node_request, sign_node_request, NodeRead, NodeRequest},
-    threshold_objects::{
-        encode_threshold_object, EncryptedDocument, KeyDerivation, ThresholdObject,
-    },
-    ClientError, ExecutionReceipt, HubClient, NativeWorker, HUB_ADDRESS,
-};
-use hub_domain::{ConsensusPublicKey, NativeTx};
 use k256::ecdsa::SigningKey;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     redb::RedbStorage,
 };
+use vera_client::{
+    nodes::{encode_node_request, sign_node_request, NodeRead, NodeRequest},
+    threshold_objects::{
+        encode_threshold_object, EncryptedDocument, KeyDerivation, ThresholdObject,
+    },
+    ClientError, ExecutionReceipt, NativeWorker, VeraClient, HUB_ADDRESS,
+};
+use vera_domain::{ConsensusPublicKey, NativeTx};
 use zeroize::Zeroizing;
 
 use crate::r#trait::{
     BulletinPost, BulletinReportSubmission, DemeritConfig, DocumentPayload, NodeInfo,
     ReportingConfig, RingFinalizationStatus, RingPayload, UpgradeInfo,
 };
-pub use hub_client::nodes::{NodeCommand, NodeTarget};
-use hub_client::rings::{
+pub use vera_client::nodes::{NodeCommand, NodeTarget};
+use vera_client::rings::{
     encode_ring_command, encode_ring_participant_request, encode_ring_report, encode_ring_reshare,
     sign_ring_participant_request, RingRead, RingRecord, RingState,
 };
-pub use hub_client::rings::{
+pub use vera_client::rings::{
     ReshareTarget, RingCommand, RingConfig, RingParticipantCommand, RingParticipantRequest,
     RingReshareRequest, RingSettings, RingUpdate, ScheduledUpgrade, ThresholdScheme,
 };
-pub use hub_client::threshold_objects::ObjectKind;
+pub use vera_client::threshold_objects::ObjectKind;
 
 /// Native service client backed by an encrypted worker key and durable submission journal.
 /// Prepare, submit and confirm are separate so an uncertain response never allocates a new request.
 pub struct NativeVeraClient {
-    client: HubClient,
+    client: VeraClient,
     trusted: ConsensusPublicKey,
     deployment_root: [u8; 32],
     authority: SigningKey,
@@ -72,7 +72,7 @@ impl NativeVeraClient {
     /// Open the journal using Orbis's existing encrypted store and node signing identity.
     /// The caller provisions the deployment root and consensus key independently of the endpoint.
     pub fn open(
-        client: HubClient,
+        client: VeraClient,
         trusted: ConsensusPublicKey,
         deployment_root: [u8; 32],
         deployment_id: u64,
@@ -119,7 +119,7 @@ impl NativeVeraClient {
         info: NodeInfo,
         expires_at: u64,
     ) -> Result<B256, ClientError> {
-        let mut info = hub_client::nodes::NodeInfo {
+        let mut info = vera_client::nodes::NodeInfo {
             peer_id: info.peer_id,
             controller_key: info.controller_key,
             allowed_policy_ids: info.whitelisted_policy_ids,
@@ -200,7 +200,7 @@ impl NativeVeraClient {
 
     /// Deployment namespace used by the existing Orbis reshare signing document.
     pub fn deployment_label(&self) -> String {
-        hub_client::rings::ring_deployment_label(self.deployment_root, self.worker.deployment_id())
+        vera_client::rings::ring_deployment_label(self.deployment_root, self.worker.deployment_id())
     }
 
     /// Persist aggregate authorization produced by the existing ring's threshold signers.
@@ -425,7 +425,7 @@ impl NativeVeraClient {
 }
 
 fn object_post(
-    record: hub_client::threshold_objects::ObjectRecord,
+    record: vera_client::threshold_objects::ObjectRecord,
 ) -> crate::error::Result<BulletinPost> {
     let payload = match record.object {
         ThresholdObject::Document(d) => serde_json::to_vec(&d),
@@ -438,9 +438,9 @@ fn object_post(
     })
 }
 
-fn native_report(s: BulletinReportSubmission) -> hub_client::rings::SignedReport {
-    hub_client::rings::SignedReport {
-        report: hub_client::rings::ReportEnvelope {
+fn native_report(s: BulletinReportSubmission) -> vera_client::rings::SignedReport {
+    vera_client::rings::SignedReport {
+        report: vera_client::rings::ReportEnvelope {
             domain: s.domain,
             report_type: s.report_type,
             chain_id: s.chain_id,
@@ -571,7 +571,7 @@ mod tests {
         );
         let make_post = |object: ThresholdObject| {
             object.validate().unwrap();
-            object_post(hub_client::threshold_objects::ObjectRecord {
+            object_post(vera_client::threshold_objects::ObjectRecord {
                 id: object.id().unwrap(),
                 deployment_root: [7; 32],
                 creator: "did:key:actor".into(),
@@ -627,7 +627,7 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["report"]["deployment"], "vera-test");
         assert!(json["report"].get("chain_id").is_none());
-        let restored: hub_client::rings::SignedReport = serde_json::from_value(json).unwrap();
+        let restored: vera_client::rings::SignedReport = serde_json::from_value(json).unwrap();
         assert_eq!(
             restored.report.canonical_bytes(),
             report.report.canonical_bytes()
@@ -645,7 +645,7 @@ mod tests {
         let directory = root.path().join("worker");
         let open = |deployment| {
             NativeVeraClient::open(
-                HubClient::new("http://127.0.0.1:1"),
+                VeraClient::new("http://127.0.0.1:1"),
                 ConsensusPublicKey::generator(),
                 [7; 32],
                 deployment,
@@ -704,7 +704,7 @@ mod tests {
         let ring_directory = root.path().join("ring-worker");
         let open_ring = || {
             NativeVeraClient::open(
-                HubClient::new("http://127.0.0.1:1"),
+                VeraClient::new("http://127.0.0.1:1"),
                 ConsensusPublicKey::generator(),
                 [7; 32],
                 9001,
@@ -758,7 +758,7 @@ mod tests {
             trusted_auth_relay_dids: Some(vec![
                 "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
             ]),
-            reporting: hub_client::rings::ReportingConfig {
+            reporting: vera_client::rings::ReportingConfig {
                 kick_threshold: 7,
                 ..Default::default()
             },
@@ -808,11 +808,11 @@ mod tests {
         settings.pss_interval = 100000;
         settings.reporting.kick_threshold = 8;
         settings.trusted_auth_relay_dids = Some(vec![]);
-        settings.scheduled_upgrade = Some(hub_client::rings::ScheduledUpgrade {
+        settings.scheduled_upgrade = Some(vera_client::rings::ScheduledUpgrade {
             version: 1,
             activates_at: 700,
         });
-        settings.pending_reshare = Some(hub_client::rings::ReshareTarget {
+        settings.pending_reshare = Some(vera_client::rings::ReshareTarget {
             peer_node_keys: peers.clone(),
             threshold: 1,
         });
@@ -855,7 +855,7 @@ mod tests {
         state.threshold = state.new_threshold.take().unwrap();
         let finalized = ring_reshare_sign_state_hash(&state);
         let orbis_bytes = ring_reshare_finalize_sign_bytes(
-            &hub_client::rings::ring_deployment_label(record.deployment_root, 9001),
+            &vera_client::rings::ring_deployment_label(record.deployment_root, 9001),
             &record.id,
             &payload.ring_pk,
             current.to_vec(),

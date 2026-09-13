@@ -8,18 +8,18 @@ use crate::{
     },
 };
 use async_trait::async_trait;
-use hub_client::{create_scoped_bearer_token, DelegationScope, ExecutionReceipt};
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::Mutex;
+use vera_client::{create_scoped_bearer_token, DelegationScope, ExecutionReceipt};
 
 #[cfg(test)]
 mod tests;
 
 pub struct NativeBulletin {
-    reader: HubClient,
+    reader: VeraClient,
     trusted: ConsensusPublicKey,
     writer: Mutex<NativeVeraClient>,
     namespace: String,
@@ -42,7 +42,7 @@ impl NativeBulletin {
     /// Readers remain available while one durable writer waits for finality.
     pub async fn connect(
         writer: NativeVeraClient,
-        reader: HubClient,
+        reader: VeraClient,
         maximum_age: u64,
         timeout: Duration,
     ) -> Result<Self> {
@@ -101,7 +101,7 @@ impl NativeBulletin {
         &self,
         kind: ObjectKind,
         id: &str,
-    ) -> Result<Option<hub_client::threshold_objects::ObjectRecord>> {
+    ) -> Result<Option<vera_client::threshold_objects::ObjectRecord>> {
         let response = self
             .reader
             .read_threshold_object(
@@ -119,7 +119,7 @@ impl NativeBulletin {
     async fn completion(
         &self,
         writer: &NativeVeraClient,
-    ) -> Result<Option<hub_client::ReceiptResponse>> {
+    ) -> Result<Option<vera_client::ReceiptResponse>> {
         let Some(id) = writer.pending_id().map_err(error)? else {
             return Ok(None);
         };
@@ -314,7 +314,7 @@ impl Bulletin for NativeBulletin {
             let signature = hex::encode(signature);
             if let Some(call) = writer.pending_call().map_err(error)? {
                 if let Some(previous) =
-                    hub_client::rings::decode_ring_reshare(&call).map_err(error)?
+                    vera_client::rings::decode_ring_reshare(&call).map_err(error)?
                 {
                     if previous.ring_id == id
                         && previous.scheme == scheme

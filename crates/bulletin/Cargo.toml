@@ -20,8 +20,8 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
-hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a", optional = true }
-hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true }
@@ -30,7 +30,7 @@ zeroize = { workspace = true, optional = true }
 [features]
 default = ["vera"]
 vera = []
-native = ["dep:commonware-codec", "dep:url", "dep:hub-client", "dep:hub-domain", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
+native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
 dummy = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]
@@ -40,8 +40,8 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a" }
-hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a" }
+vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3" }
+vera-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true

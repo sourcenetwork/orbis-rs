@@ -26,9 +26,9 @@ sha2 = { workspace = true }
 rpassword = "7.3"
 bs58 = "0.5"
 
-hub-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
 alloy-primitives = { version = "1", optional = true }
-hub-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
 local-storage = { path = "../../crates/local-storage", default-features = false, features = ["redb"], optional = true }
 zeroize = { workspace = true, optional = true }
 
@@ -38,7 +38,7 @@ path = "src/bin/vera-admin.rs"
 required-features = ["native"]
 
 [features]
-native = ["bulletin/native", "dep:alloy-primitives", "dep:hub-client", "dep:hub-domain", "dep:local-storage", "dep:zeroize"]
+native = ["bulletin/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
 decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
@@ -48,8 +48,8 @@ name = "native_admin"
 required-features = ["native"]
 
 [dev-dependencies]
-hub-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a" }
-hub-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf0f312eb7ea23630d98dd4048f754478f6bb43a" }
+vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3" }
+vera-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3" }
 commonware-codec = "2026.9.0"
 k256.workspace = true
 tempfile.workspace = true

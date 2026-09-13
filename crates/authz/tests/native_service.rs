@@ -1,11 +1,11 @@
 use alloy_primitives::B256;
 use authz::{native::NativeAuth, r#trait::Authz, request::AccessCheckRequest};
-use hub_client::{BlsSigner, HubClient};
-use hub_domain::ConsensusPublicKey;
-use hub_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 use std::time::Duration;
+use vera_client::{BlsSigner, VeraClient};
+use vera_domain::ConsensusPublicKey;
+use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 
-async fn receipt(reader: &HubClient, id: B256, trusted: &ConsensusPublicKey) {
+async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = reader.read_receipt(id, trusted).await.unwrap() {
@@ -45,12 +45,12 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
         .wait_for_height(3, Duration::from_secs(30))
         .await
         .unwrap();
-    let writer = HubClient::new(cluster.node(0).rpc_url());
-    let reader = HubClient::new(cluster.node(3).rpc_url());
+    let writer = VeraClient::new(cluster.node(0).rpc_url());
+    let reader = VeraClient::new(cluster.node(3).rpc_url());
     let first = reader.read_finalized_revision(1, &trusted).await.unwrap();
     let root: B256 = first.parent_hash.parse().unwrap();
     assert!(NativeAuth::connect(
-        HubClient::new(cluster.node(3).rpc_url()),
+        VeraClient::new(cluster.node(3).rpc_url()),
         trusted,
         [9; 32],
         30
@@ -58,7 +58,7 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     .await
     .is_err());
     let auth = NativeAuth::connect(
-        HubClient::new(cluster.node(3).rpc_url()),
+        VeraClient::new(cluster.node(3).rpc_url()),
         trusted,
         root.0,
         30,

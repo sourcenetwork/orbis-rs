@@ -7,8 +7,6 @@ mod defra_peers;
 mod defra_documents;
 
 use commonware_codec::Encode;
-use hub_client::HubClient;
-use hub_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
@@ -19,6 +17,8 @@ use std::{
     process::{Child, Command, Stdio},
     time::Duration,
 };
+use vera_client::VeraClient;
+use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 
 struct Node(Child);
 impl Drop for Node {
@@ -138,7 +138,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .await
         .unwrap();
     let url = cluster.node(0).rpc_url();
-    let client = HubClient::new(&url);
+    let client = VeraClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
     let root = first.parent_hash.trim_start_matches("0x");
     let base = tempfile::tempdir().unwrap();
@@ -194,9 +194,9 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 async fn confirmed(
-    client: &HubClient,
+    client: &VeraClient,
     id: alloy_primitives::B256,
-    trusted: &hub_domain::ConsensusPublicKey,
+    trusted: &vera_domain::ConsensusPublicKey,
 ) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -212,13 +212,13 @@ async fn confirmed(
 }
 
 async fn submit(
-    client: &HubClient,
-    worker: &hub_client::BlsSigner,
-    trusted: &hub_domain::ConsensusPublicKey,
+    client: &VeraClient,
+    worker: &vera_client::BlsSigner,
+    trusted: &vera_domain::ConsensusPublicKey,
     call: alloy_primitives::Bytes,
 ) {
     let wire = worker
-        .sign_native_tx(hub_client::HUB_ADDRESS, call)
+        .sign_native_tx(vera_client::HUB_ADDRESS, call)
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(client, id, trusted).await;
@@ -245,7 +245,14 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     use alloy_primitives::B256;
     use authn::jwt_builder::{create_authenticated_request, JwtSigner};
     use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
-    use hub_client::{
+    use proto::{
+        info_service::GetRingStateRequest,
+        v0::{
+            dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest},
+            sign::{sign_service_client::SignServiceClient, StartSignRequest},
+        },
+    };
+    use vera_client::{
         create_scoped_bearer_token,
         nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
         rings::{
@@ -253,13 +260,6 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         },
         threshold_objects::{encode_threshold_object, KeyDerivation, ThresholdObject},
         BlsSigner, DelegationScope,
-    };
-    use proto::{
-        info_service::GetRingStateRequest,
-        v0::{
-            dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest},
-            sign::{sign_service_client::SignServiceClient, StartSignRequest},
-        },
     };
     let deployment = 9074;
     let trusted = *KeySet::builder()
@@ -285,7 +285,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .await
         .unwrap();
     let url = cluster.node(0).rpc_url();
-    let client = HubClient::new(&url);
+    let client = VeraClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
     let headers = acp_light_client::header_sync::HeaderChain::connect(
         &url.replacen("http://", "ws://", 1),
@@ -301,7 +301,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let root: B256 = first.parent_hash.parse().unwrap();
     let controller = k256::ecdsa::SigningKey::from_slice(&[34; 32]).unwrap();
     let controller_key = hex::encode(controller.verifying_key().to_sec1_bytes());
-    let actor = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         controller.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();
@@ -950,7 +950,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     .await
     .expect("current members start reshare while incoming member is paused");
     let pending = client
-        .read_threshold_ring(&derivation.ring_id, previous.revision.block_height, &trusted)
+        .read_threshold_ring(
+            &derivation.ring_id,
+            previous.revision.block_height,
+            &trusted,
+        )
         .await
         .unwrap()
         .record

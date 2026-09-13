@@ -6,13 +6,6 @@ use bulletin::{
         RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
 };
-use hub_client::{
-    create_scoped_bearer_token,
-    rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig},
-    BlsSigner, DelegationScope, HubClient, HUB_ADDRESS,
-};
-use hub_domain::{ConsensusPublicKey, NativeTx};
-use hub_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 use k256::ecdsa::SigningKey;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -22,9 +15,16 @@ use std::{
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vera_client::{
+    create_scoped_bearer_token,
+    rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig},
+    BlsSigner, DelegationScope, VeraClient, HUB_ADDRESS,
+};
+use vera_domain::{ConsensusPublicKey, NativeTx};
+use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 use zeroize::Zeroizing;
 
-async fn receipt(reader: &HubClient, id: B256, trusted: &ConsensusPublicKey) {
+async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = reader.read_receipt(id, trusted).await.unwrap() {
@@ -38,7 +38,7 @@ async fn receipt(reader: &HubClient, id: B256, trusted: &ConsensusPublicKey) {
     .unwrap();
 }
 async fn submit(
-    client: &HubClient,
+    client: &VeraClient,
     worker: &BlsSigner,
     trusted: &ConsensusPublicKey,
     call: Bytes,
@@ -56,7 +56,15 @@ fn open(
     directory: &Path,
     storage: &RedbStorage,
 ) -> NativeVeraClient {
-    NativeVeraClient::open(HubClient::new(url), trusted, root, 9072, directory, storage).unwrap()
+    NativeVeraClient::open(
+        VeraClient::new(url),
+        trusted,
+        root,
+        9072,
+        directory,
+        storage,
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -87,7 +95,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         .unwrap();
     let url = cluster.node(0).rpc_url();
     let reader_url = cluster.node(3).rpc_url();
-    let client = HubClient::new(&url);
+    let client = VeraClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
     let root: B256 = first.parent_hash.parse().unwrap();
     let local = tempfile::tempdir().unwrap();
@@ -103,7 +111,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         )
         .unwrap();
     let authority = SigningKey::from_slice(&[31; 32]).unwrap();
-    let actor = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         authority.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();
@@ -118,7 +126,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     };
     let backend = NativeBulletin::connect(
         writer,
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(1),
     )
@@ -134,7 +142,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert!(writer.pending_id().unwrap().is_some());
     let backend = NativeBulletin::connect(
         writer,
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(30),
     )
@@ -238,16 +246,16 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         .record
         .unwrap()
         .sequence;
-    let allow = hub_client::nodes::sign_node_request(
-        hub_client::nodes::NodeRequest {
+    let allow = vera_client::nodes::sign_node_request(
+        vera_client::nodes::NodeRequest {
             deployment_root: root.0,
             deployment_id: deployment,
             node_key,
             sequence,
             expires_at: now + 300,
-            command: hub_client::nodes::NodeCommand::Allow(hub_client::nodes::NodeTarget::Policy(
-                policy.clone(),
-            )),
+            command: vera_client::nodes::NodeCommand::Allow(
+                vera_client::nodes::NodeTarget::Policy(policy.clone()),
+            ),
         },
         &authority,
     )
@@ -256,7 +264,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         &client,
         &worker,
         &trusted,
-        hub_client::nodes::encode_node_request(&allow).unwrap(),
+        vera_client::nodes::encode_node_request(&allow).unwrap(),
     )
     .await;
     assert_eq!(
@@ -339,7 +347,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
     )
     .await;
-    receipt(&HubClient::new(&reader_url), creation, &trusted).await;
+    receipt(&VeraClient::new(&reader_url), creation, &trusted).await;
     let cancel = serde_json::to_vec(&RingCancellationPayload {
         ring_id: pending_id.clone(),
     })
@@ -360,7 +368,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     assert!(writer.pending_id().unwrap().is_none());
     let backend = NativeBulletin::connect(
         writer,
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(30),
     )
@@ -387,7 +395,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 async fn native_report_and_reshare_recover_certified_completion() {
     use bulletin::native::{RingParticipantCommand, RingUpdate};
     use bulletin::r#trait::BulletinReportSubmission;
-    use hub_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
+    use vera_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
     let deployment = 9072;
     let trusted = *KeySet::builder()
         .seed(deployment)
@@ -413,7 +421,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         .unwrap();
     let url = cluster.node(0).rpc_url();
     let reader_url = cluster.node(3).rpc_url();
-    let client = HubClient::new(&url);
+    let client = VeraClient::new(&url);
     let root: B256 = client
         .read_finalized_revision(1, &trusted)
         .await
@@ -423,7 +431,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         .unwrap();
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
     let authority = SigningKey::from_slice(&[40; 32]).unwrap();
-    let actor = hub_crypto::secp256k1::did_from_secp256k1_pubkey(
+    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         authority.verifying_key().to_sec1_bytes().as_ref(),
     )
     .unwrap();
@@ -613,7 +621,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
     };
     let backend = NativeBulletin::connect(
         disconnected(),
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(1),
     )
@@ -631,7 +639,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
     let retained = std::fs::read(&journal).unwrap();
     let backend = NativeBulletin::connect(
         disconnected(),
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(5),
     )
@@ -698,7 +706,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
     let retained = std::fs::read(&journal).unwrap();
     let backend = NativeBulletin::connect(
         disconnected(),
-        HubClient::new(&reader_url),
+        VeraClient::new(&reader_url),
         30,
         Duration::from_secs(5),
     )
