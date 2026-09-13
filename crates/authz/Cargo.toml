@@ -12,8 +12,8 @@ async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "2d915305bce7895ca15108557e10d2ea527e8469", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "2d915305bce7895ca15108557e10d2ea527e8469", optional = true }
 hex = { workspace = true, optional = true }
 
 [features]
@@ -27,7 +27,7 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "dd8f04d4a66cc4143bdcea9aa826ca804c6f12c3" }
+vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "2d915305bce7895ca15108557e10d2ea527e8469" }
 alloy-primitives = "1"
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"

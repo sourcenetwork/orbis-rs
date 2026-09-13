@@ -58,12 +58,12 @@ async fn completion_retries_failed_submission_without_replacing_pending_request(
             let request: Value = serde_json::from_slice(&body).unwrap();
             let mut response = json!({"jsonrpc": "2.0", "id": request["id"]});
             match request["method"].as_str().unwrap() {
-                "hub_getReceiptProof" => {
+                "vera_getReceiptProof" => {
                     reads += 1;
                     assert_eq!(request["params"], json!([id]));
                     response["result"] = Value::Null;
                 }
-                "hub_sendNativeTx" => {
+                "vera_sendNativeTx" => {
                     submissions += 1;
                     assert_eq!(request["params"], json!([expected_wire]));
                     if submissions == 1 {
