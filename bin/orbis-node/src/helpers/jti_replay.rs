@@ -5,10 +5,24 @@
 //! first time this node accepts it and rejects any later request that reuses it,
 //! so an observed token cannot be replayed within its validity window.
 //!
-//! Placement (see `docs/security-review-findings.md` SEC-03):
-//! - client entrypoints: `start_pre`, `start_sign`, `store_secret`;
+//! Placement:
+//! - client entrypoints: `start_pre`, `start_sign` (not `store_secret` — see
+//!   its own call site for why);
 //! - responder handlers that see the forwarded token exactly once:
 //!   `handle_reencrypt_request` (PRE), `handle_nonce_request` (Sign FROST Round 1).
+//!
+//! Each of those records the `jti` only once its own ACP `check_policy_access`
+//! call has succeeded — not merely once the JWT signature/claims are valid.
+//! Recording earlier would let an authenticated-but-never-authorized caller
+//! burn this guard's capped, shared capacity with tokens that were always
+//! going to fail, which can evict still-valid entries and reopen a real replay
+//! window for them. A token that fails authorization stays replayable against
+//! this guard; that's fine, since nothing state-changing happened for it to
+//! double up on. On the responder side, repeated replay of one captured,
+//! ACP-failing request also can't be used to spam the unauthorized-relay
+//! report at that call site — that path checks Vera's `accepted_report_session`
+//! before spending a threshold-signing round on an incident already accepted
+//! on-chain.
 //!
 //! **Not** `handle_sign_request` (FROST Round 2): it legitimately re-presents the
 //! same token, and is already single-use via the atomic nonce consume bound to

@@ -482,6 +482,17 @@ mod tests {
             Ok(())
         }
 
+        async fn accepted_report_session(
+            &self,
+            _ring_id: &str,
+            _report_type: &str,
+            _origin_protocol: &str,
+            _accused_node_key: &str,
+            _session_id: &str,
+        ) -> bulletin::error::Result<bool> {
+            Ok(false)
+        }
+
         fn chain_id(&self) -> String {
             "test-chain".to_string()
         }
@@ -586,6 +597,17 @@ mod tests {
             _submission: BulletinReportSubmission,
         ) -> bulletin::error::Result<()> {
             Ok(())
+        }
+
+        async fn accepted_report_session(
+            &self,
+            _ring_id: &str,
+            _report_type: &str,
+            _origin_protocol: &str,
+            _accused_node_key: &str,
+            _session_id: &str,
+        ) -> bulletin::error::Result<bool> {
+            Ok(false)
         }
 
         fn chain_id(&self) -> String {

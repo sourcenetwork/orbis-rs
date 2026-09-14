@@ -11,7 +11,7 @@ use common::blockchain::orbis::{
     generate_document_id, generate_key_derivation_id,
     ring_reshare_finalize_sign_bytes as orbis_ring_reshare_finalize_sign_bytes,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 #[derive(Debug)]
@@ -28,6 +28,12 @@ pub struct DummyBulletin {
     submitted_reports: Mutex<Vec<BulletinReportSubmission>>,
     /// Node demerit points by (ring_id, node_key) — for test assertions.
     node_demerits: Mutex<HashMap<(String, String), u64>>,
+    /// (ring_id, report_type, accused_node_key, session_id) of every report
+    /// accepted via submit_report() — mirrors Vera's session dedupe so tests
+    /// exercise the same short-circuit `accepted_report_session` gives a real
+    /// reporter. origin_protocol isn't tracked here (session_id collisions
+    /// across protocols aren't a realistic test concern).
+    accepted_report_sessions: Mutex<HashSet<(String, String, String, String)>>,
 }
 
 #[async_trait]
@@ -100,8 +106,30 @@ impl Bulletin for DummyBulletin {
     }
 
     async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()> {
+        self.accepted_report_sessions.lock().unwrap().insert((
+            submission.ring_id.clone(),
+            submission.report_type.clone(),
+            submission.accused_node_key.clone(),
+            submission.session_id.clone(),
+        ));
         self.submitted_reports.lock().unwrap().push(submission);
         Ok(())
+    }
+
+    async fn accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        _origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        Ok(self.accepted_report_sessions.lock().unwrap().contains(&(
+            ring_id.to_string(),
+            report_type.to_string(),
+            accused_node_key.to_string(),
+            session_id.to_string(),
+        )))
     }
 
     fn chain_id(&self) -> String {
@@ -242,6 +270,7 @@ impl Default for DummyBulletin {
             fail_pending_ring_cancellations: Mutex::new(false),
             submitted_reports: Mutex::new(Vec::new()),
             node_demerits: Mutex::new(HashMap::new()),
+            accepted_report_sessions: Mutex::new(HashSet::new()),
         }
     }
 }
