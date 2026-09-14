@@ -115,8 +115,10 @@ impl ThresholdSigner for ThresholdBlsSigner {
         // Augmented BLS hashes PK || message using the AUG ciphersuite DST.
         let h_msg = hash_to_g2(&effective_pk, msg)?;
 
-        // Compute signature share: sig_i = s_i' * H(PK' || msg)
-        let sig_share: G2Affine = (G2Projective::from(*h_msg.inner()) * ski_eff).into_affine();
+        // Compute signature share: sig_i = s_i' * H(PK' || msg). `ski_eff` is
+        // secret (the node's share, optionally scaled by a public derivation
+        // scalar), so this must be constant-time — see bls12_381::ct.
+        let sig_share: G2Affine = crate::bls12_381::ct::ct_mul_g2(h_msg.inner(), &ski_eff)?;
 
         Ok(PubShare {
             i: idx,

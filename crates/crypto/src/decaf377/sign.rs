@@ -19,8 +19,8 @@ use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
 };
-use ark_ff::{One, Zero};
-use ark_serialize::CanonicalSerialize;
+use ark_ff_05::{One, Zero};
+use ark_serialize_05::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
