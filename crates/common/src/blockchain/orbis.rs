@@ -873,6 +873,30 @@ pub struct QueryNodeDemeritsResponse {
     pub points: u64,
 }
 
+#[derive(Clone, Message)]
+pub struct QueryAcceptedReportSessionRequest {
+    #[prost(string, tag = "1")]
+    pub ring_id: String,
+    #[prost(string, tag = "2")]
+    pub report_type: String,
+    #[prost(string, tag = "3")]
+    pub origin_protocol: String,
+    #[prost(string, tag = "4")]
+    pub accused_node_key: String,
+    #[prost(string, tag = "5")]
+    pub session_id: String,
+    /// Leave empty for ceremony-scoped report kinds (node_offline,
+    /// unauthorized_request); only attempt-scoped kinds need this set.
+    #[prost(bytes = "vec", tag = "6")]
+    pub attempt_id: Vec<u8>,
+}
+
+#[derive(Clone, Message)]
+pub struct QueryAcceptedReportSessionResponse {
+    #[prost(bool, tag = "1")]
+    pub accepted: bool,
+}
+
 // ============================================================================
 // Reshare Sign Doc
 // ============================================================================
@@ -1759,6 +1783,46 @@ impl VeraClient {
                 ))
             })?;
         Ok(response.points)
+    }
+
+    /// Whether a fault report for this `(ring, report_type, origin_protocol,
+    /// accused, session)` has already been accepted on-chain — mirrors the
+    /// dedupe key `reportSessionDedupeID` computes in Vera's `x/orbis/keeper`
+    /// before applying a demerit. Lets a reporter skip a threshold-signing
+    /// round for an incident that's already recorded, rather than discovering
+    /// the duplicate only after paying for the round.
+    pub async fn orbis_read_accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        let request = QueryAcceptedReportSessionRequest {
+            ring_id: ring_id.to_string(),
+            report_type: report_type.to_string(),
+            origin_protocol: origin_protocol.to_string(),
+            accused_node_key: accused_node_key.to_string(),
+            session_id: session_id.to_string(),
+            attempt_id: Vec::new(),
+        };
+        let response_bytes = self
+            .abci_query(
+                "/vera.orbis.Query/AcceptedReportSession",
+                request.encode_to_vec(),
+                None,
+                false,
+            )
+            .await?;
+        let response = QueryAcceptedReportSessionResponse::decode(response_bytes.as_slice())
+            .map_err(|e| {
+                BlockchainError::Serialization(format!(
+                    "Failed to decode accepted report session response: {}",
+                    e
+                ))
+            })?;
+        Ok(response.accepted)
     }
 
     pub async fn orbis_submit_report(&self, req: SubmitReportRequest) -> Result<BroadcastResult> {

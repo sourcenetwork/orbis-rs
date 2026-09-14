@@ -121,19 +121,6 @@ where
             &ctx.salt,
         )?;
 
-        // Reject a forwarded JWT this node has already accepted. A responder sees
-        // the client token exactly once per PRE, so a duplicate means the leader
-        // (or a ring insider) replayed a captured `ReencryptRequest`.
-        self.app_state
-            .jti_guard
-            .check_and_record(
-                &token.jwt_id,
-                token.expiration_time,
-                "pre_reencrypt_request",
-            )
-            .await
-            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
-
         // When the caller supplied the document inline (ctx.document), it's used directly and
         // independently re-verified against object_id here — this node does not trust that the
         // relay/leader already checked it. Otherwise this reads from the bulletin exactly as
@@ -219,6 +206,27 @@ where
             }
             return Err(error);
         }
+
+        // Reject a forwarded JWT this node has already accepted. A responder sees
+        // the client token exactly once per PRE, so a duplicate means the leader
+        // (or a ring insider) replayed a captured `ReencryptRequest`. Recorded only
+        // on this success path — after `check_policy_access` above already passed —
+        // rather than right after JWT validation, so an unauthorized caller can't
+        // burn capacity in the shared replay cache purely by presenting fresh,
+        // never-authorized tokens. A captured request that fails the ACP re-check
+        // above stays replayable against this guard, but repeatedly replaying it
+        // can't spam the unauthorized-relay report either: `report_unauthorized_relay`
+        // checks Vera's `accepted_report_session` first and skips a signing round
+        // for an incident already accepted on-chain.
+        self.app_state
+            .jti_guard
+            .check_and_record(
+                &token.jwt_id,
+                token.expiration_time,
+                "pre_reencrypt_request",
+            )
+            .await
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         // 1. Deserialize the secret
         let secret = deserialize_secret(&document_payload.document)?;

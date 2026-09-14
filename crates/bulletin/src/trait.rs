@@ -395,6 +395,18 @@ pub trait Bulletin {
     }
     /// Submit a threshold-signed MPC fault report to the chain.
     async fn submit_report(&self, submission: BulletinReportSubmission) -> Result<()>;
+    /// Whether a fault report for this `(ring, report_type, origin_protocol,
+    /// accused, session)` has already been accepted on-chain. Lets a reporter
+    /// skip a threshold-signing round for an incident that's already recorded
+    /// rather than discovering the duplicate only after paying for the round.
+    async fn accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool>;
     /// Chain ID used when building chain-bound signing statements.
     fn chain_id(&self) -> String;
     /// Serialize the canonical sign bytes for a ring reshare finalization sign doc.

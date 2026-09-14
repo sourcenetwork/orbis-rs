@@ -105,13 +105,6 @@ where
         // validate JWT claims match request fields (no IO) ---
         validate_sign_claims(&token, &req.derivation_id, Some(&req.message))?;
 
-        // Reject a JWT this node has already accepted (single use).
-        self.state
-            .jti_guard
-            .check_and_record(&token.jwt_id, token.expiration_time, "start_sign")
-            .await
-            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
-
         let valid_window = req.valid_window.map(|w| ValidWindow {
             start: w.start,
             end: w.end,
@@ -141,6 +134,17 @@ where
             relay_acp_timestamp,
         )
         .await?;
+
+        // Reject a JWT this node has already accepted (single use). Recorded only
+        // on this success path, after the ACP check above already passed, so an
+        // unauthorized caller can't burn capacity in the shared replay cache purely
+        // by presenting fresh, never-authorized tokens — see the responder-side
+        // `handle_nonce_request` for the equivalent reasoning.
+        self.state
+            .jti_guard
+            .check_and_record(&token.jwt_id, token.expiration_time, "start_sign")
+            .await
+            .map_err(|e| SignError::Unauthorized(e.to_string()))?;
 
         tracing::info!(
             derivation_id = %req.derivation_id,
