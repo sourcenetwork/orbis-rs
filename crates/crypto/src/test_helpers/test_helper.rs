@@ -4,8 +4,7 @@
 //! DKG implementation for testing purposes.
 
 use crate::error::{CryptoError, Result};
-use crate::r#trait::{DistributedShare, Dkg, DkgMode, DkgRole, PriShare};
-use ark_serialize::CanonicalSerialize;
+use crate::r#trait::{CryptoSerialize, DistributedShare, Dkg, DkgMode, DkgRole, PriShare};
 use std::fmt::Debug;
 use subtle::ConstantTimeEq;
 
@@ -31,7 +30,7 @@ pub struct DKGCoordinator<Node: TestDkgNode> {
 
 impl<Node: TestDkgNode> DKGCoordinator<Node>
 where
-    Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+    Node::PublicKey: CryptoSerialize + PartialEq + Debug,
     Node::PubPoly: Clone,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone + zeroize::Zeroize,
@@ -171,13 +170,8 @@ where
         for node in &self.nodes {
             let pk = node.compute_aggregate_public_key()?;
 
-            let mut pk_bytes = Vec::new();
-            let mut aggregate_pk_bytes = Vec::new();
-            pk.serialize_compressed(&mut pk_bytes)
-                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
-            aggregate_pk
-                .serialize_compressed(&mut aggregate_pk_bytes)
-                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+            let pk_bytes = pk.to_bytes()?;
+            let aggregate_pk_bytes = aggregate_pk.to_bytes()?;
 
             let max_len = pk_bytes.len().max(aggregate_pk_bytes.len());
             let mut pk_padded = vec![0u8; max_len];
@@ -216,7 +210,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -255,7 +249,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -282,7 +276,7 @@ pub mod generic_tests {
     pub fn test_dkg_2_of_3<Node, F, Z>(node_factory: F, check_zero: Option<Z>) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -296,7 +290,7 @@ pub mod generic_tests {
     pub fn test_dkg_3_of_5<Node, F, Z>(node_factory: F, check_zero: Option<Z>) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -313,7 +307,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -347,7 +341,7 @@ pub mod generic_tests {
     pub fn test_invalid_threshold<Node, F>(node_factory: F) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -375,7 +369,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -428,7 +422,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -523,7 +517,7 @@ pub mod generic_tests {
     pub fn test_dkg_refresh<Node, F, Z>(node_factory: F, check_zero: Z) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -558,7 +552,7 @@ pub mod generic_tests {
     pub fn test_dkg_reshare_same_committee<Node, F>(node_factory: F) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -571,10 +565,7 @@ pub mod generic_tests {
         let mut fresh_coord = DKGCoordinator::new(node_factory.clone(), n, t)?;
         let (old_pk, old_shares, _) = fresh_coord.run_dkg()?;
 
-        let mut old_pk_bytes = Vec::new();
-        old_pk
-            .serialize_compressed(&mut old_pk_bytes)
-            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+        let old_pk_bytes = old_pk.to_bytes()?;
 
         // ── Step 2: reshare ceremony (same committee, all DealerReceiver) ───
         use rand_core::{OsRng, RngCore};
@@ -652,9 +643,7 @@ pub mod generic_tests {
         for node in &reshare_nodes {
             let pk = node.compute_aggregate_public_key()?;
 
-            let mut pk_bytes = Vec::new();
-            pk.serialize_compressed(&mut pk_bytes)
-                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+            let pk_bytes = pk.to_bytes()?;
 
             assert_eq!(
                 old_pk_bytes,
@@ -680,7 +669,7 @@ pub mod generic_tests {
     ) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -695,10 +684,7 @@ pub mod generic_tests {
 
         let mut fresh_coord = DKGCoordinator::new(node_factory.clone(), n_old, t_old)?;
         let (old_pk, old_shares, _) = fresh_coord.run_dkg()?;
-        let mut old_pk_bytes = Vec::new();
-        old_pk
-            .serialize_compressed(&mut old_pk_bytes)
-            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+        let old_pk_bytes = old_pk.to_bytes()?;
 
         use rand_core::{OsRng, RngCore};
         let mut rng = OsRng;
@@ -760,9 +746,7 @@ pub mod generic_tests {
 
         for receiver in &receiver_nodes {
             let pk = receiver.compute_aggregate_public_key()?;
-            let mut pk_bytes = Vec::new();
-            pk.serialize_compressed(&mut pk_bytes)
-                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+            let pk_bytes = pk.to_bytes()?;
             assert_eq!(
                 old_pk_bytes,
                 pk_bytes,
@@ -792,7 +776,7 @@ pub mod generic_tests {
     pub fn test_dkg_reshare_different_committee<Node, F>(node_factory: F) -> Result<()>
     where
         Node: TestDkgNode,
-        Node::PublicKey: CanonicalSerialize + PartialEq + Debug,
+        Node::PublicKey: CryptoSerialize + PartialEq + Debug,
         Node::PubPoly: Clone,
         Node::PolynomialCommitment: Clone,
         Node::ShareValue: Clone + zeroize::Zeroize,
@@ -807,10 +791,7 @@ pub mod generic_tests {
         let mut fresh_coord = DKGCoordinator::new(node_factory.clone(), n_old, t_old)?;
         let (old_pk, old_shares, _) = fresh_coord.run_dkg()?;
 
-        let mut old_pk_bytes = Vec::new();
-        old_pk
-            .serialize_compressed(&mut old_pk_bytes)
-            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+        let old_pk_bytes = old_pk.to_bytes()?;
 
         // ── Step 2: reshare to new committee ──────────────────────────────
         use rand_core::{OsRng, RngCore};
@@ -886,9 +867,7 @@ pub mod generic_tests {
         for node in &receiver_nodes {
             let pk = node.compute_aggregate_public_key()?;
 
-            let mut pk_bytes = Vec::new();
-            pk.serialize_compressed(&mut pk_bytes)
-                .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+            let pk_bytes = pk.to_bytes()?;
 
             assert_eq!(
                 old_pk_bytes,

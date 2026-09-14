@@ -1,11 +1,19 @@
-use crate::error::{CryptoError, Result};
+#[cfg(feature = "bls12-381")]
+use crate::error::CryptoError;
+use crate::error::Result;
+#[cfg(feature = "bls12-381")]
 use ark_ff::Zero;
+#[cfg(feature = "bls12-381")]
 use ark_serialize::CanonicalSerialize;
 
 /// Draw until the sampler returns a non-zero value.
 ///
 /// Protocol proof nonces must never be zero: for a Schnorr-style response
 /// `z = r + c*x`, setting `r = 0` exposes `x` whenever `c` is non-zero.
+///
+/// bls12-381 only: decaf377's one call site inlines this same loop directly
+/// instead of sharing it — see `decaf377/pre.rs`.
+#[cfg(feature = "bls12-381")]
 pub(crate) fn sample_nonzero<F: Zero>(mut sample: impl FnMut() -> F) -> F {
     loop {
         let candidate = sample();
@@ -51,6 +59,10 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
 /// (e.g. identity points with trailing garbage). This check re-serializes the
 /// decoded value and compares it to the original bytes, rejecting anything that
 /// doesn't round-trip exactly.
+///
+/// bls12-381 only: decaf377 has its own twin bound to arkworks 0.5
+/// (`decaf377::common::reject_non_canonical`) — see Cargo.toml.
+#[cfg(feature = "bls12-381")]
 pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
     let mut canonical = Vec::with_capacity(bytes.len());
     value.serialize_compressed(&mut canonical)?;
@@ -63,7 +75,7 @@ pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "bls12-381"))]
 mod tests {
     use super::sample_nonzero;
 

@@ -9,6 +9,11 @@ pub enum CryptoError {
     ElGamalError(String),
     #[error("Serialization error: {0}")]
     SerializationError(#[from] ark_serialize::SerializationError),
+    // decaf377's constant-time fix pulled in arkworks 0.5 (see crates/crypto/Cargo.toml);
+    // the bls12-381 path stays on 0.4, so decaf377 call sites need their own `From` arm.
+    #[cfg(feature = "decaf377")]
+    #[error("Serialization error: {0}")]
+    SerializationError05(#[from] ark_serialize_05::SerializationError),
     #[error("Invalid Signature Share")]
     InvalidSignatureShare,
     #[error("Invalid Signature")]

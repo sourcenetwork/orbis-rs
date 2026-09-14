@@ -10,11 +10,10 @@
 use crate::context::CiphertextContext;
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
-    DistKeyShare, DistributedShare, DkgMode, DkgRole, PriShare, PubPoly as PubPolyTrait, PubShare,
-    ReencryptReply, Secret, ThresholdDealer, ThresholdSigner,
+    CryptoSerialize, DistKeyShare, DistributedShare, DkgMode, DkgRole, PriShare,
+    PubPoly as PubPolyTrait, PubShare, ReencryptReply, Secret, ThresholdDealer, ThresholdSigner,
 };
 use crate::test_helper::{DKGCoordinator, TestDkgNode};
-use ark_serialize::CanonicalSerialize;
 use std::collections::HashMap;
 use std::fmt::Debug;
 
@@ -158,7 +157,7 @@ where
     Node: TestDkgNode<ShareValue = SV, PublicKey = PK, PubPoly = PP>,
     Node::PolynomialCommitment: Clone,
     SV: Clone + zeroize::Zeroize,
-    PK: Clone + CanonicalSerialize + Debug,
+    PK: Clone + CryptoSerialize + Debug,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
     NF: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>>,
 {
@@ -225,13 +224,8 @@ where
     let mut new_shares = Vec::new();
     for node in &nodes {
         let pk = node.compute_aggregate_public_key()?;
-        let mut pk_bytes = Vec::new();
-        let mut old_pk_bytes = Vec::new();
-        pk.serialize_compressed(&mut pk_bytes)
-            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
-        old_pk
-            .serialize_compressed(&mut old_pk_bytes)
-            .map_err(|e| CryptoError::DKGError(format!("Serialization error: {}", e)))?;
+        let pk_bytes = pk.to_bytes()?;
+        let old_pk_bytes = old_pk.to_bytes()?;
         assert_eq!(
             pk_bytes,
             old_pk_bytes,
@@ -292,7 +286,7 @@ where
     S::SigShare: Clone,
     S::NonceCommitment: Clone,
     SV: Clone + zeroize::Zeroize,
-    PK: Clone + PartialEq + Debug + CanonicalSerialize,
+    PK: Clone + PartialEq + Debug + CryptoSerialize,
     PP: Clone + PubPolyTrait<PublicKey = PK>,
     NF: Fn(u32, usize, usize, u128, DkgRole) -> Result<Box<Node>> + Clone,
     MK: Fn() -> (SV, PK),
@@ -339,10 +333,8 @@ where
 
     // Sanity: reshare PK must equal original (also asserted inside reshare_ceremony)
     {
-        let mut pk_bytes = Vec::new();
-        let mut agg_bytes = Vec::new();
-        new_pk.serialize_compressed(&mut pk_bytes).unwrap();
-        agg_pk.serialize_compressed(&mut agg_bytes).unwrap();
+        let pk_bytes = new_pk.to_bytes().unwrap();
+        let agg_bytes = agg_pk.to_bytes().unwrap();
         assert_eq!(
             pk_bytes, agg_bytes,
             "Round 2: reshared PK must equal original PK"

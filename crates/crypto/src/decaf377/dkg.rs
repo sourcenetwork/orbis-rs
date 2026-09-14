@@ -1,4 +1,4 @@
-use ark_ff::{One, Zero};
+use ark_ff_05::{One, Zero};
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use std::collections::HashMap;

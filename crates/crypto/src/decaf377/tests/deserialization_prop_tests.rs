@@ -1,4 +1,5 @@
 use crate::context::CiphertextContext;
+use crate::decaf377::common::reject_non_canonical;
 use crate::decaf377::common::{
     PolynomialCommitment, PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE,
 };
@@ -7,7 +8,6 @@ use crate::decaf377::sign::{FrostNonceCommitment, FrostSigningState, SchnorrSign
 use crate::deserialization_prop_tests_helpers::{
     assert_canonical_from_bytes, assert_value_roundtrips, byte_vec, small_byte_vec, PROPTEST_CASES,
 };
-use crate::helpers::reject_non_canonical;
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, DistributedShare, EncryptionProof, PriShare,
     PubShare, ReencryptReply, Secret, ThresholdDealer,
