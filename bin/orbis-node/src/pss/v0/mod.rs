@@ -38,7 +38,9 @@
 mod tests;
 
 use crate::app_state::AppState;
-use crate::constants::{PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS, PSS_GRACE_PERIOD_SECS};
+use crate::constants::{
+    PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS, PSS_GRACE_PERIOD_SECS, PSS_RING_CONCURRENCY_LIMIT,
+};
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::ring_payload_matches_ring_key;
 use crate::dkg::v0::network::{
@@ -125,6 +127,16 @@ where
 }
 
 /// Iterate over every known ring and trigger a PSS ceremony when due.
+///
+/// Runs up to [`PSS_RING_CONCURRENCY_LIMIT`] rings' checks concurrently
+/// rather than one at a time: a ring whose check becomes full ceremony
+/// coordination can legitimately block for a couple of minutes waiting on
+/// the committee's activation barrier (`coordinate_prepared_inner`'s own
+/// `DKG_PREPARATION_TIMEOUT`, which already cleans up properly on its own
+/// timeout — deliberately not re-wrapped in an extra timeout here, since
+/// cancelling that future early via `tokio::time::timeout` would skip its
+/// abort/cleanup path instead of running it). Sequential processing would
+/// let one such ring serialize in front of every ring later in the index.
 async fn pss_all_rings<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -145,16 +157,58 @@ where
 
     warn_on_protocol_version_divergence(app_state, &ring_index).await;
 
-    for entry in &ring_index {
-        let _ = pss_ring(app_state, entry).await.inspect_err(|error| {
+    let mut pending = ring_index.into_iter();
+    let mut in_flight = tokio::task::JoinSet::new();
+    for entry in pending.by_ref().take(PSS_RING_CONCURRENCY_LIMIT) {
+        spawn_pss_ring_check(&mut in_flight, app_state.clone(), entry);
+    }
+    while let Some(joined) = in_flight.join_next().await {
+        if let Some(entry) = pending.next() {
+            spawn_pss_ring_check(&mut in_flight, app_state.clone(), entry);
+        }
+        report_pss_ring_outcome(joined);
+    }
+    Ok(())
+}
+
+fn spawn_pss_ring_check<D>(
+    set: &mut tokio::task::JoinSet<(String, Result<(), DkgError>)>,
+    app_state: Arc<AppState<D>>,
+    entry: RingIndexEntry,
+) where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    set.spawn(async move {
+        let ring_pk_str = entry.ring_pk_str.clone();
+        let result = pss_ring(&app_state, &entry).await;
+        (ring_pk_str, result)
+    });
+}
+
+fn report_pss_ring_outcome(
+    joined: std::result::Result<(String, Result<(), DkgError>), tokio::task::JoinError>,
+) {
+    match joined {
+        Ok((_, Ok(()))) => {}
+        Ok((ring_pk_str, Err(error))) => {
             tracing::error!(
-                ring_pk_str = %entry.ring_pk_str,
+                ring_pk_str = %ring_pk_str,
                 error = %error,
                 "PSS: ceremony failed for ring"
             );
-        });
+        }
+        Err(join_error) => {
+            tracing::error!(error = %join_error, "PSS: ring check task panicked");
+        }
     }
-    Ok(())
 }
 
 /// Throttling + de-duplication state for [`warn_on_protocol_version_divergence`].

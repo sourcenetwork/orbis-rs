@@ -8,6 +8,8 @@ pub enum ReportingError {
     Unauthorized(String),
     #[error("report target is reachable")]
     TargetReachable,
+    #[error("report target health probe was inconclusive")]
+    HealthProbeInconclusive,
     #[error("report has expired")]
     Expired,
     #[error("unsupported report type {name}")]

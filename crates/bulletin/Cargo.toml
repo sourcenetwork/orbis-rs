@@ -20,7 +20,16 @@ tokio = { workspace = true }
 [features]
 default = ["vera"]
 vera = []
-dummy = []
+# Selects `DummyBulletin` as the production `BulletinImpl` (mutually
+# exclusive with `vera`, enforced below). Implies `dummy-type` since that's
+# what actually compiles the module this re-exports.
+dummy = ["dummy-type"]
+# Compiles the `dummy` module (an in-memory mock, no chain) without
+# selecting it as `BulletinImpl` — for a `vera`-backed binary (orbis-node,
+# orbis-bench) that still wants `DummyBulletin` available for an in-process
+# test/benchmark harness. Split from `dummy` so enabling it can't trip the
+# `vera`+`dummy` mutual-exclusivity check below.
+dummy-type = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]
 
