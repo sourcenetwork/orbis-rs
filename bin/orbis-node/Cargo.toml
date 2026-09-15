@@ -50,6 +50,7 @@ hyper-util = { workspace = true }
 
 [dev-dependencies]
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
+bulletin = { path = "../../crates/bulletin", features = ["dummy-type"] }
 bs58 = "0.5"
 serial_test = "3.2.0"
 ark-bls12-381 = "0.4"
@@ -78,7 +79,7 @@ unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead
 # of Vera. Not used by the production binary.
-harness = ["authz/test-helpers", "network/shaping"]
+harness = ["authz/test-helpers", "network/shaping", "bulletin/dummy-type"]
 fault-injection = ["network/fault-injection"]
 # Native in-process scale test (tests::scale_testing): many real orbis-node
 # instances running a full DKG ceremony in one process. Implies `harness`.
