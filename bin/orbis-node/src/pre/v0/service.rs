@@ -136,6 +136,23 @@ where
             PreError::SystemTime("Failed to get current timestamp".to_string())
         })?;
 
+        // Reject an oversized inline document before any JWT/crypto work —
+        // mirrors Sign's message-size gate. Redundant with the gRPC
+        // transport's `max_decoding_message_size(MAX_PRE_REQUEST_BYTES)`
+        // (`runtime.rs`), which already bounds the whole request; this is
+        // defense-in-depth so a maximal-but-still-under-that-cap document
+        // doesn't spend a JWT signature verification before being rejected.
+        if let Some(document) = request.get_ref().document.as_ref() {
+            if document.encrypted_document.len() > crate::constants::MAX_PRE_REQUEST_BYTES {
+                return Err(PreError::InvalidInput(format!(
+                    "Inline document too large: {} bytes exceeds maximum {}",
+                    document.encrypted_document.len(),
+                    crate::constants::MAX_PRE_REQUEST_BYTES
+                ))
+                .into());
+            }
+        }
+
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
             .map_err(PreError::Unauthorized)?;
