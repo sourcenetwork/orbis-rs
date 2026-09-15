@@ -1,0 +1,138 @@
+diff --git a/CONFIG b/CONFIG
+index 6d5f0f1..8d2d5d7 100644
+--- a/CONFIG
++++ b/CONFIG
+@@ -66,9 +66,9 @@ endif
+ # Default for MAX_MOD_SZ is 10, which suffices for all Overdrive protocols
+ # MOD = -DMAX_MOD_SZ=10 -DGFP_MOD_SZ=5
+ 
+-LDLIBS = -lmpirxx -lmpir -lsodium $(MY_LDLIBS)
++LDLIBS = -lgmpxx -lgmp -lsodium $(MY_LDLIBS)
+ LDLIBS +=  -Wl,-rpath -Wl,$(CURDIR)/local/lib -L$(CURDIR)/local/lib
+-LDLIBS += -lboost_system -lssl -lcrypto
++LDLIBS += -lssl -lcrypto
+ 
+ CFLAGS += -I./local/include
+ 
+diff --git a/Math/Z2k.h b/Math/Z2k.h
+index e8d2ba5..0415537 100644
+--- a/Math/Z2k.h
++++ b/Math/Z2k.h
+@@ -6,7 +6,7 @@
+ #ifndef MATH_Z2K_H_
+ #define MATH_Z2K_H_
+ 
+-#include <mpirxx.h>
++#include <gmpxx.h>
+ #include <string>
+ using namespace std;
+ 
+diff --git a/Math/bigint.h b/Math/bigint.h
+index 2a92939..39edf46 100644
+--- a/Math/bigint.h
++++ b/Math/bigint.h
+@@ -5,7 +5,7 @@
+ using namespace std;
+ 
+ #include <stddef.h>
+-#include <mpirxx.h>
++#include <gmpxx.h>
+ 
+ #include "Tools/Exceptions.h"
+ #include "Tools/int.h"
+@@ -281,11 +281,7 @@ inline int numBytes(const bigint& m)
+ 
+ inline int probPrime(const bigint& x)
+ {
+-  gmp_randstate_t rand_state;
+-  gmp_randinit_default(rand_state);
+-  int ans = mpz_probable_prime_p(x.get_mpz_t(), rand_state,
+-      max(40, DEFAULT_SECURITY), 0);
+-  gmp_randclear(rand_state);
++  int ans = mpz_probab_prime_p(x.get_mpz_t(), max(40, DEFAULT_SECURITY));
+   return ans;
+ }
+ 
+diff --git a/Math/mpn_fixed.h b/Math/mpn_fixed.h
+index 87e9407..b8f73ef 100644
+--- a/Math/mpn_fixed.h
++++ b/Math/mpn_fixed.h
+@@ -6,7 +6,7 @@
+ #ifndef MATH_MPN_FIXED_H_
+ #define MATH_MPN_FIXED_H_
+ 
+-#include <mpir.h>
++#include <gmp.h>
+ #include <string.h>
+ #include <assert.h>
+ 
+diff --git a/Math/square128.cpp b/Math/square128.cpp
+index fadbe21..7aa2c75 100644
+--- a/Math/square128.cpp
++++ b/Math/square128.cpp
+@@ -3,7 +3,7 @@
+  *
+  */
+ 
+-#include <mpirxx.h>
++#include <gmpxx.h>
+ 
+ #include "OT/BitMatrix.h"
+ #include "Tools/random.h"
+diff --git a/Networking/CryptoPlayer.h b/Networking/CryptoPlayer.h
+index 03c09bf..4d89269 100644
+--- a/Networking/CryptoPlayer.h
++++ b/Networking/CryptoPlayer.h
+@@ -21,7 +21,7 @@
+ class CryptoPlayer : public MultiPlayer<ssl_socket*>
+ {
+     ssl_ctx ctx;
+-    boost::asio::io_service io_service;
++    boost::asio::io_context io_service;
+ 
+     vector<ssl_socket*> other_sockets;
+ 
+diff --git a/Networking/ssl_sockets.h b/Networking/ssl_sockets.h
+index a9ce631..b2d1c26 100644
+--- a/Networking/ssl_sockets.h
++++ b/Networking/ssl_sockets.h
+@@ -18,7 +18,7 @@
+ #define SSL_DIR "Player-Data/"
+ #endif
+ 
+-typedef boost::asio::io_service ssl_service;
++typedef boost::asio::io_context ssl_service;
+ 
+ void check_ssl_file(string filename);
+ void ssl_error(string side, string other, string server);
+@@ -46,7 +46,7 @@ class ssl_socket : public boost::asio::ssl::stream<boost::asio::ip::tcp::socket>
+     typedef boost::asio::ssl::stream<boost::asio::ip::tcp::socket> parent;
+ 
+ public:
+-    ssl_socket(boost::asio::io_service& io_service,
++    ssl_socket(boost::asio::io_context& io_service,
+             boost::asio::ssl::context& ctx, int plaintext_socket, string other,
+             string me, bool client) :
+             parent(io_service, ctx)
+@@ -57,7 +57,7 @@ public:
+ #endif
+         lowest_layer().assign(boost::asio::ip::tcp::v4(), plaintext_socket);
+         set_verify_mode(boost::asio::ssl::verify_peer);
+-        set_verify_callback(boost::asio::ssl::rfc2818_verification(other));
++        set_verify_callback(boost::asio::ssl::host_name_verification(other));
+         if (client)
+             try
+             {
+diff --git a/Tools/random.h b/Tools/random.h
+index 373fcd6..3b16cdb 100644
+--- a/Tools/random.h
++++ b/Tools/random.h
+@@ -7,7 +7,7 @@
+ #include "Tools/avx_memcpy.h"
+ #include "Networking/data.h"
+ 
+-#include <mpir.h>
++#include <gmp.h>
+ 
+ #define USE_AES
+ 
