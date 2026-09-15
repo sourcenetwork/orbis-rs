@@ -7,7 +7,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const HEALTH_PROBE_ATTEMPTS: usize = 3;
-const HEALTH_PROBE_TOTAL_TIMEOUT: Duration = Duration::from_secs(5);
+// Comfortably above the inner loop's worst case (3 * ATTEMPT_TIMEOUT + 2 *
+// RETRY_DELAY = 4.7s) so this timeout firing is a genuine "our own probing
+// stalled" circuit breaker, not routine tail latency grazing the deadline.
+const HEALTH_PROBE_TOTAL_TIMEOUT: Duration = Duration::from_secs(7);
 const HEALTH_PROBE_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(1_400);
 const HEALTH_PROBE_RETRY_DELAY: Duration = Duration::from_millis(250);
 
@@ -70,7 +73,21 @@ pub async fn require_peer_offline(
 
     match tokio::time::timeout(HEALTH_PROBE_TOTAL_TIMEOUT, probe).await {
         Ok(result) => result,
-        Err(_) => Ok(()),
+        // The outer deadline firing means our own probing didn't finish in
+        // time — it is not evidence the peer is unreachable. Treat it the
+        // same as a confirmed-reachable result (decline to attribute) rather
+        // than folding it into "offline": this gates a threshold-signed
+        // demerit, so ambiguity must fail closed. A merely-slow prober costs
+        // this one co-signer's contribution toward the threshold, never a
+        // false attribution — see the module-level reasoning in
+        // `dkg/v0/coordinator/reporting.rs` for the equivalent PSS-side
+        // property.
+        Err(_) => {
+            crate::metrics::REPORT_HEALTH_CHECKS_TOTAL
+                .with_label_values(&["inconclusive"])
+                .inc();
+            Err(ReportingError::HealthProbeInconclusive)
+        }
     }
 }
 
