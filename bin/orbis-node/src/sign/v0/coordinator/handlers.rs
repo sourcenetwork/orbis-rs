@@ -269,15 +269,6 @@ where
                 )
                 .map_err(|e| SignError::Unauthorized(format!("JWT validation failed: {}", e)))?;
                 validate_sign_claims(&token, derivation_id, None)?;
-                // Reject a forwarded JWT this node has already accepted. A responder
-                // sees the client token once here in FROST Round 1; Round 2
-                // (`handle_sign_request`) is covered by the single-use nonce, not
-                // this guard. A duplicate here means a replayed `NonceRequest`.
-                self.app_state
-                    .jti_guard
-                    .check_and_record(&token.jwt_id, token.expiration_time, "sign_nonce_request")
-                    .await
-                    .map_err(|e| SignError::Unauthorized(e.to_string()))?;
                 let (key_derivation, ring_payload) = fetch_bulletin_payloads_for_version(
                     &*self.app_state.bulletin,
                     derivation_id,
@@ -343,6 +334,25 @@ where
                     }
                     return Err(error);
                 }
+
+                // Reject a forwarded JWT this node has already accepted. A responder
+                // sees the client token once here in FROST Round 1; Round 2
+                // (`handle_sign_request`) is covered by the single-use nonce, not
+                // this guard. A duplicate here means a replayed `NonceRequest`.
+                // Recorded only on this success path, after the ACP check above
+                // already passed, so an unauthorized caller can't burn capacity in
+                // the shared replay cache purely by presenting fresh, never-authorized
+                // tokens. A captured request that fails the ACP re-check above stays
+                // replayable against this guard, but repeatedly replaying it can't
+                // spam the unauthorized-relay report either: `report_unauthorized_relay`
+                // checks Vera's `accepted_report_session` first and skips a signing
+                // round for an incident already accepted on-chain.
+                self.app_state
+                    .jti_guard
+                    .check_and_record(&token.jwt_id, token.expiration_time, "sign_nonce_request")
+                    .await
+                    .map_err(|e| SignError::Unauthorized(e.to_string()))?;
+
                 Some(ring_payload.ring_pk)
             }
             // The ready marker proves this signing round belongs to an already accepted

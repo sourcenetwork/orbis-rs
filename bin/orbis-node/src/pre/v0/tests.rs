@@ -1340,12 +1340,18 @@ async fn test_start_pre_fails_wrong_signature() {
     cleanup_db(&db_path);
 }
 
-/// A JWT is single use: the second `start_pre` with the same token is rejected
-/// by the `jti` guard even though the first attempt failed later in the flow.
+/// A JWT is recorded by the `jti` guard only once `start_pre` reaches a
+/// successful ACP decision — not merely for presenting a validly-signed
+/// token. A request that fails earlier in the flow (no such document, so
+/// `check_policy_access` is never reached) must not consume the guard's
+/// capacity: retrying with the same token hits the same non-replay failure
+/// again, not a replay rejection. This is what stops an authenticated-but-
+/// never-authorized caller from burning the shared replay cache with tokens
+/// that were always going to fail.
 #[tokio::test]
 #[serial_test::serial]
-async fn test_start_pre_rejects_a_replayed_jwt() {
-    let db_name = "test_start_pre_rejects_a_replayed_jwt";
+async fn test_start_pre_does_not_record_jti_before_authorization() {
+    let db_name = "test_start_pre_does_not_record_jti_before_authorization";
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
     let service = PreServiceImpl::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);
@@ -1366,8 +1372,9 @@ async fn test_start_pre_rejects_a_replayed_jwt() {
         rdr_pk_proof: None,
     };
 
-    // First call: JWT and claims are valid, so the jti is recorded before the
-    // flow fails later (no such document). That failure is not a replay rejection.
+    // First call: JWT and claims are valid, but the flow fails before
+    // `check_policy_access` (no such document), so the jti guard is never
+    // reached at all.
     let first = service
         .start_pre(create_authenticated_request(make_request(), &token).unwrap())
         .await
@@ -1378,15 +1385,16 @@ async fn test_start_pre_rejects_a_replayed_jwt() {
         first.message()
     );
 
-    // Same token again: rejected by the single-use guard.
+    // Same token again: since the first attempt never reached authorization,
+    // nothing was recorded — this hits the same non-replay failure, not the
+    // single-use guard.
     let second = service
         .start_pre(create_authenticated_request(make_request(), &token).unwrap())
         .await
-        .expect_err("a replayed JWT must be rejected");
-    assert_eq!(second.code(), tonic::Code::Unauthenticated);
+        .expect_err("no such document in the bulletin, again");
     assert!(
-        second.message().contains("already been used"),
-        "replay must be rejected by the jti guard: {}",
+        !second.message().contains("already been used"),
+        "a token that never reached authorization must stay usable: {}",
         second.message()
     );
 

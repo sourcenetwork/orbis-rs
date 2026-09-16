@@ -16,7 +16,7 @@ use crate::reporting::v0::registry::{
 };
 use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, RelayRequestStatement, ReportSigningContext,
-    ReportedDocumentEvidence, SignedReport, RELAY_REQUEST_DOMAIN,
+    ReportedDocumentEvidence, SignedReport, RELAY_REQUEST_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse};
 use crate::sign::v0::messages::SignContext;
@@ -407,6 +407,37 @@ pub async fn report_unauthorized_relay<D, S>(
             request_id = %statement.request_id,
             %error,
             "Skipping unauthorized_request report: relay signature is invalid"
+        );
+        return;
+    }
+
+    // A leader that keeps replaying the same captured, ACP-failing request forces
+    // every responder that re-derives this far to re-run this whole path. Ask the
+    // chain whether this exact incident was already accepted before paying for a
+    // full threshold-signing round that would only end in ErrReportAlreadyAccepted.
+    let already_accepted = app_state
+        .bulletin
+        .accepted_report_session(
+            &statement.ring_id,
+            UNAUTHORIZED_REQUEST_REPORT_TYPE,
+            &statement.origin_protocol,
+            &statement.relayer_node_key,
+            &statement.request_id,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                request_id = %statement.request_id,
+                %error,
+                "Failed to check accepted_report_session; proceeding without the pre-check"
+            );
+            false
+        });
+    if already_accepted {
+        tracing::debug!(
+            request_id = %statement.request_id,
+            accused = %statement.relayer_node_key,
+            "Skipping unauthorized_request report: session already accepted on-chain"
         );
         return;
     }

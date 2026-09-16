@@ -154,13 +154,6 @@ where
             &req.salt,
         )?;
 
-        // Reject a JWT this node has already accepted (single use).
-        self.state
-            .jti_guard
-            .check_and_record(&token.jwt_id, token.expiration_time, "start_pre")
-            .await
-            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
-
         // Parse the reader's proof of knowledge of rdr_pk's discrete log. This
         // is re-verified independently by every committee member inside
         // `ThresholdDealer::reencrypt` (the actual security boundary — see
@@ -221,6 +214,17 @@ where
             valid_window.clone(),
         )
         .await?;
+
+        // Reject a JWT this node has already accepted (single use). Recorded only
+        // on this success path, after the ACP check above already passed, so an
+        // unauthorized caller can't burn capacity in the shared replay cache purely
+        // by presenting fresh, never-authorized tokens — see the responder-side
+        // `handle_reencrypt_request` for the equivalent reasoning.
+        self.state
+            .jti_guard
+            .check_and_record(&token.jwt_id, token.expiration_time, "start_pre")
+            .await
+            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
         let secret = deserialize_secret(&document_payload.document)?;

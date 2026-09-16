@@ -174,6 +174,26 @@ impl Bulletin for VeraBulletin {
         check_result(result, "submit report")
     }
 
+    async fn accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        self.chain_client
+            .orbis_read_accepted_report_session(
+                ring_id,
+                report_type,
+                origin_protocol,
+                accused_node_key,
+                session_id,
+            )
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))
+    }
+
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
         match kind {
             BulletinKind::Ring => self
