@@ -16,7 +16,7 @@ use vera_client::{
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, SignedNodeRequest},
     rings::encode_ring_command,
     rings::RingCommand,
-    NativeWorker, VeraClient, HUB_ADDRESS,
+    NativeWorker, VeraClient, VERA_ADDRESS,
 };
 use vera_domain::NativeTx;
 use zeroize::Zeroizing;
@@ -257,7 +257,7 @@ async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
             let command = ring_command(request)?;
             let token = read_bounded(token_file, 64 * 1024)?;
             let wire = worker.prepare(
-                HUB_ADDRESS,
+                VERA_ADDRESS,
                 encode_ring_command(&command, std::str::from_utf8(&token)?.trim())?,
             )?;
             print(json!({"submission_id": NativeTx::decode_wire(wire)?.tx_id().0}))
@@ -270,7 +270,7 @@ async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
                     && signed.request.deployment_id == config.deployment_id,
                 "node request targets a different deployment"
             );
-            let wire = worker.prepare(HUB_ADDRESS, encode_node_request(&signed)?)?;
+            let wire = worker.prepare(VERA_ADDRESS, encode_node_request(&signed)?)?;
             print(json!({"submission_id": NativeTx::decode_wire(wire)?.tx_id().0}))
         }
         Command::Submit | Command::Acknowledge { .. } => {

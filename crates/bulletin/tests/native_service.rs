@@ -18,7 +18,7 @@ use std::{
 use vera_client::{
     create_scoped_bearer_token,
     rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig},
-    BlsSigner, DelegationScope, VeraClient, HUB_ADDRESS,
+    BlsSigner, DelegationScope, VeraClient, VERA_ADDRESS,
 };
 use vera_domain::{ConsensusPublicKey, NativeTx};
 use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
@@ -43,7 +43,7 @@ async fn submit(
     trusted: &ConsensusPublicKey,
     call: Bytes,
 ) -> B256 {
-    let wire = worker.sign_native_tx(HUB_ADDRESS, call).unwrap();
+    let wire = worker.sign_native_tx(VERA_ADDRESS, call).unwrap();
     let id = NativeTx::decode_wire(&wire).unwrap().tx_id().0;
     assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
     receipt(client, id, trusted).await;

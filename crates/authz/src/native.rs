@@ -220,7 +220,7 @@ impl Authz for NativeAuth {
         let response = self
             .client
             .read_current_record(
-                ModuleId::Hub,
+                ModuleId::Vera,
                 b"orbis/authz/anchor/v1",
                 self.minimum.load(Ordering::Acquire),
                 &self.trusted,

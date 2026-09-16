@@ -112,7 +112,7 @@ impl Node {
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -218,14 +218,14 @@ async fn submit(
     call: alloy_primitives::Bytes,
 ) {
     let wire = worker
-        .sign_native_tx(vera_client::HUB_ADDRESS, call)
+        .sign_native_tx(vera_client::VERA_ADDRESS, call)
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(client, id, trusted).await;
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -233,7 +233,7 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -871,11 +871,6 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         )
         .await;
     }
-    assert!(Command::new("kill")
-        .args(["-STOP", &incoming.0.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
     nodes.push(incoming);
     infos.push(info);
     addresses.push(addr);
@@ -903,6 +898,17 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .map(|info| info.node_key.clone())
         .collect();
     target.sort();
+    // Pause the actual next leader so current members must forward before
+    // the coordinator can begin the transition.
+    let leader = infos
+        .iter()
+        .position(|info| info.node_key == target[0])
+        .unwrap();
+    assert!(Command::new("kill")
+        .args(["-STOP", &nodes[leader].0.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -934,7 +940,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap(),
     )
     .await;
-    tokio::time::timeout(Duration::from_secs(15), async {
+    let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let started = (0..nodes.len() - 1).any(|index| {
                 fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
@@ -947,8 +953,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
-    .await
-    .expect("current members start reshare while incoming member is paused");
+    .await;
+    if forwarding.is_err() {
+        let logs = base.keep();
+        panic!("current members did not forward reshare to paused leader; logs: {logs:?}");
+    }
     let pending = client
         .read_threshold_ring(
             &derivation.ring_id,

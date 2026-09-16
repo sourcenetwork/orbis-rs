@@ -26,9 +26,9 @@ sha2 = { workspace = true }
 rpassword = "7.3"
 bs58 = "0.5"
 
-vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "7965a38f0eee5f1f92e4b6c6870a818617391e82", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "82c4e1bf43ab80e6a13cb1b89f95db8086218333", optional = true }
 alloy-primitives = { version = "1", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "7965a38f0eee5f1f92e4b6c6870a818617391e82", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "82c4e1bf43ab80e6a13cb1b89f95db8086218333", optional = true }
 local-storage = { path = "../../crates/local-storage", default-features = false, features = ["redb"], optional = true }
 zeroize = { workspace = true, optional = true }
 
@@ -48,8 +48,8 @@ name = "native_admin"
 required-features = ["native"]
 
 [dev-dependencies]
-vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "7965a38f0eee5f1f92e4b6c6870a818617391e82" }
-vera-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "7965a38f0eee5f1f92e4b6c6870a818617391e82" }
+vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "82c4e1bf43ab80e6a13cb1b89f95db8086218333" }
+vera-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "82c4e1bf43ab80e6a13cb1b89f95db8086218333" }
 commonware-codec = "2026.9.0"
 k256.workspace = true
 tempfile.workspace = true

@@ -18,7 +18,7 @@ use vera_client::{
     threshold_objects::{
         encode_threshold_object, EncryptedDocument, KeyDerivation, ThresholdObject,
     },
-    ClientError, ExecutionReceipt, NativeWorker, VeraClient, HUB_ADDRESS,
+    ClientError, ExecutionReceipt, NativeWorker, VeraClient, VERA_ADDRESS,
 };
 use vera_domain::{ConsensusPublicKey, NativeTx};
 use zeroize::Zeroizing;
@@ -156,7 +156,7 @@ impl NativeVeraClient {
     }
 
     fn prepare_call(&mut self, calldata: Bytes) -> Result<B256, ClientError> {
-        let wire = self.worker.prepare(HUB_ADDRESS, calldata)?;
+        let wire = self.worker.prepare(VERA_ADDRESS, calldata)?;
         Ok(NativeTx::decode_wire(wire)
             .map_err(|e| ClientError::Signing(e.to_string()))?
             .tx_id()
@@ -347,7 +347,7 @@ impl NativeVeraClient {
             .map(|wire| {
                 let request =
                     NativeTx::decode_wire(wire).map_err(|e| ClientError::Worker(e.to_string()))?;
-                if request.target != HUB_ADDRESS {
+                if request.target != VERA_ADDRESS {
                     return Err(ClientError::Worker(
                         "unexpected native bulletin target".into(),
                     ));
