@@ -178,16 +178,10 @@ impl PubPolyTrait for PubPoly {
         if self.commits.is_empty() {
             return G1Affine::zero();
         }
-
-        let x = Fr::from(i as u64);
-        let mut result = G1Projective::from(self.commits[0]);
-        let mut x_power = x;
-
-        for commit in &self.commits[1..] {
-            result += G1Projective::from(*commit) * x_power;
-            x_power *= x;
-        }
-
+        let result: G1Projective = crate::helpers::eval_poly_at(
+            self.commits.iter().map(|&c| G1Projective::from(c)),
+            Fr::from(i as u64),
+        );
         result.into()
     }
 }
@@ -206,16 +200,10 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
         if self.coefficients.is_empty() {
             return G1Affine::zero();
         }
-
-        let x_scalar = Fr::from(x as u64);
-        let mut result = G1Projective::from(self.coefficients[0]);
-        let mut x_power = x_scalar;
-
-        for coeff in &self.coefficients[1..] {
-            result += G1Projective::from(*coeff) * x_power;
-            x_power *= x_scalar;
-        }
-
+        let result: G1Projective = crate::helpers::eval_poly_at(
+            self.coefficients.iter().map(|&c| G1Projective::from(c)),
+            Fr::from(x as u64),
+        );
         result.into()
     }
 

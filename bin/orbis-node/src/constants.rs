@@ -616,6 +616,14 @@ pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
 /// INFO/WARN when the observed set of `(ring, version)` pairs changes.
 pub const PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS: u64 = 15 * 60;
 
+/// Maximum number of rings whose PSS check runs concurrently per scheduler
+/// tick. A ring's check can become full ceremony coordination (up to
+/// `DKG_PREPARATION_TIMEOUT` waiting on the committee's activation barrier),
+/// so this bounds the fan-out for a node that happens to be a member of many
+/// simultaneously-due rings, rather than either serializing behind them one
+/// at a time or coordinating unboundedly many ceremonies at once.
+pub const PSS_RING_CONCURRENCY_LIMIT: usize = 8;
+
 /// Maximum number of attempts to collect threshold signatures at the end of a reshare.
 pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 

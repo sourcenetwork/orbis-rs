@@ -53,6 +53,32 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     Ok((sk, pk))
 }
 
+/// Evaluate `coeffs[0] + coeffs[1]*x + coeffs[2]*x^2 + ...` by accumulating
+/// a running scalar power of `x` alongside the running sum. This is the
+/// shared evaluation loop behind every `PubPoly`/`PolynomialCommitment::eval`
+/// in this crate, generic over both curve backends' point type (`A`) and
+/// scalar type (`S`) so it needs no curve-specific code itself.
+///
+/// Panics if `coeffs` is empty — callers own the empty-polynomial case
+/// (checked before this is called) since its "zero" value differs by type
+/// (identity element vs. affine-zero point).
+pub(crate) fn eval_poly_at<A, S>(coeffs: impl IntoIterator<Item = A>, x: S) -> A
+where
+    A: core::ops::Add<Output = A> + core::ops::Mul<S, Output = A>,
+    S: Copy + core::ops::Mul<Output = S>,
+{
+    let mut iter = coeffs.into_iter();
+    let mut result = iter
+        .next()
+        .expect("eval_poly_at requires a non-empty coefficient list");
+    let mut x_power = x;
+    for coeff in iter {
+        result = result + coeff * x_power;
+        x_power = x_power * x;
+    }
+    result
+}
+
 /// Rejects non-canonical encodings by round-tripping through serialization.
 ///
 /// arkworks' `deserialize_compressed` accepts some non-canonical byte strings

@@ -223,6 +223,20 @@ impl JtiReplayGuard {
     }
 }
 
+/// Enforce single-use on a client-presented JWT at a client entrypoint
+/// (`start_pre`/`start_sign`). Callers must call this only after their own
+/// ACP `check_policy_access` has already succeeded — see this module's docs
+/// above for why recording any earlier would let an unauthorized caller
+/// burn this guard's shared capacity.
+pub async fn record_client_jti_after_acp(
+    guard: &JtiReplayGuard,
+    jti: &str,
+    token_exp_unix: u64,
+    site: &'static str,
+) -> Result<(), ReplayError> {
+    guard.check_and_record(jti, token_exp_unix, site).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

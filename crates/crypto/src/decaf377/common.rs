@@ -102,22 +102,12 @@ pub struct PubPoly {
 impl PubPolyTrait for PubPoly {
     type PublicKey = Element;
 
-    /// Evaluate the public polynomial at index i using Horner's method
+    /// Evaluate the public polynomial at index i.
     fn eval(&self, i: u32) -> Self::PublicKey {
         if self.commits.is_empty() {
             return Element::default();
         }
-
-        let x = Fr::from(i as u64);
-        let mut result = self.commits[0];
-        let mut x_power = x;
-
-        for commit in &self.commits[1..] {
-            result += *commit * x_power;
-            x_power *= x;
-        }
-
-        result
+        crate::helpers::eval_poly_at(self.commits.iter().copied(), Fr::from(i as u64))
     }
 }
 
@@ -135,17 +125,7 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
         if self.coefficients.is_empty() {
             return Element::default();
         }
-
-        let x_scalar = Fr::from(x as u64);
-        let mut result = self.coefficients[0];
-        let mut x_power = x_scalar;
-
-        for coeff in &self.coefficients[1..] {
-            result += *coeff * x_power;
-            x_power *= x_scalar;
-        }
-
-        result
+        crate::helpers::eval_poly_at(self.coefficients.iter().copied(), Fr::from(x as u64))
     }
 
     fn verify_share(&self, share_id: u32, share_value: &Fr) -> bool {

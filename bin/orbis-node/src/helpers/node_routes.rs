@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
 
-use crate::helpers::identity::{canonicalize_peer_id, extract_node_part};
+use crate::helpers::identity::{canonicalize_peer_id, extract_node_part, validate_all_peer_ids};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRoute {
@@ -58,6 +58,28 @@ pub async fn resolve_node_routes(
 
 pub fn peer_ids_from_routes(routes: &[NodeRoute]) -> Vec<String> {
     routes.iter().map(|route| route.peer_id.clone()).collect()
+}
+
+/// Resolve `peer_node_keys` to routable peer IDs and validate every one, for
+/// a client entrypoint (`start_pre`/`start_sign`) about to fan a request out
+/// to them. Every failure mode here — an empty committee, a route Vera
+/// doesn't recognize, a malformed peer ID — is the caller's own
+/// `InvalidInput` variant; this returns a plain message so PRE and Sign can
+/// each wrap it in their own error type without sharing one.
+pub async fn resolve_and_validate_peer_ids(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    peer_node_keys: &[String],
+    empty_committee_message: &str,
+) -> Result<Vec<String>, String> {
+    if peer_node_keys.is_empty() {
+        return Err(empty_committee_message.to_string());
+    }
+    let routes = resolve_node_routes(bulletin, peer_node_keys).await?;
+    let peer_ids = peer_ids_from_routes(&routes);
+    validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
+        format!("Invalid peer ID '{invalid_peer_id}': {validation_error}")
+    })?;
+    Ok(peer_ids)
 }
 
 /// Validate the exact `node_key -> peer route` bindings supplied on the wire

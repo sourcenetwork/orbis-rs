@@ -1,7 +1,9 @@
 use crate::app_state::AppState;
-use crate::helpers::auth::{current_unix_time, extract_and_validate_jwt, request_actor};
-use crate::helpers::identity::validate_all_peer_ids;
-use crate::helpers::node_routes::{peer_ids_from_routes, resolve_node_routes};
+use crate::helpers::auth::{
+    client_valid_window, current_unix_time, extract_and_validate_jwt, request_actor,
+};
+use crate::helpers::jti_replay::record_client_jti_after_acp;
+use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
 use crate::metrics;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
@@ -15,7 +17,6 @@ use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use authn::PreClaims;
-use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use crypto::r#trait::{
     DistKeyShare, Dkg, EncryptionProof, ReencryptReply, Secret, ThresholdDealer,
@@ -135,16 +136,30 @@ where
             PreError::SystemTime("Failed to get current timestamp".to_string())
         })?;
 
+        // Reject an oversized inline document before any JWT/crypto work —
+        // mirrors Sign's message-size gate. Redundant with the gRPC
+        // transport's `max_decoding_message_size(MAX_PRE_REQUEST_BYTES)`
+        // (`runtime.rs`), which already bounds the whole request; this is
+        // defense-in-depth so a maximal-but-still-under-that-cap document
+        // doesn't spend a JWT signature verification before being rejected.
+        if let Some(document) = request.get_ref().document.as_ref() {
+            if document.encrypted_document.len() > crate::constants::MAX_PRE_REQUEST_BYTES {
+                return Err(PreError::InvalidInput(format!(
+                    "Inline document too large: {} bytes exceeds maximum {}",
+                    document.encrypted_document.len(),
+                    crate::constants::MAX_PRE_REQUEST_BYTES
+                ))
+                .into());
+            }
+        }
+
         // 1. Authenticate: Extract and validate JWT
         let (token_str, token) = extract_and_validate_jwt::<PreClaims, _>(&request, current_time)
             .map_err(PreError::Unauthorized)?;
 
         let mut req = request.into_inner();
 
-        let valid_window = req.valid_window.map(|w| ValidWindow {
-            start: w.start,
-            end: w.end,
-        });
+        let valid_window = client_valid_window(req.valid_window.map(|w| (w.start, w.end)));
 
         validate_pre_claims(
             &token,
@@ -215,16 +230,16 @@ where
         )
         .await?;
 
-        // Reject a JWT this node has already accepted (single use). Recorded only
-        // on this success path, after the ACP check above already passed, so an
-        // unauthorized caller can't burn capacity in the shared replay cache purely
-        // by presenting fresh, never-authorized tokens — see the responder-side
-        // `handle_reencrypt_request` for the equivalent reasoning.
-        self.state
-            .jti_guard
-            .check_and_record(&token.jwt_id, token.expiration_time, "start_pre")
-            .await
-            .map_err(|e| PreError::Unauthorized(e.to_string()))?;
+        // Single-use JWT enforcement — see `record_client_jti_after_acp`'s docs
+        // for why this must come after the ACP check above.
+        record_client_jti_after_acp(
+            &self.state.jti_guard,
+            &token.jwt_id,
+            token.expiration_time,
+            "start_pre",
+        )
+        .await
+        .map_err(|e| PreError::Unauthorized(e.to_string()))?;
 
         let (ring_pk_bytes, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
         let secret = deserialize_secret(&document_payload.document)?;
@@ -256,26 +271,14 @@ where
         // Use original string bytes instead of re-serializing
         let secret_bytes = document_payload.document.as_bytes().to_vec();
 
-        // 2. Validate we have peers
-        if ring_payload.peer_node_keys.is_empty() {
-            return Err(PreError::InvalidInput(
-                "No peer node keys provided for reencryption".to_string(),
-            )
-            .into());
-        }
-
-        let routes = resolve_node_routes(&self.state.bulletin, &ring_payload.peer_node_keys)
-            .await
-            .map_err(PreError::InvalidInput)?;
-        let peer_ids = peer_ids_from_routes(&routes);
-
-        // 2b. Validate all peer IDs before attempting connections
-        validate_all_peer_ids(&peer_ids).map_err(|(invalid_peer_id, validation_error)| {
-            PreError::InvalidInput(format!(
-                "Invalid peer ID '{}': {}",
-                invalid_peer_id, validation_error
-            ))
-        })?;
+        // 2. Resolve and validate peers
+        let peer_ids = resolve_and_validate_peer_ids(
+            &self.state.bulletin,
+            &ring_payload.peer_node_keys,
+            "No peer node keys provided for reencryption",
+        )
+        .await
+        .map_err(PreError::InvalidInput)?;
 
         // 3. Generate unique request ID
         let request_id = rand::random::<u64>().to_string();
