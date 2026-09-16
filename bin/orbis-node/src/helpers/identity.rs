@@ -70,6 +70,26 @@ pub fn validate_all_peer_ids(peer_ids: &[String]) -> Result<(), (String, PeerIdV
         .try_for_each(|peer_id| validate_peer_id(peer_id).map_err(|e| (peer_id.clone(), e)))
 }
 
+/// Validate `peer_id` and lowercase its hex node part, leaving any `@address`
+/// suffix untouched.
+///
+/// Iroh's node-ID parser and `hex::encode` (used for authenticated sender
+/// identities) both only ever produce/accept lowercase hex, while route
+/// comparisons throughout the codebase are a mix of case-sensitive and
+/// `.to_lowercase()`-normalized. Canonicalizing at the point a peer ID enters
+/// the system (chain-sourced `NodeInfo.peer_id`, or a locally derived/operator
+/// -supplied ID) keeps every downstream comparison and dial consistent
+/// regardless of the casing an operator originally typed or pasted.
+pub fn canonicalize_peer_id(peer_id: &str) -> Result<String, PeerIdValidationError> {
+    validate_peer_id(peer_id)?;
+    let mut parts = peer_id.splitn(2, '@');
+    let node_id = parts.next().unwrap_or_default().to_lowercase();
+    Ok(match parts.next() {
+        Some(addr) => format!("{node_id}@{addr}"),
+        None => node_id,
+    })
+}
+
 pub fn extract_node_part(peer_id: &str) -> String {
     peer_id.split('@').next().unwrap_or(peer_id).to_string()
 }
@@ -110,6 +130,28 @@ pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonicalize_lowercases_node_part_only() {
+        let upper_node = "A".repeat(64);
+        let lower_node = "a".repeat(64);
+
+        assert_eq!(
+            canonicalize_peer_id(&upper_node).expect("valid peer id"),
+            lower_node
+        );
+
+        let with_addr = format!("{upper_node}@Host.Example.com:4000");
+        assert_eq!(
+            canonicalize_peer_id(&with_addr).expect("valid peer id"),
+            format!("{lower_node}@Host.Example.com:4000")
+        );
+    }
+
+    #[test]
+    fn canonicalize_rejects_invalid_peer_id() {
+        assert!(canonicalize_peer_id("not-a-peer-id").is_err());
+    }
 
     fn ring(peer_node_keys: &[&str], peer_ids: &[&str]) -> RingConfig {
         RingConfig {
