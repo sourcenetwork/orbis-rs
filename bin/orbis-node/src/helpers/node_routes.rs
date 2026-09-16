@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
 
-use crate::helpers::identity::{extract_node_part, validate_all_peer_ids, validate_peer_id, canonicalize_peer_id};
+use crate::helpers::identity::{
+    canonicalize_peer_id, extract_node_part, validate_all_peer_ids, validate_peer_id,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRoute {
