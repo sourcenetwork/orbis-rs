@@ -11,7 +11,21 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 zeroize = { workspace = true }
 ark-bls12-381 = { version = "0.4", optional = true }
-decaf377 = { version = "0.10", optional = true }
+# Constant-time scalar multiplication for the handful of BLS12-381 group
+# operations that multiply a secret scalar by a point (arkworks' own
+# short-Weierstrass point addition branches on the operands, so it cannot be
+# used to build a constant-time ladder — see bls12_381/ct.rs).
+blstrs = { version = "0.7", optional = true }
+group = { version = "0.13", optional = true }
+decaf377 = { git = "https://github.com/mizufinance/decaf377", branch = "main", optional = true }
+# decaf377's constant-time fix (see above) is built on top of an arkworks
+# 0.4 -> 0.5 upgrade in that fork. The bls12-381 path stays on arkworks 0.4
+# (ark-bls12-381 has no 0.5 release), so the decaf377 module gets its own
+# renamed 0.5 deps rather than bumping the crate-wide ones.
+ark-ec-05 = { package = "ark-ec", version = "0.5", optional = true }
+ark-ff-05 = { package = "ark-ff", version = "0.5", optional = true }
+ark-std-05 = { package = "ark-std", version = "0.5", optional = true }
+ark-serialize-05 = { package = "ark-serialize", version = "0.5", optional = true }
 ark-ec = "0.4"
 ark-ff = "0.4"
 ark-std = "0.4"
@@ -32,8 +46,8 @@ proptest = "1.6.0"
 [features]
 default = ["bls12-381"]
 test-helpers = []
-bls12-381 = ["dep:ark-bls12-381"]
-decaf377 = ["dep:decaf377"]
+bls12-381 = ["dep:ark-bls12-381", "dep:blstrs", "dep:group"]
+decaf377 = ["dep:decaf377", "dep:ark-ec-05", "dep:ark-ff-05", "dep:ark-std-05", "dep:ark-serialize-05"]
 
 [[bench]]
 name = "pre_benchmarks"

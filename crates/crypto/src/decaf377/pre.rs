@@ -11,9 +11,9 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use ark_ff::{One, Zero};
-use ark_serialize::CanonicalSerialize;
-use ark_std::{collections::HashSet, vec::Vec};
+use ark_ff_05::{One, Zero};
+use ark_serialize_05::CanonicalSerialize;
+use ark_std_05::{collections::HashSet, vec::Vec};
 use decaf377::{Element, Fr};
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
@@ -567,7 +567,16 @@ impl ThresholdDealerNode {
         // Produce random oracle challenge
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
-        let ri = crate::helpers::sample_nonzero(|| Fr::rand(&mut rng));
+        // Draw until non-zero: for a Schnorr-style response `f = r + e*x`,
+        // `r = 0` would expose `x`. Inlined rather than
+        // `crate::helpers::sample_nonzero` because that helper is bound to
+        // arkworks 0.4's `Zero`, not the 0.5 this module uses — see Cargo.toml.
+        let ri = loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        };
         let ui_hat = xr_g * ri;
         let hi_hat = Element::GENERATOR * ri;
 

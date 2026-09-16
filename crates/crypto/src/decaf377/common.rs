@@ -1,10 +1,9 @@
 use crate::error::{CryptoError, Result};
-use crate::helpers::reject_non_canonical;
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, PolynomialCommitment as PolynomialCommitmentTrait,
     PubPoly as PubPolyTrait,
 };
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize_05::{CanonicalDeserialize, CanonicalSerialize};
 use decaf377::{Element, Fr};
 use subtle::ConstantTimeEq;
 
@@ -17,6 +16,24 @@ pub const ELEMENT_COMPRESSED_SIZE: usize = 32;
 
 /// Size of a compressed Fr scalar in bytes (decaf377)
 pub const FR_COMPRESSED_SIZE: usize = 32;
+
+/// Rejects non-canonical encodings by round-tripping through serialization.
+///
+/// Local twin of `crate::helpers::reject_non_canonical`, bound to arkworks
+/// 0.5 (`ark_serialize_05`) rather than the crate-wide 0.4 the bls12-381
+/// path uses — see `Cargo.toml` for why decaf377 pulls a separate arkworks
+/// generation.
+pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
+    let mut canonical = Vec::with_capacity(bytes.len());
+    value.serialize_compressed(&mut canonical)?;
+    if canonical == bytes {
+        Ok(())
+    } else {
+        Err(CryptoError::SerializationError05(
+            ark_serialize_05::SerializationError::InvalidData,
+        ))
+    }
+}
 
 // ============================================================================
 // CryptoSerialize/CryptoDeserialize implementations for decaf377 types
@@ -37,8 +54,8 @@ impl CryptoSerialize for Fr {
 impl CryptoDeserialize for Fr {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != FR_COMPRESSED_SIZE {
-            return Err(CryptoError::SerializationError(
-                ark_serialize::SerializationError::InvalidData,
+            return Err(CryptoError::SerializationError05(
+                ark_serialize_05::SerializationError::InvalidData,
             ));
         }
         let scalar = Fr::deserialize_compressed(bytes)?;
@@ -62,8 +79,8 @@ impl CryptoSerialize for Element {
 impl CryptoDeserialize for Element {
     fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != ELEMENT_COMPRESSED_SIZE {
-            return Err(CryptoError::SerializationError(
-                ark_serialize::SerializationError::InvalidData,
+            return Err(CryptoError::SerializationError05(
+                ark_serialize_05::SerializationError::InvalidData,
             ));
         }
         let element = Element::deserialize_compressed(bytes)?;

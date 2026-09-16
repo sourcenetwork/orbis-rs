@@ -200,7 +200,9 @@ impl ThresholdDealer for ThresholdDealerNode {
                 break candidate;
             }
         };
-        let enc_cmt: G1Affine = (G1Projective::generator() * r).into(); // U = rG
+        // U = rG. `r` is the ephemeral encryption randomness (secret) — constant-time.
+        let enc_cmt: G1Affine =
+            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &r)?;
 
         // Compute the effective public key if derivation is provided.
         let effective_pk = if let Some(deriv_bytes) = derivation {
@@ -222,8 +224,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         };
 
         // KEM shared point V = r * effective_pk = r*d*s*G (with derivation) or r*s*G.
-        // Never serialized — only the AES key is derived from it.
-        let shared_point: G1Affine = (G1Projective::from(effective_pk) * r).into();
+        // Never serialized — only the AES key is derived from it. `r` is
+        // secret — constant-time.
+        let shared_point: G1Affine = crate::bls12_381::ct::ct_mul_g1(&effective_pk, &r)?;
         let aes_key = Self::derive_key_from_point(&shared_point)?;
         let cipher = Aes256Gcm::new(&aes_key.into());
 
@@ -408,8 +411,11 @@ impl ThresholdDealer for ThresholdDealerNode {
         //                       -> shared_point = xnc_cmt - x*effective_pk = r*s*G
         //   with derivation:    xnc_cmt = d*(x+r)*s*G, effective_pk = d*s*G
         //                       -> shared_point = xnc_cmt - x*effective_pk = d*r*s*G
-        let xs_g = G1Projective::from(*effective_pk) * rdr_sk; // x * effective_pk
-        let shared_point: G1Affine = (G1Projective::from(*xnc_cmt) - xs_g).into();
+        // x * effective_pk. `rdr_sk` is the reader's long-lived secret key —
+        // constant-time.
+        let xs_g = crate::bls12_381::ct::ct_mul_g1(effective_pk, rdr_sk)?;
+        let shared_point: G1Affine =
+            (G1Projective::from(*xnc_cmt) - G1Projective::from(xs_g)).into();
 
         // Derive AES key
         let aes_key = Self::derive_key_from_point(&shared_point)?;
@@ -627,18 +633,24 @@ impl ThresholdDealerNode {
         // Ui = effective_ski * (xG + rG)
         // With derivation: Ui = (d * ski) * (xG + rG)
         // Without: Ui = ski * (xG + rG)
-        let xr_g = G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt); // xrG = xG + rG
-        let xnc_ski = (xr_g * effective_ski).into(); // Ui = effective_ski * (xG + rG)
+        // `effective_ski` is this node's secret share — constant-time.
+        let xr_g_affine: G1Affine =
+            (G1Projective::from(*rdr_pk) + G1Projective::from(*enc_cmt)).into(); // xrG = xG + rG
+        let xnc_ski = crate::bls12_381::ct::ct_mul_g1(&xr_g_affine, &effective_ski)?; // Ui = effective_ski * (xG + rG)
 
-        // Compute effective commitment for binding into challenge hash
-        let effective_cmt: G1Affine = (G1Projective::generator() * effective_ski).into();
+        // Compute effective commitment for binding into challenge hash.
+        // Same secret `effective_ski` — constant-time.
+        let generator = G1Affine::from(G1Projective::generator());
+        let effective_cmt: G1Affine = crate::bls12_381::ct::ct_mul_g1(&generator, &effective_ski)?;
 
         // Produce random oracle challenge (ei)
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
         let ri = crate::helpers::sample_nonzero(|| Fr::rand(&mut rng));
-        let ui_hat = (xr_g * ri).into(); // UiHat = ri * (xG + rG)
-        let hi_hat = (G1Projective::generator() * ri).into(); // HiHat = ri * G
+        // `ri` is this proof's fresh nonce; leaking it solves `proofi = ri +
+        // ei*effective_ski` for `effective_ski` directly — constant-time.
+        let ui_hat = crate::bls12_381::ct::ct_mul_g1(&xr_g_affine, &ri)?; // UiHat = ri * (xG + rG)
+        let hi_hat = crate::bls12_381::ct::ct_mul_g1(&generator, &ri)?; // HiHat = ri * G
 
         let challenge_hash = Self::hash_reencrypt_proof_points(
             idx,
@@ -847,7 +859,9 @@ impl ThresholdDealerNode {
                 break candidate;
             }
         };
-        let r1: G1Affine = (G1Projective::generator() * k).into();
+        // `k` is this proof's fresh nonce — constant-time.
+        let r1: G1Affine =
+            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
         let c = Self::encryption_proof_challenge(enc_cmt, &r1, context_digest, ciphertext_digest)?;
         let z = k + (c * r);
@@ -891,7 +905,9 @@ impl ThresholdDealerNode {
                 break candidate;
             }
         };
-        let r1: G1Affine = (G1Projective::generator() * k).into();
+        // `k` is this proof's fresh nonce — constant-time.
+        let r1: G1Affine =
+            crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
         let c = Self::reader_key_proof_challenge(rdr_pk, &r1)?;
         let z = k + (c * rdr_sk);
