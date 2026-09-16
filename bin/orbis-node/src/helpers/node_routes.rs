@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
 
-use crate::helpers::identity::{extract_node_part, validate_all_peer_ids, validate_peer_id};
+use crate::helpers::identity::{extract_node_part, validate_all_peer_ids, validate_peer_id, canonicalize_peer_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeRoute {
@@ -37,7 +37,7 @@ pub async fn resolve_node_routes(
         if peer_id.is_empty() {
             return Err(format!("NodeInfo for node {node_key} has an empty peer_id"));
         }
-        validate_peer_id(&peer_id)
+        let peer_id = canonicalize_peer_id(&peer_id)
             .map_err(|e| format!("NodeInfo for node {node_key} has invalid peer_id: {e}"))?;
 
         let peer_part = extract_node_part(&peer_id);
@@ -241,6 +241,25 @@ mod tests {
                     peer_id: peer_a,
                 },
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn resolves_uppercase_node_info_peer_id_to_canonical_lowercase() {
+        let upper_peer = format!("{}@127.0.0.1:4000", "A".repeat(64));
+        let lower_peer = format!("{}@127.0.0.1:4000", "a".repeat(64));
+        let bulletin = bulletin_with_nodes(&[("node-a", upper_peer)]).await;
+
+        let routes = resolve_node_routes(&bulletin, &["node-a".to_string()])
+            .await
+            .expect("routes");
+
+        assert_eq!(
+            routes,
+            vec![NodeRoute {
+                node_key: "node-a".to_string(),
+                peer_id: lower_peer,
+            }]
         );
     }
 

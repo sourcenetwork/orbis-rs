@@ -2,7 +2,7 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
-use crate::helpers::identity::{extract_node_part, validate_peer_id};
+use crate::helpers::identity::{canonicalize_peer_id, extract_node_part, validate_peer_id};
 use bulletin::{
     error::BulletinError,
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
@@ -495,6 +495,11 @@ pub async fn ensure_node_info(
         .filter(|value| !value.is_empty())
         .unwrap_or(&derived_peer_id)
         .to_string();
+    // `--node-peer-id` is operator-supplied and may use uppercase hex; canonicalize
+    // before it is compared against on-chain state or posted as NodeInfo, so every
+    // downstream route comparison and Iroh dial (which only accept lowercase) agree.
+    let peer_id = canonicalize_peer_id(&peer_id)
+        .map_err(|error| format!("invalid --node-peer-id/derived peer_id {peer_id}: {error}"))?;
 
     let existing = match bulletin
         .read(node_key.to_string(), BulletinKind::NodeInfo)
