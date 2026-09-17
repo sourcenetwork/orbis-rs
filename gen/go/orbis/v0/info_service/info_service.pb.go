@@ -309,6 +309,88 @@ func (x *GetRingStateResponse) GetLastPss() uint64 {
 	return 0
 }
 
+type GetDashboardRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDashboardRequest) Reset() {
+	*x = GetDashboardRequest{}
+	mi := &file_orbis_v0_info_service_info_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDashboardRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDashboardRequest) ProtoMessage() {}
+
+func (x *GetDashboardRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_info_service_info_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDashboardRequest.ProtoReflect.Descriptor instead.
+func (*GetDashboardRequest) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_info_service_info_service_proto_rawDescGZIP(), []int{4}
+}
+
+type GetDashboardResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The node's Grafana dashboard definition, as JSON. Static content, not
+	// parameterized by the caller.
+	DashboardJson string `protobuf:"bytes,1,opt,name=dashboard_json,json=dashboardJson,proto3" json:"dashboard_json,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDashboardResponse) Reset() {
+	*x = GetDashboardResponse{}
+	mi := &file_orbis_v0_info_service_info_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDashboardResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDashboardResponse) ProtoMessage() {}
+
+func (x *GetDashboardResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_info_service_info_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDashboardResponse.ProtoReflect.Descriptor instead.
+func (*GetDashboardResponse) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_info_service_info_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetDashboardResponse) GetDashboardJson() string {
+	if x != nil {
+		return x.DashboardJson
+	}
+	return ""
+}
+
 var File_orbis_v0_info_service_info_service_proto protoreflect.FileDescriptor
 
 const file_orbis_v0_info_service_info_service_proto_rawDesc = "" +
@@ -328,7 +410,10 @@ const file_orbis_v0_info_service_info_service_proto_rawDesc = "" +
 	"\vring_pk_hex\x18\x01 \x01(\tR\tringPkHex\"^\n" +
 	"\x14GetRingStateResponse\x12+\n" +
 	"\x11public_polynomial\x18\x01 \x01(\tR\x10publicPolynomial\x12\x19\n" +
-	"\blast_pss\x18\x02 \x01(\x04R\alastPss*\xc1\x01\n" +
+	"\blast_pss\x18\x02 \x01(\x04R\alastPss\"\x15\n" +
+	"\x13GetDashboardRequest\"=\n" +
+	"\x14GetDashboardResponse\x12%\n" +
+	"\x0edashboard_json\x18\x01 \x01(\tR\rdashboardJson*\xc1\x01\n" +
 	"\n" +
 	"NodeStatus\x12\x1b\n" +
 	"\x17NODE_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
@@ -336,10 +421,11 @@ const file_orbis_v0_info_service_info_service_proto_rawDesc = "" +
 	"\x1fNODE_STATUS_CONNECTING_TO_CHAIN\x10\x02\x12#\n" +
 	"\x1fNODE_STATUS_WAITING_FOR_FUNDING\x10\x03\x12\x16\n" +
 	"\x12NODE_STATUS_FUNDED\x10\x04\x12\x15\n" +
-	"\x11NODE_STATUS_READY\x10\x052\xdc\x01\n" +
+	"\x11NODE_STATUS_READY\x10\x052\xc5\x02\n" +
 	"\vInfoService\x12d\n" +
 	"\vGetNodeInfo\x12).orbis.v0.info_service.GetNodeInfoRequest\x1a*.orbis.v0.info_service.GetNodeInfoResponse\x12g\n" +
-	"\fGetRingState\x12*.orbis.v0.info_service.GetRingStateRequest\x1a+.orbis.v0.info_service.GetRingStateResponseB\xdf\x01\n" +
+	"\fGetRingState\x12*.orbis.v0.info_service.GetRingStateRequest\x1a+.orbis.v0.info_service.GetRingStateResponse\x12g\n" +
+	"\fGetDashboard\x12*.orbis.v0.info_service.GetDashboardRequest\x1a+.orbis.v0.info_service.GetDashboardResponseB\xdf\x01\n" +
 	"\x19com.orbis.v0.info_serviceB\x10InfoServiceProtoP\x01Z>github.com/sourcenetwork/orbis-rs/gen/go/orbis/v0/info_service\xa2\x02\x03OVI\xaa\x02\x14Orbis.V0.InfoService\xca\x02\x14Orbis\\V0\\InfoService\xe2\x02 Orbis\\V0\\InfoService\\GPBMetadata\xea\x02\x16Orbis::V0::InfoServiceb\x06proto3"
 
 var (
@@ -355,22 +441,26 @@ func file_orbis_v0_info_service_info_service_proto_rawDescGZIP() []byte {
 }
 
 var file_orbis_v0_info_service_info_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_orbis_v0_info_service_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_orbis_v0_info_service_info_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_orbis_v0_info_service_info_service_proto_goTypes = []any{
 	(NodeStatus)(0),              // 0: orbis.v0.info_service.NodeStatus
 	(*GetNodeInfoRequest)(nil),   // 1: orbis.v0.info_service.GetNodeInfoRequest
 	(*GetNodeInfoResponse)(nil),  // 2: orbis.v0.info_service.GetNodeInfoResponse
 	(*GetRingStateRequest)(nil),  // 3: orbis.v0.info_service.GetRingStateRequest
 	(*GetRingStateResponse)(nil), // 4: orbis.v0.info_service.GetRingStateResponse
+	(*GetDashboardRequest)(nil),  // 5: orbis.v0.info_service.GetDashboardRequest
+	(*GetDashboardResponse)(nil), // 6: orbis.v0.info_service.GetDashboardResponse
 }
 var file_orbis_v0_info_service_info_service_proto_depIdxs = []int32{
 	0, // 0: orbis.v0.info_service.GetNodeInfoResponse.status:type_name -> orbis.v0.info_service.NodeStatus
 	1, // 1: orbis.v0.info_service.InfoService.GetNodeInfo:input_type -> orbis.v0.info_service.GetNodeInfoRequest
 	3, // 2: orbis.v0.info_service.InfoService.GetRingState:input_type -> orbis.v0.info_service.GetRingStateRequest
-	2, // 3: orbis.v0.info_service.InfoService.GetNodeInfo:output_type -> orbis.v0.info_service.GetNodeInfoResponse
-	4, // 4: orbis.v0.info_service.InfoService.GetRingState:output_type -> orbis.v0.info_service.GetRingStateResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
+	5, // 3: orbis.v0.info_service.InfoService.GetDashboard:input_type -> orbis.v0.info_service.GetDashboardRequest
+	2, // 4: orbis.v0.info_service.InfoService.GetNodeInfo:output_type -> orbis.v0.info_service.GetNodeInfoResponse
+	4, // 5: orbis.v0.info_service.InfoService.GetRingState:output_type -> orbis.v0.info_service.GetRingStateResponse
+	6, // 6: orbis.v0.info_service.InfoService.GetDashboard:output_type -> orbis.v0.info_service.GetDashboardResponse
+	4, // [4:7] is the sub-list for method output_type
+	1, // [1:4] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
@@ -387,7 +477,7 @@ func file_orbis_v0_info_service_info_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_info_service_info_service_proto_rawDesc), len(file_orbis_v0_info_service_info_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   4,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

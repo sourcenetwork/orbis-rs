@@ -5,6 +5,7 @@ package orbis.v0.info_service;
 service InfoService {
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
   rpc GetRingState(GetRingStateRequest) returns (GetRingStateResponse);
+  rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
 }
 
 message GetNodeInfoRequest {}
@@ -41,4 +42,12 @@ message GetRingStateResponse {
   string public_polynomial = 1;
   // Unix timestamp (seconds) of the most recent PSS ceremony, or 0 before first completion.
   uint64 last_pss = 2;
+}
+
+message GetDashboardRequest {}
+
+message GetDashboardResponse {
+  // The node's Grafana dashboard definition, as JSON. Static content, not
+  // parameterized by the caller.
+  string dashboard_json = 1;
 }

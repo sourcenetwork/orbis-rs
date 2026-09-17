@@ -36,7 +36,7 @@ use network::{Network, NetworkImpl};
 use proto::{
     info_service::{
         info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
-        GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
+        GetDashboardRequest, GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
     },
     v0::dkg::{
         dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
@@ -598,6 +598,19 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
     );
     assert!(status.message().contains("No signing key found"));
 
+    // Dashboard content doesn't depend on the node's signing key, so it
+    // should succeed via the full (non-bootstrap) InfoServiceImpl even
+    // though get_node_info fails above.
+    let dashboard = info_client
+        .get_dashboard(GetDashboardRequest {})
+        .await
+        .expect("dashboard should not require a signing key")
+        .into_inner();
+    assert!(
+        dashboard.dashboard_json.contains("orbis-node-metrics"),
+        "dashboard response should contain the orbis-node-metrics uid"
+    );
+
     shutdown_tx.send(()).expect("shutdown full test server");
     task.await.expect("join full test server task");
     cleanup_db(&db_path);
@@ -763,6 +776,18 @@ async fn test_bootstrap_info_server_exposes_only_info() {
         .await
         .expect_err("ring state should be blocked during bootstrap");
     assert_eq!(ring_err.code(), Code::FailedPrecondition);
+
+    // Unlike ring state, the dashboard is static content and doesn't depend
+    // on chain funding -- it should be available during bootstrap too.
+    let dashboard = info_client
+        .get_dashboard(GetDashboardRequest {})
+        .await
+        .expect("dashboard should be available during bootstrap")
+        .into_inner();
+    assert!(
+        dashboard.dashboard_json.contains("orbis-node-metrics"),
+        "dashboard response should contain the orbis-node-metrics uid"
+    );
 
     let mut dkg_client = DkgServiceClient::connect(endpoint)
         .await

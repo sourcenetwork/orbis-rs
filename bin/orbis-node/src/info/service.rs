@@ -9,14 +9,20 @@ use local_storage::{
 };
 use network::Network;
 use proto::info_service::{
-    info_service_server::InfoService, GetNodeInfoRequest, GetNodeInfoResponse, GetRingStateRequest,
-    GetRingStateResponse, NodeStatus,
+    info_service_server::InfoService, GetDashboardRequest, GetDashboardResponse,
+    GetNodeInfoRequest, GetNodeInfoResponse, GetRingStateRequest, GetRingStateResponse, NodeStatus,
 };
 use std::sync::{
     atomic::{AtomicI32, Ordering},
     Arc,
 };
 use tonic::{Request, Response, Status};
+
+/// The node's Grafana dashboard definition, embedded at build time. Static
+/// content, identical for every node -- served as-is by GetDashboard,
+/// available even before the node is funded/initialized (see
+/// BootstrapInfoServiceImpl::get_dashboard below).
+const DASHBOARD_JSON: &str = include_str!("../../../../docker/grafana/dashboards/orbis.json");
 
 /// Implementation of the InfoService
 #[derive(Debug)]
@@ -64,6 +70,15 @@ where
             &self.state.local_storage,
             &ring_pk_hex,
         )?))
+    }
+
+    async fn get_dashboard(
+        &self,
+        _request: Request<GetDashboardRequest>,
+    ) -> Result<Response<GetDashboardResponse>, Status> {
+        Ok(Response::new(GetDashboardResponse {
+            dashboard_json: DASHBOARD_JSON.to_string(),
+        }))
     }
 }
 
@@ -172,5 +187,17 @@ impl InfoService for BootstrapInfoServiceImpl {
         Err(Status::failed_precondition(
             "node is waiting for funding; only GetNodeInfo is available",
         ))
+    }
+
+    async fn get_dashboard(
+        &self,
+        _request: Request<GetDashboardRequest>,
+    ) -> Result<Response<GetDashboardResponse>, Status> {
+        // Unlike get_ring_state, the dashboard is static content that
+        // doesn't depend on chain funding or bulletin state, so it's
+        // available during bootstrap too.
+        Ok(Response::new(GetDashboardResponse {
+            dashboard_json: DASHBOARD_JSON.to_string(),
+        }))
     }
 }

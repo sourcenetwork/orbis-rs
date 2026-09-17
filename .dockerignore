@@ -3,5 +3,8 @@ target/
 .github/
 docker/*
 !docker/VERA_REF
+!docker/grafana
+!docker/grafana/dashboards
+!docker/grafana/dashboards/orbis.json
 *.md
 .env
