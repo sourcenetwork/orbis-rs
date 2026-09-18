@@ -509,7 +509,9 @@ where
     };
     let committees = state
         .dkg_session_state
-        .with_attempt_state(attempt_key, |session| session.transport.committees.clone())
+        .with_attempt_state(attempt_key, |session| {
+            session.transport.configured().map(|c| c.committees.clone())
+        })
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt_key, error))?
         .ok_or_else(|| DkgError::InvalidState("refresh barrier committees are missing".into()))?;
@@ -708,11 +710,12 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state(attempt, |session| {
+            let configured = session.transport.configured();
             (
-                session.transport.committee_digest,
-                session.transport.leader_node_key.clone(),
-                session.transport.leader_peer_route.clone(),
-                session.transport.activated,
+                configured.map(|c| c.committee_digest),
+                configured.map(|c| c.leader_node_key.clone()),
+                configured.map(|c| c.leader_peer_route.clone()),
+                session.transport.is_activated(),
                 session.node.node_id(),
                 matches!(session.kind, SessionKind::Reshare { .. }),
                 session
@@ -721,17 +724,9 @@ where
                     .as_ref()
                     .and_then(|params| params.new_node_id),
                 session.routing.ring_id.clone(),
-                session
-                    .transport
-                    .committees
-                    .as_ref()
-                    .and_then(|committees| {
-                        session
-                            .transport
-                            .leader_peer_route
-                            .as_deref()
-                            .and_then(|peer| participant_for_transport_peer(committees, peer))
-                    }),
+                configured.and_then(|c| {
+                    participant_for_transport_peer(&c.committees, &c.leader_peer_route)
+                }),
             )
         })
         .await

@@ -10,7 +10,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         contribution: network::SignedPayload,
     ) -> PublicContributionRecordOutcome {
         self.with_state_mut(session_id, |state| {
-            if state.transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return PublicContributionRecordOutcome::StaleAttempt;
             }
             let transport = &mut state.transport;
@@ -65,10 +65,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         contributions: BTreeMap<ParticipantRef, network::SignedPayload>,
     ) -> PublicBatchRecordOutcome {
         self.with_state_mut(session_id, |state| {
-            let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return PublicBatchRecordOutcome::StaleAttempt;
             }
+            let transport = &mut state.transport;
 
             let retained = transport.public_contributions.entry(phase).or_default();
             for (origin, contribution) in &contributions {
@@ -123,7 +123,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         phase: PublicPhase,
     ) -> Option<BTreeMap<ParticipantRef, network::SignedPayload>> {
         self.with_state(session_id, |state| {
-            (state.transport.attempt_id == Some(attempt_id)).then(|| {
+            (state.transport.attempt_id() == Some(attempt_id)).then(|| {
                 state
                     .transport
                     .public_contributions
@@ -143,7 +143,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         phase: PublicPhase,
     ) -> Option<std::time::Duration> {
         self.with_state(session_id, |state| {
-            (state.transport.attempt_id == Some(attempt_id))
+            (state.transport.attempt_id() == Some(attempt_id))
                 .then(|| {
                     state
                         .transport
@@ -166,7 +166,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id)
+            if transport.attempt_id() != Some(attempt_id)
                 || transport
                     .public_contributions
                     .get(&phase)
@@ -193,7 +193,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id)
+            if transport.attempt_id() != Some(attempt_id)
                 || !transport.publishing_public_phases.remove(&phase)
             {
                 return false;
@@ -215,7 +215,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Vec<MessageId> {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if transport.attempt_id() != Some(attempt_id) {
                 return Vec::new();
             }
             let claimed = message_ids
@@ -246,7 +246,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id)
+            if transport.attempt_id() != Some(attempt_id)
                 || message_ids
                     .iter()
                     .any(|message_id| !transport.publishing_public_messages.contains(message_id))
@@ -271,8 +271,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
     ) -> Option<Vec<ParticipantRef>> {
-        self.with_state(session_id, |state| state.transport.active_dealers.clone())
-            .await
+        self.with_state(session_id, |state| {
+            state.transport.active_dealers().to_vec()
+        })
+        .await
     }
 
     pub(crate) async fn transport_info(
@@ -280,13 +282,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
     ) -> Option<(CeremonyId, AttemptId, [u8; 32], String, bool)> {
         self.with_state(session_id, |state| {
-            let transport = &state.transport;
+            let attempt = state.transport.attempt()?;
+            let configured = state.transport.configured()?;
             Some((
-                transport.ceremony_id?,
-                transport.attempt_id?,
-                transport.committee_digest?,
-                transport.leader_node_key.clone()?,
-                transport.activated,
+                attempt.ceremony_id,
+                attempt.attempt_id,
+                configured.committee_digest,
+                configured.leader_node_key.clone(),
+                state.transport.is_activated(),
             ))
         })
         .await
@@ -298,14 +301,21 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
     ) -> Option<Vec<String>> {
         self.with_state(session_id, |state| {
-            state.transport.participant_routes.clone()
+            state
+                .transport
+                .configured()
+                .map(|c| c.participant_routes.clone())
+                .unwrap_or_default()
         })
         .await
     }
 
     pub(crate) async fn transport_leader_route(&self, session_id: &u128) -> Option<String> {
         self.with_state(session_id, |state| {
-            state.transport.leader_peer_route.clone()
+            state
+                .transport
+                .configured()
+                .map(|c| c.leader_peer_route.clone())
         })
         .await
         .flatten()
@@ -319,8 +329,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> bool {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
-            transport.attempt_id == Some(attempt_id)
-                && transport.activated
+            transport.attempt_id() == Some(attempt_id)
+                && transport.is_activated()
                 && transport.last_progress_at.elapsed() >= stall_interval
         })
         .await
@@ -335,7 +345,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> PublicRepairClaimOutcome {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if transport.attempt_id() != Some(attempt_id) {
                 return PublicRepairClaimOutcome::StaleAttempt;
             }
             let now = Instant::now();
@@ -372,7 +382,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> bool {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if transport.attempt_id() != Some(attempt_id) {
                 return false;
             }
             if made_progress {

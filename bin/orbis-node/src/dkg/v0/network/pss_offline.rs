@@ -214,7 +214,7 @@ pub(crate) async fn spawn_pss_offline_for_attempt<D>(
                 session.kind.clone(),
                 session.routing.ring_id.clone(),
                 session.protocol_version,
-                session.transport.committees.clone(),
+                session.transport.configured().map(|c| c.committees.clone()),
             )
         })
         .await;

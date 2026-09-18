@@ -77,7 +77,14 @@ async fn handle_soft_stalled_dkg_attempt<D>(
     let (participant_routes, phase) = match app_state
         .dkg_session_state
         .with_attempt_state(attempt, |state| {
-            (state.transport.participant_routes.clone(), state.phase)
+            (
+                state
+                    .transport
+                    .configured()
+                    .map(|c| c.participant_routes.clone())
+                    .unwrap_or_default(),
+                state.phase,
+            )
         })
         .await
     {

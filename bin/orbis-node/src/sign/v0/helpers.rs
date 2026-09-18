@@ -1,9 +1,9 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
-#[cfg(test)]
-use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::dkg::v0::session_state::SessionStateManager;
 #[cfg(test)]
-use crate::dkg::v0::transport::{AttemptId, CeremonyId};
+use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, TransportLifecycle};
+#[cfg(test)]
+use crate::dkg::v0::transport::{AttemptId, AttemptKey, CeremonyId};
 use crate::helpers::protocol_version::{
     ensure_ring_protocol_route, resolve_ring_protocol_decision,
 };
@@ -851,8 +851,9 @@ mod ring_reshare_update_tests {
             *DkgImpl::new(1, 1, 1, session_id, DkgRole::Standard).expect("create DKG test node");
         state
             .create_session(session_id, node, 1, |session| {
-                session.transport.ceremony_id = Some(CeremonyId(session_id));
-                session.transport.attempt_id = Some(attempt_id);
+                session.transport.lifecycle = TransportLifecycle::Reserved {
+                    attempt: AttemptKey::new(CeremonyId(session_id), attempt_id),
+                };
             })
             .await;
 

@@ -933,8 +933,8 @@ pub(super) fn spawn_reshare_receiver_pair_openers<D>(
             .dkg_session_state
             .with_attempt_state(attempt, |session| {
                 (
-                    session.transport.committees.clone(),
-                    session.transport.active_dealers.clone(),
+                    session.transport.configured().map(|c| c.committees.clone()),
+                    session.transport.active_dealers().to_vec(),
                 )
             })
             .await
@@ -1240,10 +1240,11 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state(attempt, |session| {
+            let configured = session.transport.configured();
             (
                 session.node.node_id(),
-                session.transport.committees.clone(),
-                session.transport.hard_deadline,
+                configured.map(|c| c.committees.clone()),
+                configured.map(|c| c.hard_deadline),
             )
         })
         .await

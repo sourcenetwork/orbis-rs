@@ -184,13 +184,14 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                 }
                 let hard_deadline = state
                     .transport
-                    .hard_deadline
+                    .configured()
+                    .map(|c| c.hard_deadline)
                     .unwrap_or(state.created_at + DKG_ATTEMPT_TIMEOUT);
                 if now >= hard_deadline {
                     tracing::warn!(
                         session_id = session_id,
                         phase = ?state.phase,
-                        attempt_id = ?state.transport.attempt_id,
+                        attempt_id = ?state.transport.attempt_id(),
                         "SessionStateManager: Removing DKG attempt at hard deadline"
                     );
                     to_remove_ids.push(*session_id);
@@ -256,7 +257,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                         fresh_failures.push(FailedDkgSessionRecord {
                             session_id: *session_id,
                             ring_id: state.routing.ring_id.clone(),
-                            attempt_id: state.transport.attempt_id,
+                            attempt_id: state.transport.attempt_id(),
                             stage,
                             missing: state.missing_fresh_participants(),
                             reason:
@@ -300,11 +301,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                             k.to_string(),
                             RingPssOwner {
                                 session_id,
-                                attempt_id: state.transport.attempt_id,
+                                attempt_id: state.transport.attempt_id(),
                             },
                         ));
                     }
-                    if let Some(attempt_id) = state.transport.attempt_id {
+                    if let Some(attempt_id) = state.transport.attempt_id() {
                         removed_attempts.insert((session_id, attempt_id));
                     } else {
                         removed_unconfigured_ids.insert(session_id);
@@ -396,7 +397,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             if !state.is_local_leader() {
                 continue;
             }
-            let Some(attempt_id) = state.transport.attempt_id else {
+            let Some(attempt_id) = state.transport.attempt_id() else {
                 continue;
             };
             let stalled_ids = state.soft_stalled_peer_ids(
