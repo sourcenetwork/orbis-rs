@@ -347,8 +347,8 @@ mod tests {
             app_state
                 .dkg_session_state
                 .create_session(session_id, node, 2, |state| {
-                    state.transport.ceremony_id = Some(attempt.ceremony_id);
-                    state.transport.attempt_id = Some(attempt.attempt_id);
+                    state.transport.lifecycle =
+                        crate::dkg::v0::session_state::TransportLifecycle::Reserved { attempt };
                 })
                 .await,
             crate::dkg::v0::session_state::CreateSessionOutcome::Created

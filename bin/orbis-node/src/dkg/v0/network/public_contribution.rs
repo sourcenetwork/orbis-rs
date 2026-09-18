@@ -57,7 +57,7 @@ where
         .with_state(&contribution.ceremony_id.0, |session| {
             (
                 session.kind.clone(),
-                session.transport.active_dealers.clone(),
+                session.transport.active_dealers().to_vec(),
             )
         })
         .await
@@ -304,7 +304,9 @@ where
     let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
     let local_is_origin = state
         .dkg_session_state
-        .with_attempt_state(attempt, |session| session.transport.committees.clone())
+        .with_attempt_state(attempt, |session| {
+            session.transport.configured().map(|c| c.committees.clone())
+        })
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
         .and_then(|committees| {
@@ -507,7 +509,9 @@ where
     let attempt = AttemptKey::new(contribution.ceremony_id, contribution.attempt_id);
     let local_is_origin = state
         .dkg_session_state
-        .with_attempt_state(attempt, |session| session.transport.committees.clone())
+        .with_attempt_state(attempt, |session| {
+            session.transport.configured().map(|c| c.committees.clone())
+        })
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?
         .and_then(|committees| {

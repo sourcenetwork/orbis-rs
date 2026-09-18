@@ -747,7 +747,11 @@ where
             let participant_routes = state
                 .dkg_session_state
                 .with_attempt_state(attempt, |session| {
-                    session.transport.participant_routes.clone()
+                    session
+                        .transport
+                        .configured()
+                        .map(|c| c.participant_routes.clone())
+                        .unwrap_or_default()
                 })
                 .await
                 .unwrap_or_default();

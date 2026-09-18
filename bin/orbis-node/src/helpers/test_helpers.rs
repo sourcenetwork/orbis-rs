@@ -710,6 +710,49 @@ pub async fn write_ring_to_bulletin(
     }
 }
 
+/// A no-op `network::Topic` for test fixtures that need to construct a DKG
+/// `ConfiguredTransport` but don't exercise real broadcast/receive behavior.
+pub struct NoopTestTopic {
+    id: network::TopicId,
+}
+
+impl NoopTestTopic {
+    pub fn new(id: [u8; 32]) -> Self {
+        Self {
+            id: network::TopicId::new(id),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl network::Topic for NoopTestTopic {
+    fn id(&self) -> network::TopicId {
+        self.id
+    }
+
+    async fn broadcast(&self, _data: bytes::Bytes) -> network::Result<()> {
+        Ok(())
+    }
+
+    async fn recv(&self) -> network::Result<network::PubSubEvent> {
+        std::future::pending().await
+    }
+}
+
+/// A minimal single-member `CeremonyConfig` for test fixtures that need a DKG
+/// `ConfiguredTransport` but don't exercise committee contents.
+pub fn minimal_test_ceremony_config() -> crate::dkg::v0::transport::CeremonyConfig {
+    crate::dkg::v0::transport::CeremonyConfig {
+        current: crate::dkg::v0::transport::CommitteeConfig {
+            node_keys: vec!["test-node".to_string()],
+            peer_routes: vec!["test-node@127.0.0.1:9000".to_string()],
+            node_id_assignments: std::collections::HashMap::from([("test-node".to_string(), 1)]),
+            threshold: 1,
+        },
+        next: None,
+    }
+}
+
 pub fn test_db_path(name: &str) -> String {
     use_fast_test_kdf();
     let project_root = project_root::get_project_root().unwrap();

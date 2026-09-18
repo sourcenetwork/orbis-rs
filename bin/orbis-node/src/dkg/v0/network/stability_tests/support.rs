@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::super::*;
+use crate::dkg::v0::session_state::{ActivatedTransport, ConfiguredTransport, TransportLifecycle};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(super) struct ScriptedBroadcastTopic {
@@ -160,11 +161,26 @@ pub(super) async fn contribution_test_state(
             .get_mut(&session_id)
             .expect("session was just created");
         session.kind = kind;
-        session.transport.ceremony_id = Some(ceremony_id);
-        session.transport.attempt_id = Some(attempt_id);
-        session.transport.committee_digest = Some(committee_digest);
-        session.transport.leader_node_key = Some("test-leader".to_string());
-        session.transport.active_dealers = active_dealers;
+        let now = std::time::Instant::now();
+        session.transport.lifecycle = TransportLifecycle::Activated {
+            attempt: AttemptKey::new(ceremony_id, attempt_id),
+            transport: ConfiguredTransport {
+                committee_digest,
+                config_digest: [0u8; 32],
+                topic_id: network::TopicId::new([0u8; 32]),
+                leader_node_key: "test-leader".to_string(),
+                leader_peer_route: String::new(),
+                participant_routes: Vec::new(),
+                committees: crate::helpers::test_helpers::minimal_test_ceremony_config(),
+                topic: Arc::new(crate::helpers::test_helpers::NoopTestTopic::new([0u8; 32])),
+                prepared_at: now,
+                hard_deadline: now + crate::constants::DKG_ATTEMPT_TIMEOUT,
+            },
+            activation: ActivatedTransport {
+                activation_digest: [0u8; 32],
+                active_dealers,
+            },
+        };
         session.routing.ring_id = "test-ring-post".to_string();
         session
             .routing

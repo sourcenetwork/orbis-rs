@@ -16,41 +16,42 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         committees: CeremonyConfig,
         topic: Arc<dyn network::Topic>,
     ) -> TransportConfigureOutcome {
+        let attempt = AttemptKey::new(ceremony_id, attempt_id);
         self.with_state_mut(session_id, |state| {
-            let transport = &mut state.transport;
-            if let Some(existing) = transport.attempt_id {
-                if existing == attempt_id
-                    && transport.ceremony_id == Some(ceremony_id)
-                    && transport.config_digest.is_none()
-                {
-                    // `handle_session_init` reserves the concrete attempt
-                    // before the Gossip topic has been joined. Finish filling
-                    // the transport configuration below.
-                } else {
-                    return if existing == attempt_id
-                        && transport.ceremony_id == Some(ceremony_id)
-                        && transport.config_digest == Some(config_digest)
-                    {
-                        TransportConfigureOutcome::AlreadyConfigured
-                    } else {
-                        TransportConfigureOutcome::ConflictingAttempt
-                    };
+            if let Some(existing) = state.transport.attempt() {
+                if existing != attempt {
+                    return TransportConfigureOutcome::ConflictingAttempt;
                 }
             }
+            // A late-arriving duplicate Configure is tolerated for a matching-digest
+            // retry even after this attempt has moved on to Activated/Begun (`configured()`
+            // is `Some` for all three), not just while still `Configured`.
+            if let Some(configured) = state.transport.configured() {
+                return if configured.config_digest == config_digest {
+                    TransportConfigureOutcome::AlreadyConfigured
+                } else {
+                    TransportConfigureOutcome::ConflictingAttempt
+                };
+            }
+            // `Unset` (no prior reservation -- harmless, the original code tolerated
+            // this too) or `Reserved` matching this attempt: configure now.
             let now = Instant::now();
-            transport.ceremony_id = Some(ceremony_id);
-            transport.attempt_id = Some(attempt_id);
-            transport.committee_digest = Some(committee_digest);
-            transport.config_digest = Some(config_digest);
-            transport.topic_id = Some(topic_id);
-            transport.leader_node_key = Some(leader_node_key);
-            transport.leader_peer_route = Some(leader_peer_route);
-            transport.participant_routes = participant_routes;
-            transport.committees = Some(committees);
-            transport.topic = Some(topic);
-            transport.prepared_at = Some(now);
-            transport.last_progress_at = now;
-            transport.hard_deadline = Some(now + crate::constants::DKG_ATTEMPT_TIMEOUT);
+            state.transport.lifecycle = TransportLifecycle::Configured {
+                attempt,
+                transport: ConfiguredTransport {
+                    committee_digest,
+                    config_digest,
+                    topic_id,
+                    leader_node_key,
+                    leader_peer_route,
+                    participant_routes,
+                    committees,
+                    topic,
+                    prepared_at: now,
+                    hard_deadline: now + crate::constants::DKG_ATTEMPT_TIMEOUT,
+                },
+            };
+            state.transport.last_progress_at = now;
             TransportConfigureOutcome::Configured
         })
         .await
@@ -65,27 +66,78 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         active_dealers: Vec<ParticipantRef>,
     ) -> TransportActivationOutcome {
         self.with_state_mut(session_id, |state| {
-            if state.transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return TransportActivationOutcome::StaleAttempt;
             }
-            if state.transport.activated {
-                return if state.transport.activation_digest == Some(activation_digest)
-                    && state.transport.active_dealers == active_dealers
-                {
-                    TransportActivationOutcome::AlreadyActivated
-                } else {
+            let current =
+                std::mem::replace(&mut state.transport.lifecycle, TransportLifecycle::Unset);
+            match current {
+                TransportLifecycle::Configured { attempt, transport } => {
+                    if let Some(params) = state.reshare.params.as_mut() {
+                        params.participating_ids =
+                            active_dealers.iter().map(|dealer| dealer.node_id).collect();
+                    }
+                    state.transport.lifecycle = TransportLifecycle::Activated {
+                        attempt,
+                        transport,
+                        activation: ActivatedTransport {
+                            activation_digest,
+                            active_dealers,
+                        },
+                    };
+                    state.transport.last_progress_at = Instant::now();
+                    TransportActivationOutcome::Activated
+                }
+                TransportLifecycle::Activated {
+                    attempt,
+                    transport,
+                    activation,
+                } => {
+                    let outcome = if activation.activation_digest == activation_digest
+                        && activation.active_dealers == active_dealers
+                    {
+                        TransportActivationOutcome::AlreadyActivated
+                    } else {
+                        TransportActivationOutcome::StaleAttempt
+                    };
+                    state.transport.lifecycle = TransportLifecycle::Activated {
+                        attempt,
+                        transport,
+                        activation,
+                    };
+                    outcome
+                }
+                TransportLifecycle::Begun {
+                    attempt,
+                    transport,
+                    activation,
+                } => {
+                    // A retried Activate after Begin already happened is accepted the
+                    // same way a retry before Begin would be (matches the original
+                    // code, which only ever checked the `activated` flag).
+                    let outcome = if activation.activation_digest == activation_digest
+                        && activation.active_dealers == active_dealers
+                    {
+                        TransportActivationOutcome::AlreadyActivated
+                    } else {
+                        TransportActivationOutcome::StaleAttempt
+                    };
+                    state.transport.lifecycle = TransportLifecycle::Begun {
+                        attempt,
+                        transport,
+                        activation,
+                    };
+                    outcome
+                }
+                other => {
+                    // `Reserved` matching `attempt_id` (not yet configured). Not
+                    // reachable in production -- every caller confirms
+                    // `transport_configuration` succeeded before activating -- but
+                    // fail closed rather than activating without a topic/committee.
+                    state.transport.lifecycle = other;
                     TransportActivationOutcome::StaleAttempt
-                };
+                }
             }
-            if let Some(params) = state.reshare.params.as_mut() {
-                params.participating_ids =
-                    active_dealers.iter().map(|dealer| dealer.node_id).collect();
-            }
-            state.transport.activated = true;
-            state.transport.activation_digest = Some(activation_digest);
-            state.transport.active_dealers = active_dealers;
-            state.transport.last_progress_at = Instant::now();
-            TransportActivationOutcome::Activated
         })
         .await
         .unwrap_or(TransportActivationOutcome::MissingSession)
@@ -102,22 +154,56 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         activation_digest: [u8; 32],
     ) -> TransportBeginOutcome {
         self.with_state_mut(session_id, |state| {
-            let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return TransportBeginOutcome::StaleAttempt;
             }
-            if !transport.activated {
-                return TransportBeginOutcome::NotActivated;
+            let current =
+                std::mem::replace(&mut state.transport.lifecycle, TransportLifecycle::Unset);
+            match current {
+                TransportLifecycle::Activated {
+                    attempt,
+                    transport,
+                    activation,
+                } => {
+                    if activation.activation_digest != activation_digest {
+                        state.transport.lifecycle = TransportLifecycle::Activated {
+                            attempt,
+                            transport,
+                            activation,
+                        };
+                        return TransportBeginOutcome::StaleAttempt;
+                    }
+                    state.transport.lifecycle = TransportLifecycle::Begun {
+                        attempt,
+                        transport,
+                        activation,
+                    };
+                    state.transport.last_progress_at = Instant::now();
+                    TransportBeginOutcome::Begun
+                }
+                TransportLifecycle::Begun {
+                    attempt,
+                    transport,
+                    activation,
+                } => {
+                    let outcome = if activation.activation_digest == activation_digest {
+                        TransportBeginOutcome::AlreadyBegun
+                    } else {
+                        TransportBeginOutcome::StaleAttempt
+                    };
+                    state.transport.lifecycle = TransportLifecycle::Begun {
+                        attempt,
+                        transport,
+                        activation,
+                    };
+                    outcome
+                }
+                other => {
+                    // `Reserved`/`Configured` matching `attempt_id`: not yet activated.
+                    state.transport.lifecycle = other;
+                    TransportBeginOutcome::NotActivated
+                }
             }
-            if transport.activation_digest != Some(activation_digest) {
-                return TransportBeginOutcome::StaleAttempt;
-            }
-            if transport.begun {
-                return TransportBeginOutcome::AlreadyBegun;
-            }
-            transport.begun = true;
-            transport.last_progress_at = Instant::now();
-            TransportBeginOutcome::Begun
         })
         .await
         .unwrap_or(TransportBeginOutcome::MissingSession)
@@ -128,11 +214,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         session_id: &u128,
     ) -> Option<(CeremonyId, AttemptId, [u8; 32])> {
         self.with_state(session_id, |state| {
-            let transport = &state.transport;
+            let attempt = state.transport.attempt()?;
+            let configured = state.transport.configured()?;
             Some((
-                transport.ceremony_id?,
-                transport.attempt_id?,
-                transport.config_digest?,
+                attempt.ceremony_id,
+                attempt.attempt_id,
+                configured.config_digest,
             ))
         })
         .await
@@ -140,7 +227,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     pub(crate) async fn transport_attempt(&self, session_id: &u128) -> Option<AttemptId> {
-        self.with_state(session_id, |state| state.transport.attempt_id)
+        self.with_state(session_id, |state| state.transport.attempt_id())
             .await
             .flatten()
     }
@@ -151,8 +238,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         attempt_id: AttemptId,
     ) -> Option<Instant> {
         self.with_state(session_id, |state| {
-            (state.transport.attempt_id == Some(attempt_id))
-                .then_some(state.transport.hard_deadline)
+            (state.transport.attempt_id() == Some(attempt_id))
+                .then(|| state.transport.configured().map(|c| c.hard_deadline))
                 .flatten()
         })
         .await
@@ -165,12 +252,12 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         attempt_id: AttemptId,
     ) -> Option<Instant> {
         self.with_state(session_id, |state| {
-            let transport = &state.transport;
-            (transport.attempt_id == Some(attempt_id))
+            (state.transport.attempt_id() == Some(attempt_id))
                 .then(|| {
-                    transport
-                        .prepared_at
-                        .map(|prepared_at| prepared_at + crate::constants::DKG_PREPARATION_TIMEOUT)
+                    state
+                        .transport
+                        .configured()
+                        .map(|c| c.prepared_at + crate::constants::DKG_PREPARATION_TIMEOUT)
                 })
                 .flatten()
         })
@@ -182,9 +269,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         &self,
         session_id: &u128,
     ) -> Option<Arc<dyn network::Topic>> {
-        self.with_state(session_id, |state| state.transport.topic.clone())
-            .await
-            .flatten()
+        self.with_state(session_id, |state| {
+            state.transport.configured().map(|c| c.topic.clone())
+        })
+        .await
+        .flatten()
     }
 
     pub(crate) async fn transport_topic_for_attempt(
@@ -193,8 +282,8 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         attempt_id: AttemptId,
     ) -> Option<Arc<dyn network::Topic>> {
         self.with_state(session_id, |state| {
-            (state.transport.attempt_id == Some(attempt_id))
-                .then(|| state.transport.topic.clone())
+            (state.transport.attempt_id() == Some(attempt_id))
+                .then(|| state.transport.configured().map(|c| c.topic.clone()))
                 .flatten()
         })
         .await
@@ -202,9 +291,11 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     }
 
     pub(crate) async fn transport_committees(&self, session_id: &u128) -> Option<CeremonyConfig> {
-        self.with_state(session_id, |state| state.transport.committees.clone())
-            .await
-            .flatten()
+        self.with_state(session_id, |state| {
+            state.transport.configured().map(|c| c.committees.clone())
+        })
+        .await
+        .flatten()
     }
 
     pub(crate) async fn replace_transport_topic(
@@ -214,12 +305,22 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         topic: Arc<dyn network::Topic>,
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
-            if state.transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return false;
             }
-            state.transport.topic = Some(topic);
-            state.transport.last_progress_at = Instant::now();
-            true
+            let replaced = match &mut state.transport.lifecycle {
+                TransportLifecycle::Configured { transport, .. }
+                | TransportLifecycle::Activated { transport, .. }
+                | TransportLifecycle::Begun { transport, .. } => {
+                    transport.topic = topic;
+                    true
+                }
+                TransportLifecycle::Unset | TransportLifecycle::Reserved { .. } => false,
+            };
+            if replaced {
+                state.transport.last_progress_at = Instant::now();
+            }
+            replaced
         })
         .await
     }
@@ -246,7 +347,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<Arc<Notify>> {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if transport.attempt_id() != Some(attempt_id) {
                 return None;
             }
             transport.topology_probe_nonce = Some(nonce);
@@ -270,7 +371,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         nonce: [u8; 32],
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
-            if state.transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return false;
             }
             if state
@@ -296,7 +397,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> TopologyAckRecordOutcome {
         self.with_state_mut(session_id, |state| {
             let transport = &mut state.transport;
-            if transport.attempt_id != Some(attempt_id) {
+            if transport.attempt_id() != Some(attempt_id) {
                 return TopologyAckRecordOutcome::StaleAttempt;
             }
             transport.topology_probe_responses.insert(peer.clone());
@@ -322,7 +423,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<BTreeSet<String>> {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
-            (transport.attempt_id == Some(attempt_id)
+            (transport.attempt_id() == Some(attempt_id)
                 && transport.topology_probe_nonce == Some(nonce))
             .then(|| transport.topology_probe_acknowledgements.clone())
         })
@@ -337,7 +438,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
     ) -> Option<BTreeSet<String>> {
         self.with_state(session_id, |state| {
             let transport = &state.transport;
-            (transport.attempt_id == Some(attempt_id))
+            (transport.attempt_id() == Some(attempt_id))
                 .then(|| transport.topology_probe_responses.clone())
         })
         .await

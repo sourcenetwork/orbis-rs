@@ -147,7 +147,10 @@ where
     let route = state
         .dkg_session_state
         .with_attempt_state(attempt, |session| {
-            session.transport.leader_peer_route.clone()
+            session
+                .transport
+                .configured()
+                .map(|c| c.leader_peer_route.clone())
         })
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?

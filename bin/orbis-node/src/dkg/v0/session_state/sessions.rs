@@ -48,9 +48,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let Some(state) = states.get(&attempt.session_id()) else {
             return Err(AttemptStateError::MissingSession);
         };
-        if state.transport.ceremony_id != Some(attempt.ceremony_id)
-            || state.transport.attempt_id != Some(attempt.attempt_id)
-        {
+        if state.transport.attempt() != Some(attempt) {
             return Err(AttemptStateError::StaleAttempt);
         }
         Ok(f(state))
@@ -71,9 +69,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let Some(state) = states.get_mut(&attempt.session_id()) else {
             return Err(AttemptStateError::MissingSession);
         };
-        if state.transport.ceremony_id != Some(attempt.ceremony_id)
-            || state.transport.attempt_id != Some(attempt.attempt_id)
-        {
+        if state.transport.attempt() != Some(attempt) {
             return Err(AttemptStateError::StaleAttempt);
         }
         Ok(f(state))

@@ -259,7 +259,7 @@ where
                 )));
             }
             let dealer = ParticipantRef::current(dealer_id);
-            if !state.transport.active_dealers.contains(&dealer) {
+            if !state.transport.active_dealers().contains(&dealer) {
                 return Err(DkgError::Unauthorized(format!(
                     "ReshareShareAck names inactive dealer {}",
                     dealer_id
@@ -504,7 +504,7 @@ where
             )));
         }
         let dealer = ParticipantRef::current(*dealer_id);
-        if !state.transport.active_dealers.contains(&dealer) {
+        if !state.transport.active_dealers().contains(&dealer) {
             return Err(DkgError::Unauthorized(format!(
                 "ReshareParticipantSet contains inactive dealer {}",
                 dealer_id
@@ -540,7 +540,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dkg::v0::session_state::ReshareParams;
+    use crate::dkg::v0::session_state::{
+        ActivatedTransport, ConfiguredTransport, ReshareParams, TransportLifecycle,
+    };
     use crate::helpers::test_helpers::create_test_app_state_default;
     use crypto::r#trait::Dkg as _;
     use crypto::DkgImpl;
@@ -576,18 +578,35 @@ mod tests {
                 .get_mut(&session_id)
                 .expect("session was just created");
             let attempt = AttemptKey::test(session_id);
-            session.transport.ceremony_id = Some(attempt.ceremony_id);
-            session.transport.attempt_id = Some(attempt.attempt_id);
             session.kind = SessionKind::Reshare {
                 ring_pk_hex: "test-ring".to_string(),
                 new_peer_node_keys: vec!["node-a".to_string(), "node-b".to_string()],
                 new_threshold: 1,
                 bulletin_post_id: "test-ring-post".to_string(),
             };
-            session.transport.active_dealers = active_dealers
-                .into_iter()
-                .map(ParticipantRef::current)
-                .collect();
+            let now = std::time::Instant::now();
+            session.transport.lifecycle = TransportLifecycle::Activated {
+                attempt,
+                transport: ConfiguredTransport {
+                    committee_digest: [0u8; 32],
+                    config_digest: [0u8; 32],
+                    topic_id: network::TopicId::new([0u8; 32]),
+                    leader_node_key: "test-leader".to_string(),
+                    leader_peer_route: "test-leader@127.0.0.1:9000".to_string(),
+                    participant_routes: Vec::new(),
+                    committees: crate::helpers::test_helpers::minimal_test_ceremony_config(),
+                    topic: Arc::new(crate::helpers::test_helpers::NoopTestTopic::new([0u8; 32])),
+                    prepared_at: now,
+                    hard_deadline: now + crate::constants::DKG_ATTEMPT_TIMEOUT,
+                },
+                activation: ActivatedTransport {
+                    activation_digest: [0u8; 32],
+                    active_dealers: active_dealers
+                        .into_iter()
+                        .map(ParticipantRef::current)
+                        .collect(),
+                },
+            };
             session.reshare.valid_share_dealers = valid_share_dealers.into_iter().collect();
         }
         (DkgCoordinator::with_routes(state, &::network::V0), db_path)
