@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 use vera_client::VeraClient;
-use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
+use vera_harness::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
 
 struct Node(Child);
 impl Drop for Node {
@@ -127,6 +127,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
+        .genesis(GenesisBuilder::devnet().simplex(Default::default()))
         .preset(ConsensusPreset::Normal)
         .build()
         .await
@@ -274,6 +275,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
+        .genesis(GenesisBuilder::devnet().simplex(Default::default()))
         .preset(ConsensusPreset::Normal)
         .build()
         .await
