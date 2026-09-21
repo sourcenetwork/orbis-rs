@@ -12,7 +12,7 @@ use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use sha2::{Digest, Sha256};
 
-use common::blockchain::TxSigner;
+use super::chain::tx_signer;
 
 /// Prepared secret ready for storage - can be reused for retries
 /// This contains the encrypted data and proof, which are deterministic
@@ -205,8 +205,7 @@ pub(crate) fn secp256k1_pubkey_to_did(pubkey_hex: &str) -> Result<String> {
 /// a transaction signed with this key -- such as `create-ring` -- will be
 /// authorized.
 pub fn derive_signer_did(signing_key_hex: &str, config: ChainConfig) -> Result<(String, String)> {
-    let signer = TxSigner::from_hex_key(signing_key_hex, config)
-        .map_err(|e| anyhow!("Failed to derive signer: {}", e))?;
+    let signer = tx_signer(signing_key_hex, config)?;
     let public_key_hex = signer.public_key_hex();
     let did = secp256k1_pubkey_to_did(&public_key_hex)?;
     Ok((public_key_hex, did))

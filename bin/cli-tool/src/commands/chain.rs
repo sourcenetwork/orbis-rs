@@ -32,14 +32,21 @@ pub(crate) async fn vera_client(config: ChainConfig) -> Result<VeraClient> {
         .map_err(|e| anyhow!("Failed to create client: {}", e))
 }
 
+/// Builds a `TxSigner` from a hex-encoded signing key, for commands that need
+/// a signer standalone rather than wrapped in a `VeraClient` (e.g. to pass to
+/// `VeraBulletin::with_signer`, or to derive a signer's public key/DID).
+pub(crate) fn tx_signer(signing_key_hex: &str, config: ChainConfig) -> Result<TxSigner> {
+    TxSigner::from_hex_key(signing_key_hex, config)
+        .map_err(|e| anyhow!("Failed to create signer: {}", e))
+}
+
 /// A chain client signed with `signing_key_hex`, for commands that submit a
 /// transaction.
 pub(crate) async fn signed_vera_client(
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<VeraClient> {
-    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let signer = tx_signer(signing_key_hex, config.clone())?;
     VeraClient::with_signer(config, signer)
         .await
         .map_err(|e| anyhow!("Failed to create Vera client: {}", e))

@@ -4,20 +4,18 @@
 use anyhow::{anyhow, Result};
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
 use bulletin::vera::VeraBulletin;
-use common::blockchain::{ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{ChainConfig, TEST_ACCOUNT_HEX_KEY};
 use crypto::r#trait::ThresholdSigner;
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine as G1Affine, SignImpl};
 
-use super::chain::{chain_config_builder, signed_vera_client, vera_client};
+use super::chain::{chain_config_builder, signed_vera_client, tx_signer, vera_client};
 
 pub async fn register_bulletin_namespace(
     namespace: String,
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<()> {
-    let read_client = VeraClient::new(config.clone())
-        .await
-        .map_err(|e| anyhow!("Failed to create chain client: {}", e))?;
+    let read_client = vera_client(config.clone()).await?;
 
     if read_client.bulletin_get_namespace(&namespace).await.is_ok() {
         println!("Bulletin namespace already exists: {}", namespace);
@@ -100,8 +98,7 @@ pub async fn create_bulletin_post_with_config(
     payload: Vec<u8>,
     config: ChainConfig,
 ) -> Result<String> {
-    let signer = TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let signer = tx_signer(TEST_ACCOUNT_HEX_KEY, config.clone())?;
 
     let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
@@ -188,8 +185,7 @@ async fn post_key_derivation_impl(
             .map_err(|e| anyhow!("Failed to serialize derived_pk: {}", e))?,
     );
 
-    let signer = TxSigner::from_hex_key(signing_key_hex, config.clone())
-        .map_err(|e| anyhow!("Failed to create signer: {}", e))?;
+    let signer = tx_signer(signing_key_hex, config.clone())?;
 
     let bulletin = VeraBulletin::with_signer(chain_config_builder(&config), signer, None)
         .await
