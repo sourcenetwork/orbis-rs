@@ -1,15 +1,35 @@
-use crate::app_state::AppState;
-use crate::helpers::auth::{
-    client_valid_window, current_unix_time, extract_and_validate_jwt, request_actor,
-};
+//! `start_sign`'s request pipeline, broken into named stages, each returning a small
+//! state type that only exposes what later stages need (mirrors PRE's `start_pre`
+//! pipeline — see `pre::v0::service::stages`'s module docs):
+//!
+//!  1. [`authenticate_sign_request`] (**authentication**) — JWT + claims. No IO.
+//!  2. [`SignServiceImpl::resolve_sign_bulletin_state`] (**bulletin reads**) — resolves
+//!     the key-derivation/ring payloads live from the bulletin.
+//!  3. [`SignServiceImpl::authorize_sign_request`] (**policy checks**) — on-chain ACP
+//!     check, then single-use JWT enforcement.
+//!  4. [`SignServiceImpl::prepare_sign_relay`] (**relay setup**) — peer resolution, the
+//!     signed relay-forwarding statement, and coordinator input assembly.
+//!  5. [`SignServiceImpl::coordinate_sign`] (**coordination**) — runs the threshold
+//!     signing round.
+//!  6. [`encode_sign_response`] (**response encoding**) — turns the coordinator's raw
+//!     result into the wire response.
+//!
+//! Security-sensitive ordering preserved from the original monolithic handler: stage 3
+//! enforces single-use JWT consumption strictly *after* the ACP policy check succeeds
+//! (see `record_client_jti_after_acp`'s docs) — swapping that order would let a request
+//! ACP was going to reject still burn the caller's one-time JWT.
+//!
+//! `start_sign` itself (the thin orchestrator that calls these in order) lives in
+//! `super`, alongside `SignServiceImpl`.
+
+use super::*;
+use crate::helpers::auth::{client_valid_window, extract_and_validate_jwt, request_actor};
 use crate::helpers::jti_replay::record_client_jti_after_acp;
 use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
-use crate::metrics;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use crate::sign::v0::coordinator::{SignCoordinator, SigningOptions};
-use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
     check_policy_access_at, fetch_bulletin_payloads_for_version, policy_access_timestamp,
     validate_sign_claims,
@@ -18,46 +38,19 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::{BearerToken, SignClaims};
 use authz::vera::ValidWindow;
 use bulletin::r#trait::{KeyDerivation, RingPayload};
-use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};
-use crypto::SigShareInner;
-use crypto::SignaturePoint;
-use proto::v0::sign::{sign_service_server::SignService, StartSignRequest, StartSignResponse};
-use std::sync::Arc;
-use tonic::{Request, Response, Status};
 
-/// `start_sign`'s request pipeline is broken into named stages, each returning a small
-/// state type that only exposes what later stages need (mirrors PRE's `start_pre`
-/// pipeline — see that file's module docs):
-///
-///  1. [`authenticate_sign_request`] (**authentication**) — JWT + claims. No IO.
-///  2. [`SignServiceImpl::resolve_sign_bulletin_state`] (**bulletin reads**) — resolves
-///     the key-derivation/ring payloads live from the bulletin.
-///  3. [`SignServiceImpl::authorize_sign_request`] (**policy checks**) — on-chain ACP
-///     check, then single-use JWT enforcement.
-///  4. [`SignServiceImpl::prepare_sign_relay`] (**relay setup**) — peer resolution, the
-///     signed relay-forwarding statement, and coordinator input assembly.
-///  5. [`SignServiceImpl::coordinate_sign`] (**coordination**) — runs the threshold
-///     signing round.
-///  6. [`encode_sign_response`] (**response encoding**) — turns the coordinator's raw
-///     result into the wire response.
-///
-/// Security-sensitive ordering preserved from the original monolithic handler: stage 3
-/// enforces single-use JWT consumption strictly *after* the ACP policy check succeeds
-/// (see `record_client_jti_after_acp`'s docs) — swapping that order would let a request
-/// ACP was going to reject still burn the caller's one-time JWT.
-///
 /// Output of stage 1.
-struct AuthenticatedSignRequest {
+pub(super) struct AuthenticatedSignRequest {
     token_string: String,
-    token: BearerToken<SignClaims>,
-    derivation_id: String,
+    pub(super) token: BearerToken<SignClaims>,
+    pub(super) derivation_id: String,
     message: Vec<u8>,
     valid_window: Option<ValidWindow>,
 }
 
 /// Output of stage 2: the key-derivation and ring state this request resolves to, plus
 /// the actor derived from the token and the ring's trusted-relay configuration.
-struct SignBulletinState {
+pub(super) struct SignBulletinState {
     key_derivation: KeyDerivation,
     ring_payload: RingPayload,
     actor_id: String,
@@ -66,7 +59,7 @@ struct SignBulletinState {
 /// Output of stage 3: a request that has passed authentication, bulletin resolution,
 /// on-chain policy authorization, and single-use JWT enforcement. The remaining stages
 /// only set up and run the threshold coordination round.
-struct AuthorizedSignRequest {
+pub(super) struct AuthorizedSignRequest {
     token_string: String,
     token: BearerToken<SignClaims>,
     derivation_id: String,
@@ -80,7 +73,7 @@ struct AuthorizedSignRequest {
 
 /// Output of stage 4: everything the coordination stage needs to run the threshold
 /// round.
-struct SignRelaySetup {
+pub(super) struct SignRelaySetup {
     request_id: String,
     ring: RingConfig,
     message: Vec<u8>,
@@ -88,7 +81,9 @@ struct SignRelaySetup {
 }
 
 /// Rejects an oversized message before any crypto work.
-fn validate_sign_message_size(request: &Request<StartSignRequest>) -> Result<(), SignError> {
+pub(super) fn validate_sign_message_size(
+    request: &Request<StartSignRequest>,
+) -> Result<(), SignError> {
     if request.get_ref().message.len() > crate::constants::MAX_SIGN_MESSAGE_BYTES {
         return Err(SignError::InvalidInput(format!(
             "Message too large: {} bytes exceeds maximum {}",
@@ -101,7 +96,7 @@ fn validate_sign_message_size(request: &Request<StartSignRequest>) -> Result<(),
 
 /// Stage 1 (authentication): extracts and validates the JWT and checks its claims
 /// against the request. No IO.
-fn authenticate_sign_request(
+pub(super) fn authenticate_sign_request(
     request: Request<StartSignRequest>,
     current_time: u64,
 ) -> Result<AuthenticatedSignRequest, SignError> {
@@ -125,7 +120,10 @@ fn authenticate_sign_request(
 
 /// Response-encoding stage (6): parses the coordinator's raw result into the wire
 /// response.
-fn encode_sign_response(result: Vec<u8>, created_at: i64) -> Result<StartSignResponse, SignError> {
+pub(super) fn encode_sign_response(
+    result: Vec<u8>,
+    created_at: i64,
+) -> Result<StartSignResponse, SignError> {
     let sign_response: crate::sign::v0::coordinator::SignResponse = serde_json::from_slice(&result)
         .map_err(|e| SignError::Deserialization(format!("Failed to parse sign result: {}", e)))?;
 
@@ -135,39 +133,6 @@ fn encode_sign_response(result: Vec<u8>, created_at: i64) -> Result<StartSignRes
         created_at,
         signature: sign_response.signature,
     })
-}
-
-/// Implementation of the v0 SignService.
-///
-/// Accepts requests only for rings whose effective protocol version is 0.
-/// Once a ring's activation_time passes and its effective version becomes 1,
-/// callers must switch to the v1 SignService endpoint.
-#[derive(Debug)]
-pub struct SignServiceImpl<D, S>
-where
-    D: Dkg + Clone + 'static,
-    S: ThresholdSigner,
-{
-    pub state: Arc<AppState<D>>,
-    pub routes: &'static network::ProtocolRoutes,
-    _phantom: std::marker::PhantomData<S>,
-}
-
-impl<D, S> SignServiceImpl<D, S>
-where
-    D: Dkg + Clone + 'static,
-    S: ThresholdSigner,
-{
-    pub fn with_routes(
-        state: impl Into<Arc<AppState<D>>>,
-        routes: &'static network::ProtocolRoutes,
-    ) -> Self {
-        Self {
-            state: state.into(),
-            routes,
-            _phantom: std::marker::PhantomData,
-        }
-    }
 }
 
 impl<D, S> SignServiceImpl<D, S>
@@ -191,7 +156,7 @@ where
     /// Stage 2 (bulletin reads): resolves the key-derivation and ring payloads live
     /// from the bulletin, then derives the acting identity from the token and the
     /// ring's trusted-relay configuration.
-    async fn resolve_sign_bulletin_state(
+    pub(super) async fn resolve_sign_bulletin_state(
         &self,
         derivation_id: &str,
         token: &BearerToken<SignClaims>,
@@ -220,7 +185,7 @@ where
     /// ACP check succeeds (see that function's docs) — this stage preserves that order
     /// so a caller cannot burn a client's one-time JWT against a request ACP would have
     /// rejected.
-    async fn authorize_sign_request(
+    pub(super) async fn authorize_sign_request(
         &self,
         authenticated: AuthenticatedSignRequest,
         bulletin_state: SignBulletinState,
@@ -277,7 +242,7 @@ where
     /// node's signed relay-forwarding statement (so a peer whose own ACP re-check fails
     /// can attribute the request back to this relay), and assembles the ring/policy
     /// context the coordination stage hands to `SignCoordinator`.
-    async fn prepare_sign_relay(
+    pub(super) async fn prepare_sign_relay(
         &self,
         authorized: AuthorizedSignRequest,
     ) -> Result<SignRelaySetup, SignError> {
@@ -357,7 +322,10 @@ where
 
     /// Stage 5 (coordination): runs the threshold signing round across the ring's
     /// peers.
-    async fn coordinate_sign(&self, setup: SignRelaySetup) -> Result<Vec<u8>, SignError> {
+    pub(super) async fn coordinate_sign(
+        &self,
+        setup: SignRelaySetup,
+    ) -> Result<Vec<u8>, SignError> {
         let coordinator = SignCoordinator::<D, S>::with_routes(self.state.clone(), self.routes);
         coordinator
             .initiate_signing(
@@ -368,69 +336,5 @@ where
                 SigningOptions::default(),
             )
             .await
-    }
-}
-
-#[tonic::async_trait]
-impl<D, S> SignService for SignServiceImpl<D, S>
-where
-    D: Dkg<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    S: ThresholdSigner<
-            ShareValue = crypto::ScalarField,
-            PublicKey = crypto::GroupAffine,
-            DistKeyShare = DistKeyShare<crypto::ScalarField>,
-            PubPoly = D::PubPoly,
-            Signature = SignaturePoint,
-            SigShare = PubShare<SigShareInner>,
-        > + Send
-        + Sync
-        + 'static,
-{
-    #[tracing::instrument(skip_all, fields(request))]
-    async fn start_sign(
-        &self,
-        request: Request<StartSignRequest>,
-    ) -> Result<Response<StartSignResponse>, Status> {
-        let grpc_metrics = metrics::GrpcRequestGuard::new("sign", "start_sign");
-        let request_metrics = metrics::track_sign_request();
-
-        // get timestamp (needed for JWT validation) ---
-        let current_time = current_unix_time().map_err(SignError::RequestTimestamp)?;
-
-        validate_sign_message_size(&request)?;
-
-        // 1. Authentication.
-        let authenticated = authenticate_sign_request(request, current_time)?;
-
-        // 2. Bulletin reads.
-        let bulletin_state = self
-            .resolve_sign_bulletin_state(&authenticated.derivation_id, &authenticated.token)
-            .await?;
-
-        // 3. Policy checks (ACP, then single-use JWT enforcement — see
-        //    `authorize_sign_request`'s docs for the security-sensitive ordering
-        //    between the ACP check and the JWT check).
-        let authorized = self
-            .authorize_sign_request(authenticated, bulletin_state)
-            .await?;
-
-        // 4. Relay setup.
-        let setup = self.prepare_sign_relay(authorized).await?;
-
-        // 5. Coordination.
-        let result = self.coordinate_sign(setup).await?;
-
-        // 6. Response encoding.
-        let created_at = current_time as i64;
-        let response = encode_sign_response(result, created_at)?;
-
-        request_metrics.complete();
-        grpc_metrics.success();
-
-        Ok(Response::new(response))
     }
 }

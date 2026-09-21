@@ -1,13 +1,34 @@
-use crate::app_state::AppState;
-use crate::helpers::auth::{
-    client_valid_window, current_unix_time, extract_and_validate_jwt, request_actor,
-};
+//! `start_pre`'s request pipeline, broken into named stages, each returning a small
+//! state type that only exposes what later stages need:
+//!
+//!  1. [`PreServiceImpl::authenticate_pre_request`] (**authentication**) — JWT + claims
+//!     + reader-key proof-of-possession. No IO.
+//!  2. [`PreServiceImpl::resolve_pre_bulletin_state`] (**bulletin reads**) — resolves the
+//!     document/ring payloads live from the bulletin.
+//!  3. [`PreServiceImpl::authorize_pre_request`] (**policy checks**) — on-chain ACP
+//!     check, then single-use JWT enforcement, then Schnorr ciphertext-binding
+//!     verification.
+//!  4. [`PreServiceImpl::prepare_pre_relay`] (**relay setup**) — peer resolution, the
+//!     signed relay-forwarding statement, and coordinator input assembly.
+//!  5. [`PreServiceImpl::coordinate_pre_reencryption`] (**coordination**) — runs the
+//!     threshold re-encryption round.
+//!  6. [`encode_pre_response`] (**response encoding**) — turns the coordinator's raw
+//!     result into the wire response.
+//!
+//! Security-sensitive ordering preserved from the original monolithic handler: stage 3
+//! enforces single-use JWT consumption strictly *after* the ACP policy check succeeds
+//! (see `record_client_jti_after_acp`'s docs) — swapping that order would let a request
+//! ACP was going to reject still burn the caller's one-time JWT.
+//!
+//! `start_pre` itself (the thin orchestrator that calls these in order) lives in
+//! `super`, alongside `PreServiceImpl`.
+
+use super::*;
+use crate::helpers::auth::{client_valid_window, extract_and_validate_jwt, request_actor};
 use crate::helpers::jti_replay::record_client_jti_after_acp;
 use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
-use crate::metrics;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
-use crate::pre::v0::error::PreError;
 use crate::pre::v0::helpers::{
     build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
     resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
@@ -20,83 +41,14 @@ use authn::{BearerToken, PreClaims};
 use authz::vera::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::context::CiphertextContext;
-use crypto::r#trait::{
-    DistKeyShare, Dkg, EncryptionProof, ReaderKeyProof, ReencryptReply, Secret, ThresholdDealer,
-};
-use proto::v0::pre::{pre_service_server::PreService, StartPreRequest, StartPreResponse};
-use std::sync::Arc;
-use tonic::{Request, Response, Status};
+use crypto::r#trait::ReaderKeyProof;
 
-/// Converts a caller-supplied `InlineDocument` into the internal `DocumentPayload` shape,
-/// validating the encrypted document's structure along the way. Does not check `object_id` —
-/// that happens in `resolve_document_and_ring_payloads` via `check_document_id_binding` (after the
-/// protocol-version gate), which every node (including cascaded committee members) independently
-/// re-runs.
-///
-/// `pub(crate)` so `unsafe_testing::service` can reuse it to inject a
-/// `PreRequestContext.document` for integration tests exercising the inline-document path.
-pub(crate) fn document_payload_from_inline(
-    inline: proto::v0::pre::InlineDocument,
-) -> Result<DocumentPayload, PreError> {
-    crate::helpers::encrypted_document::validate_encrypted_document(
-        &inline.encrypted_document,
-        &inline.enc_cmt,
-    )
-    .map_err(PreError::InvalidInput)?;
-
-    let document = String::from_utf8(inline.encrypted_document).map_err(|e| {
-        PreError::InvalidInput(format!("encrypted_document is not valid UTF-8: {}", e))
-    })?;
-
-    let proof: String = EncryptionProof {
-        challenge: inline.challenge,
-        response: inline.response,
-    }
-    .try_into()
-    .map_err(|e: crypto::error::CryptoError| {
-        PreError::Serialization(format!("Failed to serialize proof: {}", e))
-    })?;
-
-    Ok(DocumentPayload {
-        ring_id: inline.ring_id,
-        document,
-        proof,
-        policy_id: inline.policy_id,
-        resource: inline.resource,
-        permission: inline.permission,
-        tier: inline.tier,
-        timestamp: inline.timestamp,
-    })
-}
-
-/// `start_pre`'s request pipeline is broken into named stages, each returning a small
-/// state type that only exposes what later stages need:
-///
-///  1. [`PreServiceImpl::authenticate_pre_request`] (**authentication**) — JWT + claims
-///     + reader-key proof-of-possession. No IO.
-///  2. [`PreServiceImpl::resolve_pre_bulletin_state`] (**bulletin reads**) — resolves the
-///     document/ring payloads live from the bulletin.
-///  3. [`PreServiceImpl::authorize_pre_request`] (**policy checks**) — on-chain ACP
-///     check, then single-use JWT enforcement, then Schnorr ciphertext-binding
-///     verification.
-///  4. [`PreServiceImpl::prepare_pre_relay`] (**relay setup**) — peer resolution, the
-///     signed relay-forwarding statement, and coordinator input assembly.
-///  5. [`PreServiceImpl::coordinate_pre_reencryption`] (**coordination**) — runs the
-///     threshold re-encryption round.
-///  6. [`encode_pre_response`] (**response encoding**) — turns the coordinator's raw
-///     result into the wire response.
-///
-/// Security-sensitive ordering preserved from the original monolithic handler: stage 3
-/// enforces single-use JWT consumption strictly *after* the ACP policy check succeeds
-/// (see `record_client_jti_after_acp`'s docs) — swapping that order would let a request
-/// ACP was going to reject still burn the caller's one-time JWT.
-///
 /// Output of stage 1. The parsed inline document (if any) is returned alongside rather
 /// than folded into this type, since only stage 2 consumes it.
-struct AuthenticatedPreRequest {
+pub(super) struct AuthenticatedPreRequest {
     token_str: String,
-    token: BearerToken<PreClaims>,
-    object_id: String,
+    pub(super) token: BearerToken<PreClaims>,
+    pub(super) object_id: String,
     rdr_pk: Vec<u8>,
     rdr_pk_proof: ReaderKeyProof,
     derivation: Option<Vec<u8>>,
@@ -106,7 +58,7 @@ struct AuthenticatedPreRequest {
 
 /// Output of stage 2: the document and ring state this request resolves to, plus the
 /// actor derived from the token and the ring's trusted-relay configuration.
-struct PreBulletinState {
+pub(super) struct PreBulletinState {
     document_payload: DocumentPayload,
     ring_payload: RingPayload,
     is_inline: bool,
@@ -118,7 +70,7 @@ struct PreBulletinState {
 /// on-chain policy authorization, single-use JWT enforcement, and Schnorr
 /// ciphertext-binding verification. The remaining stages only set up and run the
 /// threshold coordination round.
-struct AuthorizedPreRequest {
+pub(super) struct AuthorizedPreRequest {
     token_str: String,
     token: BearerToken<PreClaims>,
     object_id: String,
@@ -132,12 +84,12 @@ struct AuthorizedPreRequest {
     is_inline: bool,
     document_evidence: Option<ReportedDocumentEvidence>,
     actor_id: String,
-    ciphertext_context: CiphertextContext,
+    pub(super) ciphertext_context: CiphertextContext,
 }
 
 /// Output of stage 4: everything the coordination stage needs to run the threshold
 /// round.
-struct PreRelaySetup {
+pub(super) struct PreRelaySetup {
     request_id: String,
     ring: RingConfig,
     secret_bytes: Vec<u8>,
@@ -150,7 +102,9 @@ struct PreRelaySetup {
 /// `max_decoding_message_size(MAX_PRE_REQUEST_BYTES)` (`runtime.rs`), which already
 /// bounds the whole request; this is defense-in-depth so a maximal-but-still-under-that-
 /// cap document doesn't spend a JWT signature verification before being rejected.
-fn validate_pre_request_size(request: &Request<StartPreRequest>) -> Result<(), PreError> {
+pub(super) fn validate_pre_request_size(
+    request: &Request<StartPreRequest>,
+) -> Result<(), PreError> {
     if let Some(document) = request.get_ref().document.as_ref() {
         if document.encrypted_document.len() > crate::constants::MAX_PRE_REQUEST_BYTES {
             return Err(PreError::InvalidInput(format!(
@@ -165,7 +119,7 @@ fn validate_pre_request_size(request: &Request<StartPreRequest>) -> Result<(), P
 
 /// Response-encoding stage (6): parses the coordinator's raw result and attaches the
 /// verified ciphertext-binding context so the reader can rebuild the AAD.
-fn encode_pre_response(
+pub(super) fn encode_pre_response(
     result: Vec<u8>,
     ciphertext_context: CiphertextContext,
     created_at: i64,
@@ -187,39 +141,6 @@ fn encode_pre_response(
         created_at,
         encrypted_secret,
     })
-}
-
-/// Implementation of the v0 PreService.
-///
-/// Accepts requests only for rings whose effective protocol version is 0.
-/// Once a ring's activation_time passes and its effective version becomes 1,
-/// callers must switch to the v1 PreService endpoint.
-#[derive(Debug)]
-pub struct PreServiceImpl<D, T>
-where
-    D: Dkg + Clone + 'static,
-    T: ThresholdDealer,
-{
-    pub state: Arc<AppState<D>>,
-    pub routes: &'static network::ProtocolRoutes,
-    _phantom: std::marker::PhantomData<T>,
-}
-
-impl<D, T> PreServiceImpl<D, T>
-where
-    D: Dkg + Clone + 'static,
-    T: ThresholdDealer,
-{
-    pub fn with_routes(
-        state: impl Into<Arc<AppState<D>>>,
-        routes: &'static network::ProtocolRoutes,
-    ) -> Self {
-        Self {
-            state: state.into(),
-            routes,
-            _phantom: std::marker::PhantomData,
-        }
-    }
 }
 
 impl<D, T> PreServiceImpl<D, T>
@@ -252,7 +173,7 @@ where
     /// inside `ThresholdDealer::reencrypt` (the actual security boundary — see
     /// `ReaderKeyProof`'s docs); checking it here too just fails fast, before a
     /// threshold round trip, on a missing or malformed proof.
-    fn authenticate_pre_request(
+    pub(super) fn authenticate_pre_request(
         request: Request<StartPreRequest>,
         current_time: u64,
     ) -> Result<(AuthenticatedPreRequest, Option<DocumentPayload>), PreError> {
@@ -313,7 +234,7 @@ where
     /// payload or, when absent, from the bulletin by `object_id`) and the ring's live
     /// payload, then derives the acting identity from the token and the ring's
     /// trusted-relay configuration.
-    async fn resolve_pre_bulletin_state(
+    pub(super) async fn resolve_pre_bulletin_state(
         &self,
         object_id: &str,
         inline_document: Option<DocumentPayload>,
@@ -355,7 +276,7 @@ where
     /// ACP check succeeds (see that function's docs) — this stage preserves that order
     /// so a caller cannot burn a client's one-time JWT against a request ACP would have
     /// rejected.
-    async fn authorize_pre_request(
+    pub(super) async fn authorize_pre_request(
         &self,
         authenticated: AuthenticatedPreRequest,
         bulletin_state: PreBulletinState,
@@ -429,7 +350,7 @@ where
     /// node's signed relay-forwarding statement (so a peer whose own ACP re-check fails
     /// can attribute the request back to this relay), and assembles the ring/request
     /// context the coordination stage hands to `PreCoordinator`.
-    async fn prepare_pre_relay(
+    pub(super) async fn prepare_pre_relay(
         &self,
         authorized: AuthorizedPreRequest,
     ) -> Result<PreRelaySetup, PreError> {
@@ -526,7 +447,10 @@ where
 
     /// Stage 5 (coordination): runs the threshold re-encryption round across the ring's
     /// peers.
-    async fn coordinate_pre_reencryption(&self, setup: PreRelaySetup) -> Result<Vec<u8>, PreError> {
+    pub(super) async fn coordinate_pre_reencryption(
+        &self,
+        setup: PreRelaySetup,
+    ) -> Result<Vec<u8>, PreError> {
         let coordinator = PreCoordinator::<D, T>::with_routes(self.state.clone(), self.routes);
         coordinator
             .initiate_reencryption(
@@ -537,81 +461,5 @@ where
                 setup.report_binding,
             )
             .await
-    }
-}
-
-#[tonic::async_trait]
-impl<D, T> PreService for PreServiceImpl<D, T>
-where
-    D: Dkg<
-            ShareValue = crypto::ScalarField,
-            PublicKey = crypto::GroupAffine,
-            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
-            PubPoly = crypto::PubPolyImpl,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-    T: ThresholdDealer<
-            ShareValue = crypto::ScalarField,
-            PublicKey = crypto::GroupAffine,
-            DistKeyShare = DistKeyShare<crypto::ScalarField>,
-            Secret = Secret,
-            ReencryptReply = ReencryptReply<crypto::ScalarField, crypto::GroupAffine>,
-            PubPoly = D::PubPoly,
-        > + Send
-        + Sync
-        + 'static,
-{
-    #[tracing::instrument(skip_all, fields(request))]
-    async fn start_pre(
-        &self,
-        request: Request<StartPreRequest>,
-    ) -> Result<Response<StartPreResponse>, Status> {
-        let grpc_metrics = metrics::GrpcRequestGuard::new("pre", "start_pre");
-        let request_metrics = metrics::track_pre_request();
-
-        // Get current timestamp (needed for both auth and the response).
-        let current_time = current_unix_time().map_err(|e| {
-            tracing::error!("Failed to get current unix time: {}", e);
-            PreError::SystemTime("Failed to get current timestamp".to_string())
-        })?;
-
-        validate_pre_request_size(&request)?;
-
-        // 1. Authentication.
-        let (authenticated, inline_document) =
-            Self::authenticate_pre_request(request, current_time)?;
-
-        // 2. Bulletin reads.
-        let bulletin_state = self
-            .resolve_pre_bulletin_state(
-                &authenticated.object_id,
-                inline_document,
-                &authenticated.token,
-            )
-            .await?;
-
-        // 3. Policy checks (ACP, then single-use JWT enforcement, then ciphertext-
-        //    binding verification — see `authorize_pre_request`'s docs for the
-        //    security-sensitive ordering between the ACP check and the JWT check).
-        let authorized = self
-            .authorize_pre_request(authenticated, bulletin_state)
-            .await?;
-        let ciphertext_context = authorized.ciphertext_context.clone();
-
-        // 4. Relay setup.
-        let setup = self.prepare_pre_relay(authorized).await?;
-
-        // 5. Coordination.
-        let result = self.coordinate_pre_reencryption(setup).await?;
-
-        // 6. Response encoding.
-        let response = encode_pre_response(result, ciphertext_context, current_time as i64)?;
-
-        request_metrics.complete();
-        grpc_metrics.success();
-
-        Ok(Response::new(response))
     }
 }
