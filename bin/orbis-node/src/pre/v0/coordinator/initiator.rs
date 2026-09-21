@@ -15,6 +15,7 @@ use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::observation::{offline_observation_from_pre_error, ReportObservation};
 use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
+use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
@@ -37,6 +38,23 @@ struct PreResponseDrainArgs<D: Dkg> {
     pub_poly: D::PubPoly,
     enc_cmt: D::PublicKey,
     seen_node_ids: HashSet<u32>,
+}
+
+/// The polynomial for the ring's current PSS generation, and (when
+/// `self_in_list`) this node's own share bundle for that same generation —
+/// loaded from a single atomic `RingShareBundle` read (see the TOCTOU comment
+/// in `resolve_reencryption_material`).
+struct ReencryptionMaterial<D: Dkg> {
+    pub_poly: D::PubPoly,
+    local_share_bundle: Option<RingShareBundle>,
+}
+
+/// The reader public key and ciphertext commitment this reencryption request
+/// operates on, deserialized once up front.
+struct ReencryptionRequestMaterial<D: Dkg> {
+    rdr_pk: D::PublicKey,
+    secret: Secret,
+    enc_cmt: D::PublicKey,
 }
 
 impl<D, T> PreCoordinator<D, T>
@@ -170,6 +188,11 @@ where
     ///
     /// This is separated so that cleanup can be guaranteed by the outer function.
     /// Assumes init_pre_response has already been called.
+    ///
+    /// The pipeline is a sequence of named stages: resolve key material for the
+    /// right PSS generation, deserialize the request's reader key/secret,
+    /// collect verified shares (local + network), then recover and encode the
+    /// reencrypted commitment.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn initiate_reencryption_inner(
         &self,
@@ -182,22 +205,71 @@ where
         ctx: PreRequestContext,
         report_binding: PreReportBinding,
     ) -> Result<Vec<u8>> {
-        // 1. Load the public polynomial and (when self_in_list) the local share bundle
-        //    from a SINGLE atomic read of RingShareBundle.
-        //
-        //    Without this, there is a TOCTOU race: the service layer reads the polynomial
-        //    in one bundle read, then `self_in_list` reads the share in a second bundle
-        //    read.  If PSS Phase 4 fires between those two reads it updates the bundle
-        //    atomically (new share + new polynomial together), so the two reads can see
-        //    different generations.  A self-share from generation N+1 combined via
-        //    Lagrange with peer shares from generation N produces a wrong xnc_cmt,
-        //    which passes AES-GCM tag verification with a wrong key → "authentication
-        //    failed".
-        //
-        //    Loading both fields from the same snapshot guarantees they are always from
-        //    the same PSS generation, so Lagrange interpolation is correct.
+        let material = self
+            .resolve_reencryption_material(&ring, self_in_list, actual_peer_count)
+            .await?;
+        let request_material = Self::resolve_reencryption_request(&ctx, &secret_bytes)?;
+
+        let dealer = T::new();
+        let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
+        let mut seen_node_ids: HashSet<u32> = HashSet::new();
+
+        if let Some(share) = Self::compute_local_reencryption_share(
+            &dealer,
+            self_in_list,
+            &material,
+            &request_material,
+            &ctx,
+        )? {
+            seen_node_ids.insert(share.i);
+            verified_shares.push(share);
+        }
+
+        let already_verified = verified_shares.len();
+        verified_shares.extend(
+            self.collect_network_reencryption_shares(
+                &dealer,
+                &request_id,
+                &ring,
+                node_id,
+                &ctx,
+                &report_binding,
+                &material,
+                &request_material,
+                &mut seen_node_ids,
+                already_verified,
+            )
+            .await?,
+        );
+
+        // Note: Cleanup is handled by the outer initiate_reencryption function
+        self.finalize_reencryption(&dealer, verified_shares, &ring, secret_bytes, &request_id)
+            .await
+    }
+
+    /// Load the public polynomial and (when self_in_list) the local share bundle
+    /// from a SINGLE atomic read of RingShareBundle.
+    ///
+    /// Without this, there is a TOCTOU race: the service layer reads the polynomial
+    /// in one bundle read, then `self_in_list` reads the share in a second bundle
+    /// read.  If PSS Phase 4 fires between those two reads it updates the bundle
+    /// atomically (new share + new polynomial together), so the two reads can see
+    /// different generations.  A self-share from generation N+1 combined via
+    /// Lagrange with peer shares from generation N produces a wrong xnc_cmt,
+    /// which passes AES-GCM tag verification with a wrong key → "authentication
+    /// failed".
+    ///
+    /// Loading both fields from the same snapshot guarantees they are always from
+    /// the same PSS generation, so Lagrange interpolation is correct. Also
+    /// validates threshold feasibility before any network round-trip.
+    async fn resolve_reencryption_material(
+        &self,
+        ring: &RingConfig,
+        self_in_list: bool,
+        actual_peer_count: usize,
+    ) -> Result<ReencryptionMaterial<D>> {
         let (pub_poly, local_share_bundle) =
-            load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, &ring, self_in_list)
+            load_ring_pub_poly_and_bundle::<D>(&self.app_state.local_storage, ring, self_in_list)
                 .map_err(PreError::Deserialization)?;
 
         // Validate we have enough potential shares to meet threshold
@@ -215,13 +287,23 @@ where
             });
         }
 
-        // 2. Deserialize reader public key
+        Ok(ReencryptionMaterial {
+            pub_poly,
+            local_share_bundle,
+        })
+    }
+
+    /// Deserialize the reader public key and secret (to get `enc_cmt`) this
+    /// request operates on.
+    fn resolve_reencryption_request(
+        ctx: &PreRequestContext,
+        secret_bytes: &[u8],
+    ) -> Result<ReencryptionRequestMaterial<D>> {
         let rdr_pk = <D::PublicKey>::from_bytes(&ctx.rdr_pk_bytes[..]).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
         })?;
 
-        // 3. Deserialize secret to get enc_cmt
-        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
+        let secret: Secret = serde_json::from_slice(secret_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
@@ -229,71 +311,104 @@ where
             PreError::Deserialization(format!("Failed to deserialize enc_cmt: {}", e))
         })?;
 
-        let dealer = T::new();
-        let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
-        let mut seen_node_ids: HashSet<u32> = HashSet::new();
+        Ok(ReencryptionRequestMaterial {
+            rdr_pk,
+            secret,
+            enc_cmt,
+        })
+    }
 
-        // If we're in the peer list, compute our own share locally before deciding
-        // how many verified shares we still need from the network.
-        if self_in_list {
-            let bundle = local_share_bundle.ok_or_else(|| {
-                PreError::Storage("Local share bundle missing for ring member".to_string())
-            })?;
-            let pri_share =
-                PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|error| {
-                    PreError::Deserialization(format!(
-                        "Failed to deserialize local share: {}",
-                        error
-                    ))
-                })?;
-            let dist_key_share = DistKeyShare { pri_share };
-
-            let reply = dealer
-                .reencrypt(
-                    &dist_key_share,
-                    &secret,
-                    &rdr_pk,
-                    &ctx.rdr_pk_proof,
-                    ctx.derivation.as_deref(),
-                )
-                .map_err(|error| {
-                    PreError::Crypto(format!("Local reencryption failed: {}", error))
-                })?;
-            if dealer
-                .verify(
-                    &rdr_pk,
-                    &pub_poly,
-                    &enc_cmt,
-                    &reply,
-                    ctx.derivation.as_deref(),
-                )
-                .inspect_err(|error| {
-                    tracing::error!(
-                        from_node_id = reply.share.i,
-                        error = %error,
-                        "PRE Coordinator: Local share verification failed"
-                    );
-                })
-                .is_ok()
-            {
-                tracing::debug!(
-                    from_node_id = reply.share.i,
-                    "PRE Coordinator: Added local share"
-                );
-                seen_node_ids.insert(reply.share.i);
-                verified_shares.push(reply.share.clone());
-            }
+    /// Compute and verify our own reencryption share, if we're in the peer
+    /// list. Unlike the network path, a missing local bundle here is a hard
+    /// error (not a soft skip) — `self_in_list` means the caller expects us to
+    /// contribute a share.
+    fn compute_local_reencryption_share(
+        dealer: &T,
+        self_in_list: bool,
+        material: &ReencryptionMaterial<D>,
+        request_material: &ReencryptionRequestMaterial<D>,
+        ctx: &PreRequestContext,
+    ) -> Result<Option<PubShare<D::PublicKey>>> {
+        if !self_in_list {
+            return Ok(None);
         }
 
-        let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());
+        let bundle = material.local_share_bundle.as_ref().ok_or_else(|| {
+            PreError::Storage("Local share bundle missing for ring member".to_string())
+        })?;
+        let pri_share =
+            PriShare::<D::ShareValue>::from_bytes(&bundle.share_bytes).map_err(|error| {
+                PreError::Deserialization(format!("Failed to deserialize local share: {}", error))
+            })?;
+        let dist_key_share = DistKeyShare { pri_share };
+
+        let reply = dealer
+            .reencrypt(
+                &dist_key_share,
+                &request_material.secret,
+                &request_material.rdr_pk,
+                &ctx.rdr_pk_proof,
+                ctx.derivation.as_deref(),
+            )
+            .map_err(|error| PreError::Crypto(format!("Local reencryption failed: {}", error)))?;
+
+        if dealer
+            .verify(
+                &request_material.rdr_pk,
+                &material.pub_poly,
+                &request_material.enc_cmt,
+                &reply,
+                ctx.derivation.as_deref(),
+            )
+            .inspect_err(|error| {
+                tracing::error!(
+                    from_node_id = reply.share.i,
+                    error = %error,
+                    "PRE Coordinator: Local share verification failed"
+                );
+            })
+            .is_ok()
+        {
+            tracing::debug!(
+                from_node_id = reply.share.i,
+                "PRE Coordinator: Added local share"
+            );
+            Ok(Some(reply.share.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Request reencryption shares from peers, collect verified responses
+    /// until threshold or timeout, hand off stragglers to a background drain,
+    /// then pick up anything that was already stored before cancellation.
+    /// Threaded via `seen_node_ids` so the drain and the already-stored pass
+    /// don't double count a share this call already saw.
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_network_reencryption_shares(
+        &self,
+        dealer: &T,
+        request_id: &str,
+        ring: &RingConfig,
+        node_id: u32,
+        ctx: &PreRequestContext,
+        report_binding: &PreReportBinding,
+        material: &ReencryptionMaterial<D>,
+        request_material: &ReencryptionRequestMaterial<D>,
+        seen_node_ids: &mut HashSet<u32>,
+        already_verified_count: usize,
+    ) -> Result<Vec<PubShare<D::PublicKey>>> {
+        let pub_poly = &material.pub_poly;
+        let rdr_pk = &request_material.rdr_pk;
+        let enc_cmt = &request_material.enc_cmt;
+
+        let mut verified_shares: Vec<PubShare<D::PublicKey>> = Vec::new();
+        let min_needed_from_network = ring.threshold.saturating_sub(already_verified_count);
 
         // 4. Send reencryption requests to all peers concurrently and receive responses
         // Note: init_pre_response is called by the outer function to ensure cleanup on all paths
         // node_id is already obtained from DKG session above
         let mut set = tokio::task::JoinSet::new();
-
-        // Keep a copy of secret_bytes for later deserialization
-        let secret_bytes_for_later = secret_bytes.clone();
 
         if min_needed_from_network > 0 {
             for peer_id_str in &ring.peer_ids {
@@ -304,13 +419,13 @@ where
                 }
 
                 let request = PreMessage::ReencryptRequest(Box::new(ReencryptRequest {
-                    request_id: request_id.clone(),
+                    request_id: request_id.to_string(),
                     from_node_id: node_id,
                     context: ctx.clone(),
                 }));
 
                 let peer_id = peer_id_str.clone();
-                let req_id = request_id.clone();
+                let req_id = request_id.to_string();
                 let app_state = self.app_state.clone();
                 let routes = self.routes;
 
@@ -335,7 +450,7 @@ where
                     match res {
                         Ok((peer_id, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
-                                determine_ring_node_id_from_peer_id(&peer_id, &ring)
+                                determine_ring_node_id_from_peer_id(&peer_id, ring)
                             else {
                                 tracing::error!(
                                     peer_id = %peer_id,
@@ -343,7 +458,7 @@ where
                                 );
                                 continue;
                             };
-                            let Some(accused_node_key) = node_key_for_peer(&ring, &peer_id) else {
+                            let Some(accused_node_key) = node_key_for_peer(ring, &peer_id) else {
                                 tracing::error!(
                                     peer_id = %peer_id,
                                     "PRE Coordinator: accepted response from peer without node key"
@@ -352,7 +467,7 @@ where
                             };
                             let report_context = report_binding.response_report_context(
                                 self.routes.version,
-                                &request_id,
+                                request_id,
                                 accused_node_key,
                                 &peer_id,
                                 &ctx.object_id,
@@ -360,15 +475,15 @@ where
                                 ctx.derivation.clone(),
                             );
                             match Self::verify_peer_response(
-                                &dealer,
+                                dealer,
                                 response,
-                                &rdr_pk,
-                                &pub_poly,
-                                &enc_cmt,
+                                rdr_pk,
+                                pub_poly,
+                                enc_cmt,
                                 ctx.derivation.as_deref(),
                                 expected_node_id,
                                 &report_context,
-                                &mut seen_node_ids,
+                                seen_node_ids,
                             ) {
                                 PeerResponseVerification::Verified(share) => {
                                     verified_shares.push(share);
@@ -404,11 +519,11 @@ where
                                 "PRE peer request failed"
                             );
                             if let Some(observation) = offline_observation_from_pre_error(
-                                &ring,
+                                ring,
                                 &peer_id,
                                 &e,
                                 self.routes.version,
-                                &request_id,
+                                request_id,
                             ) {
                                 let _ = queue_report::<D, SignImpl>(
                                     self.app_state.clone(),
@@ -454,13 +569,13 @@ where
             set,
             ring: ring.clone(),
             report_binding: report_binding.clone(),
-            request_id: request_id.clone(),
+            request_id: request_id.to_string(),
             object_id: ctx.object_id.clone(),
             rdr_pk_bytes: ctx.rdr_pk_bytes.clone(),
             derivation: ctx.derivation.clone(),
-            rdr_pk,
+            rdr_pk: *rdr_pk,
             pub_poly: pub_poly.clone(),
-            enc_cmt,
+            enc_cmt: *enc_cmt,
             seen_node_ids: seen_node_ids.clone(),
         });
 
@@ -469,7 +584,7 @@ where
         let collected_responses = self
             .app_state
             .pre_response_state
-            .take_authenticated_responses_for_version(self.routes.version, &request_id)
+            .take_authenticated_responses_for_version(self.routes.version, request_id)
             .await
             .ok_or_else(|| {
                 PreError::Timeout(format!("No responses found for request {}", request_id))
@@ -477,7 +592,7 @@ where
 
         for response in collected_responses {
             let Some(expected_node_id) =
-                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
             else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,
@@ -485,7 +600,7 @@ where
                 );
                 continue;
             };
-            let Some(accused_node_key) = node_key_for_peer(&ring, &response.sender_peer_hex) else {
+            let Some(accused_node_key) = node_key_for_peer(ring, &response.sender_peer_hex) else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,
                     "PRE Coordinator: stored response from peer without node key"
@@ -494,7 +609,7 @@ where
             };
             let report_context = report_binding.response_report_context(
                 self.routes.version,
-                &request_id,
+                request_id,
                 accused_node_key,
                 &response.sender_peer_hex,
                 &ctx.object_id,
@@ -502,15 +617,15 @@ where
                 ctx.derivation.clone(),
             );
             match Self::verify_peer_response(
-                &dealer,
+                dealer,
                 response.message,
-                &rdr_pk,
-                &pub_poly,
-                &enc_cmt,
+                rdr_pk,
+                pub_poly,
+                enc_cmt,
                 ctx.derivation.as_deref(),
                 expected_node_id,
                 &report_context,
-                &mut seen_node_ids,
+                seen_node_ids,
             ) {
                 PeerResponseVerification::Verified(share) => {
                     verified_shares.push(share);
@@ -534,6 +649,19 @@ where
             }
         }
 
+        Ok(verified_shares)
+    }
+
+    /// Check we recovered enough shares, recover the reencrypted commitment,
+    /// and encode the final response bytes.
+    async fn finalize_reencryption(
+        &self,
+        dealer: &T,
+        verified_shares: Vec<PubShare<D::PublicKey>>,
+        ring: &RingConfig,
+        secret_bytes: Vec<u8>,
+        request_id: &str,
+    ) -> Result<Vec<u8>> {
         // 6. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
             if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
@@ -566,8 +694,8 @@ where
             .map_err(|e| PreError::Serialization(format!("Failed to serialize xnc_cmt: {}", e)))?;
         let xnc_cmt_hex = hex::encode(&xnc_cmt_bytes);
 
-        // 9. Deserialize secret from bytes (use cloned version)
-        let secret: Secret = serde_json::from_slice(&secret_bytes_for_later).map_err(|e| {
+        // 9. Deserialize secret from bytes
+        let secret: Secret = serde_json::from_slice(&secret_bytes).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize secret: {}", e))
         })?;
 
@@ -581,8 +709,6 @@ where
         // 11. Serialize response to JSON bytes
         let response_bytes = serde_json::to_vec(&pre_response)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize response: {}", e)))?;
-
-        // Note: Cleanup is handled by the outer initiate_reencryption function
 
         tracing::info!(
             request_id = %request_id,
