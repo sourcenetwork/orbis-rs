@@ -19,9 +19,7 @@ impl VeraClient {
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgCreateRing::new(
             &signer.address(),
             peer_node_keys,
@@ -96,9 +94,7 @@ impl VeraClient {
         tier: Option<String>,
         timestamp: Option<u64>,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgStoreDocument {
             creator: signer.address(),
             ring_id: ring_id.to_string(),
@@ -161,9 +157,7 @@ impl VeraClient {
         resource: &str,
         permission: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgStoreKeyDerivation {
             creator: signer.address(),
             ring_id: ring_id.to_string(),
@@ -218,9 +212,7 @@ impl VeraClient {
         whitelisted_policy_ids: Vec<String>,
         whitelisted_ring_ids: Vec<String>,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgCreateNodeInfo {
             creator: signer.address(),
             peer_id: peer_id.to_string(),
@@ -242,9 +234,7 @@ impl VeraClient {
         new_peer_node_keys: Vec<String>,
         new_threshold: Option<u32>,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgStartRingReshareByAcp::new(
             &signer.address(),
             ring_id,
@@ -260,9 +250,7 @@ impl VeraClient {
     }
 
     pub async fn orbis_cancel_ring_reshare_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgCancelRingReshareByAcp::new(&signer.address(), ring_id);
         self.broadcast_proto_msg_with_gas(
             MsgCancelRingReshareByAcp::TYPE_URL,
@@ -277,9 +265,7 @@ impl VeraClient {
         ring_id: &str,
         pss_interval: u64,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgSetRingPssIntervalByAcp::new(&signer.address(), ring_id, pss_interval);
         self.broadcast_proto_msg_with_gas(
             MsgSetRingPssIntervalByAcp::TYPE_URL,
@@ -294,9 +280,7 @@ impl VeraClient {
         ring_id: &str,
         reporting: ReportingConfig,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgSetRingReportingByAcp::new(&signer.address(), ring_id, reporting);
         self.broadcast_proto_msg_with_gas(
             MsgSetRingReportingByAcp::TYPE_URL,
@@ -311,9 +295,7 @@ impl VeraClient {
         ring_id: &str,
         relay_did: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgAddRingTrustedAuthRelayByAcp::new(&signer.address(), ring_id, relay_did);
         self.broadcast_proto_msg_with_gas(
             MsgAddRingTrustedAuthRelayByAcp::TYPE_URL,
@@ -328,9 +310,7 @@ impl VeraClient {
         ring_id: &str,
         relay_did: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgRemoveRingTrustedAuthRelayByAcp::new(&signer.address(), ring_id, relay_did);
         self.broadcast_proto_msg_with_gas(
             MsgRemoveRingTrustedAuthRelayByAcp::TYPE_URL,
@@ -346,9 +326,7 @@ impl VeraClient {
         next_version: u64,
         activation_time: u64,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgScheduleRingUpgradeByAcp::new(
             &signer.address(),
             ring_id,
@@ -364,9 +342,7 @@ impl VeraClient {
     }
 
     pub async fn orbis_cancel_ring_upgrade_by_acp(&self, ring_id: &str) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgCancelRingUpgradeByAcp::new(&signer.address(), ring_id);
         self.broadcast_proto_msg_with_gas(
             MsgCancelRingUpgradeByAcp::TYPE_URL,
@@ -377,9 +353,7 @@ impl VeraClient {
     }
 
     pub async fn orbis_cancel_pending_ring(&self, ring_id: &str) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgCancelPendingRing::new(&signer.address(), ring_id);
         self.broadcast_proto_msg_with_gas(
             MsgCancelPendingRing::TYPE_URL,
@@ -394,9 +368,7 @@ impl VeraClient {
         node_key: &str,
         peer_id: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgUpdateNodePeerId::new(&signer.address(), node_key, peer_id);
         self.broadcast_proto_msg_with_gas(
             MsgUpdateNodePeerId::TYPE_URL,
@@ -411,9 +383,7 @@ impl VeraClient {
         node_key: &str,
         controller_key: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgTransferNodeController::new(&signer.address(), node_key, controller_key);
         self.broadcast_proto_msg_with_gas(
             MsgTransferNodeController::TYPE_URL,
@@ -428,9 +398,7 @@ impl VeraClient {
         node_key: &str,
         target: WhitelistTarget,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgAddNodeToWhitelist::new(&signer.address(), node_key, target);
         self.broadcast_proto_msg_with_gas(
             MsgAddNodeToWhitelist::TYPE_URL,
@@ -445,9 +413,7 @@ impl VeraClient {
         node_key: &str,
         target: WhitelistTarget,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgRemoveNodeFromWhitelist::new(&signer.address(), node_key, target);
         self.broadcast_proto_msg_with_gas(
             MsgRemoveNodeFromWhitelist::TYPE_URL,
@@ -462,9 +428,7 @@ impl VeraClient {
         ring_id: &str,
         ring_pk: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk);
         self.broadcast_proto_msg_with_gas(
             MsgFinalizeRing::TYPE_URL,
@@ -480,9 +444,7 @@ impl VeraClient {
         signature_scheme: &str,
         signature: Vec<u8>,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgFinalizeRingReshareByThresholdSignature::new(
             &signer.address(),
             ring_id,
@@ -645,9 +607,7 @@ impl VeraClient {
     }
 
     pub async fn orbis_submit_report(&self, req: SubmitReportRequest) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let msg = MsgSubmitReport {
             creator: signer.address(),
             report: Some(ReportEnvelopeProto {

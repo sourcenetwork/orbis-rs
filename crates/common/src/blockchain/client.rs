@@ -224,6 +224,15 @@ impl VeraClient {
         self.signer.as_ref()
     }
 
+    /// Get the signer, or an error if none is configured.
+    ///
+    /// Every write path (`*_create_*`, `*_update_*`, ...) needs a signer; this
+    /// centralizes the "no signer" error instead of each call site re-deriving it.
+    pub fn require_signer(&self) -> Result<&TxSigner> {
+        self.signer()
+            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))
+    }
+
     /// Get the chain configuration.
     pub fn config(&self) -> &ChainConfig {
         &self.config
@@ -238,9 +247,7 @@ impl VeraClient {
     /// Returns the new nonce value, or an error if no signer is configured
     /// or the chain query fails.
     pub async fn resync_nonce(&self) -> Result<u64> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         // Match `resync_account`'s locking order: without it, this could race
         // an in-progress broadcast (which holds `tx_lock` across its own
         // read-sign-send-bump sequence) and overwrite the nonce with a stale
@@ -266,9 +273,7 @@ impl VeraClient {
     /// Returns `(account_number, sequence)`, or an error if no signer is
     /// configured or the chain query fails.
     pub async fn resync_account(&self) -> Result<(u64, u64)> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
         let _guard = self.tx_lock.lock().await;
         let account_info = self.get_account(&signer.address()).await?;
         signer.set_account_number(account_info.account_number);
@@ -352,9 +357,7 @@ impl VeraClient {
         type_url: &str,
         msg: &T,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
 
         // Encode message as protobuf (can do outside lock)
         let msg_bytes = msg.encode_to_vec();
@@ -413,9 +416,7 @@ impl VeraClient {
         type_url: &str,
         msg: &T,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
 
         // Encode message as JSON bytes (can do outside lock)
         let msg_bytes = serde_json::to_vec(msg)?;
@@ -738,9 +739,7 @@ impl VeraClient {
         amount: u64,
         denom: &str,
     ) -> Result<BroadcastResult> {
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
 
         // Create the bank transfer message using protobuf
         let coin = bank::Coin {
@@ -851,9 +850,7 @@ impl VeraClient {
             )));
         }
 
-        let signer = self
-            .signer()
-            .ok_or_else(|| BlockchainError::Signing("No signer configured".to_string()))?;
+        let signer = self.require_signer()?;
 
         // Acquire lock to ensure txs reach mempool in nonce order
         let _guard = self.tx_lock.lock().await;
