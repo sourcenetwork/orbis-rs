@@ -227,24 +227,54 @@ pub(crate) fn validate_sign_response_statement_shape(
     Ok(())
 }
 
+/// The current public polynomial for `ring_pk_hex`, plus every still-in-window
+/// retired one (`RingPolyHistory`) — so a response signed just before a PSS
+/// refresh isn't judged against the wrong generation (see that type's doc
+/// comment).
+///
+/// The current polynomial is local infrastructure input, not something either
+/// party to the report controls, so a decode failure there is surfaced as
+/// `InvalidReport` rather than silently dropped — falling through to verify
+/// against stale history alone would hide a real local-storage problem.
+/// Malformed *history* entries are best-effort only: they're skipped rather
+/// than surfaced, since they're not required for the check to be meaningful.
+fn candidate_public_polynomials(
+    context: &ReportValidationContext,
+    ring_pk_hex: &str,
+) -> Result<Vec<PubPolyImpl>> {
+    let current_hex = RingPolyState::load_from_ring_pk_hex(&context.local_storage, ring_pk_hex)
+        .map_err(ReportingError::InvalidReport)?
+        .public_polynomial;
+    let current_bytes = hex::decode(&current_hex)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let current = PubPolyImpl::from_bytes(&current_bytes).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
+    })?;
+
+    let mut candidates = vec![current];
+    candidates.extend(
+        RingPolyHistory::recent_from_ring_pk_hex(&context.local_storage, ring_pk_hex, context.now)
+            .into_iter()
+            .filter_map(|hex_poly| {
+                let bytes = hex::decode(&hex_poly).ok()?;
+                PubPolyImpl::from_bytes(&bytes).ok()
+            }),
+    );
+
+    Ok(candidates)
+}
+
 pub(crate) fn require_sign_share_verification_failure(
     statement: &SignResponseStatement,
     context: &ReportValidationContext,
 ) -> Result<()> {
-    let poly_state =
-        RingPolyState::load_from_ring_pk_hex(&context.local_storage, &statement.ring_pk)
-            .map_err(ReportingError::InvalidReport)?;
-    let pub_poly_bytes = hex::decode(&poly_state.public_polynomial)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let pub_poly = PubPolyImpl::from_bytes(&pub_poly_bytes).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
-    })?;
+    let candidates = candidate_public_polynomials(context, &statement.ring_pk)?;
     // The sig_share is the responder's own signed crypto output. A responder that
     // signs a statement whose sig_share cannot be decoded returned an unusable
     // response, which is itself an attributable verification failure — confirm the
-    // report on a decode error rather than rejecting it. (pub_poly above and
-    // signing_commitments below are round/infrastructure inputs, so a decode error
-    // there stays InvalidReport.)
+    // report on a decode error rather than rejecting it. (the candidate polynomials
+    // above and signing_commitments below are round/infrastructure inputs, so a
+    // decode error there stays InvalidReport.)
     let Ok(sig_share_v) = SigShareInner::from_bytes(&statement.sig_share) else {
         return Ok(());
     };
@@ -257,19 +287,27 @@ pub(crate) fn require_sign_share_verification_failure(
         ReportingError::InvalidReport(format!("failed to deserialize Sign commitments: {error}"))
     })?;
     let signer = SignImpl::new();
-    match signer.verify_share(
-        &statement.message,
-        &pub_poly,
-        &sig_share,
-        &signing_commitments,
-        statement.derivation.as_deref(),
-        statement.metadata.as_deref(),
-    ) {
-        Ok(()) => Err(ReportingError::Unauthorized(
-            "reported Sign share verifies successfully".to_string(),
-        )),
-        Err(_) => Ok(()),
+    // Any candidate verifying means the response was genuinely valid under some
+    // generation this node plausibly used — reject the report. Only confirm it if
+    // every candidate (current plus recently-retired) fails.
+    let verifies_under_some_generation = candidates.iter().any(|pub_poly| {
+        signer
+            .verify_share(
+                &statement.message,
+                pub_poly,
+                &sig_share,
+                &signing_commitments,
+                statement.derivation.as_deref(),
+                statement.metadata.as_deref(),
+            )
+            .is_ok()
+    });
+    if verifies_under_some_generation {
+        return Err(ReportingError::Unauthorized(
+            "reported Sign share verifies successfully under the current or a recently retired ring polynomial".to_string(),
+        ));
     }
+    Ok(())
 }
 
 pub(crate) async fn require_pre_proof_verification_failure(
@@ -325,14 +363,7 @@ pub(crate) async fn require_pre_proof_verification_failure(
     let Ok(proof) = ScalarField::from_bytes(&statement.proof) else {
         return Ok(());
     };
-    let poly_state =
-        RingPolyState::load_from_ring_pk_hex(&context.local_storage, &statement.ring_pk)
-            .map_err(ReportingError::InvalidReport)?;
-    let pub_poly_bytes = hex::decode(&poly_state.public_polynomial)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let pub_poly = PubPolyImpl::from_bytes(&pub_poly_bytes).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
-    })?;
+    let candidates = candidate_public_polynomials(context, &statement.ring_pk)?;
     let reply = ReencryptReply {
         share: PubShare {
             i: statement.from_node_id,
@@ -342,16 +373,24 @@ pub(crate) async fn require_pre_proof_verification_failure(
         proof,
     };
 
-    match PreImpl::new().verify(
-        &rdr_pk,
-        &pub_poly,
-        &enc_cmt,
-        &reply,
-        statement.derivation.as_deref(),
-    ) {
-        Ok(()) => Err(ReportingError::Unauthorized(
-            "reported PRE proof verifies successfully".to_string(),
-        )),
-        Err(_) => Ok(()),
+    // Any candidate verifying means the response was genuinely valid under some
+    // generation this node plausibly used — reject the report. Only confirm it if
+    // every candidate (current plus recently-retired) fails.
+    let verifies_under_some_generation = candidates.iter().any(|pub_poly| {
+        PreImpl::new()
+            .verify(
+                &rdr_pk,
+                pub_poly,
+                &enc_cmt,
+                &reply,
+                statement.derivation.as_deref(),
+            )
+            .is_ok()
+    });
+    if verifies_under_some_generation {
+        return Err(ReportingError::Unauthorized(
+            "reported PRE proof verifies successfully under the current or a recently retired ring polynomial".to_string(),
+        ));
     }
+    Ok(())
 }

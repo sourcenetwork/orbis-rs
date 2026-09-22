@@ -1442,3 +1442,157 @@ fn expected_leader_manifest_shape_rejects_unsupported_phase_for_origin_protocol(
             .unwrap_err();
     assert!(error.to_string().contains("not valid for origin protocol"));
 }
+
+/// Regression coverage for the PSS-refresh / invalid-crypto-report interaction:
+/// a response honestly signed against one ring polynomial generation must not be
+/// confirmed as misconduct just because local storage has since moved on to a
+/// new generation, as long as the old one is still within the retention window
+/// (`RingPolyHistory`, `ring_state.rs`). Crafts real shares directly (no nonce
+/// round), which only the non-interactive BLS backend supports — same
+/// constraint as `sign/v0/coordinator/verification.rs`'s fixture.
+#[cfg(feature = "bls12-381")]
+mod invalid_crypto_generation_history {
+    use super::*;
+    use crate::ring_state::RingShareBundle;
+    use ::common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
+    use crypto::r#trait::{CryptoSerialize, DistKeyShare, PriShare, PubPoly, ThresholdSigner};
+    use crypto::test_helper::DKGCoordinator;
+    use crypto::{DkgImpl, ScalarField, SignImpl};
+    use zeroize::Zeroizing;
+
+    /// Run a fresh, independent DKG (3 nodes, threshold 2) and return node 2's
+    /// share plus the resulting public polynomial — a stand-in "generation" of
+    /// ring key material. Two calls produce two genuinely different polynomials,
+    /// mirroring what a PSS refresh replaces.
+    fn generation() -> (PriShare<ScalarField>, <DkgImpl as Dkg>::PubPoly) {
+        let mut coordinator = DKGCoordinator::new(
+            |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role: DkgRole| {
+                <DkgImpl as Dkg>::new(id, threshold, total_nodes, session_id, role)
+            },
+            3,
+            2,
+        )
+        .unwrap();
+        let (_, shares, pub_poly) = coordinator.run_dkg().unwrap();
+        let share = shares
+            .into_iter()
+            .find(|share| share.i == 2)
+            .expect("node 2 share");
+        (share, pub_poly)
+    }
+
+    fn hex_poly(pub_poly: &<DkgImpl as Dkg>::PubPoly) -> String {
+        hex::encode(CryptoSerialize::to_bytes(pub_poly).unwrap())
+    }
+
+    #[tokio::test]
+    async fn sign_report_rejected_for_response_signed_just_before_a_refresh() {
+        let db_name = "registry_sign_report_survives_refresh";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let storage = app_state.local_storage.clone();
+
+        // Generation 1: the honest response is signed against this.
+        let (gen1_share, gen1_poly) = generation();
+        // Generation 2: what the ring looks like after a refresh replaces generation 1.
+        let (_gen2_share, gen2_poly) = generation();
+
+        // A fixed "ring_pk" storage handle shared by both generations. Real
+        // refreshes preserve the aggregate key; this test only needs the same
+        // *storage slot* reused across both saves, which is what
+        // `require_sign_share_verification_failure` actually keys its lookup on.
+        let ring_pk = gen1_poly.eval(0);
+        let ring_pk_hex = hex::encode(CryptoSerialize::to_bytes(&ring_pk).unwrap());
+
+        let signer = SignImpl::new();
+        let message = b"generation history regression".to_vec();
+        let signed_share = signer
+            .sign(
+                &DistKeyShare {
+                    pri_share: PriShare {
+                        i: gen1_share.i,
+                        v: gen1_share.v,
+                    },
+                },
+                &message,
+                &gen1_poly,
+                None,
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+
+        let signing_key_hex =
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string();
+        let responder_node_key = TxSigner::from_hex_key(&signing_key_hex, ChainConfig::local())
+            .unwrap()
+            .public_key_hex();
+
+        // t=1_000: generation 1 becomes current. `share_bytes` content is
+        // irrelevant here — report verification never reads it back, only
+        // `public_polynomial` (via the `RingPolyState` projection).
+        RingShareBundle {
+            share_bytes: Zeroizing::new(Vec::new()),
+            public_polynomial: hex_poly(&gen1_poly),
+            last_pss: 1_000,
+        }
+        .save(&storage, &ring_pk)
+        .expect("save generation 1");
+
+        let ring = ring_fixture(2);
+        let statement = SignResponseStatement {
+            domain: SIGN_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: ring_pk_hex,
+            ring_state_sha256: ring_state_sha256(&ring),
+            protocol_version: 0,
+            request_id: "sign-generation-history-test".to_string(),
+            signed_at: 1_050,
+            responder_node_key: responder_node_key.clone(),
+            origin_protocol: "sign".to_string(),
+            accused_committee_scope: CommitteeScope::Current,
+            signing_committee_scope: CommitteeScope::Current,
+            from_node_id: gen1_share.i,
+            message: message.clone(),
+            signing_commitments: Vec::new(),
+            derivation: None,
+            metadata: None,
+            sig_share: CryptoSerialize::to_bytes(&signed_share.v).unwrap(),
+            crypto_backend: SignImpl::name(),
+        };
+        let _ = sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+            .expect("statement is signable");
+
+        // t=1_100: a refresh lands — generation 2 becomes current, and generation 1
+        // is auto-retired into `RingPolyHistory` by `RingShareBundle::save`.
+        RingShareBundle {
+            share_bytes: Zeroizing::new(Vec::new()),
+            public_polynomial: hex_poly(&gen2_poly),
+            last_pss: 1_100,
+        }
+        .save(&storage, &ring_pk)
+        .expect("save generation 2");
+
+        // Still within the retention window: the report must be rejected — the
+        // response was genuinely valid when it was produced, under generation 1.
+        let context = validation_context(&app_state, 1_100 + 30);
+        require_sign_share_verification_failure(&statement, &context).expect_err(
+            "a response valid under a recently-retired generation must not confirm a report",
+        );
+
+        // Past the retention window: no history left to check against, so
+        // verification now (correctly) only has the current generation to try.
+        let context = validation_context(
+            &app_state,
+            1_100 + crate::constants::RING_POLY_HISTORY_RETENTION_SECS + 1,
+        );
+        require_sign_share_verification_failure(&statement, &context).expect(
+            "once retention lapses, only the current generation is checked, so the report is confirmed",
+        );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+}
