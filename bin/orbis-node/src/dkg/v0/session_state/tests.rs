@@ -12,6 +12,28 @@ fn make_node(id: u32) -> DkgImpl {
     *DkgImpl::new(id, 2, 3, 0, DkgRole::Standard).expect("DkgImpl::new failed")
 }
 
+/// A minimal `Configured` transport lifecycle for tests that only care about
+/// `leader_node_key` (e.g. `is_local_leader`) or the attempt identity, not the
+/// rest of the configuration.
+fn configured_lifecycle(attempt: AttemptKey, leader_node_key: &str) -> TransportLifecycle {
+    let now = Instant::now();
+    TransportLifecycle::Configured {
+        attempt,
+        transport: ConfiguredTransport {
+            committee_digest: [0u8; 32],
+            config_digest: [0u8; 32],
+            topic_id: network::TopicId::new([0u8; 32]),
+            leader_node_key: leader_node_key.to_string(),
+            leader_peer_route: String::new(),
+            participant_routes: Vec::new(),
+            committees: crate::helpers::test_helpers::minimal_test_ceremony_config(),
+            topic: Arc::new(crate::helpers::test_helpers::NoopTestTopic::new([0u8; 32])),
+            prepared_at: now,
+            hard_deadline: now + crate::constants::DKG_ATTEMPT_TIMEOUT,
+        },
+    }
+}
+
 // =========================================================================
 // Session creation
 // =========================================================================
@@ -125,8 +147,9 @@ async fn test_remove_session_clears_reshare_signature_ready_markers() {
     };
 
     mgr.create_session(7, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(CeremonyId(7));
-        state.transport.attempt_id = Some(ready_key.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(7), ready_key.attempt_id),
+        };
     })
     .await;
     mgr.mark_reshare_signature_ready(ready_key.clone()).await;
@@ -681,7 +704,10 @@ async fn test_expiration_worker_removes_sessions_at_hard_deadline() {
     {
         let mut states = mgr.states.write().await;
         if let Some(s) = states.get_mut(&20) {
-            s.transport.hard_deadline = Some(Instant::now());
+            // Not yet configured (no `hard_deadline` of its own), so the expiration
+            // worker falls back to `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that
+            // instead to force immediate expiry.
+            s.created_at = Instant::now() - DKG_ATTEMPT_TIMEOUT;
         }
     }
 
@@ -700,12 +726,6 @@ async fn test_expiration_worker_removes_sessions_at_hard_deadline() {
 async fn private_retransmission_keeps_exact_cached_bytes() {
     let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
     mgr.create_session(21, make_node(1), 3, |_| {}).await;
-    let attempt = AttemptId([7; 32]);
-    {
-        let mut states = mgr.states.write().await;
-        let state = states.get_mut(&21).expect("session");
-        state.transport.attempt_id = Some(attempt);
-    }
     let message_id = MessageId([9; 32]);
     let exact = vec![1, 2, 3, 4, 5];
     assert_eq!(
@@ -735,7 +755,9 @@ async fn public_duplicates_are_idempotent_and_conflicts_are_rejected() {
     let attempt = AttemptId([7; 32]);
     {
         let mut states = mgr.states.write().await;
-        states.get_mut(&22).expect("session").transport.attempt_id = Some(attempt);
+        states.get_mut(&22).expect("session").transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(22), attempt),
+        };
     }
     let phase = PublicPhase::Commitments;
     let origin = ParticipantRef::current(2);
@@ -795,8 +817,9 @@ async fn topology_acknowledgements_are_scoped_and_idempotent() {
     {
         let mut states = mgr.states.write().await;
         let transport = &mut states.get_mut(&23).expect("session").transport;
-        transport.ceremony_id = Some(ceremony);
-        transport.attempt_id = Some(attempt);
+        transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(ceremony, attempt),
+        };
     }
 
     mgr.begin_topology_probe(&23, attempt, nonce, "leader".into())
@@ -846,10 +869,23 @@ async fn activation_and_begin_are_idempotent_and_gate_stall_repair() {
     let mgr = Arc::new(SessionStateManager::<DkgImpl>::new());
     mgr.create_session(24, make_node(1), 3, |_| {}).await;
     let attempt = AttemptId([4; 32]);
-    {
-        let mut states = mgr.states.write().await;
-        states.get_mut(&24).expect("session").transport.attempt_id = Some(attempt);
-    }
+    assert_eq!(
+        mgr.configure_transport(
+            &24,
+            CeremonyId(24),
+            attempt,
+            [1; 32],
+            [2; 32],
+            network::TopicId::new([3; 32]),
+            "leader".to_string(),
+            "leader@127.0.0.1:9000".to_string(),
+            Vec::new(),
+            crate::helpers::test_helpers::minimal_test_ceremony_config(),
+            Arc::new(crate::helpers::test_helpers::NoopTestTopic::new([3; 32])),
+        )
+        .await,
+        TransportConfigureOutcome::Configured
+    );
 
     assert!(
         !mgr.transport_repair_due(&24, attempt, crate::constants::DKG_REPAIR_STALL_INTERVAL)
@@ -911,7 +947,9 @@ async fn public_phase_repairs_are_single_flight_and_back_off_without_progress() 
     let attempt = AttemptId([5; 32]);
     {
         let mut states = mgr.states.write().await;
-        states.get_mut(&25).expect("session").transport.attempt_id = Some(attempt);
+        states.get_mut(&25).expect("session").transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(25), attempt),
+        };
     }
 
     assert_eq!(
@@ -989,7 +1027,9 @@ async fn complete_publication_claim_commits_only_after_success() {
     let phase = PublicPhase::Commitments;
     {
         let mut states = mgr.states.write().await;
-        states.get_mut(&26).expect("session").transport.attempt_id = Some(attempt);
+        states.get_mut(&26).expect("session").transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(26), attempt),
+        };
     }
     assert_eq!(
         mgr.record_public_contribution(
@@ -1058,7 +1098,9 @@ async fn incremental_publication_claim_is_atomic_and_retryable() {
     let unclaimed = MessageId([3; 32]);
     {
         let mut states = mgr.states.write().await;
-        states.get_mut(&27).expect("session").transport.attempt_id = Some(attempt);
+        states.get_mut(&27).expect("session").transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(27), attempt),
+        };
     }
 
     assert_eq!(
@@ -1117,7 +1159,9 @@ async fn stale_publication_completion_cannot_mutate_the_active_attempt() {
     {
         let mut states = mgr.states.write().await;
         let transport = &mut states.get_mut(&28).expect("session").transport;
-        transport.attempt_id = Some(active_attempt);
+        transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(28), active_attempt),
+        };
         transport.publishing_public_phases.insert(phase);
         transport.publishing_public_messages.insert(message_id);
     }
@@ -1157,7 +1201,9 @@ async fn test_expiration_worker_removes_attempt_at_hard_deadline() {
         let mut states = mgr.states.write().await;
         if let Some(s) = states.get_mut(&30) {
             s.phase = DkgPhase::Phase1Commitments;
-            s.transport.hard_deadline = Some(Instant::now());
+            // Not yet configured, so the expiration worker falls back to
+            // `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that to force expiry.
+            s.created_at = Instant::now() - DKG_ATTEMPT_TIMEOUT;
         }
     }
 
@@ -1182,7 +1228,10 @@ async fn test_expiration_worker_preserves_attempt_before_hard_deadline() {
             assert_eq!(s.phase, DkgPhase::Initializing);
             s.phase_started_at = Instant::now()
                 - (crate::constants::DKG_PREPARATION_TIMEOUT + std::time::Duration::from_secs(10));
-            s.transport.hard_deadline = Some(Instant::now() + DKG_ATTEMPT_TIMEOUT);
+            // Not yet configured, so the expiration worker derives the deadline from
+            // `created_at + DKG_ATTEMPT_TIMEOUT`; refresh `created_at` so it's still
+            // in the future regardless of time already elapsed in this test.
+            s.created_at = Instant::now();
         }
     }
 
@@ -1244,7 +1293,9 @@ async fn expiration_worker_reports_stall_for_pure_reshare_receiver_stuck_initial
             new_node_id: Some(1),
             bulletin_post_id: "post".to_string(),
         });
-        s.transport.hard_deadline = Some(Instant::now());
+        // Not yet configured, so the expiration worker falls back to
+        // `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that to force expiry.
+        s.created_at = Instant::now() - DKG_ATTEMPT_TIMEOUT;
     }
 
     // Only dealer 2 sent its share; dealer 3 stayed silent. A pure
@@ -1310,8 +1361,9 @@ async fn test_expiration_worker_removes_completed_sessions_past_ttl() {
     };
 
     mgr.create_session(42, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(CeremonyId(42));
-        state.transport.attempt_id = Some(ready_key.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(42), ready_key.attempt_id),
+        };
     })
     .await;
     mgr.set_session_kind(
@@ -1376,7 +1428,9 @@ async fn test_expiration_worker_removes_phase4_at_attempt_hard_deadline() {
         let mut states = mgr.states.write().await;
         if let Some(s) = states.get_mut(&41) {
             s.phase = DkgPhase::Phase4Completing;
-            s.transport.hard_deadline = Some(Instant::now());
+            // Not yet configured, so the expiration worker falls back to
+            // `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that to force expiry.
+            s.created_at = Instant::now() - DKG_ATTEMPT_TIMEOUT;
         }
     }
 
@@ -1478,7 +1532,9 @@ async fn test_expiration_clears_ring_pss_flag() {
     {
         let mut states = mgr.states.write().await;
         if let Some(s) = states.get_mut(&60) {
-            s.transport.hard_deadline = Some(Instant::now());
+            // Not yet configured, so the expiration worker falls back to
+            // `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that to force expiry.
+            s.created_at = Instant::now() - DKG_ATTEMPT_TIMEOUT;
         }
     }
 
@@ -1507,8 +1563,7 @@ async fn transport_claim_guard_finish_marks_processed() {
     let session_id = 100u128;
     let attempt = AttemptKey::test(session_id);
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt.ceremony_id);
-        state.transport.attempt_id = Some(attempt.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt };
     })
     .await;
     let message_id = MessageId([1u8; 32]);
@@ -1533,8 +1588,7 @@ async fn transport_claim_guard_releases_claim_when_dropped_without_finish() {
     let session_id = 101u128;
     let attempt = AttemptKey::test(session_id);
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt.ceremony_id);
-        state.transport.attempt_id = Some(attempt.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt };
     })
     .await;
     let message_id = MessageId([2u8; 32]);
@@ -1584,8 +1638,7 @@ async fn stale_claim_guard_cannot_release_replacement_attempt_claim() {
     let message_id = MessageId([0xCC; 32]);
 
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt_a.ceremony_id);
-        state.transport.attempt_id = Some(attempt_a.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt: attempt_a };
     })
     .await;
     assert_eq!(
@@ -1599,8 +1652,7 @@ async fn stale_claim_guard_cannot_release_replacement_attempt_claim() {
             .await
     );
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt_b.ceremony_id);
-        state.transport.attempt_id = Some(attempt_b.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt: attempt_b };
     })
     .await;
     assert_eq!(
@@ -1627,8 +1679,7 @@ async fn stale_attempt_cannot_mutate_or_remove_replacement_session() {
     let attempt_b = AttemptKey::new(CeremonyId(session_id), AttemptId([0xB4; 32]));
 
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt_a.ceremony_id);
-        state.transport.attempt_id = Some(attempt_a.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt: attempt_a };
     })
     .await;
     assert!(
@@ -1636,8 +1687,7 @@ async fn stale_attempt_cannot_mutate_or_remove_replacement_session() {
             .await
     );
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.ceremony_id = Some(attempt_b.ceremony_id);
-        state.transport.attempt_id = Some(attempt_b.attempt_id);
+        state.transport.lifecycle = TransportLifecycle::Reserved { attempt: attempt_b };
         state.commitments_received = 7;
     })
     .await;
@@ -1695,7 +1745,9 @@ async fn public_batch_recording_is_atomic_on_conflict() {
     let session_id = 102u128;
     let attempt = AttemptId([3; 32]);
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.attempt_id = Some(attempt);
+        state.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(session_id), attempt),
+        };
     })
     .await;
     let phase = PublicPhase::Commitments;
@@ -1768,8 +1820,9 @@ async fn attempt_scoped_abort_detaches_listener_and_clears_pss_claim() {
         state.kind = SessionKind::Refresh {
             ring_pk_hex: ring_key.to_string(),
         };
-        state.transport.ceremony_id = Some(CeremonyId(session_id));
-        state.transport.attempt_id = Some(attempt);
+        state.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(session_id), attempt),
+        };
         state.transport.topic_task = Some(listener_abort);
     })
     .await;
@@ -1814,7 +1867,9 @@ async fn preparation_abort_preserves_a_different_configured_attempt() {
     let winning_attempt = AttemptId([6; 32]);
     let stale_attempt = AttemptId([7; 32]);
     mgr.create_session(session_id, make_node(1), 3, |state| {
-        state.transport.attempt_id = Some(winning_attempt);
+        state.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(CeremonyId(session_id), winning_attempt),
+        };
     })
     .await;
 
@@ -1955,8 +2010,9 @@ async fn test_soft_stalled_peer_ids_gating_and_clear() {
     let ceremony_id = CeremonyId(502);
     let attempt_id = AttemptId([3; 32]);
     mgr.create_session(502, make_node(1), 3, |s| {
-        s.transport.ceremony_id = Some(ceremony_id);
-        s.transport.attempt_id = Some(attempt_id);
+        s.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(ceremony_id, attempt_id),
+        };
     })
     .await;
     let attempt = AttemptKey::new(ceremony_id, attempt_id);
@@ -2002,8 +2058,9 @@ async fn test_record_public_contribution_clears_peer_no_progress() {
     let ceremony_id = CeremonyId(503);
     let attempt_id = AttemptId([4; 32]);
     mgr.create_session(503, make_node(1), 3, |s| {
-        s.transport.ceremony_id = Some(ceremony_id);
-        s.transport.attempt_id = Some(attempt_id);
+        s.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(ceremony_id, attempt_id),
+        };
     })
     .await;
     let attempt = AttemptKey::new(ceremony_id, attempt_id);
@@ -2038,8 +2095,9 @@ async fn test_record_public_batch_clears_peer_no_progress_only_for_newly_recorde
     let ceremony_id = CeremonyId(509);
     let attempt_id = AttemptId([6; 32]);
     mgr.create_session(509, make_node(1), 3, |s| {
-        s.transport.ceremony_id = Some(ceremony_id);
-        s.transport.attempt_id = Some(attempt_id);
+        s.transport.lifecycle = TransportLifecycle::Reserved {
+            attempt: AttemptKey::new(ceremony_id, attempt_id),
+        };
     })
     .await;
     let attempt = AttemptKey::new(ceremony_id, attempt_id);
@@ -2085,7 +2143,7 @@ async fn test_is_local_leader() {
     let mgr = SessionStateManager::<DkgImpl>::new();
     mgr.create_session(504, make_node(1), 3, |s| {
         s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
-        s.transport.leader_node_key = Some("k1".to_string());
+        s.transport.lifecycle = configured_lifecycle(AttemptKey::test(504), "k1");
     })
     .await;
     assert!(
@@ -2095,7 +2153,7 @@ async fn test_is_local_leader() {
 
     mgr.create_session(505, make_node(2), 3, |s| {
         s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
-        s.transport.leader_node_key = Some("k1".to_string());
+        s.transport.lifecycle = configured_lifecycle(AttemptKey::test(505), "k1");
     })
     .await;
     assert!(
@@ -2180,8 +2238,8 @@ async fn test_soft_stall_scan_publishes_event_for_genuinely_stalled_leader() {
         s.kind = SessionKind::Fresh;
         s.routing.ring_id = "ring-602".to_string();
         s.routing.peer_node_keys = vec!["k1".into(), "k2".into(), "k3".into()];
-        s.transport.leader_node_key = Some("k1".to_string());
-        s.transport.attempt_id = Some(attempt_id);
+        s.transport.lifecycle =
+            configured_lifecycle(AttemptKey::new(CeremonyId(602), attempt_id), "k1");
         s.phase = DkgPhase::Phase1Commitments;
         // Backdated rather than `Instant::now()` + `tokio::time::advance`: `Instant` here
         // is `std::time::Instant`, unaffected by tokio's paused clock (see the TTL sweep

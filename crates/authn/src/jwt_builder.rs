@@ -131,6 +131,30 @@ impl JwtSigner {
             .map_err(|e| AuthNError::JwtError(format!("Failed to sign JWT: {}", e)))
     }
 
+    /// Build an unsigned bearer token: resolves `issued_time`/`expiration_time`
+    /// from `duration` and fills in the fields every token needs regardless of
+    /// `subject_id` (`None` for `sign`, `Some(actor_id)` for `sign_for_actor`).
+    fn build_token<T>(
+        &self,
+        subject_id: Option<String>,
+        claims: T,
+        duration: Duration,
+    ) -> Result<BearerToken<T>> {
+        let issued_time = Self::current_unix_time()?;
+        let expiration_time = issued_time
+            .checked_add(duration.as_secs())
+            .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
+        Ok(BearerToken {
+            issuer_id: self.did_uri.clone(),
+            subject_id,
+            issued_time,
+            expiration_time,
+            not_before: None,
+            jwt_id: Self::generate_jwt_id(),
+            claims,
+        })
+    }
+
     /// Create a signed JWT with custom claims.
     ///
     /// # Arguments
@@ -143,19 +167,7 @@ impl JwtSigner {
     where
         T: Serialize + DeserializeOwned,
     {
-        let issued_time = Self::current_unix_time()?;
-        let expiration_time = issued_time
-            .checked_add(duration.as_secs())
-            .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
-        let token = BearerToken {
-            issuer_id: self.did_uri.clone(),
-            subject_id: None,
-            issued_time,
-            expiration_time,
-            not_before: None,
-            jwt_id: Self::generate_jwt_id(),
-            claims,
-        };
+        let token = self.build_token(None, claims, duration)?;
         self.sign_bearer_token(&token)
     }
 
@@ -169,19 +181,8 @@ impl JwtSigner {
     where
         T: Serialize + DeserializeOwned,
     {
-        let issued_time = Self::current_unix_time()?;
-        let expiration_time = issued_time
-            .checked_add(duration.as_secs())
-            .ok_or_else(|| AuthNError::JwtError("JWT expiration overflow".to_string()))?;
-        self.sign_bearer_token(&BearerToken {
-            issuer_id: self.did_uri.clone(),
-            subject_id: Some(actor_id),
-            issued_time,
-            expiration_time,
-            not_before: None,
-            jwt_id: Self::generate_jwt_id(),
-            claims,
-        })
+        let token = self.build_token(Some(actor_id), claims, duration)?;
+        self.sign_bearer_token(&token)
     }
 
     /// Create a JWT with DKG claims.

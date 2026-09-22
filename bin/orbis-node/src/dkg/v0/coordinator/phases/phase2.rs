@@ -71,7 +71,7 @@ where
                 state.routing.node_id_to_peer_id.clone(),
                 serialize_commitment_coefficients(&state.node.commitment().coefficients)?,
                 state.local_signed_commitment.clone(),
-                state.transport.activated,
+                state.transport.is_activated(),
             ))
         })
         .await

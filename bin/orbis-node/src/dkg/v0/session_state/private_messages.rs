@@ -51,7 +51,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         message_id: MessageId,
     ) -> Option<bool> {
         self.with_state_mut(session_id, |state| {
-            if state.transport.attempt_id != Some(attempt_id) {
+            if state.transport.attempt_id() != Some(attempt_id) {
                 return false;
             }
             state

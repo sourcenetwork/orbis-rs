@@ -558,17 +558,102 @@ pub(crate) struct DkgReportEvidenceBinding {
     pub receiver_node_keys: Vec<String>,
 }
 
-pub(crate) struct DkgSessionTransportState {
-    pub ceremony_id: Option<CeremonyId>,
-    pub attempt_id: Option<AttemptId>,
-    pub committee_digest: Option<[u8; 32]>,
-    pub config_digest: Option<[u8; 32]>,
-    pub topic_id: Option<network::TopicId>,
-    pub leader_node_key: Option<String>,
-    pub leader_peer_route: Option<String>,
+/// The fields `configure_transport` sets together, once a transport attempt has joined
+/// its Gossip topic and fixed its committee/leader/deadlines. Every field here exists
+/// starting at [`TransportLifecycle::Configured`] and stays populated through
+/// [`TransportLifecycle::Activated`]/[`TransportLifecycle::Begun`].
+pub(crate) struct ConfiguredTransport {
+    pub committee_digest: [u8; 32],
+    pub config_digest: [u8; 32],
+    // Redundant with `topic.id()`; kept for parity with `PrepareSession`'s wire field.
+    // Pre-existing (not introduced by this lifecycle refactor): never read outside the
+    // write site in `configure_transport`.
+    #[allow(dead_code)]
+    pub topic_id: network::TopicId,
+    pub leader_node_key: String,
+    pub leader_peer_route: String,
     pub participant_routes: Vec<String>,
-    pub committees: Option<CeremonyConfig>,
-    pub topic: Option<Arc<dyn network::Topic>>,
+    pub committees: CeremonyConfig,
+    pub topic: Arc<dyn network::Topic>,
+    pub prepared_at: Instant,
+    pub hard_deadline: Instant,
+}
+
+/// The fields `activate_transport` sets together, once the activation barrier has been
+/// crossed and the dealer set for this attempt is final.
+pub(crate) struct ActivatedTransport {
+    pub activation_digest: [u8; 32],
+    pub active_dealers: Vec<ParticipantRef>,
+}
+
+/// Explicit reserved -> configured -> activated -> begun lifecycle for one DKG
+/// transport attempt.
+///
+/// Replaces a flat pile of `Option`/`bool` fields whose valid combinations were
+/// enforced only by convention (e.g. "`activated` is `true` only if `activation_digest`
+/// is `Some`"). Each variant now carries exactly the data that stage guarantees, so
+/// illegal combinations (like `activated: true` with no `topic`) are uninhabitable.
+/// See `transport_config.rs` for the transition functions.
+#[derive(Default)]
+pub(crate) enum TransportLifecycle {
+    /// No attempt reserved yet. Never observed by production code once a session
+    /// exists — `DkgCoordinator::create_session` always reserves before any other task
+    /// can see the session — but kept so the type has a cheap `Default`.
+    #[default]
+    Unset,
+    Reserved {
+        attempt: AttemptKey,
+    },
+    Configured {
+        attempt: AttemptKey,
+        transport: ConfiguredTransport,
+    },
+    Activated {
+        attempt: AttemptKey,
+        transport: ConfiguredTransport,
+        activation: ActivatedTransport,
+    },
+    Begun {
+        attempt: AttemptKey,
+        transport: ConfiguredTransport,
+        activation: ActivatedTransport,
+    },
+}
+
+impl TransportLifecycle {
+    /// The reserved attempt identity, once any stage past `Unset` is reached.
+    pub(crate) fn attempt(&self) -> Option<AttemptKey> {
+        match self {
+            TransportLifecycle::Unset => None,
+            TransportLifecycle::Reserved { attempt }
+            | TransportLifecycle::Configured { attempt, .. }
+            | TransportLifecycle::Activated { attempt, .. }
+            | TransportLifecycle::Begun { attempt, .. } => Some(*attempt),
+        }
+    }
+
+    pub(crate) fn configured(&self) -> Option<&ConfiguredTransport> {
+        match self {
+            TransportLifecycle::Configured { transport, .. }
+            | TransportLifecycle::Activated { transport, .. }
+            | TransportLifecycle::Begun { transport, .. } => Some(transport),
+            TransportLifecycle::Unset | TransportLifecycle::Reserved { .. } => None,
+        }
+    }
+
+    pub(crate) fn activation(&self) -> Option<&ActivatedTransport> {
+        match self {
+            TransportLifecycle::Activated { activation, .. }
+            | TransportLifecycle::Begun { activation, .. } => Some(activation),
+            TransportLifecycle::Unset
+            | TransportLifecycle::Reserved { .. }
+            | TransportLifecycle::Configured { .. } => None,
+        }
+    }
+}
+
+pub(crate) struct DkgSessionTransportState {
+    pub lifecycle: TransportLifecycle,
     pub topology_probe_nonce: Option<[u8; 32]>,
     pub topology_probe_acknowledgements: BTreeSet<String>,
     /// Authenticated peers that returned any topology ACK request for the
@@ -577,12 +662,6 @@ pub(crate) struct DkgSessionTransportState {
     /// later classified as offline.
     pub topology_probe_responses: BTreeSet<String>,
     pub topology_probe_notify: Arc<Notify>,
-    pub activated: bool,
-    pub begun: bool,
-    pub activation_digest: Option<[u8; 32]>,
-    pub active_dealers: Vec<ParticipantRef>,
-    pub prepared_at: Option<Instant>,
-    pub hard_deadline: Option<Instant>,
     pub last_progress_at: Instant,
     pub public_contributions:
         HashMap<PublicPhase, BTreeMap<ParticipantRef, network::SignedPayload>>,
@@ -621,30 +700,51 @@ pub(crate) struct DkgSessionTransportState {
     pub(crate) control_ack_receipts: HashMap<(String, &'static str), ([u8; 32], ControlSignature)>,
 }
 
+impl DkgSessionTransportState {
+    /// The reserved attempt identity, once any stage past `Unset` is reached.
+    pub(crate) fn attempt(&self) -> Option<AttemptKey> {
+        self.lifecycle.attempt()
+    }
+
+    /// Convenience for call sites that only have (and only need to compare against) an
+    /// `AttemptId`, not a full `AttemptKey` — e.g. because they're already scoped to
+    /// the right session/ceremony via the `session_id` used to look the state up.
+    pub(crate) fn attempt_id(&self) -> Option<AttemptId> {
+        self.attempt().map(|attempt| attempt.attempt_id)
+    }
+
+    /// `Some` once this attempt has joined its topic and fixed its committee/leader/
+    /// deadlines (i.e. `Configured`, `Activated`, or `Begun`).
+    pub(crate) fn configured(&self) -> Option<&ConfiguredTransport> {
+        self.lifecycle.configured()
+    }
+
+    /// `Some` once the activation barrier has been crossed (`Activated` or `Begun`).
+    pub(crate) fn activation(&self) -> Option<&ActivatedTransport> {
+        self.lifecycle.activation()
+    }
+
+    pub(crate) fn is_activated(&self) -> bool {
+        self.activation().is_some()
+    }
+
+    /// The final dealer set for this attempt, or an empty slice before activation.
+    pub(crate) fn active_dealers(&self) -> &[ParticipantRef] {
+        self.activation()
+            .map(|activation| activation.active_dealers.as_slice())
+            .unwrap_or(&[])
+    }
+}
+
 impl Default for DkgSessionTransportState {
     fn default() -> Self {
         let (attempt_cancel_tx, _) = watch::channel(false);
         Self {
-            ceremony_id: None,
-            attempt_id: None,
-            committee_digest: None,
-            config_digest: None,
-            topic_id: None,
-            leader_node_key: None,
-            leader_peer_route: None,
-            participant_routes: Vec::new(),
-            committees: None,
-            topic: None,
+            lifecycle: TransportLifecycle::Unset,
             topology_probe_nonce: None,
             topology_probe_acknowledgements: BTreeSet::new(),
             topology_probe_responses: BTreeSet::new(),
             topology_probe_notify: Arc::new(Notify::new()),
-            activated: false,
-            begun: false,
-            activation_digest: None,
-            active_dealers: Vec::new(),
-            prepared_at: None,
-            hard_deadline: None,
             last_progress_at: Instant::now(),
             public_contributions: HashMap::new(),
             public_phase_started_at: HashMap::new(),
@@ -1031,7 +1131,11 @@ impl<D: Dkg> DkgSessionState<D> {
     /// the leader key recorded at Prepare time) — no external "own node key"
     /// parameter needed.
     pub(crate) fn is_local_leader(&self) -> bool {
-        let Some(leader) = self.transport.leader_node_key.as_deref() else {
+        let Some(leader) = self
+            .transport
+            .configured()
+            .map(|c| c.leader_node_key.as_str())
+        else {
             return false;
         };
         let own_node_id = self.node.node_id();

@@ -600,8 +600,6 @@ where
                 total_participants as usize,
                 dkg_role,
                 move |state| {
-                    state.transport.ceremony_id = Some(attempt.ceremony_id);
-                    state.transport.attempt_id = Some(attempt.attempt_id);
                     state.kind = init_kind;
                     state.policy_id = init_policy_id;
                     state.pss_interval = pss_interval;

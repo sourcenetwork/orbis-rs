@@ -1,3 +1,4 @@
+use crate::dkg::v0::session_state::TransportLifecycle;
 use std::sync::atomic::Ordering;
 #[allow(unused_imports)]
 use {super::super::*, super::support::*};
@@ -54,10 +55,19 @@ async fn direct_origin_payload_is_preflighted_before_leader_relay() {
         let session = states
             .get_mut(&ceremony_id.0)
             .expect("direct contribution test session");
-        session.transport.leader_node_key = Some(state.node_key.clone());
-        session.transport.topic = Some(topic.clone());
-        session.transport.hard_deadline =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(30));
+        match &mut session.transport.lifecycle {
+            TransportLifecycle::Configured { transport, .. }
+            | TransportLifecycle::Activated { transport, .. }
+            | TransportLifecycle::Begun { transport, .. } => {
+                transport.leader_node_key = state.node_key.clone();
+                transport.topic = topic.clone();
+                transport.hard_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(30);
+            }
+            TransportLifecycle::Unset | TransportLifecycle::Reserved { .. } => {
+                panic!("test session must already be configured")
+            }
+        }
         session.transport.public_contributions.insert(
             PublicPhase::Commitments,
             BTreeMap::from([

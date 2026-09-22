@@ -1,3 +1,12 @@
+mod bootstrap;
+// `shutdown_bootstrap_after_init` isn't called directly in this file (only by
+// `bootstrap::complete_initialization_or_shutdown` internally) — re-exported
+// here purely so `lib.rs` can re-export it in turn for `tests/node.rs`.
+#[allow(unused_imports)]
+pub(crate) use bootstrap::{
+    complete_initialization_or_shutdown, shutdown_bootstrap_after_init, start_bootstrap_info_server,
+};
+
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
@@ -8,7 +17,7 @@ use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
     get_network_key_secret, get_password, resolve_runtime_base_path, Args, CorsPolicy,
 };
-use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
+use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
@@ -18,19 +27,8 @@ use common::blockchain::ChainConfigBuilder;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
-use std::{
-    future::Future,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicI32, Ordering},
-        Arc,
-    },
-};
-use tokio::{
-    sync::{oneshot, watch},
-    task::JoinHandle,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use tokio::sync::watch;
 use tonic_web::GrpcWebLayer;
 // Concrete crypto implementations
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -71,43 +69,6 @@ pub(crate) struct InitializedNode {
     pub(crate) grpc_max_concurrent_streams: u32,
     pub(crate) cors_policy: CorsPolicy,
     pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
-}
-
-/// Running info-only gRPC server used while the node waits for chain funding.
-#[derive(Clone)]
-struct BootstrapStatus(Arc<AtomicI32>);
-
-impl BootstrapStatus {
-    fn new(status: NodeStatus) -> Self {
-        Self(Arc::new(AtomicI32::new(status as i32)))
-    }
-
-    fn set_status(&self, status: NodeStatus) {
-        self.0.store(status as i32, Ordering::SeqCst);
-    }
-
-    fn shared(&self) -> Arc<AtomicI32> {
-        self.0.clone()
-    }
-}
-
-pub(crate) struct BootstrapInfoServer {
-    local_addr: SocketAddr,
-    status: BootstrapStatus,
-    shutdown_tx: oneshot::Sender<()>,
-    task: JoinHandle<Result<(), tonic::transport::Error>>,
-}
-
-impl BootstrapInfoServer {
-    pub(crate) fn local_addr(&self) -> SocketAddr {
-        self.local_addr
-    }
-
-    pub(crate) async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self.shutdown_tx.send(());
-        self.task.await??;
-        Ok(())
-    }
 }
 
 /// Full run function that initializes and runs the server
@@ -263,7 +224,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "Bootstrap info service started while waiting for funding"
         );
 
-        let bootstrap_status = bootstrap_info_server.status.clone();
+        let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
             bootstrap_status.set_status(NodeStatus::ConnectingToChain);
 
@@ -343,96 +304,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Start an info-only gRPC server before the full node is ready.
-pub(crate) fn start_bootstrap_info_server(
-    grpc_addr: SocketAddr,
-    network: Arc<dyn Network>,
-    local_storage: LocalStorageImpl,
-    cors_policy: CorsPolicy,
-) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
-    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
-    let local_addr = incoming.local_addr()?;
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
-    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
-
-    let task = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .accept_http1(true)
-            .layer(cors_policy.layer())
-            .layer(GrpcWebLayer::new())
-            .add_service(
-                InfoServiceServer::new(info_service)
-                    .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
-            )
-            .serve_with_incoming_shutdown(incoming, async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
-
-    Ok(BootstrapInfoServer {
-        local_addr,
-        status,
-        shutdown_tx,
-        task,
-    })
-}
-
-pub(crate) async fn shutdown_bootstrap_after_init(
-    bootstrap_info_server: BootstrapInfoServer,
-    init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
-) -> Result<InitializedNode, Box<dyn std::error::Error>> {
-    if init_result.is_ok() {
-        tracing::info!(
-            "Funding and bulletin initialization complete; stopping bootstrap info service"
-        );
-    } else {
-        tracing::info!("Node initialization failed; stopping bootstrap info service");
-    }
-
-    let shutdown_result = bootstrap_info_server.shutdown().await;
-
-    match (init_result, shutdown_result) {
-        (Ok(node), Ok(())) => Ok(node),
-        (Err(init_err), Ok(())) => Err(init_err),
-        (Ok(_), Err(shutdown_err)) => Err(shutdown_err),
-        (Err(init_err), Err(shutdown_err)) => {
-            tracing::error!(
-                error = %shutdown_err,
-                "Bootstrap info service shutdown failed while handling initialization error"
-            );
-            Err(init_err)
-        }
-    }
-}
-
-/// Wait for node initialization or stop it promptly when process shutdown is requested.
-pub(crate) async fn complete_initialization_or_shutdown<F>(
-    bootstrap_info_server: BootstrapInfoServer,
-    init_result: F,
-    shutdown_rx: watch::Receiver<bool>,
-) -> Result<Option<InitializedNode>, Box<dyn std::error::Error>>
-where
-    F: Future<Output = Result<InitializedNode, Box<dyn std::error::Error>>>,
-{
-    tokio::pin!(init_result);
-
-    tokio::select! {
-        init_result = &mut init_result => {
-            shutdown_bootstrap_after_init(bootstrap_info_server, init_result)
-                .await
-                .map(Some)
-        }
-        _ = wait_for_shutdown(shutdown_rx) => {
-            tracing::info!("Shutdown requested during node initialization; stopping bootstrap info service");
-            bootstrap_info_server.shutdown().await?;
-            Ok(None)
-        }
-    }
-}
-
-async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
+pub(super) async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
     if *shutdown_rx.borrow() {
         return;
     }

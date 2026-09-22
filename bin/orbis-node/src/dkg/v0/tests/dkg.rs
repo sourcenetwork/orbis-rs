@@ -1327,7 +1327,9 @@ async fn test_attempt_hard_deadline_removes_session() {
     {
         let mut states = manager.states.write().await;
         if let Some(state) = states.get_mut(&session_id) {
-            state.transport.hard_deadline = Some(Instant::now());
+            // Not yet configured, so the expiration worker falls back to
+            // `created_at + DKG_ATTEMPT_TIMEOUT` -- backdate that to force expiry.
+            state.created_at = Instant::now() - crate::constants::DKG_ATTEMPT_TIMEOUT;
         }
     }
     tokio::time::advance(

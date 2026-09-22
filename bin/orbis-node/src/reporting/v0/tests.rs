@@ -26,6 +26,7 @@ use crate::dkg::v0::network::{
     record_control_ack_best_effort_for_test, record_public_contribution_at_leader_for_test,
 };
 use crate::dkg::v0::service::DkgServiceImpl;
+use crate::dkg::v0::session_state::{ActivatedTransport, ConfiguredTransport, TransportLifecycle};
 use crate::dkg::v0::transport::{
     canonical_leader, AttemptId, AttemptKey, CeremonyConfig, CeremonyId, CommitteeConfig,
     DkgControlMessage, DkgPublicContribution, DkgPublicPayload, ParticipantRef, PrepareSession,
@@ -463,18 +464,29 @@ async fn configure_public_test_session(
         .with_attempt_state_mut(attempt, |state| {
             state.routing.peer_ids = participant_routes.clone();
             state.routing.node_id_to_peer_id = node_id_to_peer_id;
-            state.transport.ceremony_id = Some(attempt.ceremony_id);
-            state.transport.attempt_id = Some(attempt.attempt_id);
-            state.transport.committee_digest = Some(committee_digest);
-            state.transport.leader_node_key = Some(leader_node_key);
-            state.transport.leader_peer_route = Some(leader_peer_route);
-            state.transport.participant_routes = participant_routes;
-            state.transport.committees = Some(CeremonyConfig {
-                current: committee,
-                next: None,
-            });
-            state.transport.active_dealers = active_dealers;
-            state.transport.activated = true;
+            let now = Instant::now();
+            state.transport.lifecycle = TransportLifecycle::Activated {
+                attempt,
+                transport: ConfiguredTransport {
+                    committee_digest,
+                    config_digest: [0u8; 32],
+                    topic_id: network::TopicId::new([0u8; 32]),
+                    leader_node_key,
+                    leader_peer_route,
+                    participant_routes,
+                    committees: CeremonyConfig {
+                        current: committee,
+                        next: None,
+                    },
+                    topic: Arc::new(crate::helpers::test_helpers::NoopTestTopic::new([0u8; 32])),
+                    prepared_at: now,
+                    hard_deadline: now + crate::constants::DKG_ATTEMPT_TIMEOUT,
+                },
+                activation: ActivatedTransport {
+                    activation_digest: [0u8; 32],
+                    active_dealers,
+                },
+            };
         })
         .await
         .expect("configure explicit public transport session");
@@ -1274,8 +1286,17 @@ async fn staged_refresh_result_invalid_payload_queues_report_before_abort() {
         .app_state
         .dkg_session_state
         .with_attempt_state_mut(refresh_attempt, |state| {
-            state.transport.leader_node_key = Some(leader_app_state.node_key.clone());
-            state.transport.leader_peer_route = Some(leader_route);
+            match &mut state.transport.lifecycle {
+                TransportLifecycle::Configured { transport, .. }
+                | TransportLifecycle::Activated { transport, .. }
+                | TransportLifecycle::Begun { transport, .. } => {
+                    transport.leader_node_key = leader_app_state.node_key.clone();
+                    transport.leader_peer_route = leader_route;
+                }
+                TransportLifecycle::Unset | TransportLifecycle::Reserved { .. } => {
+                    panic!("test session must already be configured before overriding leader")
+                }
+            }
         })
         .await
         .expect("override test session leader to canonical node 1");
