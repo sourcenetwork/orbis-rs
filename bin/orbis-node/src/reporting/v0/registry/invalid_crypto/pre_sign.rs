@@ -230,29 +230,38 @@ pub(crate) fn validate_sign_response_statement_shape(
 /// The current public polynomial for `ring_pk_hex`, plus every still-in-window
 /// retired one (`RingPolyHistory`) — so a response signed just before a PSS
 /// refresh isn't judged against the wrong generation (see that type's doc
-/// comment). Malformed history entries are local corruption, not something to
-/// blame on the accused node, so they're skipped rather than surfaced as an error.
+/// comment).
+///
+/// The current polynomial is local infrastructure input, not something either
+/// party to the report controls, so a decode failure there is surfaced as
+/// `InvalidReport` rather than silently dropped — falling through to verify
+/// against stale history alone would hide a real local-storage problem.
+/// Malformed *history* entries are best-effort only: they're skipped rather
+/// than surfaced, since they're not required for the check to be meaningful.
 fn candidate_public_polynomials(
     context: &ReportValidationContext,
     ring_pk_hex: &str,
 ) -> Result<Vec<PubPolyImpl>> {
-    let current = RingPolyState::load_from_ring_pk_hex(&context.local_storage, ring_pk_hex)
+    let current_hex = RingPolyState::load_from_ring_pk_hex(&context.local_storage, ring_pk_hex)
         .map_err(ReportingError::InvalidReport)?
         .public_polynomial;
-    let mut hex_candidates = vec![current];
-    hex_candidates.extend(RingPolyHistory::recent_from_ring_pk_hex(
-        &context.local_storage,
-        ring_pk_hex,
-        context.now,
-    ));
+    let current_bytes = hex::decode(&current_hex)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let current = PubPolyImpl::from_bytes(&current_bytes).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
+    })?;
 
-    Ok(hex_candidates
-        .into_iter()
-        .filter_map(|hex_poly| {
-            let bytes = hex::decode(&hex_poly).ok()?;
-            PubPolyImpl::from_bytes(&bytes).ok()
-        })
-        .collect())
+    let mut candidates = vec![current];
+    candidates.extend(
+        RingPolyHistory::recent_from_ring_pk_hex(&context.local_storage, ring_pk_hex, context.now)
+            .into_iter()
+            .filter_map(|hex_poly| {
+                let bytes = hex::decode(&hex_poly).ok()?;
+                PubPolyImpl::from_bytes(&bytes).ok()
+            }),
+    );
+
+    Ok(candidates)
 }
 
 pub(crate) fn require_sign_share_verification_failure(
@@ -260,11 +269,6 @@ pub(crate) fn require_sign_share_verification_failure(
     context: &ReportValidationContext,
 ) -> Result<()> {
     let candidates = candidate_public_polynomials(context, &statement.ring_pk)?;
-    if candidates.is_empty() {
-        return Err(ReportingError::InvalidReport(
-            "failed to deserialize public polynomial".to_string(),
-        ));
-    }
     // The sig_share is the responder's own signed crypto output. A responder that
     // signs a statement whose sig_share cannot be decoded returned an unusable
     // response, which is itself an attributable verification failure — confirm the
@@ -360,11 +364,6 @@ pub(crate) async fn require_pre_proof_verification_failure(
         return Ok(());
     };
     let candidates = candidate_public_polynomials(context, &statement.ring_pk)?;
-    if candidates.is_empty() {
-        return Err(ReportingError::InvalidReport(
-            "failed to deserialize public polynomial".to_string(),
-        ));
-    }
     let reply = ReencryptReply {
         share: PubShare {
             i: statement.from_node_id,
