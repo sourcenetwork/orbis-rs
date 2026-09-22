@@ -527,6 +527,65 @@ pub(super) async fn cleanup_excluded_reshare_dealers<D>(
     while cleanups.join_next().await.is_some() {}
 }
 
+/// Cancellation-safe cleanup for the local transport reservation
+/// `prepare_participant` establishes at the top of `coordinate_prepared_inner`.
+///
+/// `coordinate_prepared` already cleans up (`abort_prepared_attempt` +
+/// `abort_transport_preparation`) on every ordinary `Err` return from
+/// `coordinate_prepared_inner`. This guard exists for the case that cleanup
+/// can't reach: the future coordinating this Prepare being dropped before
+/// `coordinate_prepared_inner` returns at all (e.g. the inbound request that
+/// triggered it is cancelled). Without it the reservation — and any ring PSS
+/// claim it holds — sits stuck until the next session-expiration sweep instead
+/// of being released immediately.
+///
+/// Defused right before the function's normal return; an un-defused guard
+/// dropped on an ordinary `Err` path harmlessly duplicates
+/// `abort_transport_preparation`'s cleanup (it no-ops once the session is
+/// already removed) rather than needing every intermediate `?` to defuse it.
+struct PreparationCleanupGuard<D: CoordinatorDkg> {
+    state: Option<Arc<AppState<D>>>,
+    ceremony_id: u128,
+    attempt_id: AttemptId,
+}
+
+impl<D: CoordinatorDkg> PreparationCleanupGuard<D> {
+    fn new(state: Arc<AppState<D>>, ceremony_id: u128, attempt_id: AttemptId) -> Self {
+        Self {
+            state: Some(state),
+            ceremony_id,
+            attempt_id,
+        }
+    }
+
+    fn defuse(mut self) {
+        self.state = None;
+    }
+}
+
+impl<D: CoordinatorDkg> Drop for PreparationCleanupGuard<D> {
+    fn drop(&mut self) {
+        let Some(state) = self.state.take() else {
+            return;
+        };
+        let ceremony_id = self.ceremony_id;
+        let attempt_id = self.attempt_id;
+        // Mirrors `CeremonyStartGuard`'s drop-time cleanup (`ceremony_start.rs`):
+        // `Drop::drop` can't `.await`, so hand the async cleanup to a detached
+        // task on the current runtime. No runtime (e.g. dropped during shutdown
+        // outside any task) means best-effort only.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            state
+                .dkg_session_state
+                .abort_transport_preparation(&ceremony_id, attempt_id, TopicTaskDisposition::Abort)
+                .await;
+        });
+    }
+}
+
 pub(super) async fn coordinate_prepared_inner<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
@@ -557,6 +616,10 @@ where
             )))
         }
     }
+    // From here on, the local reservation `prepare_participant` just created
+    // needs cleanup if this future is dropped before returning — see
+    // `PreparationCleanupGuard`.
+    let cleanup_guard = PreparationCleanupGuard::new(state.clone(), session_id, attempt_id);
 
     let (peer_ids, active_dealers) =
         prepare_transport_participants(&state, routes, &prepare, deadline).await?;
@@ -918,6 +981,7 @@ where
         readiness_start.elapsed().as_secs_f64(),
     );
     crate::metrics::record_dkg_transport_event("control", "activated");
+    cleanup_guard.defuse();
     Ok((ceremony_id, attempt_id))
 }
 
