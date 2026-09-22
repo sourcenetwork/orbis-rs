@@ -19,6 +19,13 @@ pub enum LocalStorageKeys {
     NodeSecretKey,
     /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
+    /// JSON-encoded `RingPolyHistory` of a ring's recently-retired *public*
+    /// polynomials, keyed the same way as `RingKey` (`aggregate_pk.to_string()`).
+    /// Never holds the private share. Lets invalid-crypto report verification
+    /// check a PRE/Sign response against the generation it was actually produced
+    /// under, even after a PSS refresh has moved the ring on. Unlike `RingKey`,
+    /// not encrypted — a public polynomial isn't secret (see `ring_state.rs`).
+    RingPolyHistory(String),
 }
 
 pub trait LocalStorage {

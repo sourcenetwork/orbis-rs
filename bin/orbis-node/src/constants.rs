@@ -655,6 +655,14 @@ pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs
 /// by independently.
 pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
 
+/// How long a retired ring polynomial stays available for invalid-crypto report
+/// verification (`ring_state::RingPolyHistory`) after a PSS ceremony replaces it.
+/// Must cover `reporting::v0::types::REPORT_TTL_SECS` (120s) — kept as an
+/// independent constant with margin, rather than importing across the module
+/// boundary, since this file is lower-level than `reporting/`; if
+/// `REPORT_TTL_SECS` ever grows, this must grow with it.
+pub const RING_POLY_HISTORY_RETENTION_SECS: u64 = 180;
+
 // ============================================================================
 // Nonce Serialization Constants (FROST)
 // ============================================================================

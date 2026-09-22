@@ -1,3 +1,4 @@
+use crate::constants::RING_POLY_HISTORY_RETENTION_SECS;
 use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -126,6 +127,7 @@ impl RingShareBundle {
 
     /// Save the bundle as a single encrypted write keyed by `ring_pk.to_string()`.
     pub fn save(&self, storage: &impl LocalStorage, ring_pk: &G1Affine) -> Result<(), String> {
+        self.stash_previous_polynomial(storage, &ring_pk.to_string());
         storage
             .set_encrypted(
                 LocalStorageKeys::RingKey(ring_pk.to_string()),
@@ -150,12 +152,40 @@ impl RingShareBundle {
         storage: &impl LocalStorage,
         ring_key: &str,
     ) -> Result<(), String> {
+        self.stash_previous_polynomial(storage, ring_key);
         storage
             .set_encrypted(
                 LocalStorageKeys::RingKey(ring_key.to_string()),
                 self.to_bytes(),
             )
             .map_err(|e| format!("Failed to store RingShareBundle: {}", e))
+    }
+
+    /// Best-effort: read whatever bundle currently occupies this ring's slot and,
+    /// if its polynomial differs from the one about to be written, retain it in
+    /// `RingPolyHistory` so invalid-crypto report verification can still check a
+    /// PRE/Sign response against the generation it was actually produced under,
+    /// even after this save moves the ring on to a new one. Must never fail the
+    /// actual share/polynomial write over this side write — logs and moves on.
+    fn stash_previous_polynomial(&self, storage: &impl LocalStorage, ring_key: &str) {
+        let Ok(previous) = Self::load_by_ring_key(storage, ring_key) else {
+            return; // First-ever write for this ring — nothing to retire.
+        };
+        if previous.public_polynomial == self.public_polynomial {
+            return; // Retried/duplicate commit of the same generation.
+        }
+        if let Err(error) = RingPolyHistory::record_retired(
+            storage,
+            ring_key,
+            previous.public_polynomial,
+            self.last_pss,
+        ) {
+            tracing::warn!(
+                ring_key = %ring_key,
+                %error,
+                "Failed to record retired ring polynomial for report verification"
+            );
+        }
     }
 
     /// Deserialize the private share out of the bundle.
@@ -247,5 +277,110 @@ impl RingPolyState {
         let ring_pk = G1Affine::from_bytes(&bytes)
             .map_err(|e| format!("Failed to deserialize ring_pk: {}", e))?;
         Self::load(storage, &ring_pk)
+    }
+}
+
+/// Defense in depth on top of the retention-window filter in [`RingPolyHistory::recent`] —
+/// the window is the real bound, this just caps storage if a ring somehow accumulates
+/// entries faster than expected.
+const RING_POLY_HISTORY_MAX_ENTRIES: usize = 4;
+
+/// Short-lived history of a ring's recently-retired *public* polynomials, stored
+/// separately from `RingShareBundle` under `LocalStorageKeys::RingPolyHistory` —
+/// never alongside, or in place of, the current secret share, and never itself
+/// secret (see that key's doc comment for why).
+///
+/// Exists so invalid-crypto report verification
+/// (`reporting::v0::registry::invalid_crypto::pre_sign`) can still check a PRE/Sign
+/// response against the share generation it was actually produced under, even
+/// after a PSS ceremony has since moved the ring on to a new one — without
+/// retaining the (unrecoverable, and rightly so) old private share.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RingPolyHistory {
+    /// Most-recently-retired first.
+    entries: Vec<RetiredPolynomial>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RetiredPolynomial {
+    public_polynomial: String,
+    /// Unix seconds this polynomial was retired — i.e. the completion time of the
+    /// PSS ceremony that replaced it (the incoming bundle's own `last_pss`).
+    retired_at: u64,
+}
+
+impl RingPolyHistory {
+    fn load(storage: &impl LocalStorage, ring_key: &str) -> Self {
+        storage
+            .get(LocalStorageKeys::RingPolyHistory(ring_key.to_string()))
+            .ok()
+            .flatten()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+        let bytes = serde_json::to_vec(self)
+            .map_err(|e| format!("Failed to serialize RingPolyHistory: {}", e))?;
+        storage
+            .set(
+                LocalStorageKeys::RingPolyHistory(ring_key.to_string()),
+                bytes,
+            )
+            .map_err(|e| format!("Failed to store RingPolyHistory: {}", e))
+    }
+
+    /// Record a just-retired polynomial and prune anything past the retention
+    /// window or the max entry count. Called right before a new `RingShareBundle`
+    /// overwrites the current one (see `RingShareBundle::stash_previous_polynomial`).
+    fn record_retired(
+        storage: &impl LocalStorage,
+        ring_key: &str,
+        public_polynomial: String,
+        retired_at: u64,
+    ) -> Result<(), String> {
+        let mut history = Self::load(storage, ring_key);
+        history.entries.retain(|entry| {
+            retired_at.saturating_sub(entry.retired_at) <= RING_POLY_HISTORY_RETENTION_SECS
+        });
+        history.entries.insert(
+            0,
+            RetiredPolynomial {
+                public_polynomial,
+                retired_at,
+            },
+        );
+        history.entries.truncate(RING_POLY_HISTORY_MAX_ENTRIES);
+        history.save(storage, ring_key)
+    }
+
+    /// Every still-in-window retired polynomial for `ring_key`, most-recent first,
+    /// hex-encoded and ready for `PubPolyImpl::from_bytes(&hex::decode(..)?)`.
+    pub fn recent(storage: &impl LocalStorage, ring_key: &str, now_secs: u64) -> Vec<String> {
+        Self::load(storage, ring_key)
+            .entries
+            .into_iter()
+            .filter(|entry| {
+                now_secs.saturating_sub(entry.retired_at) <= RING_POLY_HISTORY_RETENTION_SECS
+            })
+            .map(|entry| entry.public_polynomial)
+            .collect()
+    }
+
+    /// Convenience wrapper mirroring `RingPolyState::load_from_ring_pk_hex`, for
+    /// callers (report verification) that only have the hex-encoded ring_pk, not
+    /// the `.to_string()` display-format storage key `RingShareBundle` itself uses.
+    pub fn recent_from_ring_pk_hex(
+        storage: &impl LocalStorage,
+        ring_pk_hex: &str,
+        now_secs: u64,
+    ) -> Vec<String> {
+        let Ok(bytes) = hex::decode(ring_pk_hex) else {
+            return Vec::new();
+        };
+        let Ok(ring_pk) = G1Affine::from_bytes(&bytes) else {
+            return Vec::new();
+        };
+        Self::recent(storage, &ring_pk.to_string(), now_secs)
     }
 }
