@@ -2,6 +2,7 @@ use crate::constants::RING_POLY_HISTORY_RETENTION_SECS;
 use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use std::fmt;
 use zeroize::Zeroizing;
 
 /// One entry in the node's ring index.
@@ -28,7 +29,7 @@ pub struct RingIndexEntry {
 ///
 /// Serialized manually so the plaintext buffer can be held in a
 /// `Zeroizing` wrapper throughout the write path.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RingShareBundle {
     /// Serialized `PriShare<Fr>` (output of `CryptoSerialize::to_bytes`).
     pub share_bytes: Zeroizing<Vec<u8>>,
@@ -37,6 +38,21 @@ pub struct RingShareBundle {
     /// Unix timestamp (seconds) of the most recent PSS ceremony (fresh DKG, refresh,
     /// or reshare), or 0 before the first completion.
     pub last_pss: u64,
+}
+
+// Hand-written rather than derived: `Zeroizing<Z>` derives `Debug` by forwarding to
+// `Z`'s own impl, so a derived `Debug` here would print the raw secret share bytes
+// on any accidental `{:?}` (log line, panic message, `expect`/`expect_err` on an
+// unexpected branch, etc). Redacting `share_bytes` keeps `Debug` usable for tests
+// and diagnostics without ever printing the secret.
+impl fmt::Debug for RingShareBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RingShareBundle")
+            .field("share_bytes", &"<redacted>")
+            .field("public_polynomial", &self.public_polynomial)
+            .field("last_pss", &self.last_pss)
+            .finish()
+    }
 }
 
 const BUNDLE_VERSION: u8 = 0x01;
@@ -277,11 +293,23 @@ const PENDING_RESHARE_BUNDLE_VERSION: u8 = 0x01;
 /// comment for the lifecycle: written at staging time, cleared the moment the live
 /// bulletin-confirmation wait (`wait_for_reshare_bulletin_finalized`) resolves, and
 /// read by startup reconciliation to recover from a restart that happens in between.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PendingReshareBundle {
     pub bundle: RingShareBundle,
     pub bulletin_post_id: String,
     pub finalized_ring_sha256: String,
+}
+
+// See `RingShareBundle`'s `Debug` impl — this embeds one, so the same redaction
+// applies here for the same reason.
+impl fmt::Debug for PendingReshareBundle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingReshareBundle")
+            .field("bundle", &self.bundle)
+            .field("bulletin_post_id", &self.bulletin_post_id)
+            .field("finalized_ring_sha256", &self.finalized_ring_sha256)
+            .finish()
+    }
 }
 
 impl PendingReshareBundle {
