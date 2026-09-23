@@ -54,7 +54,8 @@ use crate::dkg::v0::network::{
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
-use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use crate::ring_state::{PendingReshareBundle, RingIndexEntry, RingShareBundle};
+use crate::sign::v0::helpers::ring_payload_reshare_sign_state_sha256_hex;
 use bulletin::error::BulletinError;
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind, RingCancellationPayload, RingPayload};
 use crypto::r#trait::Dkg;
@@ -576,6 +577,107 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
         })
         .transpose()
         .map(|index| index.unwrap_or_default())
+}
+
+/// One-shot startup check: for every ring with a `PendingReshareBundle` left over from a
+/// restart that happened before its live confirmation wait
+/// (`wait_for_reshare_bulletin_finalized`) resolved, read the ring's current bulletin state
+/// once and promote or discard. No retry loop — if the bulletin can't be read or parsed right
+/// now, the entry is left as-is and reconsidered on the next startup.
+pub async fn reconcile_pending_reshares<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let ring_index = read_ring_index(&app_state.local_storage)?;
+    for entry in &ring_index {
+        let pending = match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str)
+        {
+            Ok(Some(pending)) => pending,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: failed to read pending reshare bundle at startup"
+                );
+                continue;
+            }
+        };
+
+        let ring_post = match app_state
+            .bulletin
+            .read(pending.bulletin_post_id.clone(), BulletinKind::Ring)
+            .await
+        {
+            Ok(post) => post,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: could not confirm pending reshare bundle at startup; leaving for next startup"
+                );
+                continue;
+            }
+        };
+        let ring_payload = match RingPayload::try_from(ring_post) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: failed to parse bulletin payload for pending reshare bundle at startup; leaving for next startup"
+                );
+                continue;
+            }
+        };
+
+        let observed_hash = ring_payload_reshare_sign_state_sha256_hex(&ring_payload);
+        if observed_hash == pending.finalized_ring_sha256 {
+            match pending
+                .bundle
+                .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        "PSS: promoted pending reshare bundle found on startup"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        %error,
+                        "PSS: failed to promote pending reshare bundle on startup"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            tracing::warn!(
+                ring_pk_str = %entry.ring_pk_str,
+                "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
+            );
+        }
+
+        if let Err(error) =
+            PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
+        {
+            tracing::warn!(
+                ring_pk_str = %entry.ring_pk_str,
+                %error,
+                "PSS: failed to clear pending reshare bundle after startup reconciliation"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Initiate a Refresh ceremony (same secret, new shares, same committee).

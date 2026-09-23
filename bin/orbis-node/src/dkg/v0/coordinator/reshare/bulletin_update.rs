@@ -13,7 +13,7 @@ use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::ring::RingConfig;
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::{PendingReshareBundle, RingShareBundle};
 use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions};
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{
@@ -301,12 +301,31 @@ where
     if !coord
         .app_state
         .dkg_session_state
-        .mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone(), staged_bundle)
+        .mark_reshare_signature_ready_for_attempt(attempt, ready_key.clone(), staged_bundle.clone())
         .await
     {
         return Err(DkgError::StaleAttempt {
             ceremony_id: session_id,
         });
+    }
+
+    // Restart insurance: the staged bundle above only lives in memory until this
+    // node's own bulletin-confirmation wait promotes it. Persist a copy to disk so
+    // a restart in that window can recover via startup reconciliation instead of
+    // losing the share outright. Best-effort — never fail the reshare over this
+    // side write.
+    let pending = PendingReshareBundle {
+        bundle: staged_bundle,
+        bulletin_post_id: ring_id.to_string(),
+        finalized_ring_sha256: finalized_ring_sha256.clone(),
+    };
+    if let Err(error) = pending.save(&coord.app_state.local_storage, storage_key) {
+        tracing::warn!(
+            session_id,
+            ring_key = %storage_key,
+            %error,
+            "Reshare: failed to persist pending bundle for restart recovery"
+        );
     }
 
     Ok(PreparedReshareUpdate {

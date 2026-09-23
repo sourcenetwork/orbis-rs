@@ -8,6 +8,7 @@ use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_
 use crate::dkg::v0::helpers::peer_node_keys_match;
 use crate::dkg::v0::session_state::TopicTaskDisposition;
 use crate::dkg::v0::transport::AttemptKey;
+use crate::ring_state::PendingReshareBundle;
 
 use super::bulletin_update::ReshareReadinessInfo;
 
@@ -230,6 +231,17 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                          on disk is preserved"
                     );
                 }
+                // This node's own live wait has now resolved one way or another (promoted,
+                // mismatched, or timed out) — the disk-persisted restart-insurance copy has
+                // done its job either way and startup reconciliation no longer needs it.
+                if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key) {
+                    tracing::warn!(
+                        session_id,
+                        ring_key = %key,
+                        %error,
+                        "Reshare: failed to clear pending-restart bundle"
+                    );
+                }
                 app_state
                     .dkg_session_state
                     .unmark_ring_pss_for_attempt(&key, attempt)
@@ -362,10 +374,20 @@ mod tests {
         assert!(
             app_state
                 .dkg_session_state
-                .mark_reshare_signature_ready_for_attempt(attempt, key, staged_new_bundle())
+                .mark_reshare_signature_ready_for_attempt(attempt, key.clone(), staged_new_bundle())
                 .await,
             "staging the new bundle against a live attempt must succeed"
         );
+
+        // Mirrors the disk write `prepare_reshare_update` performs right after the
+        // in-memory staging above, so tests can exercise the restart-recovery clear.
+        PendingReshareBundle {
+            bundle: staged_new_bundle(),
+            bulletin_post_id: POST_ID.to_string(),
+            finalized_ring_sha256: key.finalized_ring_sha256,
+        }
+        .save(&app_state.local_storage, RING_KEY)
+        .expect("seed pending reshare bundle for restart-recovery test");
 
         (app_state, dummy_bulletin, db_path)
     }
@@ -373,6 +395,15 @@ mod tests {
     fn disk_bundle(app_state: &AppState<DkgImpl>) -> RingShareBundle {
         RingShareBundle::load_by_ring_key(&app_state.local_storage, RING_KEY)
             .expect("bundle must still be present on disk")
+    }
+
+    fn assert_pending_bundle_cleared(app_state: &AppState<DkgImpl>) {
+        assert!(
+            PendingReshareBundle::load(&app_state.local_storage, RING_KEY)
+                .expect("pending reshare bundle lookup must not error")
+                .is_none(),
+            "pending-restart bundle must be cleared once the live wait resolves"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -425,6 +456,7 @@ mod tests {
                 .is_none(),
             "a discarded (timed-out) marker must not authorize a later sign request"
         );
+        assert_pending_bundle_cleared(&app_state);
 
         cleanup_db(&db_path);
     }
@@ -461,6 +493,7 @@ mod tests {
         .await;
 
         assert_eq!(disk_bundle(&app_state).public_polynomial, "old-poly");
+        assert_pending_bundle_cleared(&app_state);
 
         cleanup_db(&db_path);
     }
@@ -517,6 +550,7 @@ mod tests {
             material.is_none(),
             "a promoted marker must signal disk fallback, not a stale staged bundle"
         );
+        assert_pending_bundle_cleared(&app_state);
 
         cleanup_db(&db_path);
     }

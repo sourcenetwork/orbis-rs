@@ -1134,6 +1134,168 @@ async fn test_refresh_ring_missing_from_bulletin_reconciles_local_index() {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Startup reshare reconciliation (`reconcile_pending_reshares`)
+// ──────────────────────────────────────────────────────────────────────────────
+
+fn reshare_test_ring_payload(
+    ring_pk: &str,
+    peer_node_keys: Vec<String>,
+    threshold: u32,
+) -> RingPayload {
+    RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: ring_pk.to_string(),
+        peer_node_keys,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+    }
+}
+
+fn old_reshare_test_bundle() -> RingShareBundle {
+    RingShareBundle {
+        share_bytes: zeroize::Zeroizing::new(vec![1, 1, 1]),
+        public_polynomial: "old-poly".to_string(),
+        last_pss: 1,
+    }
+}
+
+fn staged_reshare_test_bundle() -> RingShareBundle {
+    RingShareBundle {
+        share_bytes: zeroize::Zeroizing::new(vec![2, 2, 2]),
+        public_polynomial: "new-poly".to_string(),
+        last_pss: 2,
+    }
+}
+
+/// A restart landed after this node's own live bulletin-confirmation wait never
+/// resolved, but the bulletin already shows exactly the finalized state this node
+/// staged for (a successful reshare that completed while this node was down).
+/// Startup reconciliation must promote the staged bundle and clear the pending entry.
+#[tokio::test]
+async fn reconcile_pending_reshares_promotes_matching_pending_bundle() {
+    let db_name = "pss_reconcile_promote";
+    let ring_pk = "reconcile-promote-ring-pk".to_string();
+    let ring_payload =
+        reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string(), "new-b".to_string()], 1);
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_ring_key(&app_state.local_storage, &ring_pk)
+        .expect("seed old bundle");
+
+    let finalized_ring_sha256 =
+        crate::sign::v0::helpers::ring_payload_reshare_sign_state_sha256_hex(&ring_payload);
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        finalized_ring_sha256,
+    }
+    .save(&app_state.local_storage, &ring_pk)
+    .expect("seed pending reshare bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &ring_pk)
+            .expect("bundle must be present")
+            .public_polynomial,
+        "new-poly",
+        "matching bulletin state must promote the staged bundle"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load(&state_arc.local_storage, &ring_pk)
+            .expect("pending lookup must not error")
+            .is_none(),
+        "pending entry must be cleared after reconciliation"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// The bulletin does not reflect the staged finalized state (e.g. the reshare never
+/// completed, or resolved differently) — reconciliation must discard the staged
+/// bundle, preserve the old one, and still clear the pending entry.
+#[tokio::test]
+async fn reconcile_pending_reshares_discards_nonmatching_pending_bundle() {
+    let db_name = "pss_reconcile_discard";
+    let ring_pk = "reconcile-discard-ring-pk".to_string();
+    // Bulletin still shows the pre-reshare committee — never finalized.
+    let ring_payload = reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string()], 1);
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_ring_key(&app_state.local_storage, &ring_pk)
+        .expect("seed old bundle");
+
+    // A finalized-state hash that does not match the (unchanged) current payload.
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        finalized_ring_sha256: "does-not-match".to_string(),
+    }
+    .save(&app_state.local_storage, &ring_pk)
+    .expect("seed pending reshare bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &ring_pk)
+            .expect("bundle must be present")
+            .public_polynomial,
+        "old-poly",
+        "non-matching bulletin state must discard the staged bundle and preserve the old one"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load(&state_arc.local_storage, &ring_pk)
+            .expect("pending lookup must not error")
+            .is_none(),
+        "pending entry must be cleared after reconciliation"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// A ring with no pending entry at all must be left completely untouched.
+#[tokio::test]
+async fn reconcile_pending_reshares_ignores_ring_without_pending_entry() {
+    let db_name = "pss_reconcile_no_pending";
+    let ring_pk = "reconcile-no-pending-ring-pk".to_string();
+    let ring_payload = reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string()], 1);
+    let (app_state, _entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_ring_key(&app_state.local_storage, &ring_pk)
+        .expect("seed old bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &ring_pk)
+            .expect("bundle must be present")
+            .public_polynomial,
+        "old-poly",
+        "a ring without a pending entry must be left untouched"
+    );
+
+    cleanup_db(&db_path);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Multi-ring protocol-version divergence warning
 // ──────────────────────────────────────────────────────────────────────────────
 

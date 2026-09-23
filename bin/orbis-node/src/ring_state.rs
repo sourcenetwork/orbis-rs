@@ -205,7 +205,30 @@ impl RingShareBundle {
 
 #[cfg(test)]
 mod tests {
-    use super::{RingShareBundle, BUNDLE_VERSION};
+    use super::{PendingReshareBundle, RingShareBundle, BUNDLE_VERSION};
+    use zeroize::Zeroizing;
+
+    #[test]
+    fn pending_reshare_bundle_round_trips() {
+        let pending = PendingReshareBundle {
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![9, 9, 9]),
+                public_polynomial: "poly".to_string(),
+                last_pss: 42,
+            },
+            bulletin_post_id: "post-1".to_string(),
+            finalized_ring_sha256: "deadbeef".to_string(),
+        };
+
+        let bytes = pending.to_bytes();
+        let decoded = PendingReshareBundle::from_bytes(&bytes).expect("round-trip decode");
+
+        assert_eq!(decoded.bundle.share_bytes.as_slice(), &[9, 9, 9]);
+        assert_eq!(decoded.bundle.public_polynomial, "poly");
+        assert_eq!(decoded.bundle.last_pss, 42);
+        assert_eq!(decoded.bulletin_post_id, "post-1");
+        assert_eq!(decoded.finalized_ring_sha256, "deadbeef");
+    }
 
     #[test]
     fn ring_share_bundle_rejects_truncated_length_prefix() {
@@ -244,6 +267,135 @@ mod tests {
             result.unwrap_err(),
             "RingShareBundle: buffer too short (last_pss)"
         );
+    }
+}
+
+const PENDING_RESHARE_BUNDLE_VERSION: u8 = 0x01;
+
+/// Restart-insurance copy of a reshare's staged (not-yet-promoted) `RingShareBundle`,
+/// stored encrypted under `LocalStorageKeys::PendingReshareBundle`. See that key's doc
+/// comment for the lifecycle: written at staging time, cleared the moment the live
+/// bulletin-confirmation wait (`wait_for_reshare_bulletin_finalized`) resolves, and
+/// read by startup reconciliation to recover from a restart that happens in between.
+#[derive(Clone, Debug)]
+pub struct PendingReshareBundle {
+    pub bundle: RingShareBundle,
+    pub bulletin_post_id: String,
+    pub finalized_ring_sha256: String,
+}
+
+impl PendingReshareBundle {
+    fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let bundle_bytes = self.bundle.to_bytes();
+        let post_id_bytes = self.bulletin_post_id.as_bytes();
+        let hash_bytes = self.finalized_ring_sha256.as_bytes();
+        let capacity = 1 + 4 + bundle_bytes.len() + 4 + post_id_bytes.len() + 4 + hash_bytes.len();
+        let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
+
+        buf.push(PENDING_RESHARE_BUNDLE_VERSION);
+        buf.extend_from_slice(&(bundle_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&bundle_bytes);
+        buf.extend_from_slice(&(post_id_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(post_id_bytes);
+        buf.extend_from_slice(&(hash_bytes.len() as u32).to_le_bytes());
+        buf.extend_from_slice(hash_bytes);
+
+        buf
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.is_empty() {
+            return Err("PendingReshareBundle: empty buffer".to_string());
+        }
+        if bytes[0] != PENDING_RESHARE_BUNDLE_VERSION {
+            return Err(format!(
+                "PendingReshareBundle: unsupported version 0x{:02X}",
+                bytes[0]
+            ));
+        }
+
+        let mut cursor = 1usize;
+
+        let read_u32 = |buf: &[u8], pos: &mut usize| -> Result<u32, String> {
+            if buf.len() < *pos + 4 {
+                return Err("PendingReshareBundle: buffer too short (u32)".to_string());
+            }
+            let encoded = buf[*pos..*pos + 4]
+                .try_into()
+                .map_err(|_| "PendingReshareBundle: invalid u32 encoding".to_string())?;
+            let v = u32::from_le_bytes(encoded);
+            *pos += 4;
+            Ok(v)
+        };
+
+        let bundle_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + bundle_len {
+            return Err("PendingReshareBundle: buffer too short (bundle)".to_string());
+        }
+        let bundle = RingShareBundle::from_bytes(&bytes[cursor..cursor + bundle_len])?;
+        cursor += bundle_len;
+
+        let post_id_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + post_id_len {
+            return Err("PendingReshareBundle: buffer too short (bulletin_post_id)".to_string());
+        }
+        let bulletin_post_id = String::from_utf8(bytes[cursor..cursor + post_id_len].to_vec())
+            .map_err(|e| {
+                format!(
+                    "PendingReshareBundle: invalid utf-8 in bulletin_post_id: {}",
+                    e
+                )
+            })?;
+        cursor += post_id_len;
+
+        let hash_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + hash_len {
+            return Err(
+                "PendingReshareBundle: buffer too short (finalized_ring_sha256)".to_string(),
+            );
+        }
+        let finalized_ring_sha256 = String::from_utf8(bytes[cursor..cursor + hash_len].to_vec())
+            .map_err(|e| {
+                format!(
+                    "PendingReshareBundle: invalid utf-8 in finalized_ring_sha256: {}",
+                    e
+                )
+            })?;
+
+        Ok(Self {
+            bundle,
+            bulletin_post_id,
+            finalized_ring_sha256,
+        })
+    }
+
+    /// Best-effort write — callers must log and continue on `Err`, never fail the
+    /// live reshare over this restart-insurance side write.
+    pub fn save(&self, storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+        storage
+            .set_encrypted(
+                LocalStorageKeys::PendingReshareBundle(ring_key.to_string()),
+                self.to_bytes(),
+            )
+            .map_err(|e| format!("Failed to store PendingReshareBundle: {}", e))
+    }
+
+    /// Returns `Ok(None)` if no pending entry exists for `ring_key`.
+    pub fn load(storage: &impl LocalStorage, ring_key: &str) -> Result<Option<Self>, String> {
+        let Some(bytes) = storage
+            .get_encrypted(LocalStorageKeys::PendingReshareBundle(ring_key.to_string()))
+            .map_err(|e| format!("Failed to read PendingReshareBundle: {}", e))?
+        else {
+            return Ok(None);
+        };
+        Self::from_bytes(&bytes).map(Some)
+    }
+
+    /// Best-effort clear — callers must log and continue on `Err`.
+    pub fn clear(storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+        storage
+            .delete(LocalStorageKeys::PendingReshareBundle(ring_key.to_string()))
+            .map_err(|e| format!("Failed to clear PendingReshareBundle: {}", e))
     }
 }
 
