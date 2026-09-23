@@ -170,6 +170,12 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     peer_node_keys_match(&payload.peer_node_keys, &info.expected_new_committee)
                         && payload.threshold == info.expected_new_threshold
                 });
+                // Only a clean promotion or a genuine discard means the disk-persisted
+                // restart-insurance copy has done its job. A failed (or unresolved) promotion
+                // attempt below deliberately leaves it in place, so a future startup's
+                // reconciliation gets its own independent attempt at the exact same write —
+                // which may succeed once whatever caused this one to fail has cleared.
+                let mut pending_bundle_resolved = false;
                 if should_promote {
                     match app_state
                         .dkg_session_state
@@ -188,14 +194,16 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                                         ring_key = %key,
                                         "Reshare: promoted staged bundle after chain confirmation"
                                     );
+                                    pending_bundle_resolved = true;
                                 }
                                 Err(error) => {
                                     // Chain confirmed the reshare, but the local write failed:
                                     // this node is now locally-stale-but-chain-confirmed. No
-                                    // automatic retry — matches the existing Fresh-DKG precedent
-                                    // of preferring a diagnosable gap over new retry machinery.
-                                    // The map entry is deliberately left `Staged` (not marked
-                                    // promoted) so this isn't silently reported as resolved.
+                                    // automatic retry within this run — matches the existing
+                                    // Fresh-DKG precedent of preferring a diagnosable gap over
+                                    // new retry machinery. The map entry is deliberately left
+                                    // `Staged` (not marked promoted) so this isn't silently
+                                    // reported as resolved.
                                     //
                                     // The transport attempt still completes normally below
                                     // (the ceremony itself succeeded), so this counter is the
@@ -230,17 +238,18 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                          committee/threshold (or timed out); discarding staged bundle, old share \
                          on disk is preserved"
                     );
+                    pending_bundle_resolved = true;
                 }
-                // This node's own live wait has now resolved one way or another (promoted,
-                // mismatched, or timed out) — the disk-persisted restart-insurance copy has
-                // done its job either way and startup reconciliation no longer needs it.
-                if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key) {
-                    tracing::warn!(
-                        session_id,
-                        ring_key = %key,
-                        %error,
-                        "Reshare: failed to clear pending-restart bundle"
-                    );
+                if pending_bundle_resolved {
+                    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key)
+                    {
+                        tracing::warn!(
+                            session_id,
+                            ring_key = %key,
+                            %error,
+                            "Reshare: failed to clear pending-restart bundle"
+                        );
+                    }
                 }
                 app_state
                     .dkg_session_state
@@ -381,10 +390,13 @@ mod tests {
 
         // Mirrors the disk write `prepare_reshare_update` performs right after the
         // in-memory staging above, so tests can exercise the restart-recovery clear.
+        // Matches every test's own `ReshareReadinessInfo.expected_new_committee` /
+        // `expected_new_threshold` below.
         PendingReshareBundle {
             bundle: staged_new_bundle(),
             bulletin_post_id: POST_ID.to_string(),
-            finalized_ring_sha256: key.finalized_ring_sha256,
+            expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+            expected_new_threshold: 1,
         }
         .save(&app_state.local_storage, RING_KEY)
         .expect("seed pending reshare bundle for restart-recovery test");

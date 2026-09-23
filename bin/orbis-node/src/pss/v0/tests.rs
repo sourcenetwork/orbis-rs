@@ -1142,12 +1142,22 @@ fn reshare_test_ring_payload(
     peer_node_keys: Vec<String>,
     threshold: u32,
 ) -> RingPayload {
+    reshare_test_ring_payload_pending(ring_pk, peer_node_keys, threshold, None, None)
+}
+
+fn reshare_test_ring_payload_pending(
+    ring_pk: &str,
+    peer_node_keys: Vec<String>,
+    threshold: u32,
+    new_peer_node_keys: Option<Vec<String>>,
+    new_threshold: Option<u32>,
+) -> RingPayload {
     RingPayload {
         upgrade_info: Default::default(),
         ring_pk: ring_pk.to_string(),
         peer_node_keys,
-        new_peer_node_keys: None,
-        new_threshold: None,
+        new_peer_node_keys,
+        new_threshold,
         threshold,
         pss_interval: 0,
         block_number_nonce: 0,
@@ -1174,30 +1184,59 @@ fn staged_reshare_test_bundle() -> RingShareBundle {
 }
 
 /// A restart landed after this node's own live bulletin-confirmation wait never
-/// resolved, but the bulletin already shows exactly the finalized state this node
-/// staged for (a successful reshare that completed while this node was down).
-/// Startup reconciliation must promote the staged bundle and clear the pending entry.
+/// resolved, but the bulletin has since actually finalized to exactly the
+/// committee/threshold this node staged for (a successful reshare that completed
+/// while this node was down). Startup reconciliation must promote the staged
+/// bundle and clear the pending entry.
+///
+/// Staging happens against the *pre*-finalization payload (`new_peer_node_keys`/
+/// `new_threshold` still set), and this test then applies the bulletin's real
+/// `update()` — which also bumps `block_number_nonce`, exactly like the live
+/// chain does — rather than hand-constructing an already-finalized payload. This
+/// is what actually exercises the comparison reconciliation uses on restart; a
+/// test that only ever sees an already-finalized payload can't tell a correct
+/// committee/threshold comparison apart from a comparison that's silently
+/// comparing something that happens to never change (e.g. a full-payload hash
+/// that implicitly assumes `block_number_nonce` stays constant across
+/// finalization, which it does not).
 #[tokio::test]
 async fn reconcile_pending_reshares_promotes_matching_pending_bundle() {
     let db_name = "pss_reconcile_promote";
     let ring_pk = "reconcile-promote-ring-pk".to_string();
-    let ring_payload =
-        reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string(), "new-b".to_string()], 1);
-    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+    let pending_payload = reshare_test_ring_payload_pending(
+        &ring_pk,
+        vec!["old-a".to_string()],
+        1,
+        Some(vec!["old-a".to_string(), "new-b".to_string()]),
+        Some(1),
+    );
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &pending_payload).await;
 
     old_reshare_test_bundle()
         .save_by_ring_key(&app_state.local_storage, &ring_pk)
         .expect("seed old bundle");
 
-    let finalized_ring_sha256 =
-        crate::sign::v0::helpers::ring_payload_reshare_sign_state_sha256_hex(&ring_payload);
     crate::ring_state::PendingReshareBundle {
         bundle: staged_reshare_test_bundle(),
         bulletin_post_id: entry.bulletin_post_id.clone(),
-        finalized_ring_sha256,
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
     }
     .save(&app_state.local_storage, &ring_pk)
     .expect("seed pending reshare bundle");
+
+    // The real finalization write: clears new_peer_node_keys/new_threshold onto
+    // peer_node_keys/threshold and bumps block_number_nonce, exactly like
+    // `update_bulletin_if_selector`'s on-chain update does.
+    app_state
+        .bulletin
+        .update(
+            entry.bulletin_post_id.clone(),
+            "test-scheme".to_string(),
+            vec![],
+        )
+        .await
+        .expect("apply real bulletin finalization");
 
     let state_arc = Arc::new(app_state);
     super::reconcile_pending_reshares(&state_arc)
@@ -1236,11 +1275,12 @@ async fn reconcile_pending_reshares_discards_nonmatching_pending_bundle() {
         .save_by_ring_key(&app_state.local_storage, &ring_pk)
         .expect("seed old bundle");
 
-    // A finalized-state hash that does not match the (unchanged) current payload.
+    // An expected committee that does not match the (unchanged) current payload.
     crate::ring_state::PendingReshareBundle {
         bundle: staged_reshare_test_bundle(),
         bulletin_post_id: entry.bulletin_post_id.clone(),
-        finalized_ring_sha256: "does-not-match".to_string(),
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
     }
     .save(&app_state.local_storage, &ring_pk)
     .expect("seed pending reshare bundle");

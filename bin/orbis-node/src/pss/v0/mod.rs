@@ -48,14 +48,13 @@ use divergence::*;
 use crate::app_state::AppState;
 use crate::constants::{PSS_GRACE_PERIOD_SECS, PSS_RING_CONCURRENCY_LIMIT};
 use crate::dkg::v0::error::DkgError;
-use crate::dkg::v0::helpers::ring_payload_matches_ring_key;
+use crate::dkg::v0::helpers::{peer_node_keys_match, ring_payload_matches_ring_key};
 use crate::dkg::v0::network::{
     start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
 use crate::ring_state::{PendingReshareBundle, RingIndexEntry, RingShareBundle};
-use crate::sign::v0::helpers::ring_payload_reshare_sign_state_sha256_hex;
 use bulletin::error::BulletinError;
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind, RingCancellationPayload, RingPayload};
 use crypto::r#trait::Dkg;
@@ -639,8 +638,15 @@ where
             }
         };
 
-        let observed_hash = ring_payload_reshare_sign_state_sha256_hex(&ring_payload);
-        if observed_hash == pending.finalized_ring_sha256 {
+        // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
+        // exactly (committee + threshold), not a full-payload hash — see
+        // `PendingReshareBundle`'s doc comment for why a hash can't work here.
+        let matches_staged_expectation = peer_node_keys_match(
+            &ring_payload.peer_node_keys,
+            &pending.expected_new_committee,
+        ) && ring_payload.threshold
+            == pending.expected_new_threshold;
+        if matches_staged_expectation {
             match pending
                 .bundle
                 .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)

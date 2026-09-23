@@ -233,7 +233,8 @@ mod tests {
                 last_pss: 42,
             },
             bulletin_post_id: "post-1".to_string(),
-            finalized_ring_sha256: "deadbeef".to_string(),
+            expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+            expected_new_threshold: 1,
         };
 
         let bytes = pending.to_bytes();
@@ -243,7 +244,11 @@ mod tests {
         assert_eq!(decoded.bundle.public_polynomial, "poly");
         assert_eq!(decoded.bundle.last_pss, 42);
         assert_eq!(decoded.bulletin_post_id, "post-1");
-        assert_eq!(decoded.finalized_ring_sha256, "deadbeef");
+        assert_eq!(
+            decoded.expected_new_committee,
+            vec!["old-a".to_string(), "new-b".to_string()]
+        );
+        assert_eq!(decoded.expected_new_threshold, 1);
     }
 
     #[test]
@@ -293,11 +298,22 @@ const PENDING_RESHARE_BUNDLE_VERSION: u8 = 0x01;
 /// comment for the lifecycle: written at staging time, cleared the moment the live
 /// bulletin-confirmation wait (`wait_for_reshare_bulletin_finalized`) resolves, and
 /// read by startup reconciliation to recover from a restart that happens in between.
+///
+/// `expected_new_committee`/`expected_new_threshold` are compared against the ring's
+/// *current* bulletin state at reconciliation time using the exact same
+/// `peer_node_keys_match(...) && threshold == ...` predicate the live path
+/// (`wait_for_reshare_bulletin_finalized`'s `should_promote`) already uses — not a
+/// hash of the full payload. A full-payload hash would also cover
+/// `block_number_nonce`, which real finalization changes (confirmed via
+/// `DummyBulletin::update`, which bumps it) in a way this node cannot predict ahead
+/// of time, so a hash computed at staging time can never match the hash of the real
+/// post-finalization payload.
 #[derive(Clone)]
 pub struct PendingReshareBundle {
     pub bundle: RingShareBundle,
     pub bulletin_post_id: String,
-    pub finalized_ring_sha256: String,
+    pub expected_new_committee: Vec<String>,
+    pub expected_new_threshold: u32,
 }
 
 // See `RingShareBundle`'s `Debug` impl — this embeds one, so the same redaction
@@ -307,7 +323,8 @@ impl fmt::Debug for PendingReshareBundle {
         f.debug_struct("PendingReshareBundle")
             .field("bundle", &self.bundle)
             .field("bulletin_post_id", &self.bulletin_post_id)
-            .field("finalized_ring_sha256", &self.finalized_ring_sha256)
+            .field("expected_new_committee", &self.expected_new_committee)
+            .field("expected_new_threshold", &self.expected_new_threshold)
             .finish()
     }
 }
@@ -316,8 +333,12 @@ impl PendingReshareBundle {
     fn to_bytes(&self) -> Zeroizing<Vec<u8>> {
         let bundle_bytes = self.bundle.to_bytes();
         let post_id_bytes = self.bulletin_post_id.as_bytes();
-        let hash_bytes = self.finalized_ring_sha256.as_bytes();
-        let capacity = 1 + 4 + bundle_bytes.len() + 4 + post_id_bytes.len() + 4 + hash_bytes.len();
+        // Not secret (ring committee membership, mirrors what's already public on
+        // the bulletin) — JSON is fine for this sub-field.
+        let committee_json = serde_json::to_vec(&self.expected_new_committee)
+            .expect("Vec<String> serialization cannot fail");
+        let capacity =
+            1 + 4 + bundle_bytes.len() + 4 + post_id_bytes.len() + 4 + committee_json.len() + 4;
         let mut buf = Zeroizing::new(Vec::with_capacity(capacity));
 
         buf.push(PENDING_RESHARE_BUNDLE_VERSION);
@@ -325,8 +346,9 @@ impl PendingReshareBundle {
         buf.extend_from_slice(&bundle_bytes);
         buf.extend_from_slice(&(post_id_bytes.len() as u32).to_le_bytes());
         buf.extend_from_slice(post_id_bytes);
-        buf.extend_from_slice(&(hash_bytes.len() as u32).to_le_bytes());
-        buf.extend_from_slice(hash_bytes);
+        buf.extend_from_slice(&(committee_json.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&committee_json);
+        buf.extend_from_slice(&self.expected_new_threshold.to_le_bytes());
 
         buf
     }
@@ -376,24 +398,36 @@ impl PendingReshareBundle {
             })?;
         cursor += post_id_len;
 
-        let hash_len = read_u32(bytes, &mut cursor)? as usize;
-        if bytes.len() < cursor + hash_len {
+        let committee_len = read_u32(bytes, &mut cursor)? as usize;
+        if bytes.len() < cursor + committee_len {
             return Err(
-                "PendingReshareBundle: buffer too short (finalized_ring_sha256)".to_string(),
+                "PendingReshareBundle: buffer too short (expected_new_committee)".to_string(),
             );
         }
-        let finalized_ring_sha256 = String::from_utf8(bytes[cursor..cursor + hash_len].to_vec())
-            .map_err(|e| {
+        let expected_new_committee: Vec<String> =
+            serde_json::from_slice(&bytes[cursor..cursor + committee_len]).map_err(|e| {
                 format!(
-                    "PendingReshareBundle: invalid utf-8 in finalized_ring_sha256: {}",
+                    "PendingReshareBundle: invalid expected_new_committee json: {}",
                     e
                 )
             })?;
+        cursor += committee_len;
+
+        if bytes.len() < cursor + 4 {
+            return Err(
+                "PendingReshareBundle: buffer too short (expected_new_threshold)".to_string(),
+            );
+        }
+        let threshold_bytes: [u8; 4] = bytes[cursor..cursor + 4]
+            .try_into()
+            .map_err(|_| "PendingReshareBundle: invalid u32 encoding".to_string())?;
+        let expected_new_threshold = u32::from_le_bytes(threshold_bytes);
 
         Ok(Self {
             bundle,
             bulletin_post_id,
-            finalized_ring_sha256,
+            expected_new_committee,
+            expected_new_threshold,
         })
     }
 

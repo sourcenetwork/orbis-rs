@@ -314,10 +314,17 @@ where
     // a restart in that window can recover via startup reconciliation instead of
     // losing the share outright. Best-effort — never fail the reshare over this
     // side write.
+    //
+    // Compared against the ring's committee/threshold on reconciliation, not a
+    // full-payload hash: `finalized_ring_sha256` (used below for the chain-signed
+    // statement) covers `block_number_nonce`, which real finalization changes in a
+    // way this node can't predict ahead of time — a hash computed now would never
+    // match the hash of the actual post-finalization payload.
     let pending = PendingReshareBundle {
         bundle: staged_bundle,
         bulletin_post_id: ring_id.to_string(),
-        finalized_ring_sha256: finalized_ring_sha256.clone(),
+        expected_new_committee: sorted_new_peer_node_keys.clone(),
+        expected_new_threshold: new_threshold,
     };
     if let Err(error) = pending.save(&coord.app_state.local_storage, storage_key) {
         tracing::warn!(
