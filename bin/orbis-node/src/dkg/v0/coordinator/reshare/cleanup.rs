@@ -8,6 +8,7 @@ use crate::constants::{RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL, RESHARE_BULLETIN_
 use crate::dkg::v0::helpers::peer_node_keys_match;
 use crate::dkg::v0::session_state::TopicTaskDisposition;
 use crate::dkg::v0::transport::AttemptKey;
+use crate::ring_state::PendingReshareBundle;
 
 use super::bulletin_update::ReshareReadinessInfo;
 
@@ -169,6 +170,12 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     peer_node_keys_match(&payload.peer_node_keys, &info.expected_new_committee)
                         && payload.threshold == info.expected_new_threshold
                 });
+                // Only a clean promotion or a genuine discard means the disk-persisted
+                // restart-insurance copy has done its job. A failed (or unresolved) promotion
+                // attempt below deliberately leaves it in place, so a future startup's
+                // reconciliation gets its own independent attempt at the exact same write —
+                // which may succeed once whatever caused this one to fail has cleared.
+                let mut pending_bundle_resolved = false;
                 if should_promote {
                     match app_state
                         .dkg_session_state
@@ -187,14 +194,16 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                                         ring_key = %key,
                                         "Reshare: promoted staged bundle after chain confirmation"
                                     );
+                                    pending_bundle_resolved = true;
                                 }
                                 Err(error) => {
                                     // Chain confirmed the reshare, but the local write failed:
                                     // this node is now locally-stale-but-chain-confirmed. No
-                                    // automatic retry — matches the existing Fresh-DKG precedent
-                                    // of preferring a diagnosable gap over new retry machinery.
-                                    // The map entry is deliberately left `Staged` (not marked
-                                    // promoted) so this isn't silently reported as resolved.
+                                    // automatic retry within this run — matches the existing
+                                    // Fresh-DKG precedent of preferring a diagnosable gap over
+                                    // new retry machinery. The map entry is deliberately left
+                                    // `Staged` (not marked promoted) so this isn't silently
+                                    // reported as resolved.
                                     //
                                     // The transport attempt still completes normally below
                                     // (the ceremony itself succeeded), so this counter is the
@@ -221,14 +230,44 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             );
                         }
                     }
-                } else {
+                } else if let Some(payload) = finalized_payload.as_ref() {
+                    // A genuine, confirmed mismatch: we know for certain the bulletin
+                    // resolved to something other than what this node staged (a real
+                    // cancel, or a different reshare entirely) — nothing left to wait for.
                     tracing::warn!(
                         session_id,
                         ring_key = %key,
+                        observed_peer_node_keys = ?payload.peer_node_keys,
+                        observed_threshold = payload.threshold,
                         "Reshare: bulletin confirmation did not match this node's expected new \
-                         committee/threshold (or timed out); discarding staged bundle, old share \
-                         on disk is preserved"
+                         committee/threshold; discarding staged bundle, old share on disk is \
+                         preserved"
                     );
+                    pending_bundle_resolved = true;
+                } else {
+                    // Timed out: we simply stopped watching, not that the bulletin
+                    // resolved to something else — it may still finalize to exactly
+                    // what was staged. Leave the disk-persisted restart-insurance copy
+                    // in place so a future startup's reconciliation gets its own,
+                    // independent chance to observe that.
+                    tracing::warn!(
+                        session_id,
+                        ring_key = %key,
+                        "Reshare: timed out waiting for bulletin confirmation; discarding staged \
+                         bundle locally, old share on disk is preserved. Pending-restart copy is \
+                         kept in case the bulletin still finalizes to what was staged."
+                    );
+                }
+                if pending_bundle_resolved {
+                    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key)
+                    {
+                        tracing::warn!(
+                            session_id,
+                            ring_key = %key,
+                            %error,
+                            "Reshare: failed to clear pending-restart bundle"
+                        );
+                    }
                 }
                 app_state
                     .dkg_session_state
@@ -362,10 +401,23 @@ mod tests {
         assert!(
             app_state
                 .dkg_session_state
-                .mark_reshare_signature_ready_for_attempt(attempt, key, staged_new_bundle())
+                .mark_reshare_signature_ready_for_attempt(attempt, key.clone(), staged_new_bundle())
                 .await,
             "staging the new bundle against a live attempt must succeed"
         );
+
+        // Mirrors the disk write `prepare_reshare_update` performs right after the
+        // in-memory staging above, so tests can exercise the restart-recovery clear.
+        // Matches every test's own `ReshareReadinessInfo.expected_new_committee` /
+        // `expected_new_threshold` below.
+        PendingReshareBundle {
+            bundle: staged_new_bundle(),
+            bulletin_post_id: POST_ID.to_string(),
+            expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+            expected_new_threshold: 1,
+        }
+        .save(&app_state.local_storage, RING_KEY)
+        .expect("seed pending reshare bundle for restart-recovery test");
 
         (app_state, dummy_bulletin, db_path)
     }
@@ -373,6 +425,25 @@ mod tests {
     fn disk_bundle(app_state: &AppState<DkgImpl>) -> RingShareBundle {
         RingShareBundle::load_by_ring_key(&app_state.local_storage, RING_KEY)
             .expect("bundle must still be present on disk")
+    }
+
+    fn assert_pending_bundle_cleared(app_state: &AppState<DkgImpl>) {
+        assert!(
+            PendingReshareBundle::load(&app_state.local_storage, RING_KEY)
+                .expect("pending reshare bundle lookup must not error")
+                .is_none(),
+            "pending-restart bundle must be cleared once the live wait resolves"
+        );
+    }
+
+    fn assert_pending_bundle_retained(app_state: &AppState<DkgImpl>) {
+        assert!(
+            PendingReshareBundle::load(&app_state.local_storage, RING_KEY)
+                .expect("pending reshare bundle lookup must not error")
+                .is_some(),
+            "pending-restart bundle must survive a timeout — the bulletin was never \
+             actually observed to resolve, so it may still finalize to what was staged"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -425,6 +496,7 @@ mod tests {
                 .is_none(),
             "a discarded (timed-out) marker must not authorize a later sign request"
         );
+        assert_pending_bundle_retained(&app_state);
 
         cleanup_db(&db_path);
     }
@@ -461,6 +533,7 @@ mod tests {
         .await;
 
         assert_eq!(disk_bundle(&app_state).public_polynomial, "old-poly");
+        assert_pending_bundle_cleared(&app_state);
 
         cleanup_db(&db_path);
     }
@@ -517,6 +590,7 @@ mod tests {
             material.is_none(),
             "a promoted marker must signal disk fallback, not a stale staged bundle"
         );
+        assert_pending_bundle_cleared(&app_state);
 
         cleanup_db(&db_path);
     }

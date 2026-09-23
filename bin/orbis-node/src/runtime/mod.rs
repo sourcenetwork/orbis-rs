@@ -400,6 +400,14 @@ async fn run_server(
         &NetworkImpl::name(),
     );
 
+    // Restart insurance: promote or discard any reshare that was staged locally but never
+    // reached its live bulletin-confirmation resolution before a previous shutdown. Awaited
+    // directly, before the PSS scheduler starts touching the same rings, so this always
+    // completes as a one-shot startup step rather than racing a live PSS tick.
+    if let Err(error) = pss::reconcile_pending_reshares(&node.app_state).await {
+        tracing::error!(error = %error, "PSS: startup reshare reconciliation failed");
+    }
+
     // Start PSS reshare scheduler (no-op if interval is zero)
     let pss_scheduler = pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
 

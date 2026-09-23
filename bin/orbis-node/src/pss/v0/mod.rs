@@ -48,13 +48,13 @@ use divergence::*;
 use crate::app_state::AppState;
 use crate::constants::{PSS_GRACE_PERIOD_SECS, PSS_RING_CONCURRENCY_LIMIT};
 use crate::dkg::v0::error::DkgError;
-use crate::dkg::v0::helpers::ring_payload_matches_ring_key;
+use crate::dkg::v0::helpers::{peer_node_keys_match, ring_payload_matches_ring_key};
 use crate::dkg::v0::network::{
     start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
-use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use crate::ring_state::{PendingReshareBundle, RingIndexEntry, RingShareBundle};
 use bulletin::error::BulletinError;
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind, RingCancellationPayload, RingPayload};
 use crypto::r#trait::Dkg;
@@ -576,6 +576,126 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
         })
         .transpose()
         .map(|index| index.unwrap_or_default())
+}
+
+/// One-shot startup check: for every ring with a `PendingReshareBundle` left over from a
+/// restart that happened before its live confirmation wait
+/// (`wait_for_reshare_bulletin_finalized`) resolved, read the ring's current bulletin state
+/// once and promote or discard. No retry loop — if the bulletin can't be read or parsed right
+/// now, the entry is left as-is and reconsidered on the next startup.
+pub async fn reconcile_pending_reshares<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let ring_index = read_ring_index(&app_state.local_storage)?;
+    for entry in &ring_index {
+        let pending = match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str)
+        {
+            Ok(Some(pending)) => pending,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: failed to read pending reshare bundle at startup"
+                );
+                continue;
+            }
+        };
+
+        let ring_post = match app_state
+            .bulletin
+            .read(pending.bulletin_post_id.clone(), BulletinKind::Ring)
+            .await
+        {
+            Ok(post) => post,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: could not confirm pending reshare bundle at startup; leaving for next startup"
+                );
+                continue;
+            }
+        };
+        let ring_payload = match RingPayload::try_from(ring_post) {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    %error,
+                    "PSS: failed to parse bulletin payload for pending reshare bundle at startup; leaving for next startup"
+                );
+                continue;
+            }
+        };
+
+        if ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some() {
+            // This ring's reshare (this one, or a different one entirely) hasn't
+            // finalized on the bulletin yet — we can't yet tell whether it will
+            // resolve to what was staged. Leave the pending entry in place and
+            // recheck on a future startup once it has, rather than guessing now.
+            tracing::debug!(
+                ring_pk_str = %entry.ring_pk_str,
+                "PSS: pending reshare bundle's ring has not finalized on the bulletin yet; leaving for next startup"
+            );
+            continue;
+        }
+
+        // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
+        // exactly (committee + threshold), not a full-payload hash — see
+        // `PendingReshareBundle`'s doc comment for why a hash can't work here.
+        let matches_staged_expectation = peer_node_keys_match(
+            &ring_payload.peer_node_keys,
+            &pending.expected_new_committee,
+        ) && ring_payload.threshold
+            == pending.expected_new_threshold;
+        if matches_staged_expectation {
+            match pending
+                .bundle
+                .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        "PSS: promoted pending reshare bundle found on startup"
+                    );
+                }
+                Err(error) => {
+                    tracing::error!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        %error,
+                        "PSS: failed to promote pending reshare bundle on startup"
+                    );
+                    continue;
+                }
+            }
+        } else {
+            tracing::warn!(
+                ring_pk_str = %entry.ring_pk_str,
+                "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
+            );
+        }
+
+        if let Err(error) =
+            PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
+        {
+            tracing::warn!(
+                ring_pk_str = %entry.ring_pk_str,
+                %error,
+                "PSS: failed to clear pending reshare bundle after startup reconciliation"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Initiate a Refresh ceremony (same secret, new shares, same committee).
