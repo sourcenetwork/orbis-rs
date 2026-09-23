@@ -230,15 +230,33 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             );
                         }
                     }
-                } else {
+                } else if let Some(payload) = finalized_payload.as_ref() {
+                    // A genuine, confirmed mismatch: we know for certain the bulletin
+                    // resolved to something other than what this node staged (a real
+                    // cancel, or a different reshare entirely) — nothing left to wait for.
                     tracing::warn!(
                         session_id,
                         ring_key = %key,
+                        observed_peer_node_keys = ?payload.peer_node_keys,
+                        observed_threshold = payload.threshold,
                         "Reshare: bulletin confirmation did not match this node's expected new \
-                         committee/threshold (or timed out); discarding staged bundle, old share \
-                         on disk is preserved"
+                         committee/threshold; discarding staged bundle, old share on disk is \
+                         preserved"
                     );
                     pending_bundle_resolved = true;
+                } else {
+                    // Timed out: we simply stopped watching, not that the bulletin
+                    // resolved to something else — it may still finalize to exactly
+                    // what was staged. Leave the disk-persisted restart-insurance copy
+                    // in place so a future startup's reconciliation gets its own,
+                    // independent chance to observe that.
+                    tracing::warn!(
+                        session_id,
+                        ring_key = %key,
+                        "Reshare: timed out waiting for bulletin confirmation; discarding staged \
+                         bundle locally, old share on disk is preserved. Pending-restart copy is \
+                         kept in case the bulletin still finalizes to what was staged."
+                    );
                 }
                 if pending_bundle_resolved {
                     if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key)
@@ -418,6 +436,16 @@ mod tests {
         );
     }
 
+    fn assert_pending_bundle_retained(app_state: &AppState<DkgImpl>) {
+        assert!(
+            PendingReshareBundle::load(&app_state.local_storage, RING_KEY)
+                .expect("pending reshare bundle lookup must not error")
+                .is_some(),
+            "pending-restart bundle must survive a timeout — the bulletin was never \
+             actually observed to resolve, so it may still finalize to what was staged"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn timeout_discards_staged_bundle_and_preserves_old_one() {
         let session_id = 9001;
@@ -468,7 +496,7 @@ mod tests {
                 .is_none(),
             "a discarded (timed-out) marker must not authorize a later sign request"
         );
-        assert_pending_bundle_cleared(&app_state);
+        assert_pending_bundle_retained(&app_state);
 
         cleanup_db(&db_path);
     }

@@ -638,6 +638,18 @@ where
             }
         };
 
+        if ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some() {
+            // This ring's reshare (this one, or a different one entirely) hasn't
+            // finalized on the bulletin yet — we can't yet tell whether it will
+            // resolve to what was staged. Leave the pending entry in place and
+            // recheck on a future startup once it has, rather than guessing now.
+            tracing::debug!(
+                ring_pk_str = %entry.ring_pk_str,
+                "PSS: pending reshare bundle's ring has not finalized on the bulletin yet; leaving for next startup"
+            );
+            continue;
+        }
+
         // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
         // exactly (committee + threshold), not a full-payload hash — see
         // `PendingReshareBundle`'s doc comment for why a hash can't work here.

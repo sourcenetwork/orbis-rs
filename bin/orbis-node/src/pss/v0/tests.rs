@@ -1260,6 +1260,56 @@ async fn reconcile_pending_reshares_promotes_matching_pending_bundle() {
     cleanup_db(&db_path);
 }
 
+/// The ring's reshare hasn't finalized on the bulletin yet (`new_peer_node_keys`/
+/// `new_threshold` still set) at the moment reconciliation runs. Even though the
+/// *current* committee/threshold happen to already equal what was staged (a
+/// same-committee, threshold-only reshare — `peer_node_keys` doesn't change),
+/// reconciliation must not treat that as a mismatch and discard: the reshare may
+/// still finalize to exactly what was staged moments later. The pending entry
+/// must be left untouched for a future startup to recheck.
+#[tokio::test]
+async fn reconcile_pending_reshares_leaves_unfinalized_pending_bundle_untouched() {
+    let db_name = "pss_reconcile_unfinalized";
+    let ring_pk = "reconcile-unfinalized-ring-pk".to_string();
+    let pending_payload =
+        reshare_test_ring_payload_pending(&ring_pk, vec!["old-a".to_string()], 1, None, Some(2));
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &pending_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_ring_key(&app_state.local_storage, &ring_pk)
+        .expect("seed old bundle");
+
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["old-a".to_string()],
+        expected_new_threshold: 2,
+    }
+    .save(&app_state.local_storage, &ring_pk)
+    .expect("seed pending reshare bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &ring_pk)
+            .expect("bundle must be present")
+            .public_polynomial,
+        "old-poly",
+        "an unfinalized reshare must not be treated as resolved"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load(&state_arc.local_storage, &ring_pk)
+            .expect("pending lookup must not error")
+            .is_some(),
+        "pending entry must survive so a future startup can recheck once finalized"
+    );
+
+    cleanup_db(&db_path);
+}
+
 /// The bulletin does not reflect the staged finalized state (e.g. the reshare never
 /// completed, or resolved differently) — reconciliation must discard the staged
 /// bundle, preserve the old one, and still clear the pending entry.
