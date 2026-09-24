@@ -30,6 +30,8 @@ pub use bls12_381::common::{
 #[cfg(feature = "bls12-381")]
 pub use bls12_381::dkg::DKGNode as DkgImpl;
 #[cfg(feature = "bls12-381")]
+pub use bls12_381::pet::PetNode as PetImpl;
+#[cfg(feature = "bls12-381")]
 pub use bls12_381::pre::ThresholdDealerNode as PreImpl;
 #[cfg(feature = "bls12-381")]
 pub use bls12_381::sign::ThresholdBlsSigner as SignImpl;
@@ -45,6 +47,8 @@ pub use decaf377::common::{
 };
 #[cfg(feature = "decaf377")]
 pub use decaf377::dkg::DKGNode as DkgImpl;
+#[cfg(feature = "decaf377")]
+pub use decaf377::pet::PetNode as PetImpl;
 #[cfg(feature = "decaf377")]
 pub use decaf377::pre::ThresholdDealerNode as PreImpl;
 #[cfg(feature = "decaf377")]
@@ -67,6 +71,9 @@ pub mod test_helper;
 
 #[cfg(test)]
 mod dkg_tests;
+
+#[cfg(test)]
+mod pet_tests;
 
 #[cfg(test)]
 mod pre_tests;
