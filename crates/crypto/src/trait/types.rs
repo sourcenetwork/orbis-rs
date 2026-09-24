@@ -159,6 +159,22 @@ pub struct PetTag {
     pub masked_fingerprint: Vec<u8>,
 }
 
+impl TryFrom<String> for PetTag {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<PetTag> for String {
+    type Error = CryptoError;
+
+    fn try_from(tag: PetTag) -> Result<Self> {
+        serde_json::to_string(&tag).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
 /// Schnorr proof of knowledge of `r_tag` for `PetTag::ephemeral_point = r_tag*G`.
 ///
 /// Its Fiat-Shamir transcript binds both tag components, the authoritative PET
@@ -173,6 +189,22 @@ pub struct TagKnowledgeProof {
     pub challenge: Vec<u8>,
     /// Proof response `z = k + c*r_tag`, serialized.
     pub response: Vec<u8>,
+}
+
+impl TryFrom<String> for TagKnowledgeProof {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<TagKnowledgeProof> for String {
+    type Error = CryptoError;
+
+    fn try_from(proof: TagKnowledgeProof) -> Result<Self> {
+        serde_json::to_string(&proof).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
 }
 
 /// Re-encryption reply

@@ -332,6 +332,8 @@ impl DummyBulletin {
             &doc.permission,
             doc.tier.as_deref(),
             doc.timestamp,
+            doc.pet_tag.as_deref(),
+            doc.pet_tag_proof.as_deref(),
         )
         .map_err(|e| BulletinError::ParseError(e.to_string()))
     }

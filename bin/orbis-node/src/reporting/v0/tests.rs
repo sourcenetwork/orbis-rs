@@ -2532,6 +2532,8 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         permission: "test-permission".to_string(),
         tier: None,
         timestamp: None,
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     let object_id = network
         .dummy_bulletin

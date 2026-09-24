@@ -944,6 +944,8 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
             &permission,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("store PRE document");
@@ -1265,6 +1267,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
             &permission,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("store PRE document");
@@ -1373,6 +1377,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         &permission,
         None,
         None,
+        None,
+        None,
     )
     .expect("generate inline object_id");
 
@@ -1426,6 +1432,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         response: inline_proof.response,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     println!(

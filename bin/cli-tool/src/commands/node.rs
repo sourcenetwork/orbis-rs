@@ -154,6 +154,7 @@ pub async fn store_prepared_secret(
         with_proof,
         tier: ctx.tier.clone(),
         timestamp: ctx.timestamp,
+        pet_tag: None,
     };
 
     // Create JWT for authentication with all request fields
@@ -311,6 +312,7 @@ pub async fn do_pre(
             challenge: rdr_pk_proof.challenge,
             response: rdr_pk_proof.response,
         }),
+        audit_target_object_id: None,
     };
 
     // JWT work use determinitic key_pair for now

@@ -21,6 +21,83 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// PET ownership-tag ciphertext and its knowledge proof, carried alongside a
+// document only on a ring that requires PET. Not yet enforced: no PET ring
+// can exist yet, and this attachment is not included in authorization.
+// Presence is all-or-nothing — a caller cannot supply only some of these
+// fields; nodes reject a document whose attachment is only partially decoded.
+type PetTagAttachment struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// R = r_tag * G (compressed group point).
+	EphemeralPoint []byte `protobuf:"bytes,1,opt,name=ephemeral_point,json=ephemeralPoint,proto3" json:"ephemeral_point,omitempty"`
+	// T = F(owner_id) + r_tag * pet_pk (compressed group point).
+	MaskedFingerprint []byte `protobuf:"bytes,2,opt,name=masked_fingerprint,json=maskedFingerprint,proto3" json:"masked_fingerprint,omitempty"`
+	// Tag-knowledge-proof challenge (Schnorr PoK of r_tag).
+	KnowledgeProofChallenge []byte `protobuf:"bytes,3,opt,name=knowledge_proof_challenge,json=knowledgeProofChallenge,proto3" json:"knowledge_proof_challenge,omitempty"`
+	// Tag-knowledge-proof response.
+	KnowledgeProofResponse []byte `protobuf:"bytes,4,opt,name=knowledge_proof_response,json=knowledgeProofResponse,proto3" json:"knowledge_proof_response,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *PetTagAttachment) Reset() {
+	*x = PetTagAttachment{}
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PetTagAttachment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PetTagAttachment) ProtoMessage() {}
+
+func (x *PetTagAttachment) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PetTagAttachment.ProtoReflect.Descriptor instead.
+func (*PetTagAttachment) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *PetTagAttachment) GetEphemeralPoint() []byte {
+	if x != nil {
+		return x.EphemeralPoint
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetMaskedFingerprint() []byte {
+	if x != nil {
+		return x.MaskedFingerprint
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetKnowledgeProofChallenge() []byte {
+	if x != nil {
+		return x.KnowledgeProofChallenge
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetKnowledgeProofResponse() []byte {
+	if x != nil {
+		return x.KnowledgeProofResponse
+	}
+	return nil
+}
+
 type StoreSecretRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The ENCRYPTED document (serialized Secret struct from crypto crate)
@@ -45,14 +122,16 @@ type StoreSecretRequest struct {
 	// tier for the policy
 	Tier *string `protobuf:"bytes,10,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
 	// timestamp for the policy
-	Timestamp     *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	Timestamp *uint64 `protobuf:"varint,11,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	// PET tag, present only when the ring requires PET.
+	PetTag        *PetTagAttachment `protobuf:"bytes,12,opt,name=pet_tag,json=petTag,proto3,oneof" json:"pet_tag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StoreSecretRequest) Reset() {
 	*x = StoreSecretRequest{}
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[0]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -64,7 +143,7 @@ func (x *StoreSecretRequest) String() string {
 func (*StoreSecretRequest) ProtoMessage() {}
 
 func (x *StoreSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[0]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -77,7 +156,7 @@ func (x *StoreSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StoreSecretRequest.ProtoReflect.Descriptor instead.
 func (*StoreSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{0}
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *StoreSecretRequest) GetEncryptedDocument() []byte {
@@ -157,6 +236,13 @@ func (x *StoreSecretRequest) GetTimestamp() uint64 {
 	return 0
 }
 
+func (x *StoreSecretRequest) GetPetTag() *PetTagAttachment {
+	if x != nil {
+		return x.PetTag
+	}
+	return nil
+}
+
 type StoreSecretResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Status    string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -174,7 +260,7 @@ type StoreSecretResponse struct {
 
 func (x *StoreSecretResponse) Reset() {
 	*x = StoreSecretResponse{}
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -186,7 +272,7 @@ func (x *StoreSecretResponse) String() string {
 func (*StoreSecretResponse) ProtoMessage() {}
 
 func (x *StoreSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -199,7 +285,7 @@ func (x *StoreSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StoreSecretResponse.ProtoReflect.Descriptor instead.
 func (*StoreSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{1}
+	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StoreSecretResponse) GetStatus() string {
@@ -248,7 +334,12 @@ var File_orbis_v0_store_secret_store_secret_service_proto protoreflect.FileDescr
 
 const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"\n" +
-	"0orbis/v0/store_secret/store_secret_service.proto\x12\x15orbis.v0.store_secret\"\xfa\x02\n" +
+	"0orbis/v0/store_secret/store_secret_service.proto\x12\x15orbis.v0.store_secret\"\xe0\x01\n" +
+	"\x10PetTagAttachment\x12'\n" +
+	"\x0fephemeral_point\x18\x01 \x01(\fR\x0eephemeralPoint\x12-\n" +
+	"\x12masked_fingerprint\x18\x02 \x01(\fR\x11maskedFingerprint\x12:\n" +
+	"\x19knowledge_proof_challenge\x18\x03 \x01(\fR\x17knowledgeProofChallenge\x128\n" +
+	"\x18knowledge_proof_response\x18\x04 \x01(\fR\x16knowledgeProofResponse\"\xcd\x03\n" +
 	"\x12StoreSecretRequest\x12-\n" +
 	"\x12encrypted_document\x18\x01 \x01(\fR\x11encryptedDocument\x12\x17\n" +
 	"\aenc_cmt\x18\x02 \x01(\fR\x06encCmt\x12\x17\n" +
@@ -264,10 +355,13 @@ const file_orbis_v0_store_secret_store_secret_service_proto_rawDesc = "" +
 	"with_proof\x18\t \x01(\bR\twithProof\x12\x17\n" +
 	"\x04tier\x18\n" +
 	" \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
-	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
+	"\ttimestamp\x18\v \x01(\x04H\x01R\ttimestamp\x88\x01\x01\x12E\n" +
+	"\apet_tag\x18\f \x01(\v2'.orbis.v0.store_secret.PetTagAttachmentH\x02R\x06petTag\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
-	"_timestamp\"\xba\x01\n" +
+	"_timestampB\n" +
+	"\n" +
+	"\b_pet_tag\"\xba\x01\n" +
 	"\x13StoreSecretResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -292,19 +386,21 @@ func file_orbis_v0_store_secret_store_secret_service_proto_rawDescGZIP() []byte 
 	return file_orbis_v0_store_secret_store_secret_service_proto_rawDescData
 }
 
-var file_orbis_v0_store_secret_store_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_orbis_v0_store_secret_store_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_orbis_v0_store_secret_store_secret_service_proto_goTypes = []any{
-	(*StoreSecretRequest)(nil),  // 0: orbis.v0.store_secret.StoreSecretRequest
-	(*StoreSecretResponse)(nil), // 1: orbis.v0.store_secret.StoreSecretResponse
+	(*PetTagAttachment)(nil),    // 0: orbis.v0.store_secret.PetTagAttachment
+	(*StoreSecretRequest)(nil),  // 1: orbis.v0.store_secret.StoreSecretRequest
+	(*StoreSecretResponse)(nil), // 2: orbis.v0.store_secret.StoreSecretResponse
 }
 var file_orbis_v0_store_secret_store_secret_service_proto_depIdxs = []int32{
-	0, // 0: orbis.v0.store_secret.StoreSecretService.StoreSecret:input_type -> orbis.v0.store_secret.StoreSecretRequest
-	1, // 1: orbis.v0.store_secret.StoreSecretService.StoreSecret:output_type -> orbis.v0.store_secret.StoreSecretResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	0, // 0: orbis.v0.store_secret.StoreSecretRequest.pet_tag:type_name -> orbis.v0.store_secret.PetTagAttachment
+	1, // 1: orbis.v0.store_secret.StoreSecretService.StoreSecret:input_type -> orbis.v0.store_secret.StoreSecretRequest
+	2, // 2: orbis.v0.store_secret.StoreSecretService.StoreSecret:output_type -> orbis.v0.store_secret.StoreSecretResponse
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_store_secret_store_secret_service_proto_init() }
@@ -312,14 +408,14 @@ func file_orbis_v0_store_secret_store_secret_service_proto_init() {
 	if File_orbis_v0_store_secret_store_secret_service_proto != nil {
 		return
 	}
-	file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[0].OneofWrappers = []any{}
+	file_orbis_v0_store_secret_store_secret_service_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_store_secret_store_secret_service_proto_rawDesc), len(file_orbis_v0_store_secret_store_secret_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

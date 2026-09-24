@@ -71,6 +71,8 @@ async fn setup_document_in_bulletin(
         permission: "test-permission".to_string(),
         tier: None,
         timestamp: None,
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     let document_payload_bytes: Vec<u8> = document_payload
         .try_into()
@@ -488,6 +490,8 @@ async fn test_pre_with_inline_document_end_to_end() {
         permission: "test-permission".to_string(),
         tier: None,
         timestamp: None,
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     let object_id = common::blockchain::orbis::generate_document_id(
         &document.ring_id,
@@ -498,6 +502,8 @@ async fn test_pre_with_inline_document_end_to_end() {
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
+        document.pet_tag.as_deref(),
+        document.pet_tag_proof.as_deref(),
     )
     .expect("generate object_id");
     let document_evidence = ReportedDocumentEvidence {
@@ -1218,6 +1224,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         valid_window: None,
         document: None,
         rdr_pk_proof: None,
+        audit_target_object_id: None,
     };
 
     // Create request WITHOUT authentication header
@@ -1261,6 +1268,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         valid_window: None,
         document: None,
         rdr_pk_proof: None,
+        audit_target_object_id: None,
     };
 
     // Create request with malformed JWT (not a valid JWT structure)
@@ -1320,6 +1328,7 @@ async fn test_start_pre_fails_wrong_signature() {
         valid_window: None,
         document: None,
         rdr_pk_proof: None,
+        audit_target_object_id: None,
     };
 
     let tonic_request = create_authenticated_request(request, &tampered_token).unwrap();
@@ -1370,6 +1379,7 @@ async fn test_start_pre_does_not_record_jti_before_authorization() {
         valid_window: None,
         document: None,
         rdr_pk_proof: None,
+        audit_target_object_id: None,
     };
 
     // First call: JWT and claims are valid, but the flow fails before
@@ -1894,6 +1904,8 @@ async fn test_check_policy_access_enforces_authz_denial() {
         permission: "read".to_string(),
         tier: None,
         timestamp: None,
+        pet_tag: None,
+        pet_tag_proof: None,
     };
 
     let result =

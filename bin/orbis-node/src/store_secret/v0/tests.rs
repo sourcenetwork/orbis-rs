@@ -103,6 +103,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     }
 }
 
@@ -322,6 +323,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -504,6 +506,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     // Snapshot post count before any store_secret call. The bulletin already holds
@@ -545,6 +548,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();

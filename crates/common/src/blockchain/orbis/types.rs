@@ -109,6 +109,15 @@ pub struct Document {
     pub tier: Option<String>,
     #[prost(uint64, optional, tag = "10")]
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only when the ring requires PET. JSON of
+    /// `{ephemeral_point, masked_fingerprint}`. Present and absent together
+    /// with `pet_tag_proof`.
+    #[prost(string, optional, tag = "11")]
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of `{challenge, response}`.
+    #[prost(string, optional, tag = "12")]
+    pub pet_tag_proof: Option<String>,
 }
 
 /// Key derivation state stored in x/orbis.
@@ -504,6 +513,15 @@ pub struct MsgStoreDocument {
     pub tier: Option<String>,
     #[prost(uint64, optional, tag = "9")]
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only when the ring requires PET. JSON of
+    /// `{ephemeral_point, masked_fingerprint}`. Present and absent together
+    /// with `pet_tag_proof`.
+    #[prost(string, optional, tag = "10")]
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of `{challenge, response}`.
+    #[prost(string, optional, tag = "11")]
+    pub pet_tag_proof: Option<String>,
 }
 
 impl MsgStoreDocument {

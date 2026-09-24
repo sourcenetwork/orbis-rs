@@ -33,6 +33,8 @@ fn generate_document_id_is_canonical_and_matches_vera() {
             "read",
             Some("gold"),
             Some(1_700_000_000),
+            None,
+            None,
         )
     };
 
@@ -101,6 +103,80 @@ fn generate_document_id_is_canonical_and_matches_vera() {
     assert!(
         id(D1, &format!("{P}  trailing")).is_err(),
         "trailing data after the JSON object"
+    );
+}
+
+/// The PET tag attachment must be present or absent *together*, must change
+/// the id when present, and — critically — must leave an ordinary (non-PET)
+/// document's id byte-identical to before the attachment existed, since Vera
+/// and every existing document computed their id without it.
+#[test]
+fn generate_document_id_pet_attachment_presence_and_binding() {
+    const D1: &str =
+        r#"{"enc_cmt":[1,2,3],"encrypted_data":[4,5,6],"nonce":[0,0,0,0,0,0,0,0,0,0,0,0]}"#;
+    const P: &str = r#"{"challenge":[7,8],"response":[9,10]}"#;
+    const TAG: &str = r#"{"ephemeral_point":[1,1],"masked_fingerprint":[2,2]}"#;
+    const TAG_PROOF: &str = r#"{"challenge":[3,3],"response":[4,4]}"#;
+
+    let id = |pet_tag: Option<&str>, pet_tag_proof: Option<&str>| {
+        generate_document_id(
+            "ring-1",
+            D1,
+            P,
+            "policy-b",
+            "document",
+            "read",
+            Some("gold"),
+            Some(1_700_000_000),
+            pet_tag,
+            pet_tag_proof,
+        )
+    };
+
+    let without_pet = id(None, None).unwrap();
+    // Must reproduce the exact id from the vector above — a document with no
+    // PET attachment must hash identically to one that never had the field.
+    assert_eq!(
+        without_pet,
+        "e555cfcb145edf3d4cd8acbae93e05dc3a48eb0162b3af90f42064ab837c9a06"
+    );
+
+    let with_pet = id(Some(TAG), Some(TAG_PROOF)).unwrap();
+    assert_ne!(
+        without_pet, with_pet,
+        "a present PET attachment must change the id"
+    );
+
+    // Presence must be all-or-nothing.
+    assert!(id(Some(TAG), None).is_err(), "tag without its proof");
+    assert!(id(None, Some(TAG_PROOF)).is_err(), "proof without its tag");
+
+    // Malformed PET JSON must be rejected the same way document/proof are.
+    assert!(id(Some("not json"), Some(TAG_PROOF)).is_err());
+    assert!(id(Some(TAG), Some("not json")).is_err());
+    assert!(
+        id(
+            Some(r#"{"ephemeral_point":[1,1],"masked_fingerprint":[2,2],"extra":1}"#),
+            Some(TAG_PROOF)
+        )
+        .is_err(),
+        "unknown field in pet_tag"
+    );
+
+    // Every field of the attachment participates in the binding.
+    let other_tag = id(
+        Some(r#"{"ephemeral_point":[9,9],"masked_fingerprint":[2,2]}"#),
+        Some(TAG_PROOF),
+    )
+    .unwrap();
+    assert_ne!(
+        with_pet, other_tag,
+        "changing ephemeral_point must change the id"
+    );
+    let other_proof = id(Some(TAG), Some(r#"{"challenge":[9,9],"response":[4,4]}"#)).unwrap();
+    assert_ne!(
+        with_pet, other_proof,
+        "changing the tag knowledge proof must change the id"
     );
 }
 

@@ -42,6 +42,21 @@ pub(crate) fn document_payload_from_inline(
         PreError::Serialization(format!("Failed to serialize proof: {}", e))
     })?;
 
+    let (pet_tag, pet_tag_proof) = match inline.pet_tag {
+        Some(attachment) => {
+            let (pet_tag, pet_tag_proof) =
+                crate::helpers::pet_tag::pet_tag_attachment_to_document_fields(
+                    attachment.ephemeral_point,
+                    attachment.masked_fingerprint,
+                    attachment.knowledge_proof_challenge,
+                    attachment.knowledge_proof_response,
+                )
+                .map_err(PreError::InvalidInput)?;
+            (Some(pet_tag), Some(pet_tag_proof))
+        }
+        None => (None, None),
+    };
+
     Ok(bulletin::r#trait::DocumentPayload {
         ring_id: inline.ring_id,
         document,
@@ -51,6 +66,8 @@ pub(crate) fn document_payload_from_inline(
         permission: inline.permission,
         tier: inline.tier,
         timestamp: inline.timestamp,
+        pet_tag,
+        pet_tag_proof,
     })
 }
 

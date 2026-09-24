@@ -50,6 +50,8 @@ fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Res
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
+        document.pet_tag.as_deref(),
+        document.pet_tag_proof.as_deref(),
     )
     .map_err(|e| PreError::InvalidInput(format!("malformed document: {e}")))?;
 
@@ -278,6 +280,8 @@ mod tests {
             permission: "read".to_string(),
             tier: Some("gold".to_string()),
             timestamp: Some(1_700_000_000),
+            pet_tag: None,
+            pet_tag_proof: None,
         }
     }
 
@@ -291,6 +295,8 @@ mod tests {
             &document.permission,
             document.tier.as_deref(),
             document.timestamp,
+            document.pet_tag.as_deref(),
+            document.pet_tag_proof.as_deref(),
         )
         .expect("well-formed test document")
     }
@@ -339,6 +345,14 @@ mod tests {
                 "timestamp",
                 Box::new(|d: &mut DocumentPayload| d.timestamp = Some(1)),
             ),
+            (
+                "pet_tag+pet_tag_proof",
+                Box::new(|d: &mut DocumentPayload| {
+                    d.pet_tag =
+                        Some(r#"{"ephemeral_point":[1],"masked_fingerprint":[2]}"#.to_string());
+                    d.pet_tag_proof = Some(r#"{"challenge":[3],"response":[4]}"#.to_string());
+                }),
+            ),
         ];
 
         for (field, mutate) in mutations {
@@ -372,6 +386,8 @@ mod tests {
             permission: "read".to_string(),
             tier: Some("gold".to_string()),
             timestamp: Some(1_700_000_000),
+            pet_tag: None,
+            pet_tag_proof: None,
         };
         // document_c is itself internally valid for its own object_id...
         assert!(check_document_id_binding(&object_id_for(&document_c), &document_c).is_ok());

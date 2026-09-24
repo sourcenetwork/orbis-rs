@@ -329,6 +329,8 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             permission: permission.clone(),
             tier: tier.clone(),
             timestamp,
+            pet_tag: None,
+            pet_tag_proof: None,
         };
         let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
         cli_tool::create_bulletin_post_with_config(

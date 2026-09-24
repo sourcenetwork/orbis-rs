@@ -149,6 +149,16 @@ pub struct DocumentPayload {
     pub tier: Option<String>,
     /// Optional timestamp for acp check
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only on a ring that requires PET. JSON of
+    /// the crypto crate's `PetTag` (`ephemeral_point`, `masked_fingerprint`).
+    /// Present and absent together with `pet_tag_proof` — a tag without its
+    /// knowledge proof (or vice versa) is malformed. Not yet enforced: no PET
+    /// ring can exist yet, and this field is not included in authorization.
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of the crypto crate's `TagKnowledgeProof` (`challenge`,
+    /// `response`).
+    pub pet_tag_proof: Option<String>,
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]

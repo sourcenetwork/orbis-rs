@@ -83,6 +83,7 @@ impl VeraClient {
         Ok((result, ring_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_store_document(
         &self,
         ring_id: &str,
@@ -93,6 +94,8 @@ impl VeraClient {
         permission: &str,
         tier: Option<String>,
         timestamp: Option<u64>,
+        pet_tag: Option<String>,
+        pet_tag_proof: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
         let msg = MsgStoreDocument {
@@ -105,6 +108,8 @@ impl VeraClient {
             permission: permission.to_string(),
             tier,
             timestamp,
+            pet_tag,
+            pet_tag_proof,
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreDocument::TYPE_URL,
@@ -115,6 +120,7 @@ impl VeraClient {
     }
 
     /// Store a document and return the chain-assigned document_id alongside the broadcast result.
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_store_document_get_id(
         &self,
         ring_id: &str,
@@ -125,10 +131,21 @@ impl VeraClient {
         permission: &str,
         tier: Option<String>,
         timestamp: Option<u64>,
+        pet_tag: Option<String>,
+        pet_tag_proof: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_store_document(
-                ring_id, document, proof, policy_id, resource, permission, tier, timestamp,
+                ring_id,
+                document,
+                proof,
+                policy_id,
+                resource,
+                permission,
+                tier,
+                timestamp,
+                pet_tag,
+                pet_tag_proof,
             )
             .await?;
 
