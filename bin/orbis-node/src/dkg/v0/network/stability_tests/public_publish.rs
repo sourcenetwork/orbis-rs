@@ -1,3 +1,4 @@
+use crate::dkg::v0::session_state::TransportLifecycle;
 #[allow(unused_imports)]
 use {super::super::*, super::support::*};
 
@@ -53,9 +54,18 @@ async fn complete_phase_is_marked_published_only_after_retry_succeeds() {
             .get_mut(&ceremony_id.0)
             .expect("publication test session")
             .transport;
-        transport.topic = Some(topic.clone());
-        transport.hard_deadline =
-            Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        match &mut transport.lifecycle {
+            TransportLifecycle::Configured { transport, .. }
+            | TransportLifecycle::Activated { transport, .. }
+            | TransportLifecycle::Begun { transport, .. } => {
+                transport.topic = topic.clone();
+                transport.hard_deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(60);
+            }
+            TransportLifecycle::Unset | TransportLifecycle::Reserved { .. } => {
+                panic!("test session must already be configured")
+            }
+        }
         transport.public_contributions.insert(
             PublicPhase::Commitments,
             (1..=3)

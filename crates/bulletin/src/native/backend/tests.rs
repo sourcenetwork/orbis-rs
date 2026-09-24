@@ -109,3 +109,32 @@ async fn completion_retries_failed_submission_without_replacing_pending_request(
     assert_eq!(writer.pending_id().unwrap(), Some(id));
     assert_eq!(writer.worker.pending().unwrap(), wire);
 }
+
+#[test]
+fn native_report_session_retention_checks_expiry_and_record_integrity() {
+    assert!(!report_session_is_current(None, 10).unwrap());
+    let mut record = 10_u64.to_be_bytes().to_vec();
+    record.extend_from_slice("ab".repeat(32).as_bytes());
+    assert!(report_session_is_current(Some(&record), 10).unwrap());
+    assert!(!report_session_is_current(Some(&record), 11).unwrap());
+    assert!(report_session_is_current(Some(&record[..71]), 10).is_err());
+    record[8] = b'X';
+    assert!(report_session_is_current(Some(&record), 10).is_err());
+}
+
+#[test]
+fn native_report_session_key_matches_v1_wire_fixture() {
+    let key = unauthorized_report_session_key(
+        "vera-9001",
+        &"ab".repeat(32),
+        "pre",
+        "accused",
+        "request-1",
+    )
+    .unwrap();
+    assert_eq!(String::from_utf8(key).unwrap(), "orbis/reports/v1/abababababababababababababababababababababababababababababababab/session/a78a03bb7ad825dcab71cad43ee60814b1072afcd1c1ad2ba6f46a83e02492e0");
+    assert!(
+        unauthorized_report_session_key("vera-9001", "invalid", "pre", "accused", "request-1")
+            .is_err()
+    );
+}

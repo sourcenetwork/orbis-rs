@@ -346,17 +346,123 @@ pub const NETWORK_IDLE_TIMEOUT_MS: u32 = 5 * 60 * 1_000;
 /// QUIC keep-alive interval for active peer connections.
 pub const NETWORK_KEEP_ALIVE_INTERVAL_MS: u64 = 10_000;
 
-/// Maximum concurrently executing inbound P2P application work items.
+/// Maximum concurrently executing inbound-request P2P application work items.
 ///
-/// Direct QUIC streams and authenticated Gossip frames share this node-wide
-/// budget. Excess work is dropped before protocol deserialization.
+/// Charged once per decoded request frame (a direct request message or an
+/// authenticated Gossip frame) and released when the application finishes with
+/// it. Direct request streams and Gossip frames share this node-wide budget.
+/// Excess work is dropped before protocol deserialization.
 pub const NETWORK_MAX_CONCURRENT_INGRESS_WORK: usize = 1024;
 
-/// Maximum inbound P2P work items accepted from one immediate peer per second.
+/// Maximum concurrently executing reply-frame P2P work items — replies read on
+/// client-opened streams.
 ///
-/// Direct streams and Gossip frames count against the same peer budget. DKG,
-/// PRE, and Sign traffic should stay well below this in normal operation.
+/// A separate budget from `NETWORK_MAX_CONCURRENT_INGRESS_WORK` so a request
+/// handler that fans out sub-requests and awaits their replies cannot deadlock
+/// by holding the only capacity those replies need.
+pub const NETWORK_MAX_CONCURRENT_REPLY_INGRESS_WORK: usize = 1024;
+
+/// Maximum inbound P2P frames accepted from one immediate peer per second.
+///
+/// Charged per decoded frame, so a single long-lived stream cannot pump
+/// unlimited messages without spending this budget. Direct streams and Gossip
+/// frames count against the same peer budget. DKG, PRE, and Sign traffic should
+/// stay well below this in normal operation.
 pub const NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND: usize = 512;
+
+/// Maximum accepted-but-not-yet-closed inbound P2P QUIC connections node-wide.
+///
+/// A connection counts for its whole lifetime, so this bounds remote identities
+/// that keep connections open (refreshed by QUIC transport traffic) without ever
+/// opening an application stream — a case the 5-minute idle timeout does not
+/// catch. Committee-scale traffic uses a handful of connections per peer (one
+/// per ALPN, pooled), so 2048 is generous headroom.
+pub const NETWORK_MAX_CONCURRENT_CONNECTIONS: usize = 2048;
+
+/// Maximum concurrent inbound P2P QUIC connections from one immediate peer (one
+/// Iroh endpoint key), across every ALPN including Gossip.
+pub const NETWORK_MAX_CONNECTIONS_PER_PEER: usize = 32;
+
+/// Percent of every shared inbound budget — concurrent connections, concurrent
+/// streams, request-frame work permits, request-frame body bytes — held back for
+/// peers the authorized-peer oracle vouches for (current / pending committee
+/// members).
+///
+/// Unauthorized identities — cheap self-issued endpoint keys not yet registered
+/// as nodes — are capped at `budget - budget * percent / 100` in each pool.
+/// Legitimate P2P traffic is committee-to-committee (clients use gRPC, not this
+/// layer), so the "unauthorized" pool is really scratch space for unauthenticated
+/// internet noise: 90% leaves it only ~205 connections / ~410 streams / ~19 MiB
+/// request-body — enough for a peer mid-onboarding or a brief oracle-refresh lag,
+/// nowhere near enough for a Sybil flood to touch the committee's capacity.
+pub const NETWORK_AUTHORIZED_RESERVE_PERCENT: usize = 90;
+
+/// How often the authorized-peer set is rebuilt from the local ring index and
+/// the bulletin. A peer newly added by an in-flight reshare is briefly outside
+/// the set (competes in the shared pool) until the next rebuild; that window is
+/// self-correcting and the ceremony coordinator retries regardless.
+pub const AUTHORIZED_PEER_REFRESH_INTERVAL: Duration = Duration::from_secs(90);
+
+/// Maximum accepted-but-not-yet-closed inbound P2P direct streams node-wide.
+///
+/// A stream counts from `accept_bi()` until its handler task ends;
+/// `NETWORK_STREAM_READ_TIMEOUT_MS` bounds how long a stalled or slow-loris
+/// stream can hold a slot. Sized well above `NETWORK_MAX_CONCURRENT_INGRESS_WORK`
+/// so healthy pipelining is never stream-capped — it exists to bound memory and
+/// file descriptors under a flood.
+pub const NETWORK_MAX_CONCURRENT_STREAMS: usize = 4096;
+
+/// Maximum concurrent inbound P2P direct streams from one immediate peer (one
+/// Iroh endpoint key).
+///
+/// Stops a single unauthenticated endpoint identity from occupying a large share
+/// of the node-wide stream budget while committee authorization is still
+/// pending. Legitimate DKG, PRE, and Sign peers open a handful of concurrent
+/// streams at most.
+pub const NETWORK_MAX_STREAMS_PER_PEER: usize = 32;
+
+/// Node-wide byte budget for inbound-*request* P2P frame bodies received and not
+/// yet processed.
+///
+/// Reserved after the length prefix is parsed but before the buffer is
+/// allocated, so a flood of large frames cannot commit gigabytes of buffers
+/// ahead of `NETWORK_MAX_CONCURRENT_INGRESS_WORK`. Must be at least the largest
+/// route `max_message_size` (1 MiB). Together with
+/// `NETWORK_MAX_INBOUND_REPLY_BODY_BYTES` this is the ~256 MiB total receive-
+/// buffer ceiling, split so a stalled-request backlog cannot starve replies.
+pub const NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES: usize = 192 * 1024 * 1024;
+
+/// Node-wide byte budget for reply P2P frame bodies (read on client-opened
+/// streams). A separate pool from `NETWORK_MAX_INBOUND_REQUEST_BODY_BYTES` so an
+/// MPC reply always has buffer even when inbound requests have filled theirs.
+pub const NETWORK_MAX_INBOUND_REPLY_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Deadline for reading one complete length-prefixed frame from a P2P stream.
+///
+/// Bounds how long a partial length prefix or a slow/partial body can pin an
+/// ingress work permit. Set above every application-level response timeout
+/// (`PEER_RESPONSE_TIMEOUT` and friends) so it only ever fires on a genuinely
+/// stalled stream, never pre-empting a slower legitimate exchange. Operator
+/// default for `--network-stream-read-timeout-ms`.
+pub const NETWORK_STREAM_READ_TIMEOUT_MS: u64 = 30_000;
+
+/// Maximum size of a single encoded point-to-point protocol frame (`iroh`
+/// `max_message_size`), enforced on both `send` and `recv`.
+///
+/// The PRE/Sign wire codec ([`crate::helpers::wire`], MessagePack) keeps
+/// `Vec<u8>` fields 1:1, so a maximal request is the [`MAX_SIGN_MESSAGE_BYTES`]
+/// signed message (1 MiB) plus the FROST commitment list, the auth context, and
+/// a JWT — comfortably under this 2 MiB ceiling. Kept well below both receive-
+/// byte pools above. (Before the MessagePack switch, JSON inflated a 1 MiB
+/// message to 2-4 MiB and every such request failed at the peer boundary
+/// despite being accepted by the gRPC API.)
+pub const NETWORK_MAX_MESSAGE_SIZE: usize = 2 * 1024 * 1024;
+/// Floor accepted for `--network-stream-read-timeout-ms`. The per-read deadline
+/// must stay above every application-level response timeout
+/// (`PEER_RESPONSE_TIMEOUT` and friends) or it pre-empts a slow-but-healthy
+/// exchange instead of only catching a stalled stream; this is
+/// `2 x PEER_RESPONSE_TIMEOUT`. A lower value is rejected at startup.
+pub const MIN_NETWORK_STREAM_READ_TIMEOUT_MS: u64 = PEER_RESPONSE_TIMEOUT.as_secs() * 2 * 1_000;
 
 /// Maximum in-flight gRPC requests per client connection.
 pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
@@ -507,6 +613,14 @@ pub const PSS_GRACE_PERIOD_SECS: u64 = 10;
 /// INFO/WARN when the observed set of `(ring, version)` pairs changes.
 pub const PROTOCOL_DIVERGENCE_CHECK_INTERVAL_SECS: u64 = 15 * 60;
 
+/// Maximum number of rings whose PSS check runs concurrently per scheduler
+/// tick. A ring's check can become full ceremony coordination (up to
+/// `DKG_PREPARATION_TIMEOUT` waiting on the committee's activation barrier),
+/// so this bounds the fan-out for a node that happens to be a member of many
+/// simultaneously-due rings, rather than either serializing behind them one
+/// at a time or coordinating unboundedly many ceremonies at once.
+pub const PSS_RING_CONCURRENCY_LIMIT: usize = 8;
+
 /// Maximum number of attempts to collect threshold signatures at the end of a reshare.
 pub const RESHARE_SIGNATURE_MAX_ATTEMPTS: usize = 6;
 
@@ -537,6 +651,14 @@ pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs
 /// session (and its `reshare_signature_ready` marker) is otherwise aged out
 /// by independently.
 pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
+
+/// How long a retired ring polynomial stays available for invalid-crypto report
+/// verification (`ring_state::RingPolyHistory`) after a PSS ceremony replaces it.
+/// Must cover `reporting::v0::types::REPORT_TTL_SECS` (120s) — kept as an
+/// independent constant with margin, rather than importing across the module
+/// boundary, since this file is lower-level than `reporting/`; if
+/// `REPORT_TTL_SECS` ever grows, this must grow with it.
+pub const RING_POLY_HISTORY_RETENTION_SECS: u64 = 180;
 
 // ============================================================================
 // Nonce Serialization Constants (FROST)

@@ -1,6 +1,7 @@
 use super::PreCoordinator;
 use crate::constants::PEER_RESPONSE_TIMEOUT;
 use crate::helpers::response_manager::ResponseStoreOutcome;
+use crate::helpers::wire;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::messages::PreMessage;
 use crypto::r#trait::{DistKeyShare, Dkg, ReencryptReply, Secret, ThresholdDealer};
@@ -69,7 +70,7 @@ where
                 ))
             })?;
 
-        let message_data = serde_json::to_vec(&message)
+        let message_data = wire::encode(&message)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize message: {}", e)))?;
 
         stream
@@ -93,7 +94,7 @@ where
         })?;
 
         // Deserialize response
-        let response: PreMessage = serde_json::from_slice(&response_msg.data).map_err(|e| {
+        let response: PreMessage = wire::decode(&response_msg.data).map_err(|e| {
             PreError::Deserialization(format!("Failed to deserialize response: {}", e))
         })?;
 

@@ -121,6 +121,29 @@ struct SignResponseDrainArgs<D: Dkg, S: ThresholdSigner> {
     seen_node_ids: HashSet<u32>,
 }
 
+/// Which polynomial/share generation to sign against, resolved once up front —
+/// may be a staged refresh/reshare generation rather than the on-disk one (see
+/// the TOCTOU comment in `resolve_signing_material`) — plus the key-derivation
+/// inputs for policy-derived signing.
+struct SigningMaterial<D: Dkg> {
+    pub_poly: D::PubPoly,
+    local_dist_key_share: Option<DistKeyShare<Fr>>,
+    derivation: Option<Vec<u8>>,
+    metadata: Option<Vec<u8>>,
+}
+
+/// FROST nonce-commitment round output (empty passthrough for non-interactive
+/// schemes — gated by `S::INTERACTIVE`). Bundles what Round 2 needs: which
+/// signers were selected, the serialized commitments FROST binds shares to,
+/// and the fault-report context base for this request.
+struct CommitmentRound<S: ThresholdSigner> {
+    signing_commitments: Vec<(u32, S::NonceCommitment)>,
+    local_signing_state: Option<S::SigningState>,
+    all_commitments_bytes: Vec<u8>,
+    should_attempt_local_share: bool,
+    sign_report_context_base: Option<SignResponseReportContextBase>,
+}
+
 impl<D, S> SignCoordinator<D, S>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -598,6 +621,11 @@ where
     ///
     /// This is separated so that cleanup can be guaranteed by the outer function.
     /// Assumes init_response has already been called.
+    ///
+    /// The pipeline is a sequence of named stages: resolve key material for the
+    /// right PSS generation, run the FROST nonce round (if interactive), collect
+    /// signature shares (local + network), then recover and verify the final
+    /// signature.
     pub(crate) async fn initiate_signing_inner(
         &self,
         request_id: String,
@@ -609,26 +637,96 @@ where
         context: SignContext,
         options: SigningOptions,
     ) -> Result<Vec<u8>> {
-        // 1. Load the public polynomial and (when self_in_list) the local dist_key_share
-        //    from a SINGLE atomic read of RingShareBundle — same TOCTOU fix as PRE.
-        //
-        //    Without this there are two races:
-        //    • BLS: service reads polynomial (P_old), PSS fires, signing round reads
-        //      share (S_new).  self-share verified against P_old fails → dropped →
-        //      InsufficientShares when we were one share short of threshold.
-        //    • FROST: collect_nonces reads share (S_old) to generate nonce, PSS fires,
-        //      signing round reads share (S_new).  Nonce bound to S_old, signing with
-        //      S_new → wrong sig share → verify_share rejects it → same InsufficientShares.
-        //
-        //    Loading from the same bundle snapshot eliminates both races: pub_poly,
-        //    nonce generation, and signing all use the same PSS generation.
-        let (pub_poly, local_dist_key_share) = if let SignContext::RefreshHealthCheck(ctx) =
-            &context
+        let material = self
+            .resolve_signing_material(&ring, &context, &message, self_in_list, actual_peer_count)
+            .await?;
+
+        let commitment_round = self
+            .collect_signing_commitments(
+                &request_id,
+                &ring,
+                node_id,
+                self_in_list,
+                &context,
+                material.local_dist_key_share.as_ref(),
+                &options,
+                &message,
+                material.derivation.as_deref(),
+                material.metadata.as_deref(),
+            )
+            .await?;
+
+        let signer = S::new();
+        let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
+        let mut seen_node_ids: HashSet<u32> = HashSet::new();
+
+        if let Some(share) =
+            self.compute_local_signature_share(&signer, &material, &commitment_round, &message)
+        {
+            seen_node_ids.insert(share.i);
+            verified_shares.push(share);
+        }
+
+        let already_verified = verified_shares.len();
+        verified_shares.extend(
+            self.collect_network_signature_shares(
+                &signer,
+                &request_id,
+                &ring,
+                node_id,
+                &context,
+                &options,
+                &message,
+                &material,
+                &commitment_round,
+                &mut seen_node_ids,
+                already_verified,
+            )
+            .await?,
+        );
+
+        self.finalize_signature(
+            &signer,
+            verified_shares,
+            &ring,
+            &message,
+            &commitment_round.signing_commitments,
+            &material,
+            &request_id,
+        )
+        .await
+    }
+
+    /// Load the public polynomial and (when self_in_list) the local dist_key_share
+    /// from a SINGLE atomic read of RingShareBundle — same TOCTOU fix as PRE.
+    ///
+    /// Without this there are two races:
+    /// • BLS: service reads polynomial (P_old), PSS fires, signing round reads
+    ///   share (S_new).  self-share verified against P_old fails → dropped →
+    ///   InsufficientShares when we were one share short of threshold.
+    /// • FROST: collect_nonces reads share (S_old) to generate nonce, PSS fires,
+    ///   signing round reads share (S_new).  Nonce bound to S_old, signing with
+    ///   S_new → wrong sig share → verify_share rejects it → same InsufficientShares.
+    ///
+    /// Loading from the same bundle snapshot eliminates both races: pub_poly,
+    /// nonce generation, and signing all use the same PSS generation.
+    ///
+    /// Also resolves the key-derivation inputs (for `SignContext::Policy`) and
+    /// validates threshold feasibility before any network round-trip.
+    async fn resolve_signing_material(
+        &self,
+        ring: &RingConfig,
+        context: &SignContext,
+        message: &[u8],
+        self_in_list: bool,
+        actual_peer_count: usize,
+    ) -> Result<SigningMaterial<D>> {
+        let (pub_poly, local_dist_key_share) = if let SignContext::RefreshHealthCheck(ctx) = context
         {
             let (_, bundle) = validate_refresh_health_check_statement(
                 &self.app_state.dkg_session_state,
                 &ctx.statement,
-                Some(&message),
+                Some(message),
             )
             .await?;
             let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
@@ -651,7 +749,7 @@ where
                 None
             };
             (pub_poly, dks)
-        } else if let SignContext::RingReshareUpdate(ctx) = &context {
+        } else if let SignContext::RingReshareUpdate(ctx) = context {
             // Node 1 signs its own RingReshareUpdate co-signature via this local
             // path (never through handle_nonce_request/handle_sign_request), so
             // it needs the exact same staged-vs-promoted resolution those remote
@@ -663,7 +761,7 @@ where
                 &*self.app_state.bulletin,
                 &self.app_state.dkg_session_state,
                 &ctx.statement,
-                Some(&message),
+                Some(message),
                 false,
             )
             .await?;
@@ -693,7 +791,7 @@ where
                 None => {
                     let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
                         &self.app_state.local_storage,
-                        &ring,
+                        ring,
                         self_in_list,
                     )
                     .map_err(SignError::Deserialization)?;
@@ -709,7 +807,7 @@ where
         } else {
             let (poly, bundle) = load_ring_pub_poly_and_bundle::<D>(
                 &self.app_state.local_storage,
-                &ring,
+                ring,
                 self_in_list,
             )
             .map_err(SignError::Deserialization)?;
@@ -741,7 +839,7 @@ where
         // verification, AND final signature verification. Without this, an external
         // requester (self_in_list=false) would verify shares against the root key
         // instead of the derived key.
-        let (derivation, metadata) = match &context {
+        let (derivation, metadata) = match context {
             SignContext::Bulletin { .. } => (None, None),
             SignContext::Policy(ctx) => {
                 let key_derivation = &ctx.key_derivation;
@@ -758,18 +856,40 @@ where
             SignContext::Report(_) => (None, None),
         };
 
-        // =====================================================================
-        // ROUND 1 (FROST only): Collect nonce commitments
-        // =====================================================================
+        Ok(SigningMaterial {
+            pub_poly,
+            local_dist_key_share,
+            derivation,
+            metadata,
+        })
+    }
+
+    /// ROUND 1 (FROST only): collect nonce commitments, select the signing set,
+    /// and serialize the commitments used to bind both FROST signing and the
+    /// eventual recovery step to the same participant list.
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_signing_commitments(
+        &self,
+        request_id: &str,
+        ring: &RingConfig,
+        node_id: u32,
+        self_in_list: bool,
+        context: &SignContext,
+        local_dist_key_share: Option<&DistKeyShare<Fr>>,
+        options: &SigningOptions,
+        message: &[u8],
+        derivation: Option<&[u8]>,
+        metadata: Option<&[u8]>,
+    ) -> Result<CommitmentRound<S>> {
         let (all_commitments, local_signing_state) = if S::INTERACTIVE {
             self.collect_nonces(
-                &request_id,
-                &ring,
+                request_id,
+                ring,
                 node_id,
                 self_in_list,
-                &context,
-                local_dist_key_share.as_ref(),
-                &options,
+                context,
+                local_dist_key_share,
+                options,
             )
             .await?
         } else {
@@ -796,73 +916,112 @@ where
         let all_commitments_bytes = serialize_commitments::<S>(&signing_commitments)?;
         let sign_report_context_base = self
             .sign_response_report_context_base(
-                &context,
-                &request_id,
-                &message,
+                context,
+                request_id,
+                message,
                 &all_commitments_bytes,
-                derivation.as_deref(),
-                metadata.as_deref(),
+                derivation,
+                metadata,
             )
             .await?;
 
-        // =====================================================================
-        // ROUND 2: Collect signature shares
-        // =====================================================================
+        Ok(CommitmentRound {
+            signing_commitments,
+            local_signing_state,
+            all_commitments_bytes,
+            should_attempt_local_share,
+            sign_report_context_base,
+        })
+    }
 
-        let signer = S::new();
-        let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
-        let mut seen_node_ids: HashSet<u32> = HashSet::new();
-
-        // If we are part of the signing set, compute our own share locally before
-        // deciding how many verified shares we still need from the network.
-        if should_attempt_local_share {
-            if let Some(dist_key_share) = local_dist_key_share {
-                if let Ok(sig_share) = signer
-                    .sign(
-                        &dist_key_share,
-                        &message,
-                        &pub_poly,
-                        local_signing_state.as_ref(),
-                        &signing_commitments,
-                        derivation.as_deref(),
-                        metadata.as_deref(),
-                    )
-                    .inspect_err(|error| {
-                        tracing::error!(
-                            error = %error,
-                            "Sign Coordinator: Local signing failed"
-                        );
-                    })
-                {
-                    if signer
-                        .verify_share(
-                            &message,
-                            &pub_poly,
-                            &sig_share,
-                            &signing_commitments,
-                            derivation.as_deref(),
-                            metadata.as_deref(),
-                        )
-                        .inspect_err(|error| {
-                            tracing::error!(
-                                error = %error,
-                                "Sign Coordinator: Local share verification failed"
-                            );
-                        })
-                        .is_ok()
-                    {
-                        tracing::debug!(
-                            from_node_id = sig_share.i,
-                            "Sign Coordinator: Added local share"
-                        );
-                        seen_node_ids.insert(sig_share.i);
-                        verified_shares.push(sig_share);
-                    }
-                }
-            }
+    /// Compute and verify our own signature share, if we're in the signing set
+    /// and hold a local key share. Returns `None` (not an error) on any local
+    /// signing/verification failure — the network round makes up the share.
+    fn compute_local_signature_share(
+        &self,
+        signer: &S,
+        material: &SigningMaterial<D>,
+        commitment_round: &CommitmentRound<S>,
+        message: &[u8],
+    ) -> Option<PubShare<SigShareInner>> {
+        if !commitment_round.should_attempt_local_share {
+            return None;
         }
+        let dist_key_share = material.local_dist_key_share.as_ref()?;
 
-        let min_needed_from_network = ring.threshold.saturating_sub(verified_shares.len());
+        let sig_share = signer
+            .sign(
+                dist_key_share,
+                message,
+                &material.pub_poly,
+                commitment_round.local_signing_state.as_ref(),
+                &commitment_round.signing_commitments,
+                material.derivation.as_deref(),
+                material.metadata.as_deref(),
+            )
+            .inspect_err(|error| {
+                tracing::error!(
+                    error = %error,
+                    "Sign Coordinator: Local signing failed"
+                );
+            })
+            .ok()?;
+
+        signer
+            .verify_share(
+                message,
+                &material.pub_poly,
+                &sig_share,
+                &commitment_round.signing_commitments,
+                material.derivation.as_deref(),
+                material.metadata.as_deref(),
+            )
+            .inspect_err(|error| {
+                tracing::error!(
+                    error = %error,
+                    "Sign Coordinator: Local share verification failed"
+                );
+            })
+            .ok()?;
+
+        tracing::debug!(
+            from_node_id = sig_share.i,
+            "Sign Coordinator: Added local share"
+        );
+        Some(sig_share)
+    }
+
+    /// ROUND 2 network leg: request signature shares from peers, collect
+    /// verified responses until threshold or timeout, hand off stragglers to a
+    /// background drain, then pick up anything that was already stored before
+    /// cancellation. Threaded via `seen_node_ids` so the drain and the
+    /// already-stored pass don't double count a share this call already saw.
+    #[allow(clippy::too_many_arguments)]
+    async fn collect_network_signature_shares(
+        &self,
+        signer: &S,
+        request_id: &str,
+        ring: &RingConfig,
+        node_id: u32,
+        context: &SignContext,
+        options: &SigningOptions,
+        message: &[u8],
+        material: &SigningMaterial<D>,
+        commitment_round: &CommitmentRound<S>,
+        seen_node_ids: &mut HashSet<u32>,
+        already_verified_count: usize,
+    ) -> Result<Vec<PubShare<SigShareInner>>> {
+        let pub_poly = &material.pub_poly;
+        let signing_commitments = &commitment_round.signing_commitments;
+        let all_commitments_bytes = &commitment_round.all_commitments_bytes;
+        let sign_report_context_base = &commitment_round.sign_report_context_base;
+        let derivation = material.derivation.as_deref();
+        let metadata = material.metadata.as_deref();
+        let selected_signer_ids: HashSet<u32> =
+            signing_commitments.iter().map(|(id, _)| *id).collect();
+
+        let mut verified_shares: Vec<PubShare<SigShareInner>> = Vec::new();
+        let min_needed_from_network = ring.threshold.saturating_sub(already_verified_count);
 
         // 2. Send sign requests to all peers concurrently and receive responses
         let mut set = tokio::task::JoinSet::new();
@@ -876,7 +1035,7 @@ where
                     );
                     continue;
                 }
-                if options.excludes_peer(peer_id_str, &ring) {
+                if options.excludes_peer(peer_id_str, ring) {
                     tracing::debug!(
                         peer_id = %peer_id_str,
                         "Skipping peer excluded from signing"
@@ -884,7 +1043,7 @@ where
                     continue;
                 }
                 if S::INTERACTIVE {
-                    let peer_node_id = determine_ring_node_id_from_peer_id(peer_id_str, &ring);
+                    let peer_node_id = determine_ring_node_id_from_peer_id(peer_id_str, ring);
                     if !peer_node_id
                         .map(|id| selected_signer_ids.contains(&id))
                         .unwrap_or(false)
@@ -898,15 +1057,15 @@ where
                 }
 
                 let request = SignMessage::SignRequest(SignRequest {
-                    request_id: request_id.clone(),
+                    request_id: request_id.to_string(),
                     from_node_id: node_id,
-                    message: message.clone(),
+                    message: message.to_vec(),
                     all_commitments: all_commitments_bytes.clone(),
                     context: context.clone(),
                 });
 
                 let peer_id = peer_id_str.clone();
-                let req_id = request_id.clone();
+                let req_id = request_id.to_string();
                 let app_state = self.app_state.clone();
                 let routes = self.routes;
 
@@ -929,7 +1088,7 @@ where
                     match res {
                         Ok((_, Ok(Some(response)))) => {
                             let Some(expected_node_id) =
-                                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
+                                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
                             else {
                                 tracing::error!(
                                     sender_peer = %response.sender_peer_hex,
@@ -940,18 +1099,18 @@ where
                             let sender_peer_hex = response.sender_peer_hex.clone();
                             let report_context = sign_report_context_base
                                 .as_ref()
-                                .and_then(|base| base.for_peer(&ring, expected_node_id));
+                                .and_then(|base| base.for_peer(ring, expected_node_id));
                             match Self::verify_peer_signature_response(
-                                &signer,
+                                signer,
                                 response.message,
-                                &message,
-                                &pub_poly,
-                                &signing_commitments,
-                                derivation.as_deref(),
-                                metadata.as_deref(),
+                                message,
+                                pub_poly,
+                                signing_commitments,
+                                derivation,
+                                metadata,
                                 expected_node_id,
                                 report_context.as_ref(),
-                                &mut seen_node_ids,
+                                seen_node_ids,
                             ) {
                                 PeerSignatureVerification::Verified(share) => {
                                     verified_shares.push(share);
@@ -980,11 +1139,11 @@ where
                             queue_sign_offline_report::<D, S>(
                                 self.app_state.clone(),
                                 self.routes,
-                                &ring,
+                                ring,
                                 &peer_id,
                                 &e,
-                                &request_id,
-                                &context,
+                                request_id,
+                                context,
                                 "sign_share_round",
                             );
                         }
@@ -1018,12 +1177,12 @@ where
             ring: ring.clone(),
             sign_report_context_base: sign_report_context_base.clone(),
             context: context.clone(),
-            request_id: request_id.clone(),
-            message: message.clone(),
+            request_id: request_id.to_string(),
+            message: message.to_vec(),
             pub_poly: pub_poly.clone(),
             signing_commitments: signing_commitments.clone(),
-            derivation: derivation.clone(),
-            metadata: metadata.clone(),
+            derivation: derivation.map(ToOwned::to_owned),
+            metadata: metadata.map(ToOwned::to_owned),
             seen_node_ids: seen_node_ids.clone(),
         });
 
@@ -1032,7 +1191,7 @@ where
         let collected_responses = self
             .app_state
             .sign_response_state
-            .take_authenticated_responses_for_version(self.routes.version, &request_id)
+            .take_authenticated_responses_for_version(self.routes.version, request_id)
             .await
             .ok_or_else(|| {
                 SignError::Timeout(format!("No responses found for request {}", request_id))
@@ -1040,7 +1199,7 @@ where
 
         for response in collected_responses {
             let Some(expected_node_id) =
-                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, &ring)
+                determine_ring_node_id_from_peer_id(&response.sender_peer_hex, ring)
             else {
                 tracing::error!(
                     sender_peer = %response.sender_peer_hex,
@@ -1051,18 +1210,18 @@ where
             let sender_peer_hex = response.sender_peer_hex.clone();
             let report_context = sign_report_context_base
                 .as_ref()
-                .and_then(|base| base.for_peer(&ring, expected_node_id));
+                .and_then(|base| base.for_peer(ring, expected_node_id));
             match Self::verify_peer_signature_response(
-                &signer,
+                signer,
                 response.message,
-                &message,
-                &pub_poly,
-                &signing_commitments,
-                derivation.as_deref(),
-                metadata.as_deref(),
+                message,
+                pub_poly,
+                signing_commitments,
+                derivation,
+                metadata,
                 expected_node_id,
                 report_context.as_ref(),
-                &mut seen_node_ids,
+                seen_node_ids,
             ) {
                 PeerSignatureVerification::Verified(share) => verified_shares.push(share),
                 PeerSignatureVerification::InvalidCrypto(observation) => {
@@ -1072,6 +1231,21 @@ where
             }
         }
 
+        Ok(verified_shares)
+    }
+
+    /// Check we recovered enough shares, recover + verify the aggregate
+    /// signature, and encode the final response bytes.
+    async fn finalize_signature(
+        &self,
+        signer: &S,
+        verified_shares: Vec<PubShare<SigShareInner>>,
+        ring: &RingConfig,
+        message: &[u8],
+        signing_commitments: &[(u32, S::NonceCommitment)],
+        material: &SigningMaterial<D>,
+        request_id: &str,
+    ) -> Result<Vec<u8>> {
         // 4. Check if we have enough verified shares
         if verified_shares.len() < ring.threshold {
             if is_ring_reshare_in_progress(&ring.ring_pk_bytes, &self.app_state.dkg_session_state)
@@ -1092,11 +1266,11 @@ where
         // 5. Resolve the exact public key used by this signing transcript. FROST
         // binds this key into its per-participant binding factors; BLS ignores it
         // during aggregation but receives the same explicit input.
-        let aggregate_pk = pub_poly.eval(0);
-        let verify_pk = if let Some(deriv) = derivation.as_deref() {
-            S::derive_public_key(&aggregate_pk, deriv, metadata.as_deref()).map_err(|e| {
-                SignError::Crypto(format!("Key derivation for verification failed: {}", e))
-            })?
+        let aggregate_pk = material.pub_poly.eval(0);
+        let verify_pk = if let Some(deriv) = material.derivation.as_deref() {
+            S::derive_public_key(&aggregate_pk, deriv, material.metadata.as_deref()).map_err(
+                |e| SignError::Crypto(format!("Key derivation for verification failed: {}", e)),
+            )?
         } else {
             aggregate_pk
         };
@@ -1108,8 +1282,8 @@ where
                 ring.threshold,
                 ring.total_participants,
                 &verify_pk,
-                &message,
-                &signing_commitments,
+                message,
+                signing_commitments,
             )
             .map_err(|e| {
                 SignError::RecoveryFailed(format!("Failed to recover signature: {}", e))
@@ -1121,7 +1295,7 @@ where
         // 7. Verify the final recovered signature before serializing. This catches
         // aggregation bugs before a silently bad signature reaches the caller.
         signer
-            .verify(&verify_pk, &message, &signature)
+            .verify(&verify_pk, message, &signature)
             .map_err(|e| {
                 SignError::RecoveryFailed(format!("Final signature verification failed: {}", e))
             })?;

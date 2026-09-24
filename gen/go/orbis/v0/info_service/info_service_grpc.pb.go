@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	InfoService_GetNodeInfo_FullMethodName  = "/orbis.v0.info_service.InfoService/GetNodeInfo"
 	InfoService_GetRingState_FullMethodName = "/orbis.v0.info_service.InfoService/GetRingState"
+	InfoService_GetDashboard_FullMethodName = "/orbis.v0.info_service.InfoService/GetDashboard"
 )
 
 // InfoServiceClient is the client API for InfoService service.
@@ -29,6 +30,7 @@ const (
 type InfoServiceClient interface {
 	GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error)
 	GetRingState(ctx context.Context, in *GetRingStateRequest, opts ...grpc.CallOption) (*GetRingStateResponse, error)
+	GetDashboard(ctx context.Context, in *GetDashboardRequest, opts ...grpc.CallOption) (*GetDashboardResponse, error)
 }
 
 type infoServiceClient struct {
@@ -59,12 +61,23 @@ func (c *infoServiceClient) GetRingState(ctx context.Context, in *GetRingStateRe
 	return out, nil
 }
 
+func (c *infoServiceClient) GetDashboard(ctx context.Context, in *GetDashboardRequest, opts ...grpc.CallOption) (*GetDashboardResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetDashboardResponse)
+	err := c.cc.Invoke(ctx, InfoService_GetDashboard_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // InfoServiceServer is the server API for InfoService service.
 // All implementations must embed UnimplementedInfoServiceServer
 // for forward compatibility.
 type InfoServiceServer interface {
 	GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error)
 	GetRingState(context.Context, *GetRingStateRequest) (*GetRingStateResponse, error)
+	GetDashboard(context.Context, *GetDashboardRequest) (*GetDashboardResponse, error)
 	mustEmbedUnimplementedInfoServiceServer()
 }
 
@@ -80,6 +93,9 @@ func (UnimplementedInfoServiceServer) GetNodeInfo(context.Context, *GetNodeInfoR
 }
 func (UnimplementedInfoServiceServer) GetRingState(context.Context, *GetRingStateRequest) (*GetRingStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRingState not implemented")
+}
+func (UnimplementedInfoServiceServer) GetDashboard(context.Context, *GetDashboardRequest) (*GetDashboardResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDashboard not implemented")
 }
 func (UnimplementedInfoServiceServer) mustEmbedUnimplementedInfoServiceServer() {}
 func (UnimplementedInfoServiceServer) testEmbeddedByValue()                     {}
@@ -138,6 +154,24 @@ func _InfoService_GetRingState_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _InfoService_GetDashboard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDashboardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InfoServiceServer).GetDashboard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InfoService_GetDashboard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InfoServiceServer).GetDashboard(ctx, req.(*GetDashboardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // InfoService_ServiceDesc is the grpc.ServiceDesc for InfoService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +186,10 @@ var InfoService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRingState",
 			Handler:    _InfoService_GetRingState_Handler,
+		},
+		{
+			MethodName: "GetDashboard",
+			Handler:    _InfoService_GetDashboard_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -1,3 +1,4 @@
+use super::bootstrap::start_bootstrap_info_server_with_identity;
 use super::*;
 use authz::native::NativeAuth;
 use bulletin::native::{decode_node_signing_key, NativeBulletin, NativeVeraClient};
@@ -45,6 +46,7 @@ pub(super) async fn run(
     args: Args,
     cors_policy: CorsPolicy,
     network: Arc<dyn Network>,
+    authorized_peers: Arc<RingAuthorizedPeers>,
     local_storage: LocalStorageImpl,
     base: PathBuf,
     shutdown: watch::Receiver<bool>,
@@ -92,6 +94,7 @@ pub(super) async fn run(
             cors_policy,
             node_key,
             network,
+            authorized_peers: Some(authorized_peers),
             local_storage,
             authz: Arc::new(authz),
             bulletin: Arc::new(bulletin),

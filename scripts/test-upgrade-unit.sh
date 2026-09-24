@@ -36,7 +36,19 @@ grep -F "target:   WORKTREE -> WORKTREE@" "$TEST_ROOT/worktree.log" >/dev/null
   --dry-run >"$TEST_ROOT/committed.log"
 grep -F "target:   HEAD -> $(git -C "$REPOSITORY_ROOT" rev-parse HEAD)" \
   "$TEST_ROOT/committed.log" >/dev/null
+grep -F "fresh target chain: auto" "$TEST_ROOT/committed.log" >/dev/null
 
+"$SCRIPT_DIR/test-upgrade.sh" \
+  --from HEAD \
+  --to WORKTREE \
+  --crypto bls12-381 \
+  --fresh-target-chain \
+  --output "$TEST_ROOT/fresh" \
+  --dry-run >"$TEST_ROOT/fresh.log"
+grep -F "fresh target chain: 1" "$TEST_ROOT/fresh.log" >/dev/null
+
+expect_failure to-vera-ref-missing-value \
+  --from HEAD --to HEAD --dry-run --to-vera-ref
 expect_failure invalid-ref \
   --from refs/heads/orbis-upgrade-ref-that-does-not-exist \
   --to HEAD \

@@ -20,8 +20,8 @@ pub use pubsub::{
     AuthenticatedMessage, PubSub, PubSubEvent, PubSubRejectReason, SignedPayload, Topic, TopicId,
 };
 pub use r#trait::{
-    Connection, IngressDropReason, Message, Network, NetworkIngressLimits, PeerConnection, PeerId,
-    ProtocolHandler, Router, RouterBuilder,
+    AuthorizedPeers, Connection, IngressDropReason, Message, Network, NetworkIngressLimits,
+    PeerConnection, PeerId, ProtocolHandler, Router, RouterBuilder,
 };
 
 // Export the selected implementation

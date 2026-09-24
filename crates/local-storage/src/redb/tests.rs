@@ -197,3 +197,126 @@ fn repeated_writes_still_read_latest() {
 
     cleanup_db(&path);
 }
+
+const LEGACY_WORKER_NAME: &str = "vera-worker-0123456789abcdef0123456789abcdef";
+
+fn legacy_worker_slot() -> Vec<u8> {
+    let mut key = 4_u32.to_le_bytes().to_vec();
+    key.extend_from_slice(&(LEGACY_WORKER_NAME.len() as u64).to_le_bytes());
+    key.extend_from_slice(LEGACY_WORKER_NAME.as_bytes());
+    key
+}
+
+fn seed_legacy_worker(db: &RedbStorage) {
+    let key = legacy_worker_slot();
+    let ciphertext = super::encrypt_value(&db.cipher, &super::slot_aad(&key), &[31; 32]).unwrap();
+    raw_set(&db.store, &key, &ciphertext).unwrap();
+}
+
+#[test]
+fn persisted_storage_tags_remain_stable() {
+    let keys = [
+        LocalStorageKeys::RingKey("ring".into()),
+        LocalStorageKeys::RingIndex,
+        LocalStorageKeys::NodeSecretKey,
+        LocalStorageKeys::NodeSigningKey,
+        LocalStorageKeys::RingPolyHistory("ring".into()),
+        LocalStorageKeys::PendingReshareBundle("ring".into()),
+        LocalStorageKeys::NativeWorkerKey(LEGACY_WORKER_NAME.into()),
+    ];
+    for (tag, key) in keys.iter().enumerate() {
+        assert_eq!(
+            &serialize_key(key).unwrap()[..4],
+            &(tag as u32).to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn native_worker_migration_preserves_key_and_does_not_resurrect_deleted_identity() {
+    let path = test_db_path("native_worker_migration");
+    cleanup_db(&path);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    seed_legacy_worker(&db);
+    let history = LocalStorageKeys::RingPolyHistory("ring-public-key".into());
+    db.set(history.clone(), b"public polynomial".to_vec())
+        .unwrap();
+    let pending = LocalStorageKeys::PendingReshareBundle("ring-public-key".into());
+    db.set_encrypted(pending.clone(), Zeroizing::new(b"pending share".to_vec()))
+        .unwrap();
+    drop(db);
+    let key = LocalStorageKeys::NativeWorkerKey(LEGACY_WORKER_NAME.into());
+    for _ in 0..2 {
+        let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+        assert_eq!(
+            db.get_encrypted(key.clone()).unwrap().unwrap().as_slice(),
+            &[31; 32]
+        );
+        assert!(raw_get(&db.store, &legacy_worker_slot()).unwrap().is_none());
+        assert_eq!(
+            db.get(history.clone()).unwrap().unwrap(),
+            b"public polynomial"
+        );
+        assert_eq!(
+            db.get_encrypted(pending.clone())
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            b"pending share"
+        );
+    }
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    db.delete(key.clone()).unwrap();
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert!(db.get_encrypted(key).unwrap().is_none());
+    drop(db);
+    cleanup_db(&path);
+}
+
+#[test]
+fn native_worker_migration_rejects_corrupt_ciphertext_without_deleting_it() {
+    let path = test_db_path("native_worker_corrupt");
+    cleanup_db(&path);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    raw_set(&db.store, &legacy_worker_slot(), b"corrupt").unwrap();
+    drop(db);
+    assert!(matches!(
+        RedbStorage::new("pw".into(), path.clone()),
+        Err(LocalStorageError::IntegrityCheckFailed)
+    ));
+    let db = redb::Database::create(&path).unwrap();
+    assert_eq!(
+        raw_get(&db, &legacy_worker_slot()).unwrap().unwrap(),
+        b"corrupt"
+    );
+    let key = serialize_key(&LocalStorageKeys::NativeWorkerKey(
+        LEGACY_WORKER_NAME.into(),
+    ))
+    .unwrap();
+    assert!(raw_get(&db, &key).unwrap().is_none());
+    drop(db);
+    cleanup_db(&path);
+}
+
+#[test]
+fn native_worker_migration_rejects_conflicting_identities() {
+    let path = test_db_path("native_worker_conflict");
+    cleanup_db(&path);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    seed_legacy_worker(&db);
+    let key = LocalStorageKeys::NativeWorkerKey(LEGACY_WORKER_NAME.into());
+    db.set_encrypted(key.clone(), Zeroizing::new(vec![32; 32]))
+        .unwrap();
+    let before = raw_get(&db.store, &serialize_key(&key).unwrap()).unwrap();
+    drop(db);
+    assert!(matches!(
+        RedbStorage::new("pw".into(), path.clone()),
+        Err(LocalStorageError::CorruptData)
+    ));
+    let db = redb::Database::create(&path).unwrap();
+    assert!(raw_get(&db, &legacy_worker_slot()).unwrap().is_some());
+    assert_eq!(raw_get(&db, &serialize_key(&key).unwrap()).unwrap(), before);
+    drop(db);
+    cleanup_db(&path);
+}

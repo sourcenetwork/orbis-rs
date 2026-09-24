@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
+// Variant order is persisted by bincode. Append new variants; never reorder.
 pub enum LocalStorageKeys {
     /// Encrypted `RingShareBundle` for one ring, keyed by `aggregate_pk.to_string()`.
     /// Contains the node's threshold secret share, the current public polynomial,
@@ -19,6 +20,21 @@ pub enum LocalStorageKeys {
     NodeSecretKey,
     /// The node's secp256k1 signing key for chain transactions
     NodeSigningKey,
+    /// JSON-encoded `RingPolyHistory` of a ring's recently-retired *public*
+    /// polynomials, keyed the same way as `RingKey` (`aggregate_pk.to_string()`).
+    /// Never holds the private share. Lets invalid-crypto report verification
+    /// check a PRE/Sign response against the generation it was actually produced
+    /// under, even after a PSS refresh has moved the ring on. Unlike `RingKey`,
+    /// not encrypted — a public polynomial isn't secret (see `ring_state.rs`).
+    RingPolyHistory(String),
+    /// Encrypted `PendingReshareBundle` for a ring whose reshare was staged locally but not
+    /// yet confirmed promoted, keyed the same way as `RingKey` (`aggregate_pk.to_string()`).
+    /// Restart insurance only: written at staging time, cleared the moment the live
+    /// bulletin-confirmation wait (`wait_for_reshare_bulletin_finalized`) resolves one way or
+    /// another. If a restart happens in between, startup reconciliation reads this entry,
+    /// re-derives the same state hash from the ring's *current* bulletin payload, and
+    /// promotes or discards accordingly. Encrypted like `RingKey` — holds a real secret share.
+    PendingReshareBundle(String),
     /// Independent native submission key, encrypted at rest.
     NativeWorkerKey(String),
 }

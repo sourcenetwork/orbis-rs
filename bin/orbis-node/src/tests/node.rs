@@ -6,8 +6,7 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_MESSAGE_BYTES, MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES,
-        MAX_STORE_SECRET_REQUEST_BYTES, NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-        NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        MAX_STORE_SECRET_REQUEST_BYTES,
     },
     dkg::v0::service::DkgServiceImpl,
     helpers::{
@@ -24,7 +23,7 @@ use crate::{
     sign::v0::service::SignServiceImpl,
     start_bootstrap_info_server,
     store_secret::StoreSecretServiceImpl,
-    Args, InitializedNode, NodeConfig,
+    Args, InitializedNode, NetworkIngressArgs, NodeConfig,
 };
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
@@ -37,7 +36,7 @@ use network::{Network, NetworkImpl};
 use proto::{
     info_service::{
         info_service_client::InfoServiceClient, info_service_server::InfoServiceServer,
-        GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
+        GetDashboardRequest, GetNodeInfoRequest, GetRingStateRequest, NodeStatus,
     },
     v0::dkg::{
         dkg_service_client::DkgServiceClient, dkg_service_server::DkgServiceServer, StartDkgRequest,
@@ -124,9 +123,7 @@ async fn make_test_node_config(
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-            network_max_ingress_events_per_peer_per_second:
-                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+            network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy: CorsPolicy::Disabled,
         node_key: "test-node-key".to_string(),
@@ -138,6 +135,7 @@ async fn make_test_node_config(
         .expect("Failed to create local storage"),
         authz,
         bulletin,
+        authorized_peers: None,
     };
     (config, db_path)
 }
@@ -195,9 +193,7 @@ fn node_info_test_args(
         node_whitelisted_ring_ids: ring_ids.into_iter().map(str::to_string).collect(),
         grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-        network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-        network_max_ingress_events_per_peer_per_second:
-            NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        network_ingress: NetworkIngressArgs::default(),
     }
 }
 
@@ -606,6 +602,19 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
     );
     assert!(status.message().contains("No signing key found"));
 
+    // Dashboard content doesn't depend on the node's signing key, so it
+    // should succeed via the full (non-bootstrap) InfoServiceImpl even
+    // though get_node_info fails above.
+    let dashboard = info_client
+        .get_dashboard(GetDashboardRequest {})
+        .await
+        .expect("dashboard should not require a signing key")
+        .into_inner();
+    assert!(
+        dashboard.dashboard_json.contains("orbis-node-metrics"),
+        "dashboard response should contain the orbis-node-metrics uid"
+    );
+
     shutdown_tx.send(()).expect("shutdown full test server");
     task.await.expect("join full test server task");
     cleanup_db(&db_path);
@@ -772,6 +781,18 @@ async fn test_bootstrap_info_server_exposes_only_info() {
         .expect_err("ring state should be blocked during bootstrap");
     assert_eq!(ring_err.code(), Code::FailedPrecondition);
 
+    // Unlike ring state, the dashboard is static content and doesn't depend
+    // on chain funding -- it should be available during bootstrap too.
+    let dashboard = info_client
+        .get_dashboard(GetDashboardRequest {})
+        .await
+        .expect("dashboard should be available during bootstrap")
+        .into_inner();
+    assert!(
+        dashboard.dashboard_json.contains("orbis-node-metrics"),
+        "dashboard response should contain the orbis-node-metrics uid"
+    );
+
     let mut dkg_client = DkgServiceClient::connect(endpoint)
         .await
         .expect("connect bootstrap endpoint as dkg client");
@@ -866,9 +887,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             node_whitelisted_ring_ids: vec![],
             grpc_concurrency_limit_per_connection: GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
             grpc_max_concurrent_streams: GRPC_MAX_CONCURRENT_STREAMS,
-            network_max_concurrent_ingress_work: NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-            network_max_ingress_events_per_peer_per_second:
-                NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+            network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy,
         node_key: "test-node-key".to_string(),
@@ -876,6 +895,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         local_storage,
         authz,
         bulletin,
+        authorized_peers: None,
     };
     let node = init_node(config).await.expect("Node initialization failed");
 

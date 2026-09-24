@@ -19,8 +19,8 @@ use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
 };
-use ark_ff::{One, Zero};
-use ark_serialize::CanonicalSerialize;
+use ark_ff_05::{One, Zero};
+use ark_serialize_05::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
@@ -355,7 +355,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         "threshold-frost-decaf377".to_string()
     }
 
-    fn hash_message(&self, _msg: &[u8]) -> Result<Self::Signature> {
+    fn hash_message(&self, _pk: &Self::PublicKey, _msg: &[u8]) -> Result<Self::Signature> {
         Err(CryptoError::InvalidSignature)
     }
 

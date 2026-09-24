@@ -56,10 +56,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         let session_id = attempt.session_id();
         let mut state = {
             let mut states = self.states.write().await;
-            if !states.get(&session_id).is_some_and(|state| {
-                state.transport.ceremony_id == Some(attempt.ceremony_id)
-                    && state.transport.attempt_id == Some(attempt.attempt_id)
-            }) {
+            if !states
+                .get(&session_id)
+                .is_some_and(|state| state.transport.attempt() == Some(attempt))
+            {
                 return false;
             }
             states
@@ -96,7 +96,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             };
             if existing
                 .transport
-                .attempt_id
+                .attempt_id()
                 .is_some_and(|configured| configured != attempt_id)
             {
                 return false;
@@ -148,10 +148,7 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
             "SessionStateManager: Removed session"
         );
         let ring_key_to_clear = state.kind.ring_key().map(str::to_string);
-        let removed_attempt = state
-            .transport
-            .attempt_id
-            .map(|attempt_id| AttemptKey::new(CeremonyId(*session_id), attempt_id));
+        let removed_attempt = state.transport.attempt();
 
         // Clear the in-progress PSS claim so future ceremonies can proceed.
         if let Some(key) = ring_key_to_clear {

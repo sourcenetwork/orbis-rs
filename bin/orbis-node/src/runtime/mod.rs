@@ -1,17 +1,26 @@
+mod bootstrap;
 #[cfg(feature = "native")]
 mod native;
+// `shutdown_bootstrap_after_init` isn't called directly in this file (only by
+// `bootstrap::complete_initialization_or_shutdown` internally) — re-exported
+// here purely so `lib.rs` can re-export it in turn for `tests/node.rs`.
+#[allow(unused_imports)]
+pub(crate) use bootstrap::{
+    complete_initialization_or_shutdown, shutdown_bootstrap_after_init, start_bootstrap_info_server,
+};
 
 use crate::app_state::AppState;
 use crate::constants::{self, MIN_NODE_BALANCE};
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
+use crate::helpers::authorized_peers::{spawn_authorized_peer_refresh, RingAuthorizedPeers};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
     create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
     get_network_key_secret, get_password, network_peer_address, resolve_runtime_base_path, Args,
     CorsPolicy,
 };
-use crate::info::{BootstrapInfoServiceImpl, InfoServiceImpl};
+use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
@@ -21,19 +30,8 @@ use common::blockchain::ChainConfigBuilder;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
-use std::{
-    future::Future,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicI32, Ordering},
-        Arc,
-    },
-};
-use tokio::{
-    sync::{oneshot, watch},
-    task::JoinHandle,
-};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use tokio::sync::watch;
 use tonic_web::GrpcWebLayer;
 // Concrete crypto implementations
 use crypto::{DkgImpl, PreImpl, SignImpl};
@@ -56,6 +54,9 @@ pub(crate) struct NodeConfig {
     pub(crate) local_storage: LocalStorageImpl,
     pub(crate) authz: Arc<dyn Authz>,
     pub(crate) bulletin: Arc<dyn Bulletin + Send + Sync>,
+    /// Oracle backing the network layer's reserved inbound-connection capacity.
+    /// `None` in test harnesses that build the network without a reservation.
+    pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
 /// Result of initializing the node (before starting the server)
@@ -71,43 +72,7 @@ pub(crate) struct InitializedNode {
     pub(crate) grpc_concurrency_limit_per_connection: usize,
     pub(crate) grpc_max_concurrent_streams: u32,
     pub(crate) cors_policy: CorsPolicy,
-}
-
-/// Status shared with the info service during initialization.
-#[derive(Clone)]
-struct BootstrapStatus(Arc<AtomicI32>);
-
-impl BootstrapStatus {
-    fn new(status: NodeStatus) -> Self {
-        Self(Arc::new(AtomicI32::new(status as i32)))
-    }
-
-    fn set_status(&self, status: NodeStatus) {
-        self.0.store(status as i32, Ordering::SeqCst);
-    }
-
-    fn shared(&self) -> Arc<AtomicI32> {
-        self.0.clone()
-    }
-}
-
-pub(crate) struct BootstrapInfoServer {
-    local_addr: SocketAddr,
-    status: BootstrapStatus,
-    shutdown_tx: oneshot::Sender<()>,
-    task: JoinHandle<Result<(), tonic::transport::Error>>,
-}
-
-impl BootstrapInfoServer {
-    pub(crate) fn local_addr(&self) -> SocketAddr {
-        self.local_addr
-    }
-
-    pub(crate) async fn shutdown(self) -> Result<(), Box<dyn std::error::Error>> {
-        let _ = self.shutdown_tx.send(());
-        self.task.await??;
-        Ok(())
-    }
+    pub(crate) authorized_peers: Option<Arc<RingAuthorizedPeers>>,
 }
 
 /// Full run function that initializes and runs the server
@@ -196,14 +161,22 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         // Initialize network for node-to-node communication
         tracing::info!("Initializing network");
-        let mut network_builder = network::NetworkImpl::builder()
-            .secret_key(secret_key)
-            .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
-            .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
-            .max_concurrent_ingress_work(args.network_max_concurrent_ingress_work)
-            .max_ingress_events_per_peer_per_second(
-                args.network_max_ingress_events_per_peer_per_second,
-            );
+        // Empty up front; a background task in `run_server` rebuilds it from ring
+        // state once the bulletin is available. An empty set just means no
+        // connection slots are reserved yet.
+        let authorized_peers = Arc::new(RingAuthorizedPeers::new());
+        // Every P2P ingress dial is applied by `NetworkIngressArgs::apply`; only
+        // the transport keep-alives and the (deliberately non-tunable) Sybil
+        // reserve are set here.
+        let mut network_builder = args.network_ingress.apply(
+            network::NetworkImpl::builder()
+                .secret_key(secret_key)
+                .idle_timeout_ms(constants::NETWORK_IDLE_TIMEOUT_MS)
+                .keep_alive_interval_ms(constants::NETWORK_KEEP_ALIVE_INTERVAL_MS)
+                .authorized_reserve_percent(constants::NETWORK_AUTHORIZED_RESERVE_PERCENT)
+                .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
+                .authorized_peers(authorized_peers.clone()),
+        );
         if let Some(addr) = args.network_bind_addr {
             network_builder = network_builder.bind_addr_v4(addr);
         }
@@ -227,6 +200,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 args,
                 cors_policy,
                 network,
+                authorized_peers,
                 local_storage,
                 runtime_base_path,
                 shutdown_rx,
@@ -286,7 +260,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             "Bootstrap info service started while waiting for funding"
         );
 
-        let bootstrap_status = bootstrap_info_server.status.clone();
+        let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
             bootstrap_status.set_status(NodeStatus::ConnectingToChain);
 
@@ -332,6 +306,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 local_storage,
                 authz,
                 bulletin,
+                authorized_peers: Some(authorized_peers),
             };
 
             init_node(config).await
@@ -365,105 +340,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Start an info-only gRPC server before the full node is ready.
-pub(crate) fn start_bootstrap_info_server(
-    grpc_addr: SocketAddr,
-    network: Arc<dyn Network>,
-    local_storage: LocalStorageImpl,
-    cors_policy: CorsPolicy,
-) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
-    start_bootstrap_info_server_with_identity(grpc_addr, network, local_storage, cors_policy, None)
-}
-
-fn start_bootstrap_info_server_with_identity(
-    grpc_addr: SocketAddr,
-    network: Arc<dyn Network>,
-    local_storage: LocalStorageImpl,
-    cors_policy: CorsPolicy,
-    native_identity: Option<String>,
-) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
-    let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
-    let local_addr = incoming.local_addr()?;
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
-    let mut info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
-    info_service.native_identity = native_identity;
-
-    let task = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .accept_http1(true)
-            .layer(cors_policy.layer())
-            .layer(GrpcWebLayer::new())
-            .add_service(
-                InfoServiceServer::new(info_service)
-                    .max_decoding_message_size(constants::MAX_SMALL_GRPC_REQUEST_BYTES),
-            )
-            .serve_with_incoming_shutdown(incoming, async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
-
-    Ok(BootstrapInfoServer {
-        local_addr,
-        status,
-        shutdown_tx,
-        task,
-    })
-}
-
-pub(crate) async fn shutdown_bootstrap_after_init(
-    bootstrap_info_server: BootstrapInfoServer,
-    init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
-) -> Result<InitializedNode, Box<dyn std::error::Error>> {
-    if init_result.is_ok() {
-        tracing::info!("Backend initialization complete; stopping bootstrap info service");
-    } else {
-        tracing::info!("Node initialization failed; stopping bootstrap info service");
-    }
-
-    let shutdown_result = bootstrap_info_server.shutdown().await;
-
-    match (init_result, shutdown_result) {
-        (Ok(node), Ok(())) => Ok(node),
-        (Err(init_err), Ok(())) => Err(init_err),
-        (Ok(_), Err(shutdown_err)) => Err(shutdown_err),
-        (Err(init_err), Err(shutdown_err)) => {
-            tracing::error!(
-                error = %shutdown_err,
-                "Bootstrap info service shutdown failed while handling initialization error"
-            );
-            Err(init_err)
-        }
-    }
-}
-
-/// Wait for node initialization or stop it promptly when process shutdown is requested.
-pub(crate) async fn complete_initialization_or_shutdown<F>(
-    bootstrap_info_server: BootstrapInfoServer,
-    init_result: F,
-    shutdown_rx: watch::Receiver<bool>,
-) -> Result<Option<InitializedNode>, Box<dyn std::error::Error>>
-where
-    F: Future<Output = Result<InitializedNode, Box<dyn std::error::Error>>>,
-{
-    tokio::pin!(init_result);
-
-    tokio::select! {
-        init_result = &mut init_result => {
-            shutdown_bootstrap_after_init(bootstrap_info_server, init_result)
-                .await
-                .map(Some)
-        }
-        _ = wait_for_shutdown(shutdown_rx) => {
-            tracing::info!("Shutdown requested during node initialization; stopping bootstrap info service");
-            bootstrap_info_server.shutdown().await?;
-            Ok(None)
-        }
-    }
-}
-
-async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
+pub(super) async fn wait_for_shutdown(mut shutdown_rx: watch::Receiver<bool>) {
     if *shutdown_rx.borrow() {
         return;
     }
@@ -534,6 +411,7 @@ pub(crate) async fn init_node(
         grpc_concurrency_limit_per_connection: config.args.grpc_concurrency_limit_per_connection,
         grpc_max_concurrent_streams: config.args.grpc_max_concurrent_streams,
         cors_policy: config.cors_policy,
+        authorized_peers: config.authorized_peers,
     })
 }
 
@@ -559,6 +437,14 @@ async fn run_server(
         &NetworkImpl::name(),
     );
 
+    // Restart insurance: promote or discard any reshare that was staged locally but never
+    // reached its live bulletin-confirmation resolution before a previous shutdown. Awaited
+    // directly, before the PSS scheduler starts touching the same rings, so this always
+    // completes as a one-shot startup step rather than racing a live PSS tick.
+    if let Err(error) = pss::reconcile_pending_reshares(&node.app_state).await {
+        tracing::error!(error = %error, "PSS: startup reshare reconciliation failed");
+    }
+
     // Start PSS reshare scheduler (no-op if interval is zero)
     let pss_scheduler = pss::spawn_pss_scheduler(node.app_state.clone(), node.reshare_interval);
 
@@ -578,6 +464,18 @@ async fn run_server(
         .dkg_session_state
         .take_soft_stall_receiver()
         .map(|rx| spawn_dkg_soft_stall_worker(node.app_state.clone(), rx));
+
+    // Keep the network layer's authorized-peer set (reserved inbound-connection
+    // capacity for the committee) fresh from ring state.
+    let authorized_peer_refresh = node.authorized_peers.clone().map(|oracle| {
+        spawn_authorized_peer_refresh(
+            oracle,
+            node.app_state.node_key.clone(),
+            node.app_state.local_storage.clone(),
+            node.app_state.bulletin.clone(),
+            constants::AUTHORIZED_PEER_REFRESH_INTERVAL,
+        )
+    });
 
     tracing::info!("Server is ready to accept connections");
     tracing::info!(grpc_addr = %node.grpc_addr, "Starting gRPC server");
@@ -692,6 +590,9 @@ async fn run_server(
     }
     if let Some(worker) = dkg_soft_stall_worker {
         worker.shutdown().await;
+    }
+    if let Some(handle) = authorized_peer_refresh {
+        handle.abort();
     }
 
     // Clean shutdown of router

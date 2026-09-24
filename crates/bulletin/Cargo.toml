@@ -20,8 +20,8 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
-vera-client = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf5ae4751867b4b8f07f7b31bfc2ca68ff052ca4", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf5ae4751867b4b8f07f7b31bfc2ca68ff052ca4", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "25f796771363d7ca979b59c8bd747f6c863825e5", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "25f796771363d7ca979b59c8bd747f6c863825e5", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true }
@@ -31,7 +31,16 @@ zeroize = { workspace = true, optional = true }
 default = ["vera"]
 vera = []
 native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
-dummy = []
+# Selects `DummyBulletin` as the production `BulletinImpl` (mutually
+# exclusive with `vera`, enforced below). Implies `dummy-type` since that's
+# what actually compiles the module this re-exports.
+dummy = ["dummy-type"]
+# Compiles the `dummy` module (an in-memory mock, no chain) without
+# selecting it as `BulletinImpl` — for a `vera`-backed binary (orbis-node,
+# orbis-bench) that still wants `DummyBulletin` available for an in-process
+# test/benchmark harness. Split from `dummy` so enabling it can't trip the
+# `vera`+`dummy` mutual-exclusivity check below.
+dummy-type = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
 decaf377 = ["dep:crypto", "crypto/decaf377"]
 
@@ -40,8 +49,8 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-vera-harness = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf5ae4751867b4b8f07f7b31bfc2ca68ff052ca4" }
-vera-crypto = { git = "https://github.com/sourcenetwork/hub.rs", rev = "cf5ae4751867b4b8f07f7b31bfc2ca68ff052ca4" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "25f796771363d7ca979b59c8bd747f6c863825e5" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "25f796771363d7ca979b59c8bd747f6c863825e5" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true

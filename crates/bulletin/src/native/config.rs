@@ -64,7 +64,9 @@ impl NativeConfig {
         let root: [u8; 32] = hex::decode(&raw.deployment_root)?
             .try_into()
             .map_err(|_| "deployment_root must encode exactly 32 bytes")?;
-        let trusted = ConsensusPublicKey::decode(hex::decode(&raw.consensus_key)?.as_slice())?;
+        let trusted = ConsensusPublicKey::decode(alloy_primitives::bytes::Bytes::from(
+            hex::decode(&raw.consensus_key)?,
+        ))?;
         if root == [0; 32]
             || raw.deployment_id == 0
             || raw.max_evidence_age_secs == 0

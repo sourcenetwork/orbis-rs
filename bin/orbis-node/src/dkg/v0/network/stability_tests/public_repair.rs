@@ -1,3 +1,4 @@
+use crate::dkg::v0::session_state::TransportLifecycle;
 #[allow(unused_imports)]
 use {super::super::*, super::support::*};
 
@@ -679,11 +680,19 @@ async fn malformed_leader_repair_is_attributable_but_stale_abort_is_attempt_scop
     let newer_attempt = AttemptId([attempt_id.0[0].wrapping_add(1); 32]);
     {
         let mut states = state.dkg_session_state.states.write().await;
-        states
+        let transport = &mut states
             .get_mut(&ceremony_id.0)
             .expect("repair test session")
-            .transport
-            .attempt_id = Some(newer_attempt);
+            .transport;
+        match &mut transport.lifecycle {
+            TransportLifecycle::Reserved { attempt }
+            | TransportLifecycle::Configured { attempt, .. }
+            | TransportLifecycle::Activated { attempt, .. }
+            | TransportLifecycle::Begun { attempt, .. } => {
+                attempt.attempt_id = newer_attempt;
+            }
+            TransportLifecycle::Unset => {}
+        }
     }
     abort_public_protocol_violation(
         &state,

@@ -7,7 +7,10 @@ pub use r#trait::{BulletinKind, BulletinWriteKind};
 #[cfg(feature = "vera")]
 pub mod vera;
 
-// Export dummy for testing anyways
+// In-memory mock backend. Kept out of a plain production build (no `test`
+// cfg, no opt-in feature) — see `dummy-type` below for why this is separate
+// from the `dummy` feature that selects it as `BulletinImpl`.
+#[cfg(any(test, feature = "dummy-type"))]
 pub mod dummy;
 
 // Enforce mutual exclusivity - only one backend can be selected

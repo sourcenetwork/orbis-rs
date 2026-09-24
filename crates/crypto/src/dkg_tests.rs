@@ -44,7 +44,7 @@ pub fn run_all_tests<Node, F, Z, G, W, I>(
 ) -> Result<()>
 where
     Node: crate::test_helper::TestDkgNode,
-    Node::PublicKey: ark_serialize::CanonicalSerialize + PartialEq + std::fmt::Debug,
+    Node::PublicKey: crate::r#trait::CryptoSerialize + PartialEq + std::fmt::Debug,
     Node::PubPoly: Clone + PubPoly<PublicKey = Node::PublicKey>,
     Node::PolynomialCommitment: Clone,
     Node::ShareValue: Clone + zeroize::Zeroize,

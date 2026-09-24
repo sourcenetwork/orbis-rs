@@ -154,6 +154,7 @@ pub async fn spawn_harness_node(
     // `with_ip_addr` addressing needs the default discovery.
     let unshaped_network = NetworkImpl::builder()
         .bind_addr_v4("127.0.0.1:0".parse().unwrap())
+        .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
         .build()
         .await
         .map_err(|error| anyhow::anyhow!("network: {error}"))?;
@@ -202,9 +203,7 @@ pub async fn spawn_harness_node(
         node_whitelisted_ring_ids: vec![],
         grpc_concurrency_limit_per_connection: constants::GRPC_CONCURRENCY_LIMIT_PER_CONNECTION,
         grpc_max_concurrent_streams: constants::GRPC_MAX_CONCURRENT_STREAMS,
-        network_max_concurrent_ingress_work: constants::NETWORK_MAX_CONCURRENT_INGRESS_WORK,
-        network_max_ingress_events_per_peer_per_second:
-            constants::NETWORK_MAX_INGRESS_EVENTS_PER_PEER_PER_SECOND,
+        network_ingress: crate::helpers::launch::NetworkIngressArgs::default(),
     };
 
     // `local_address` is the same hex-encoded iroh node ID `ensure_node_info`
@@ -225,6 +224,7 @@ pub async fn spawn_harness_node(
         local_storage,
         authz,
         bulletin: bulletin as Arc<dyn Bulletin + Send + Sync>,
+        authorized_peers: None,
     };
     let node = init_node(config)
         .await

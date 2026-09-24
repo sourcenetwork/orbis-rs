@@ -64,7 +64,12 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
     if !<S::Signer as ThresholdSigner>::INTERACTIVE {
         let fixture = S::create_fixture(2, 3);
         c.bench_function(&format!("{prefix}/hash_message"), |b| {
-            b.iter(|| fixture.signer.hash_message(black_box(MSG)).unwrap())
+            b.iter(|| {
+                fixture
+                    .signer
+                    .hash_message(black_box(&fixture.aggregate_pk), black_box(MSG))
+                    .unwrap()
+            })
         });
     }
 

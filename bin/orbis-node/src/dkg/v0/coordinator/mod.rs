@@ -37,7 +37,7 @@ use crate::dkg::v0::helpers::session_not_found;
 use crate::dkg::v0::messages::SignedDkgShare;
 use crate::dkg::v0::session_state::{
     AttemptStateError, CreateSessionOutcome, DkgSessionState, MessageProcessingClaim,
-    TopicTaskDisposition, TransportMessageClaimGuard,
+    TopicTaskDisposition, TransportLifecycle, TransportMessageClaimGuard,
 };
 use crate::dkg::v0::transport::{AttemptKey, MessageId};
 use crypto::r#trait::{Dkg, DkgRole};
@@ -202,8 +202,7 @@ where
             .dkg_session_state
             .create_session(session_id, *dkg_node, total_nodes, move |state| {
                 state.protocol_version = protocol_version;
-                state.transport.ceremony_id = Some(attempt.ceremony_id);
-                state.transport.attempt_id = Some(attempt.attempt_id);
+                state.transport.lifecycle = TransportLifecycle::Reserved { attempt };
                 init_fn(state);
             })
             .await

@@ -38,6 +38,52 @@ fn now() -> Result<u64> {
         .map_err(error)
 }
 
+fn unauthorized_report_session_key(
+    deployment: &str,
+    ring_id: &str,
+    origin_protocol: &str,
+    accused_node_key: &str,
+    session_id: &str,
+) -> Result<Vec<u8>> {
+    if ring_id.len() != 64
+        || !ring_id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(error("invalid native ring identifier"));
+    }
+    let mut bytes = Vec::new();
+    for field in [
+        "orbis-mpc-fault-report-session",
+        deployment,
+        ring_id,
+        orbis_reporting::UNAUTHORIZED_REQUEST_REPORT_TYPE,
+        origin_protocol,
+        accused_node_key,
+        session_id,
+    ] {
+        orbis_reporting::codec::write_string(&mut bytes, field);
+    }
+    // Native report-session v1 includes the optional DKG attempt after the strings.
+    orbis_reporting::codec::write_bytes(&mut bytes, &[]);
+    use sha2::{Digest, Sha256};
+    let session = hex::encode(Sha256::digest(bytes));
+    Ok(format!("orbis/reports/v1/{ring_id}/session/{session}").into_bytes())
+}
+
+fn report_session_is_current(value: Option<&[u8]>, timestamp: u64) -> Result<bool> {
+    let Some(value) = value else { return Ok(false) };
+    if value.len() != 72
+        || !value[8..]
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
+    {
+        return Err(error("invalid native report retention record"));
+    }
+    let expires = u64::from_be_bytes(value[..8].try_into().map_err(error)?);
+    Ok(expires >= timestamp)
+}
+
 impl NativeBulletin {
     /// Readers remain available while one durable writer waits for finality.
     pub async fn connect(
@@ -355,6 +401,50 @@ impl Bulletin for NativeBulletin {
         .map_err(|_| {
             error("native report deadline exceeded; any pending submission remains durable")
         })?
+    }
+
+    async fn accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        // DKG evidence includes an attempt identifier, which this interface does
+        // not carry. The relay pre-check only uses unauthorized-request reports.
+        if report_type != orbis_reporting::UNAUTHORIZED_REQUEST_REPORT_TYPE {
+            return Err(error(
+                "native session pre-check supports unauthorized-request reports only",
+            ));
+        }
+        let key = unauthorized_report_session_key(
+            &self.namespace,
+            ring_id,
+            origin_protocol,
+            accused_node_key,
+            session_id,
+        )?;
+        tokio::time::timeout(self.timeout, async {
+            let response = self
+                .reader
+                .read_current_record(
+                    vera_client::ModuleId::Vera,
+                    &key,
+                    self.minimum.load(Ordering::Acquire),
+                    &self.trusted,
+                    vera_client::RECORD_PROOF_BYTES,
+                )
+                .await
+                .map_err(error)?;
+            self.observe(response.revision.height, response.revision.timestamp)?;
+            report_session_is_current(
+                response.record.value.as_deref().map(|value| value.as_ref()),
+                now()?.max(response.revision.timestamp),
+            )
+        })
+        .await
+        .map_err(|_| error("native report session read deadline exceeded"))?
     }
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {

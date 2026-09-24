@@ -430,6 +430,15 @@ written under `target/upgrade-tests/` unless `--output` is provided.
 Run `scripts/test-upgrade-unit.sh` for the shell syntax, ref-resolution, and
 argument-validation checks without starting Docker.
 
+When `docker/VERA_REF` differs between the baseline and target revisions the
+baseline chain cannot verify the target's threshold signatures, so the harness
+switches to `--fresh-target-chain`: it tears the whole stack down, brings
+SourceHub up on the target ref alongside the target Orbis images, and re-runs
+`prepare` before `verify`. This does not exercise chain-state continuity
+across the upgrade (a follow-up will add an in-place `verad` swap). Force it
+on with `--fresh-target-chain` / off with `--no-fresh-target-chain`, or pin
+the target chain with `--to-vera-ref <git-ref>`.
+
 The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
 pull requests targeting `develop`, comparing the immutable PR base SHA with
 the immutable PR head SHA. BLS12-381 and Decaf377 run as independent jobs.

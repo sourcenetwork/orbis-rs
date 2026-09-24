@@ -26,116 +26,11 @@ pub struct VeraBulletin {
 impl Bulletin for VeraBulletin {
     async fn post(&self, kind: BulletinWriteKind, payload: Vec<u8>) -> Result<String> {
         match kind {
-            BulletinWriteKind::Finalize => {
-                let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let result = self
-                    .chain_client
-                    .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
-                    .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "finalize ring")?;
-                Ok(finalize.ring_id)
-            }
-            BulletinWriteKind::CancelPendingRing => {
-                let cancellation: RingCancellationPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let result = self
-                    .chain_client
-                    .orbis_cancel_pending_ring(&cancellation.ring_id)
-                    .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "cancel pending ring")?;
-                Ok(cancellation.ring_id)
-            }
-            BulletinWriteKind::Document => {
-                let doc: DocumentPayload = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                match self
-                    .chain_client
-                    .orbis_store_document_get_id(
-                        &doc.ring_id,
-                        &doc.document,
-                        &doc.proof,
-                        &doc.policy_id,
-                        &doc.resource,
-                        &doc.permission,
-                        doc.tier.clone(),
-                        doc.timestamp,
-                    )
-                    .await
-                {
-                    Ok((result, document_id)) => {
-                        check_result(result, "store document")?;
-                        Ok(document_id)
-                    }
-                    Err(e) if is_already_exists_error(&e) => generate_document_id(
-                        &doc.ring_id,
-                        &doc.document,
-                        &doc.proof,
-                        &doc.policy_id,
-                        &doc.resource,
-                        &doc.permission,
-                        doc.tier.as_deref(),
-                        doc.timestamp,
-                    )
-                    .map_err(|e| BulletinError::ParseError(e.to_string())),
-                    Err(e) => Err(BulletinError::ChainError(e.to_string())),
-                }
-            }
-            BulletinWriteKind::KeyDerivation => {
-                let kd: KeyDerivation = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                match self
-                    .chain_client
-                    .orbis_store_key_derivation_get_id(
-                        &kd.ring_id,
-                        &kd.derivation,
-                        &kd.policy_id,
-                        &kd.resource,
-                        &kd.permission,
-                    )
-                    .await
-                {
-                    Ok((result, key_derivation_id)) => {
-                        check_result(result, "store key derivation")?;
-                        Ok(key_derivation_id)
-                    }
-                    Err(e) if is_already_exists_error(&e) => Ok(generate_key_derivation_id(
-                        &kd.ring_id,
-                        &kd.derivation,
-                        &kd.policy_id,
-                        &kd.resource,
-                        &kd.permission,
-                    )),
-                    Err(e) => Err(BulletinError::ChainError(e.to_string())),
-                }
-            }
-            BulletinWriteKind::NodeInfo => {
-                let node_info: NodeInfo = serde_json::from_slice(&payload)
-                    .map_err(|e| BulletinError::ParseError(e.to_string()))?;
-                let node_key = self
-                    .chain_client
-                    .signer()
-                    .ok_or_else(|| {
-                        BulletinError::ChainError(
-                            "No signer configured for node info creation".to_string(),
-                        )
-                    })?
-                    .public_key_hex();
-                let result = self
-                    .chain_client
-                    .orbis_create_node_info(
-                        &node_info.peer_id,
-                        &node_info.controller_key,
-                        node_info.whitelisted_policy_ids,
-                        node_info.whitelisted_ring_ids,
-                    )
-                    .await
-                    .map_err(|e| BulletinError::ChainError(e.to_string()))?;
-                check_result(result, "create node info")?;
-                Ok(node_key)
-            }
+            BulletinWriteKind::Finalize => self.post_finalize(payload).await,
+            BulletinWriteKind::CancelPendingRing => self.post_cancel_pending_ring(payload).await,
+            BulletinWriteKind::Document => self.post_document(payload).await,
+            BulletinWriteKind::KeyDerivation => self.post_key_derivation(payload).await,
+            BulletinWriteKind::NodeInfo => self.post_node_info(payload).await,
         }
     }
 
@@ -172,6 +67,26 @@ impl Bulletin for VeraBulletin {
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "submit report")
+    }
+
+    async fn accepted_report_session(
+        &self,
+        ring_id: &str,
+        report_type: &str,
+        origin_protocol: &str,
+        accused_node_key: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        self.chain_client
+            .orbis_read_accepted_report_session(
+                ring_id,
+                report_type,
+                origin_protocol,
+                accused_node_key,
+                session_id,
+            )
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))
     }
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
@@ -398,6 +313,119 @@ impl VeraBulletin {
         }
 
         Ok(client)
+    }
+
+    async fn post_finalize(&self, payload: Vec<u8>) -> Result<String> {
+        let finalize: RingFinalizationPayload = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let result = self
+            .chain_client
+            .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "finalize ring")?;
+        Ok(finalize.ring_id)
+    }
+
+    async fn post_cancel_pending_ring(&self, payload: Vec<u8>) -> Result<String> {
+        let cancellation: RingCancellationPayload = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let result = self
+            .chain_client
+            .orbis_cancel_pending_ring(&cancellation.ring_id)
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "cancel pending ring")?;
+        Ok(cancellation.ring_id)
+    }
+
+    async fn post_document(&self, payload: Vec<u8>) -> Result<String> {
+        let doc: DocumentPayload = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        match self
+            .chain_client
+            .orbis_store_document_get_id(
+                &doc.ring_id,
+                &doc.document,
+                &doc.proof,
+                &doc.policy_id,
+                &doc.resource,
+                &doc.permission,
+                doc.tier.clone(),
+                doc.timestamp,
+            )
+            .await
+        {
+            Ok((result, document_id)) => {
+                check_result(result, "store document")?;
+                Ok(document_id)
+            }
+            Err(e) if is_already_exists_error(&e) => generate_document_id(
+                &doc.ring_id,
+                &doc.document,
+                &doc.proof,
+                &doc.policy_id,
+                &doc.resource,
+                &doc.permission,
+                doc.tier.as_deref(),
+                doc.timestamp,
+            )
+            .map_err(|e| BulletinError::ParseError(e.to_string())),
+            Err(e) => Err(BulletinError::ChainError(e.to_string())),
+        }
+    }
+
+    async fn post_key_derivation(&self, payload: Vec<u8>) -> Result<String> {
+        let kd: KeyDerivation = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        match self
+            .chain_client
+            .orbis_store_key_derivation_get_id(
+                &kd.ring_id,
+                &kd.derivation,
+                &kd.policy_id,
+                &kd.resource,
+                &kd.permission,
+            )
+            .await
+        {
+            Ok((result, key_derivation_id)) => {
+                check_result(result, "store key derivation")?;
+                Ok(key_derivation_id)
+            }
+            Err(e) if is_already_exists_error(&e) => Ok(generate_key_derivation_id(
+                &kd.ring_id,
+                &kd.derivation,
+                &kd.policy_id,
+                &kd.resource,
+                &kd.permission,
+            )),
+            Err(e) => Err(BulletinError::ChainError(e.to_string())),
+        }
+    }
+
+    async fn post_node_info(&self, payload: Vec<u8>) -> Result<String> {
+        let node_info: NodeInfo = serde_json::from_slice(&payload)
+            .map_err(|e| BulletinError::ParseError(e.to_string()))?;
+        let node_key = self
+            .chain_client
+            .signer()
+            .ok_or_else(|| {
+                BulletinError::ChainError("No signer configured for node info creation".to_string())
+            })?
+            .public_key_hex();
+        let result = self
+            .chain_client
+            .orbis_create_node_info(
+                &node_info.peer_id,
+                &node_info.controller_key,
+                node_info.whitelisted_policy_ids,
+                node_info.whitelisted_ring_ids,
+            )
+            .await
+            .map_err(|e| BulletinError::ChainError(e.to_string()))?;
+        check_result(result, "create node info")?;
+        Ok(node_key)
     }
 }
 

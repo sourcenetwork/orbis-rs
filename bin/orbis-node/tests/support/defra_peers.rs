@@ -19,6 +19,7 @@ pub struct Peers {
 
 fn config(path: &Path) -> P2PConfig {
     P2PConfig {
+        allowlist: Default::default(),
         port: 0,
         bind_addr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         relay_mode: defra_p2p::iroh::IrohRelayModeConfig::Disabled,

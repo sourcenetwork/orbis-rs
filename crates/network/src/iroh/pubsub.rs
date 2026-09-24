@@ -334,7 +334,7 @@ impl Topic for IrohTopic {
                     start.elapsed().as_secs_f64(),
                 );
                 let delivered_from = PeerId::from_bytes(message.delivered_from.as_bytes());
-                let lease = match self.ingress.try_admit(&delivered_from).await {
+                let lease = match self.ingress.try_admit_frame(&delivered_from).await {
                     Ok(lease) => lease,
                     Err(reason) => {
                         self.record_ingress_drop(&delivered_from, reason);

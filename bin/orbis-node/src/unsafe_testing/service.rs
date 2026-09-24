@@ -235,7 +235,7 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
                         let attempt = AttemptKey::new(CeremonyId(session_id), attempt_id);
                         app_state
                             .dkg_session_state
-                            .with_attempt_state(attempt, |state| state.transport.activated)
+                            .with_attempt_state(attempt, |state| state.transport.is_activated())
                             .await
                             .unwrap_or(false)
                     }
