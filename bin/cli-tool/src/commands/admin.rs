@@ -238,6 +238,9 @@ pub async fn create_ring(
             current_version,
             None,
             trusted_auth_relay_dids,
+            // PET-enabled rings aren't supported yet (rejected chain-side);
+            // no CLI flag for it until the checking-key lifecycle ships.
+            false,
         )
         .await
         .map_err(|e| anyhow!("Failed to create ring: {}", e))?;

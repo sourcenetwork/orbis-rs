@@ -41,6 +41,21 @@ pub struct Ring {
     pub trusted_auth_relay_dids: Vec<String>,
     #[prost(bool, tag = "15")]
     pub allow_trusted_auth_relays: bool,
+    /// Set at creation; true means this ring requires a PET check before PRE
+    /// release, applying to every document in the ring. Immutable for the
+    /// ring's lifetime. Not yet reachable: ring creation currently rejects true.
+    #[prost(bool, tag = "16")]
+    pub requires_pet: bool,
+    /// The ring's independently-generated PET public key. Absent until its own
+    /// fresh-DKG ceremony finalizes (mirrors `ring_pk`, but is a distinct key —
+    /// never used for signing). Not yet reachable: `requires_pet` is always false.
+    #[prost(string, optional, tag = "17")]
+    pub pet_pk: Option<String>,
+    /// Confirmations for the PET key's fresh-DKG finalization. Mirrors
+    /// `confirmations`, which tracks the main key's finalization independently.
+    /// Not yet reachable: `requires_pet` is always false.
+    #[prost(message, repeated, tag = "18")]
+    pub pet_confirmations: Vec<RingConfirmation>,
 }
 
 #[derive(Clone, Message)]
@@ -178,11 +193,18 @@ pub struct MsgCreateRing {
     pub trusted_auth_relay_dids: Vec<String>,
     #[prost(bool, tag = "10")]
     pub allow_trusted_auth_relays: bool,
+    /// Opt this ring into requiring a PET check before PRE release, applying
+    /// to every document in the ring (no per-document opt-out). Immutable
+    /// once set. Not yet supported: rejected until the PET checking-key
+    /// lifecycle ships.
+    #[prost(bool, tag = "11")]
+    pub requires_pet: bool,
 }
 
 impl MsgCreateRing {
     pub const TYPE_URL: &'static str = "/vera.orbis.MsgCreateRing";
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         creator: &str,
         peer_node_keys: Vec<String>,
@@ -193,6 +215,7 @@ impl MsgCreateRing {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Self {
         let allow_trusted_auth_relays = trusted_auth_relay_dids.is_some();
         Self {
@@ -206,6 +229,7 @@ impl MsgCreateRing {
             reporting,
             trusted_auth_relay_dids: trusted_auth_relay_dids.unwrap_or_default(),
             allow_trusted_auth_relays,
+            requires_pet,
         }
     }
 }

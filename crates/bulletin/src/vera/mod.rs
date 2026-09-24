@@ -496,6 +496,8 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
                 backup_node_keys: reporting.backup_node_keys,
                 kick_threshold: reporting.kick_threshold,
             }),
+        requires_pet: ring.requires_pet,
+        pet_pk: ring.pet_pk,
     };
     Ok(BulletinPost {
         id: ring.id,

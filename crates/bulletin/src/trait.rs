@@ -202,6 +202,19 @@ pub struct RingPayload {
     /// Fault-report policy and automatic replacement settings for this ring.
     #[serde(default)]
     pub reporting: ReportingConfig,
+    /// Set at creation; true means this ring requires a PET check before PRE
+    /// release, applying to every document in the ring. Immutable for the
+    /// ring's lifetime. Not yet reachable: ring creation currently rejects true.
+    #[serde(default)]
+    pub requires_pet: bool,
+    /// The ring's independently-generated PET public key. Absent until its own
+    /// fresh-DKG ceremony finalizes (mirrors `ring_pk`, but is a distinct key —
+    /// never used for signing). Not yet reachable: `requires_pet` is always
+    /// false. PET-key finalization-confirmation tracking is chain-side only
+    /// (mirrors how `confirmations` for the main key isn't on this payload
+    /// either — see `Bulletin::ring_finalization_status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_pk: Option<String>,
 }
 
 /// Payload for confirming a completed fresh DKG ring.

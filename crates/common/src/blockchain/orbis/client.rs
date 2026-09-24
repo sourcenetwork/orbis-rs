@@ -8,6 +8,7 @@ use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 
 impl VeraClient {
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_create_ring(
         &self,
         peer_node_keys: Vec<String>,
@@ -18,6 +19,7 @@ impl VeraClient {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
         let msg = MsgCreateRing::new(
@@ -30,6 +32,7 @@ impl VeraClient {
             current_version,
             reporting,
             trusted_auth_relay_dids,
+            requires_pet,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -42,6 +45,7 @@ impl VeraClient {
     /// Create a ring and return the chain-assigned ring_id alongside the broadcast result.
     ///
     /// The ring_id is decoded from `MsgCreateRingResponse` in the ABCI response data.
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_create_ring_get_id(
         &self,
         peer_node_keys: Vec<String>,
@@ -52,6 +56,7 @@ impl VeraClient {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -63,6 +68,7 @@ impl VeraClient {
                 current_version,
                 reporting,
                 trusted_auth_relay_dids,
+                requires_pet,
             )
             .await?;
 

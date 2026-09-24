@@ -816,6 +816,8 @@ mod ring_reshare_update_tests {
             policy_id: None,
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         };
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
         let ring_id = "test-sign-reshare-ring".to_string();
@@ -874,6 +876,8 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
             trusted_auth_relay_dids: Some(vec!["did:key:relay".to_string()]),
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         };
         let reordered = RingPayload {
             upgrade_info: Default::default(),
@@ -902,6 +906,8 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         };
         let with_pss_interval = RingPayload {
             pss_interval: 30,
@@ -928,6 +934,8 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         };
         let with_upgrade = RingPayload {
             upgrade_info: bulletin::r#trait::UpgradeInfo {
@@ -958,6 +966,8 @@ mod ring_reshare_update_tests {
             policy_id: Some("policy".to_string()),
             trusted_auth_relay_dids: Some(vec!["did:key:relay".to_string()]),
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         };
         let expected = RingReshareSignState {
             ring_pk: "ring-pk".to_string(),

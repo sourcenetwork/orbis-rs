@@ -63,6 +63,8 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     bulletin
@@ -427,6 +429,8 @@ async fn test_store_secret_idempotent() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let ring_id = "test-store-secret-valid-ring".to_string();

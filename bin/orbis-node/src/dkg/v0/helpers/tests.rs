@@ -62,6 +62,8 @@ fn make_valid_ring_payload(node_key: &str) -> RingPayload {
         policy_id: Some("policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }
 
@@ -78,6 +80,8 @@ fn make_valid_reshare_ring_payload(old_node_key: &str, new_node_key: &str) -> Ri
         policy_id: Some("policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }
 
@@ -147,6 +151,8 @@ async fn test_validate_fresh_dkg_node_authorization_allows_ring_id_with_blank_pl
         policy_id: Some("policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     seed_node_info(
         &dummy_bulletin,

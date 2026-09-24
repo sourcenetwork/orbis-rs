@@ -192,6 +192,8 @@ async fn test_reshare_session_init_rejects_mismatched_bulletin_ring_pk() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let post_id = "test-mismatched-ring-pk".to_string();
     dummy_bulletin
@@ -308,6 +310,8 @@ async fn test_reshare_session_init_rejects_noncanonical_next_leader() {
                 policy_id: None,
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed reshare announcement");
@@ -423,6 +427,8 @@ async fn test_reshare_session_init_rejects_new_receiver_without_node_allowlist()
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed reshare announcement");
@@ -571,6 +577,8 @@ async fn test_dealer_phase4_retains_share_until_finalized_exclusion() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     dummy_bulletin
         .set_ring(bulletin_post_id.clone(), pending_payload.clone())
@@ -705,6 +713,8 @@ async fn test_dealer_phase4_holds_pss_until_finalized_exclusion() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     dummy_bulletin
         .set_ring(bulletin_post_id.clone(), pending_payload.clone())
@@ -821,6 +831,8 @@ async fn write_ring_with_announced_reshare(
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let post_id = format!("test-reshare-{ring_pk}");
     bulletin
@@ -1139,6 +1151,8 @@ async fn post_ring_for_validation(
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let post_id = format!("test-validation-{ring_pk}");
     bulletin
@@ -1472,6 +1486,8 @@ async fn post_reshare_announcement(
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     bulletin
         .set_ring(format!("test-reshare-announcement-{key_string}"), payload)

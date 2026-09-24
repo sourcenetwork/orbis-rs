@@ -192,6 +192,7 @@ fn create_ring_round_trips_pss_interval() {
         0,
         None,
         Some(vec!["did:key:relay".to_string()]),
+        false,
     );
     let bytes = msg.encode_to_vec();
     let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");
@@ -222,6 +223,7 @@ fn create_ring_round_trips_reporting_config() {
             kick_threshold: 4,
         }),
         None,
+        false,
     );
     let bytes = msg.encode_to_vec();
     let decoded = MsgCreateRing::decode(bytes.as_slice()).expect("decode MsgCreateRing");

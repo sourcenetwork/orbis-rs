@@ -331,6 +331,8 @@ fn seed_three_node_dummy_bulletin(
             Some(trusted_auth_relay_dids)
         },
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     dummy_bulletin
         .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
@@ -684,6 +686,8 @@ pub async fn write_ring_to_bulletin(
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let post_id = format!("test-ring-{ring_pk}");
     bulletin
