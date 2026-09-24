@@ -31,6 +31,10 @@ pub struct Ring {
     pub block_number_nonce: u64,
     #[prost(string, tag = "10")]
     pub policy_id: String,
+    /// One entry per peer that has submitted a finalize confirmation. On a
+    /// `requires_pet` ring, each entry's `pet_pk` is populated too — a peer
+    /// submits both keys together in one `MsgFinalizeRing`, not as two
+    /// separate rounds.
     #[prost(message, repeated, tag = "11")]
     pub confirmations: Vec<RingConfirmation>,
     #[prost(message, optional, tag = "12")]
@@ -51,11 +55,7 @@ pub struct Ring {
     /// never used for signing). Not yet reachable: `requires_pet` is always false.
     #[prost(string, optional, tag = "17")]
     pub pet_pk: Option<String>,
-    /// Confirmations for the PET key's fresh-DKG finalization. Mirrors
-    /// `confirmations`, which tracks the main key's finalization independently.
-    /// Not yet reachable: `requires_pet` is always false.
-    #[prost(message, repeated, tag = "18")]
-    pub pet_confirmations: Vec<RingConfirmation>,
+    // tag 18 formerly pet_confirmations; folded into RingConfirmation::pet_pk instead.
 }
 
 #[derive(Clone, Message)]
@@ -99,6 +99,11 @@ pub struct RingConfirmation {
     pub node_key: String,
     #[prost(string, tag = "2")]
     pub ring_pk: String,
+    /// Present only when finalizing a `requires_pet` ring — the peer's claimed
+    /// PET public key, submitted together with `ring_pk` in the same finalize
+    /// message (not an independent confirmation round).
+    #[prost(string, optional, tag = "3")]
+    pub pet_pk: Option<String>,
 }
 
 /// Document state stored in x/orbis.
@@ -475,16 +480,22 @@ pub struct MsgFinalizeRing {
     pub ring_id: String,
     #[prost(string, tag = "3")]
     pub ring_pk: String,
+    /// Required, and only accepted, when the ring's `requires_pet` is true:
+    /// the signer's local fresh-DKG PET key ceremony completed alongside the
+    /// main one, and both are submitted together in this one finalize message.
+    #[prost(string, optional, tag = "4")]
+    pub pet_pk: Option<String>,
 }
 
 impl MsgFinalizeRing {
     pub const TYPE_URL: &'static str = "/vera.orbis.MsgFinalizeRing";
 
-    pub fn new(creator: &str, ring_id: &str, ring_pk: &str) -> Self {
+    pub fn new(creator: &str, ring_id: &str, ring_pk: &str, pet_pk: Option<String>) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
+            pet_pk,
         }
     }
 }

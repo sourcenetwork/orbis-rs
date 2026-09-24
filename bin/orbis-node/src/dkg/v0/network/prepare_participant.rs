@@ -22,7 +22,7 @@ where
         .await
         .map_err(|error| crate::dkg::v0::coordinator::attempt_state_error(attempt, error))?;
     match kind {
-        SessionKind::Fresh => {
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => {
             coordinator
                 .initiate_phase0_commitment_hashes(attempt, &peer_ids)
                 .await?;

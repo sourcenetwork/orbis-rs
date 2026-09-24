@@ -394,6 +394,88 @@ where
     })
 }
 
+/// Validate a `FreshPet` `SessionInit` — the ring's PET checking-key ceremony,
+/// run after its main-key `Fresh` ceremony has already finalized.
+///
+/// Mirrors `validate_fresh_init` exactly except for the ring-payload
+/// precondition (`validate_fresh_pet_dkg_ring_payload`, requiring an already-
+/// finalized main key rather than a pending ring) and error-message labeling;
+/// same committee/route/authorization checks, same peer set.
+async fn validate_fresh_pet_init<D>(
+    coord: &DkgCoordinator<D>,
+    threshold: u32,
+    total_participants: u32,
+    peer_ids: &[String],
+    peer_node_keys: &[String],
+    pss_interval: u64,
+    policy_id: Option<&str>,
+    ring_id: &str,
+) -> Result<ResolvedSessionRoutes>
+where
+    D: CoordinatorDkg,
+{
+    let (bulletin_ring_payload, effective_routes) =
+        read_ring_for_protocol(&*coord.app_state.bulletin, ring_id)
+            .await
+            .map_err(DkgError::ProtocolError)?;
+    if effective_routes.version != coord.routes.version {
+        return Err(DkgError::ProtocolError(format!(
+            "fresh PET DKG for ring {} arrived on protocol version {}, but effective version is {}",
+            ring_id, coord.routes.version, effective_routes.version
+        )));
+    }
+    validate_fresh_pet_dkg_ring_payload(ring_id, &bulletin_ring_payload)?;
+
+    validate_fresh_session_init_params(
+        ring_id,
+        peer_node_keys,
+        threshold,
+        total_participants,
+        pss_interval,
+        policy_id,
+        &bulletin_ring_payload,
+    )?;
+
+    let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+    validate_dkg_node_authorization_for_committee(
+        &coord.app_state.bulletin,
+        &coord.app_state.node_key,
+        &our_peer_id_hex,
+        ring_id,
+        &bulletin_ring_payload,
+        &bulletin_ring_payload.peer_node_keys,
+        "Fresh PET DKG",
+    )
+    .await?;
+    tracing::info!(
+        threshold = threshold,
+        policy_id = ?policy_id,
+        "DKG Coordinator: Fresh PET SessionInit committee authorization validated"
+    );
+
+    let routes = resolve_node_routes(&coord.app_state.bulletin, peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    validate_node_route_bindings(peer_node_keys, peer_ids, &routes).map_err(|detail| {
+        DkgError::Unauthorized(format!(
+            "Fresh PET current-committee transport routes do not match Vera NodeInfo: {detail}"
+        ))
+    })?;
+    let route_peer_ids = peer_ids_from_routes(&routes);
+    let route_assignments = canonical_node_id_assignments_from_node_keys(peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let route_map =
+        peers::old_committee_node_peer_mappings(peer_node_keys, &routes, &route_assignments)?;
+
+    Ok(ResolvedSessionRoutes {
+        old_peer_ids: route_peer_ids,
+        old_node_id_to_peer_id: route_map,
+        new_peer_ids: None,
+        new_node_id_to_peer_id: None,
+        session_peer_node_keys: peer_node_keys.to_vec(),
+    })
+}
+
 /// Validate and create state for a typed transport Prepare.
 ///
 /// Validates the session kind (Fresh/Refresh/Reshare), assigns this node's role
@@ -473,6 +555,19 @@ where
             )
             .await?
         }
+        SessionKind::FreshPet { .. } => {
+            validate_fresh_pet_init(
+                coord,
+                threshold,
+                total_participants,
+                peer_ids,
+                peer_node_keys,
+                pss_interval,
+                policy_id.as_deref(),
+                &ring_id,
+            )
+            .await?
+        }
     };
 
     let canonical_node_id_assignments =
@@ -515,7 +610,9 @@ where
         (node_id, DkgRole::Standard, None)
     };
 
-    // Refresh/Reshare: claim the ring's active PSS slot before creating the session.
+    // Refresh/Reshare/FreshPet: claim the ring's active PSS slot before creating
+    // the session (gated on `kind.ring_key()`, which is `Some` for all three —
+    // `Fresh` alone has no existing ring to protect and stays ungated).
     if let Some(ring_key) = kind.ring_key() {
         match coord
             .app_state

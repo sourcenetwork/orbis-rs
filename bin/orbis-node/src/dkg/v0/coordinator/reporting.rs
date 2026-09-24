@@ -378,7 +378,7 @@ where
 {
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
     let (origin_protocol, ring_id) = match kind {
-        SessionKind::Fresh => return Ok(None),
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
         SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
         SessionKind::Reshare {
             bulletin_post_id, ..

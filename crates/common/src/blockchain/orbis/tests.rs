@@ -285,7 +285,7 @@ fn node_demerits_query_wire_fields_match_vera_proto() {
 
 #[test]
 fn finalize_ring_wire_fields_match_vera_proto() {
-    let msg = MsgFinalizeRing::new("c", "r", "pk");
+    let msg = MsgFinalizeRing::new("c", "r", "pk", None);
 
     assert_eq!(hex::encode(msg.encode_to_vec()), "0a01631201721a02706b");
 }

@@ -161,6 +161,9 @@ where
     let payload = RingFinalizationPayload {
         ring_id: ring_id.to_string(),
         ring_pk: ring_pk.clone(),
+        // TODO(PET checking-key lifecycle): populate once this ring's PET-key
+        // ceremony (chained after this one, when requires_pet) also completes.
+        pet_pk: None,
     };
     let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
         DkgError::Serialization(format!(

@@ -598,7 +598,10 @@ where
     let readiness_start = Instant::now();
     let deadline = readiness_start + DKG_PREPARATION_TIMEOUT;
     let ceremony_kind = match &prepare.kind {
-        SessionKind::Fresh => DkgCeremonyKind::Fresh,
+        // Reuses the Fresh metrics bucket — a PET ceremony is a fresh DKG in
+        // every respect metrics care about; split it out later if PET-specific
+        // observability is ever needed.
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgCeremonyKind::Fresh,
         SessionKind::Refresh { .. } => DkgCeremonyKind::Refresh,
         SessionKind::Reshare { .. } => DkgCeremonyKind::Reshare,
     };

@@ -414,8 +414,19 @@ where
     // For Reshare non-Dealers the bulletin update still happens below (node 1
     // must sign and post), so defer the unmark until after that completes.
     // Error paths are handled by check_and_trigger_phase4 → remove_session.
+    //
+    // `Fresh` never claims a ring_pss slot in the first place (session_init's
+    // claim is gated on `kind.ring_key()`, which is `None` for `Fresh` — there
+    // is no existing ring to protect against a concurrent refresh/reshare
+    // before its key exists), so this branch is unreachable for it; that's
+    // pre-existing, not something this change alters. `FreshPet` does claim
+    // one (keyed by `ring_id`, same session_init path, now extended for free)
+    // as a cheap safety net against an accidental duplicate PET ceremony for
+    // the same ring, so it must release it here — immediately, the same as
+    // this branch already does for Refresh's non-deferred cases, since
+    // FreshPet has no "bulletin update below" step to wait for.
     if let Some(ring_key) = kind.ring_key() {
-        if matches!(kind, SessionKind::Fresh) {
+        if matches!(kind, SessionKind::Fresh | SessionKind::FreshPet { .. }) {
             coord
                 .app_state
                 .dkg_session_state

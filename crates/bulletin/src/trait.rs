@@ -224,6 +224,11 @@ pub struct RingFinalizationPayload {
     pub ring_id: String,
     /// Aggregate public key computed by DKG participants.
     pub ring_pk: String,
+    /// Required, and only accepted, when the ring's `requires_pet` is true:
+    /// the local fresh-DKG PET key ceremony completed alongside the main one,
+    /// and both are submitted together in this one finalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_pk: Option<String>,
 }
 
 /// Chain-observed state for a fresh-DKG finalization.

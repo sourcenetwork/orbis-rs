@@ -922,7 +922,7 @@ impl<D: Dkg> DkgSessionState<D> {
 
     fn ceremony_kind(&self) -> metrics::DkgCeremonyKind {
         match &self.kind {
-            SessionKind::Fresh => metrics::DkgCeremonyKind::Fresh,
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => metrics::DkgCeremonyKind::Fresh,
             SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
             SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
         }
@@ -954,7 +954,7 @@ impl<D: Dkg> DkgSessionState<D> {
     ///   `None`, which only happens for pure `Receiver` nodes — they must not call this)
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
         let mode = match &self.kind {
-            SessionKind::Fresh => DkgMode::Fresh,
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgMode::Fresh,
             SessionKind::Refresh { .. } => DkgMode::Refresh,
             SessionKind::Reshare { .. } => {
                 let p = self.reshare.params.as_mut().ok_or_else(|| {
@@ -1000,14 +1000,19 @@ impl<D: Dkg> DkgSessionState<D> {
     /// for a stalled refresh/reshare session (see [`AbandonedPssSession`]). A dealer that dies
     /// after `SessionInit` never broadcasts its commitment; a dealer that dies after committing
     /// never sends this node its Phase 2 share. Returns empty for `Fresh` (fresh DKG has no
-    /// finalized ring to anchor an offline report against).
+    /// finalized ring to anchor an offline report against) and for `FreshPet` too — even though
+    /// its ring *does* already have a finalized main key, it is still a fresh-DKG-shaped
+    /// ceremony (abort-only by design, same as `Fresh`: a stall is abandoned and retried, not
+    /// reported). Extending node_offline attribution to a stalled FreshPet ceremony is a
+    /// deliberate future design pass (see the parked "durable staging/crash-recovery" item in
+    /// docs/plans/pet-integration.md), not something to add as a side effect of this change.
     ///
     /// Refresh: every current-committee member is a dealer. Reshare: the participating
     /// old-committee members are the dealers. Over-attribution is harmless — the downstream
     /// `node_offline` report is gated by the co-signer reachability probe.
     pub(crate) fn missing_dealer_peer_ids(&self, stalled_phase: DkgPhase) -> Vec<String> {
         let dealer_node_ids: Vec<u32> = match &self.kind {
-            SessionKind::Fresh => return Vec::new(),
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => return Vec::new(),
             SessionKind::Refresh { .. } => (1..=self.routing.peer_node_keys.len() as u32).collect(),
             SessionKind::Reshare { .. } => match &self.reshare.params {
                 Some(params) => params.participating_ids.clone(),

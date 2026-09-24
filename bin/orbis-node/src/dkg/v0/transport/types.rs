@@ -711,7 +711,9 @@ impl PrepareSession {
     pub fn leader_committee(&self) -> Option<&CommitteeConfig> {
         match self.kind {
             SessionKind::Reshare { .. } => self.committees.next.as_ref(),
-            SessionKind::Fresh | SessionKind::Refresh { .. } => Some(&self.committees.current),
+            SessionKind::Fresh | SessionKind::FreshPet { .. } | SessionKind::Refresh { .. } => {
+                Some(&self.committees.current)
+            }
         }
     }
 

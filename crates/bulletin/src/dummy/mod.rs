@@ -410,6 +410,7 @@ mod tests {
         let payload = RingFinalizationPayload {
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
+            pet_pk: None,
         };
         let payload_bytes: Vec<u8> = payload.try_into()?;
         bulletin

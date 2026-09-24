@@ -320,7 +320,7 @@ impl VeraBulletin {
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
         let result = self
             .chain_client
-            .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
+            .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk, finalize.pet_pk)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "finalize ring")?;

@@ -450,9 +450,10 @@ impl VeraClient {
         &self,
         ring_id: &str,
         ring_pk: &str,
+        pet_pk: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
-        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk);
+        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk, pet_pk);
         self.broadcast_proto_msg_with_gas(
             MsgFinalizeRing::TYPE_URL,
             &msg,

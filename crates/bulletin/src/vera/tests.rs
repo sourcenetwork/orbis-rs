@@ -209,7 +209,7 @@ async fn test_bulletin_document() {
 
     bulletin
         .chain_client
-        .orbis_finalize_ring(&ring_id, "dummy_ring_pk")
+        .orbis_finalize_ring(&ring_id, "dummy_ring_pk", None)
         .await
         .unwrap();
 
