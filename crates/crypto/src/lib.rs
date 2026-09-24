@@ -5,6 +5,7 @@
 pub mod context;
 pub mod error;
 pub mod helpers;
+pub mod pet_context;
 pub mod r#trait;
 
 #[cfg(feature = "bls12-381")]
