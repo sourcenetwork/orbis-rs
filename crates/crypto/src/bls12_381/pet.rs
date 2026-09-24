@@ -11,6 +11,7 @@ use ark_std::UniformRand;
 use rand_core::OsRng;
 use sha2::{Digest, Sha512};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
 
 const NAME: &str = "pet/bls12_381";
 /// Domain separator for the PET owner-fingerprint hash-to-scalar. Distinct from
@@ -51,18 +52,22 @@ impl Pet for PetNode {
         let ephemeral_point = Self::decode_ephemeral_point(&tag.ephemeral_point)?;
 
         let mut rng = OsRng;
-        let k = loop {
+        // Zeroizing: `k` is this proof's secret nonce. If it survived in process
+        // memory, `r_tag = (z - k) / c` would recover the tag's owner fingerprint
+        // from the public proof (see `Pet::prove_tag_knowledge`'s docs).
+        let k = Zeroizing::new(loop {
             let candidate = Fr::rand(&mut rng);
             if candidate != Fr::zero() {
                 break candidate;
             }
-        };
+        });
         // `k` is this proof's fresh nonce — constant-time.
         let r1: G1Affine =
             crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
         let c = Self::tag_knowledge_proof_challenge(&ephemeral_point, &r1, tag_transcript_digest)?;
-        let z = k + (c * r_tag);
+        // z = k + c*r_tag — constant-time scalar arithmetic, since r_tag is secret.
+        let z = crate::bls12_381::ct::ct_scalar_mul_add(&k, &c, r_tag)?;
 
         let mut challenge_bytes = Vec::new();
         c.serialize_compressed(&mut challenge_bytes)?;
