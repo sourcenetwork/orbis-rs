@@ -274,17 +274,18 @@ pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload
 }
 
 /// Validates the structural state of a `RingPayload` for the PET checking key's
-/// fresh-DKG ceremony (`SessionKind::FreshPet`), run after the ring's main-key
-/// ceremony has already finalized.
+/// fresh-DKG ceremony (`SessionKind::FreshPet`).
 ///
-/// This is the mirror image of `validate_fresh_dkg_ring_payload`'s ring_pk
-/// check: the main key must already exist (`ring_pk` non-empty — the PET
-/// ceremony is sequential, never run before or alongside the main one), the
-/// ring must actually require PET, and the PET key itself must not already
-/// exist (`pet_pk` empty — this ceremony has not already completed for this
-/// ring). Peer list, threshold, and policy_id are validated the same way as
-/// plain Fresh DKG, deliberately duplicated rather than shared, since the two
-/// ceremonies' preconditions differ on the one thing that matters most here.
+/// Corrected 2026-09-24: an earlier version of this function required
+/// `ring_pk` to already be non-empty, on the assumption that the main key
+/// would finalize on its own *before* the PET ceremony started. That's wrong
+/// for the agreed flow: both ceremonies run and complete *locally* before
+/// either is submitted to chain, so neither `ring_pk` nor `pet_pk` exists
+/// on-chain yet when the PET ceremony's `SessionInit` is validated — the ring
+/// is still pending, exactly like plain `Fresh`'s own precondition. The only
+/// extra check versus `validate_fresh_dkg_ring_payload` is `requires_pet`.
+/// Peer list, threshold, and policy_id are validated the same way, duplicated
+/// rather than shared per this ceremony's own established convention.
 pub fn validate_fresh_pet_dkg_ring_payload(
     ring_id: &str,
     ring_payload: &RingPayload,
@@ -295,15 +296,9 @@ pub fn validate_fresh_pet_dkg_ring_payload(
             ring_id
         )));
     }
-    if ring_payload.ring_pk.is_empty() {
+    if !ring_payload.ring_pk.is_empty() {
         return Err(DkgError::Unauthorized(format!(
-            "Fresh PET DKG target ring {} has no finalized main key yet",
-            ring_id
-        )));
-    }
-    if ring_payload.pet_pk.is_some() {
-        return Err(DkgError::Unauthorized(format!(
-            "Fresh PET DKG target ring {} already has a PET key",
+            "Fresh PET DKG target ring {} is not pending",
             ring_id
         )));
     }

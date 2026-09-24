@@ -198,6 +198,70 @@ where
     }
 }
 
+/// Route a ring's PET checking-key fresh-DKG start to the canonical leader, or
+/// coordinate it locally. Never called from an external API — only from this
+/// node's own coordinator, once its main-key `Fresh` ceremony for the same
+/// ring has completed locally (see `phases::phase4`). Mirrors `start_fresh`
+/// exactly; the only differences are the PET-specific validator and
+/// `SessionKind`.
+///
+/// Returns a boxed future rather than being a plain `async fn`: calling this
+/// from `coordinator::phases::phase4` (the only caller) is the first time
+/// that module calls into this `start_fresh`-family network machinery — every
+/// existing caller is the external `StartDkg` RPC handler, outside
+/// `coordinator::phases` entirely. Awaiting a plain `async fn` here makes
+/// rustc's opaque-future type computation for `phase4`'s own completion
+/// function depend on itself (E0391), since this call chain loops back into
+/// `coordinator::phases` to run the PET ceremony's own phases. Boxing here
+/// (and in `coordinate_fresh_pet` below, which this calls) gives the compiler
+/// a concrete, non-opaque type at both new edges, breaking the cycle.
+pub fn start_fresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(CeremonyId, AttemptId)>> + Send>>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    Box::pin(async move {
+        let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+            .await
+            .map_err(DkgError::ProtocolError)?;
+        validate_fresh_pet_dkg_ring_payload(&ring_id, &ring)?;
+        let leader = transport::canonical_leader(&ring.peer_node_keys)
+            .ok_or(DkgError::InvalidParticipantCount(0))?
+            .to_string();
+        if leader == state.node_key {
+            return coordinate_fresh_pet(state, routes, ring_id).await;
+        }
+        let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+            .await
+            .map_err(DkgError::Unauthorized)?;
+        let leader_peer = resolved
+            .iter()
+            .find_map(|route| (route.node_key == leader).then_some(route.peer_id.as_str()))
+            .ok_or_else(|| DkgError::InvalidState("canonical leader route is missing".into()))?;
+        match control_request_with_timeout(
+            &state,
+            routes,
+            leader_peer,
+            DkgControlMessage::StartFreshPet { ring_id },
+            DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE,
+        )
+        .await?
+        {
+            DkgControlMessage::StartAccepted {
+                ceremony_id,
+                attempt_id,
+            } => Ok((ceremony_id, attempt_id)),
+            response => Err(DkgError::ProtocolError(format!(
+                "leader returned unexpected start response: {response:?}"
+            ))),
+        }
+    })
+}
+
 /// Fresh-DKG-only status query for a client that called `start_fresh`/`StartDkg` and wants to
 /// know what happened to a ceremony that failed after the RPC already returned "started" (or
 /// during the barrier, if the caller's own connection dropped before receiving that error).
@@ -980,4 +1044,93 @@ where
     )?);
 
     coordinate_prepared(state, routes, prepare).await
+}
+
+/// Coordinate a ring's PET checking-key fresh-DKG start as the canonical
+/// leader. Mirrors `coordinate_fresh` exactly except for the PET-specific
+/// validator, session-id derivation, and `SessionKind`.
+///
+/// Boxed for the same reason as `start_fresh_pet` above, which calls this:
+/// this is the first time `coordinator::phases` (via that caller) reaches
+/// this network module's `coordinate_prepared` machinery from a context that
+/// itself must complete before `coordinator::phases::phase4` can finish,
+/// which otherwise cycles rustc's opaque-future inference (E0391).
+pub(super) fn coordinate_fresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(CeremonyId, AttemptId)>> + Send>>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    Box::pin(async move {
+        let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+            .await
+            .map_err(DkgError::ProtocolError)?;
+        validate_fresh_pet_dkg_ring_payload(&ring_id, &ring)?;
+        let leader = transport::canonical_leader(&ring.peer_node_keys)
+            .ok_or(DkgError::InvalidParticipantCount(0))?
+            .to_string();
+        if leader != state.node_key {
+            return Err(DkgError::Unauthorized(
+                "StartFreshPet must be handled by the canonical leader".into(),
+            ));
+        }
+        let session_id = derive_fresh_pet_dkg_session_id(&ring_id)?;
+        let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
+        if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
+            return Ok((CeremonyId(session_id), attempt_id));
+        }
+        let ceremony_id = CeremonyId(session_id);
+        let attempt_id = AttemptId::random();
+        let committee = transport::ceremony_committee_digest(&ring.peer_node_keys, None);
+        let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+            .await
+            .map_err(DkgError::Unauthorized)?;
+        let peer_ids = peer_ids_from_routes(&resolved);
+        let assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+            .map_err(DkgError::InvalidInput)?;
+        let topic = transport::derive_topic_id(
+            &state.bulletin.chain_id(),
+            &ring_id,
+            &committee,
+            ceremony_id,
+            attempt_id,
+        );
+        let mut prepare = PrepareSession {
+            ceremony_id,
+            attempt_id,
+            config_digest: [0; 32],
+            topic_id: *topic.as_bytes(),
+            leader_node_key: leader,
+            committees: CeremonyConfig {
+                current: CommitteeConfig {
+                    node_keys: ring.peer_node_keys.clone(),
+                    peer_routes: peer_ids.clone(),
+                    node_id_assignments: assignments,
+                    threshold: ring.threshold,
+                },
+                next: None,
+            },
+            kind: SessionKind::FreshPet {
+                ring_id: ring_id.clone(),
+            },
+            pss_interval: ring.pss_interval,
+            policy_id: ring.policy_id.clone(),
+            ring_id,
+            report_signature: None,
+        };
+        prepare.config_digest =
+            transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+        prepare.report_signature = Some(sign_control_message(
+            &state,
+            prepare.ceremony_id,
+            prepare.attempt_id,
+            "prepare",
+            prepare.config_digest,
+        )?);
+
+        coordinate_prepared(state, routes, prepare).await
+    })
 }

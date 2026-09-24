@@ -395,12 +395,14 @@ where
 }
 
 /// Validate a `FreshPet` `SessionInit` — the ring's PET checking-key ceremony,
-/// run after its main-key `Fresh` ceremony has already finalized.
+/// run after this node's own main-key `Fresh` ceremony has completed locally
+/// (but not yet been submitted to chain — both ceremonies' results are held
+/// and finalized together, see `trigger_fresh_pet_after_main_ceremony`).
 ///
-/// Mirrors `validate_fresh_init` exactly except for the ring-payload
-/// precondition (`validate_fresh_pet_dkg_ring_payload`, requiring an already-
-/// finalized main key rather than a pending ring) and error-message labeling;
-/// same committee/route/authorization checks, same peer set.
+/// Mirrors `validate_fresh_init` almost exactly: same pending-ring
+/// precondition (`validate_fresh_pet_dkg_ring_payload` adds only a
+/// `requires_pet` check on top), same committee/route/authorization checks,
+/// same peer set; only the error-message labeling differs.
 async fn validate_fresh_pet_init<D>(
     coord: &DkgCoordinator<D>,
     threshold: u32,

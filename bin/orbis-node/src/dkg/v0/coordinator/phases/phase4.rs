@@ -368,19 +368,93 @@ where
                 );
             })?;
 
-        ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
-            .await
-            .inspect_err(|error| {
+        // A requires_pet ring holds this main key locally rather than
+        // submitting MsgFinalizeRing on its own: both ceremonies' results are
+        // submitted together in one combined finalize once the PET checking
+        // key's own ceremony also completes (see the FreshPet branch of this
+        // function, and the checking-key lifecycle design in
+        // docs/plans/pet-integration.md). Ordinary rings are unaffected.
+        let ring_payload =
+            read_ring_for_route(&*coord.app_state.bulletin, &ring_id, coord.routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
+
+        if ring_payload.requires_pet {
+            start_fresh_pet(coord.app_state.clone(), coord.routes, ring_id.clone())
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        error = %error,
+                        "Phase 4: failed to start the ring's PET checking-key ceremony after \
+                         the main key completed locally. This node holds a valid main-key \
+                         share and index entry but has not submitted the (deferred, combined) \
+                         finalize. The ring will remain pending until another participant \
+                         retries or operator intervention. Local state is preserved."
+                    );
+                })?;
+        } else {
+            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        ring_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: FinalizeRing chain post failed after local state was written. \
+                         This node holds a valid share and index entry but has not confirmed \
+                         on-chain. The ring will remain pending until another participant \
+                         retries or operator intervention. Local state is preserved."
+                    );
+                })?;
+        }
+    }
+
+    // The PET checking key's own ceremony completing is where the deferred,
+    // combined finalize actually gets submitted — covering both keys in one
+    // MsgFinalizeRing. See the `requires_pet` branch above, which triggered
+    // this ceremony instead of finalizing the main key on its own.
+    if let SessionKind::FreshPet { ring_id } = &kind {
+        match ring_storage::local_ring_pk_by_ring_id(&coord.app_state.local_storage, ring_id) {
+            Ok(Some(main_ring_pk)) => {
+                ring_storage::post_fresh_pet_ring_finalization(
+                    coord,
+                    ring_id,
+                    &main_ring_pk,
+                    &ring_pk_bytes,
+                )
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        main_ring_pk = %main_ring_pk,
+                        pet_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: combined FinalizeRing chain post failed after local state \
+                         was written. This node holds a valid PET-key share and index entry \
+                         but has not confirmed on-chain. The ring will remain pending until \
+                         another participant retries or operator intervention. Local state \
+                         is preserved."
+                    );
+                })?;
+            }
+            Ok(None) => {
                 tracing::error!(
                     ring_id = %ring_id,
-                    ring_pk = %hex::encode(&ring_pk_bytes),
-                    error = %error,
-                    "Phase 4: FinalizeRing chain post failed after local state was written. \
-                     This node holds a valid share and index entry but has not confirmed \
-                     on-chain. The ring will remain pending until another participant \
-                     retries or operator intervention. Local state is preserved."
+                    pet_pk = %hex::encode(&ring_pk_bytes),
+                    "Phase 4: PET checking-key ceremony completed locally, but this node has \
+                     no local record of the ring's main key — cannot submit the combined \
+                     finalize yet. This node holds a valid PET-key share; the ring will \
+                     remain pending until this node's own main-key ceremony result is \
+                     available (or operator intervention)."
                 );
-            })?;
+                return Err(DkgError::Bulletin(format!(
+                    "Fresh PET DKG for ring {} completed locally with no local main-key record",
+                    ring_id
+                )));
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     tracing::info!(

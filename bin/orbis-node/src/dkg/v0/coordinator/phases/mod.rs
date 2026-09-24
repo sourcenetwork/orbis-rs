@@ -4,12 +4,15 @@ use crate::dkg::v0::helpers::{
     public_key_matches_storage_key, serialize_commitment_coefficients,
 };
 use crate::dkg::v0::messages::SessionKind;
-use crate::dkg::v0::network::{exchange_private_shares, submit_public_contribution};
+use crate::dkg::v0::network::{
+    exchange_private_shares, start_fresh_pet, submit_public_contribution,
+};
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate, TopicTaskDisposition};
 use crate::dkg::v0::transport::{
     derive_private_message_id, encode, AttemptKey, DkgPrivateMessage, DkgPublicPayload,
     ParticipantRef,
 };
+use crate::helpers::protocol_version::read_ring_for_route;
 use crate::ring_state::RingShareBundle;
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
 use crypto::{CryptoSerialize, SignImpl};
