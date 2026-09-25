@@ -12,17 +12,32 @@ The mental model is:
 ```text
 pre::v0::service::stages (a new stage, gated on ring_payload.requires_pet)
     -> PetCoordinator::initiate_pet_check
+    -> check_pet_permission: does the requester hold document.permission
+       on the audit target? (ACP, additive — checked before anything below
+       reveals whether the tag itself would have matched)
     -> this node's own independent tag-knowledge verification
     -> threshold check-share round (peer-to-peer, mirrors PRE's reencrypt round)
     -> combine shares -> pet_sk * R
-    -> resolve the audit target's real owner via ACP
+    -> F(audit_target_object_id) — the plaintext owner identity itself,
+       not resolved via ACP; see the invariant below
     -> verify T == F(target) + pet_sk*R
-    -> Ok(()) or PetError::Mismatch, folded into PreError by `start_pre`
+    -> Ok(signed attestations) or PetError, folded into PreError by `start_pre`
 
-network message
+network message (PET's own check-share round)
     -> protocol_handler.rs
     -> PetCoordinator::handle_message
-    -> handlers.rs: verify request, load local PET share, reply with partial
+    -> handlers.rs: verify request, load local PET share, reply with a
+       signed partial (PetShareAttestation)
+
+pre::v0::coordinator::handlers::handle_reencrypt_request (every PRE peer,
+gated on ring_payload.requires_pet, using the attestations forwarded in
+PreRequestContext rather than re-running the threshold round above)
+    -> PetCoordinator::verify_pet_admission
+    -> same check_pet_permission gate, independently re-checked
+    -> independently re-verifies the tag-knowledge proof
+    -> verifies each attestation's signature, recombines, does its own
+       final match against F(audit_target_object_id)
+    -> only then releases its reencryption share
 ```
 
 Like PRE, this is a bounded one-round request/response protocol — no
@@ -44,7 +59,7 @@ pet/
                              ResponseManager, mirrors PreResponseManager)
     coordinator/
       mod.rs                  PetCoordinator facade
-      initiator.rs            fan-out, combine, resolve target, final verify
+      initiator.rs            fan-out, combine, final verify against the target
       network.rs               per-peer send and same-stream response receive
       handlers.rs             inbound CheckRequest handler (responder side)
       verification.rs        shared tag-knowledge-proof verification, reused
@@ -67,8 +82,9 @@ point instead of a sum):
 - The initiator Lagrange-combines `threshold`-many contributions into
   `pet_sk * R = pet_sk*(r_tag*G) = r_tag*pet_pk` (`Pet::combine_pet_check_shares`).
 - The check passes iff `T == F(target) + pet_sk*R` (`Pet::verify_pet_match`),
-  where `F(target)` is recomputed locally from the ACP-resolved audit target
-  — never taken from the wire.
+  where `target` is `audit_target_object_id` itself — the plaintext owner
+  identity, recomputed locally, never taken from the wire (the request
+  supplies the *identifier*, not a precomputed fingerprint).
 
 ## Key invariants
 
@@ -82,12 +98,32 @@ point instead of a sum):
   against — only the initiator needs the target, for the one final
   comparison after combining. This is why `PetCheckContext` (the wire
   payload) carries the full `DocumentPayload` but not `audit_target_object_id`.
-- **The audit target is always resolved via ACP, never trusted from the
-  caller.** `audit_target_object_id` names an ACP object; `Authz::resolve_relation_subject`
-  reads who actually holds the `"owner"` relation on it. See
-  `coordinator::verification::PET_OWNER_RESOURCE`/`PET_OWNER_RELATION` for the
-  exact contract external callers (Bankd) must follow when registering that
-  relationship.
+- **`audit_target_object_id` is the plaintext owner identity itself — there
+  is deliberately no ACP identity-resolution step.** Earlier drafts of this
+  feature resolved a `"creator"` relation via ACP to find "the real owner";
+  that indirection was removed because it added no protection a caller
+  can't already get around by naming any object it likes — nothing stops
+  that, and it doesn't need to. What actually gates the check is the
+  cryptographic match below (a wrong identity fails it outright — nobody
+  can guess or forge a matching tag) and `check_pet_permission` (below).
+  `audit_target_object_id` still names an ACP object *under the document's
+  own resource type* (`document.resource` — not a separate resource; a
+  document and its audit target sharing a resource type risks nothing in
+  practice, since `object_id` is always a content hash and
+  `audit_target_object_id` a chosen identifier).
+- **A second, independent ACP gate: `check_pet_permission`.** Does the
+  requesting actor hold `document.permission` (reused as-is — already bound
+  into the tag digest via `ciphertext_context`, so no dedicated field exists
+  for this) on `(document.resource, audit_target_object_id)`? This is
+  additive to the cryptographic tag-match above, not a replacement — a
+  genuinely matching tag still proves the tag is real; this proves the
+  requester is allowed to invoke/learn that fact. Checked *first*, in both
+  `initiate_pet_check` and `verify_pet_admission` — an unauthorized caller
+  learns nothing about whether the tag would have matched. Reuses
+  `PetError::Mismatch` on denial rather than a distinct variant, so "wrong
+  tag" and "not authorized" stay indistinguishable to the caller. This is
+  what lets the real owner delegate `reader` on the audit target to other
+  actors, exactly like decrypting the document itself.
 - **No refresh/reshare support yet.** The PET checking key's `RingShareBundle`
   is write-once (only fresh-DKG writes it via `save_by_ring_key`, keyed by
   `ring_id` rather than by public key) — the PSS-generation TOCTOU handling

@@ -1911,17 +1911,6 @@ async fn test_check_policy_access_enforces_authz_denial() {
         async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
             Ok(0)
         }
-        async fn resolve_relation_subject(
-            &self,
-            _: &str,
-            _: &str,
-            _: &str,
-            _: &str,
-        ) -> authz::error::Result<String> {
-            Err(authz::error::AuthZError::NotFound(
-                "not implemented in DenyAuthZ".to_string(),
-            ))
-        }
     }
 
     let document_payload = DocumentPayload {

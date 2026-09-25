@@ -232,6 +232,8 @@ where
                     &document_payload,
                     ctx.salt.as_deref(),
                     &audit_target_object_id,
+                    &actor_id,
+                    ctx.valid_window.clone(),
                     &ring_payload,
                     &ctx.pet_attestations,
                 )

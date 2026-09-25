@@ -14,6 +14,7 @@ use crate::pet::v0::attestation::{pet_share_signing_bytes, PetShareAttestation};
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::{PetCheckContext, PetCheckRequest, PetMessage};
 use crate::ring_state::RingShareBundle;
+use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
 use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, Pet, PriShare, PubShare};
@@ -51,6 +52,8 @@ where
         document: DocumentPayload,
         salt: Option<String>,
         audit_target_object_id: String,
+        actor_id: String,
+        valid_window: Option<ValidWindow>,
     ) -> Result<Vec<PetShareAttestation>> {
         let ring_payload = read_ring_for_route(
             &*self.app_state.bulletin,
@@ -65,6 +68,18 @@ where
                 document.ring_id
             )));
         }
+
+        // Authorization gate first — an unauthorized caller learns nothing
+        // about whether the tag itself would have matched.
+        super::verification::check_pet_permission(
+            &*self.app_state.authz,
+            &document,
+            &audit_target_object_id,
+            &actor_id,
+            valid_window,
+        )
+        .await?;
+
         let threshold = ring_payload.threshold as usize;
         let committee_size = ring_payload.peer_node_keys.len();
 
@@ -278,18 +293,10 @@ where
         let combined = P::combine_pet_check_shares(&shares, threshold, committee_size)
             .map_err(|e| PetError::Crypto(format!("Failed to combine PET check shares: {}", e)))?;
 
-        let target_owner_id = self
-            .app_state
-            .authz
-            .resolve_relation_subject(
-                &document.policy_id,
-                super::verification::PET_OWNER_RESOURCE,
-                &audit_target_object_id,
-                super::verification::PET_OWNER_RELATION,
-            )
-            .await
-            .map_err(|e| PetError::Acp(e.to_string()))?;
-        let target_fingerprint = P::owner_fingerprint(target_owner_id.as_bytes())
+        // `audit_target_object_id` *is* the plaintext owner identity — see
+        // `verification.rs`'s module doc comment for why no ACP identity
+        // resolution step exists or is needed here.
+        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
             .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         P::verify_pet_match(&tag, &combined, &target_fingerprint)

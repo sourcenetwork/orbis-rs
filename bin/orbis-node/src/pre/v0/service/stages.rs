@@ -399,6 +399,8 @@ where
                 authorized.document_payload.clone(),
                 authorized.salt.clone(),
                 audit_target_object_id,
+                authorized.actor_id.clone(),
+                authorized.valid_window.clone(),
             )
             .await
             .map_err(PreError::from)

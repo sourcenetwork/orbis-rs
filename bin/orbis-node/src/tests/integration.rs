@@ -1308,23 +1308,28 @@ async fn test_cli_calls_dkg_for_pet_ring() {
     // no tag at all. Both use the inline-document path (never posted to the
     // bulletin) — mirrors `pre::v0::tests::test_pre_with_inline_document_end_to_end`.
     // ========================================================================
-    println!("Setting up ACP for PET-gated PRE (document read/reader + owner lookup)...");
+    println!("Setting up ACP for PET-gated PRE (document creator/reader, shared with the audit target)...");
 
-    // A dedicated policy: "document"/"reader"/"read" for ordinary PRE
-    // authorization, plus an "owner" resource for PET's own ACP owner lookup
-    // (`pet::v0::coordinator::verification::{PET_OWNER_RESOURCE, PET_OWNER_RELATION}`,
-    // both "owner"). The ring-governance policy created above has neither.
+    // A single "document" resource, used for *both* checks: ordinary PRE
+    // authorization against the document's own `object_id`, and PET's
+    // `check_pet_permission` against `audit_target_object_id` — the audit
+    // target is just another object under the same resource type, not a
+    // separate one. Earlier drafts of this test used a dedicated "owner"
+    // resource, reasoning that a document and its audit target could
+    // theoretically collide if they ever shared an id; in practice
+    // `object_id` is always a SHA256 content hash and `audit_target_object_id`
+    // is a human/system-chosen identifier, so that risk is next to
+    // impossible and not worth a second resource type for.
     //
-    // "owner" itself is never declared as a relation here — ACP-core reserves
-    // that name and rejects any policy that tries to (confirmed by actually
-    // running this test: "'owner' is a reserved relation name"). Every
-    // resource gets an implicit "owner" relation for free, auto-assigned by
-    // `RegisterObjectCmd` to the DID of whoever registers the object
-    // (acp_core's `RegisterObjectHandler`) — so PET's owner lookup is
-    // satisfied simply by registering the "owner" object as a known signer,
-    // not by a separate `SetRelationship` call. `registrant`/`identify` below
-    // are an unused placeholder relation/permission, only present because
-    // the resource needs *something* declared.
+    // `audit_target_object_id` itself *is* the plaintext owner identity —
+    // the exact value `Pet::owner_fingerprint` is computed over, not a
+    // handle ACP resolves to some other identity (there is deliberately no
+    // such resolution step — see `pet::v0::coordinator::verification`'s
+    // module doc comment). What ACP *does* gate is `check_pet_permission`:
+    // does the requesting actor hold `document.permission` (here "read",
+    // via `creator`+`reader`) on the audit target — exactly mirroring how
+    // `document`'s own `creator`/`reader` govern decrypt access, and what
+    // lets the real owner delegate who else may pass PET.
     const PET_AUDIT_POLICY_YAML: &str = r#"
 name: pet audit policy
 resources:
@@ -1341,14 +1346,6 @@ resources:
     expr: creator + reader
   - name: write
     expr: creator
-- name: owner
-  relations:
-  - name: registrant
-    types:
-    - actor
-  permissions:
-  - name: identify
-    expr: registrant
 "#;
     let policy_ids_before: std::collections::HashSet<String> = controller_client
         .acp_list_policy_ids()
@@ -1372,25 +1369,33 @@ resources:
 
     let document_resource = "document".to_string();
     let read_permission = "read".to_string();
-    let audit_target_object_id = "pet-audit-target-1".to_string();
 
-    // Registering this object makes its signer's DID the resolvable "owner"
-    // (see the policy comment above) — `controller_client` already signs as
-    // `TEST_ACCOUNT_HEX_KEY`, so that account's derived DID is the owner PET
-    // will look up and the tag below must be built against.
-    controller_client
-        .acp_register_object(
-            &pet_audit_policy_id,
-            common::blockchain::acp::Object {
-                resource: "owner".to_string(),
-                id: audit_target_object_id.clone(),
-            },
-        )
-        .await
-        .expect("register PET audit-target object");
-    let (_owner_pubkey_hex, owner_did) =
-        cli_tool::derive_signer_did(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("derive owner DID from the registering signer's key");
+    // The audit target *is* the real data subject's own identity — the
+    // exact value `prepare_pet_tag` below builds the tag's fingerprint
+    // against. Not a separately-chosen label resolved to an owner via ACP.
+    let owner_seed = "pet-audit-owner-seed".to_string();
+    let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET audit-target object");
+    // The requester below authenticates with the default ("test_jwt")
+    // reader identity — the same one granted `reader` on the document —
+    // so it also needs `reader` here to pass `check_pet_permission`.
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET audit target");
 
     let (pet_reader_sk, pet_reader_pk) =
         generate_keypair().expect("generate PET-test reader keypair");
@@ -1414,8 +1419,9 @@ resources:
     )
     .expect("prepare_secret for the PET-gated document");
 
-    let pet_tag = cli_tool::prepare_pet_tag(&prepared, &ring_id, &pet_pk_hex, &owner_did)
-        .expect("prepare a genuine PET tag");
+    let pet_tag =
+        cli_tool::prepare_pet_tag(&prepared, &ring_id, &pet_pk_hex, &audit_target_object_id)
+            .expect("prepare a genuine PET tag");
 
     let document_json = String::from_utf8(prepared.encrypted_document.clone())
         .expect("encrypted_document is valid UTF-8");

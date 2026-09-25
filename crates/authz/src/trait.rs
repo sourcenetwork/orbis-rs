@@ -18,17 +18,4 @@ pub trait Authz: Send + Sync {
     /// The wall-clock unix time an `anchor` represents. Used only to bound an anchor's freshness
     /// against the relayer's signed `signed_at`; keeps the anchor itself opaque to callers.
     async fn anchor_time(&self, anchor: &str) -> Result<u64>;
-
-    /// Resolve the single actor holding `relation` on `(resource, object_id)` under
-    /// `policy_id` — e.g. reading who holds the `"owner"` relation on an audit-target
-    /// object, so a PET check verifies against the real registered owner rather than
-    /// a value the requester merely asserts. Returns `Err` if zero or more than one
-    /// actor holds the relation: an audit target must resolve unambiguously.
-    async fn resolve_relation_subject(
-        &self,
-        policy_id: &str,
-        resource: &str,
-        object_id: &str,
-        relation: &str,
-    ) -> Result<String>;
 }

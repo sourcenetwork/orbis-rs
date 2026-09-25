@@ -6,11 +6,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use common::blockchain::{
-    acp::{
-        AccessRequest, Actor, Object, ObjectSelector, ObjectSelectorKind, Operation, Policy,
-        RelationSelector, RelationSelectorKind, RelationshipSelector, SubjectKind, SubjectSelector,
-        SubjectSelectorKind, WildcardSelector,
-    },
+    acp::{AccessRequest, Actor, Object, Operation, Policy},
     ChainConfigBuilder, VeraClient,
 };
 use serde::{Deserialize, Serialize};
@@ -110,57 +106,6 @@ impl Authz for VeraAuth {
             .get_block_time(height)
             .await
             .map_err(|e| AuthZError::ChainError(e.to_string()))
-    }
-
-    async fn resolve_relation_subject(
-        &self,
-        policy_id: &str,
-        resource: &str,
-        object_id: &str,
-        relation: &str,
-    ) -> Result<String> {
-        let selector = RelationshipSelector {
-            object_selector: Some(ObjectSelector {
-                selector: Some(ObjectSelectorKind::Object(Object {
-                    resource: resource.to_string(),
-                    id: object_id.to_string(),
-                })),
-            }),
-            relation_selector: Some(RelationSelector {
-                selector: Some(RelationSelectorKind::Relation(relation.to_string())),
-            }),
-            subject_selector: Some(SubjectSelector {
-                selector: Some(SubjectSelectorKind::Wildcard(WildcardSelector {})),
-            }),
-        };
-
-        let response = self
-            .chain_client
-            .acp_filter_relationships(policy_id, &selector)
-            .await
-            .map_err(|e| AuthZError::ChainError(e.to_string()))?;
-
-        let mut actor_ids = response
-            .records
-            .into_iter()
-            .filter(|record| !record.archived)
-            .filter_map(|record| record.relationship)
-            .filter_map(|relationship| match relationship.subject?.kind? {
-                SubjectKind::Actor(actor) => Some(actor.id),
-                SubjectKind::Object(_) => None,
-            });
-
-        let Some(actor_id) = actor_ids.next() else {
-            return Err(AuthZError::NotFound(format!(
-                "no actor holds relation {relation:?} on {resource}/{object_id}"
-            )));
-        };
-        if actor_ids.next().is_some() {
-            return Err(AuthZError::InvalidRequest(format!(
-                "ambiguous relation {relation:?} on {resource}/{object_id}: more than one actor holds it"
-            )));
-        }
-        Ok(actor_id)
     }
 }
 

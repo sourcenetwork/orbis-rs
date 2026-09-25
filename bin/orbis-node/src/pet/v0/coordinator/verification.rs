@@ -20,13 +20,21 @@
 //! already passed (see `pre::v0::coordinator::handlers::handle_reencrypt_request`).
 //! That independent verification is only meaningful if the verifier knows
 //! what it is verifying, so — unlike every other function in this file —
-//! it does resolve the audit target, and every ring committee member that
-//! could release a share for a PET-gated document now learns it. This is a
-//! deliberate, reviewed trade-off: the alternative (a target-blind proof of
-//! correct ACP resolution and match) would need a ZK circuit over ACP's
-//! live relational query, well out of scope here. The exposure stays
-//! committee-internal, the same trust boundary as `actor_id`/`object_id`,
-//! which peers already see in `PreRequestContext` today.
+//! it does take the audit target as an input, and every ring committee
+//! member that could release a share for a PET-gated document now learns
+//! it. This is a deliberate, reviewed trade-off: the alternative (a
+//! target-blind proof of correct match) would need a ZK circuit, well out
+//! of scope here. The exposure stays committee-internal, the same trust
+//! boundary as `actor_id`/`object_id`, which peers already see in
+//! `PreRequestContext` today.
+//!
+//! `audit_target_object_id` is the plaintext owner identity itself — the
+//! exact value `Pet::owner_fingerprint` is computed over — not a handle
+//! that gets resolved to some other identity via ACP. There is deliberately
+//! no such resolution step: a caller can name any object it likes, but
+//! that alone gets it nowhere without both [`check_pet_permission`] (real
+//! ACP permission on that exact object) and a tag that genuinely encodes
+//! that exact identity (unforgeable without knowing Bankd's tag secret).
 
 use super::PetCoordinator;
 use crate::helpers::identity::node_key_for_id;
@@ -34,6 +42,8 @@ use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pet::v0::attestation::{pet_share_signing_bytes, PetShareAttestation};
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::PetCheckContext;
+use authz::r#trait::Authz;
+use authz::vera::{AccessCheckRequest, ValidWindow};
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{
     CryptoDeserialize, Dkg, EncryptionProof, Pet, PetTag, PubShare, Secret, TagKnowledgeProof,
@@ -41,14 +51,45 @@ use crypto::r#trait::{
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use std::collections::HashSet;
 
-/// The ACP resource type and relation an audit-target object's real owner is
-/// registered under. Bankd registers `Relationship { object: (PET_OWNER_RESOURCE,
-/// <audit_target_object_id>), relation: PET_OWNER_RELATION, subject:
-/// Actor(<owner_did>) }` once per owner; this is the contract external
-/// callers follow. Used only by `initiator.rs`'s final target resolution —
-/// see this module's own doc comment for why responders never need it.
-pub(crate) const PET_OWNER_RESOURCE: &str = "owner";
-pub(crate) const PET_OWNER_RELATION: &str = "owner";
+/// Authorization gate for PET, additive to the cryptographic tag-match
+/// below, not a replacement for it: a genuinely matching tag still proves
+/// the tag is real; this proves the requester is allowed to invoke/learn
+/// that fact at all. Mirrors `pre::v0::helpers::check_policy_access`'s exact
+/// shape, checked against `audit_target_object_id` instead of the
+/// document's own `object_id` — same resource type, same permission name,
+/// same relation schema. This is what lets whoever holds `creator` on the
+/// audit target delegate `reader` to other actors, exactly like decrypting
+/// the document itself.
+pub(crate) async fn check_pet_permission(
+    authz: &(dyn Authz + Send + Sync),
+    document: &bulletin::r#trait::DocumentPayload,
+    audit_target_object_id: &str,
+    actor_id: &str,
+    valid_window: Option<ValidWindow>,
+) -> Result<()> {
+    let permission = AccessCheckRequest::new(
+        document.policy_id.clone(),
+        document.resource.clone(),
+        audit_target_object_id.to_string(),
+        document.permission.clone(),
+        document.tier.clone(),
+        document.timestamp,
+        valid_window,
+    )
+    .to_bytes()
+    .map_err(|e| PetError::Acp(format!("Error formatting PET access request: {}", e)))?;
+
+    let is_authorized = authz
+        .check(permission, actor_id)
+        .await
+        .map_err(|e| PetError::Acp(format!("Error in PET Authz request: {}", e)))?;
+
+    if !is_authorized {
+        return Err(PetError::Mismatch);
+    }
+
+    Ok(())
+}
 
 fn deserialize_secret(document_json: &str) -> Result<Secret> {
     serde_json::from_str(document_json)
@@ -171,9 +212,22 @@ where
         document: &bulletin::r#trait::DocumentPayload,
         salt: Option<&str>,
         audit_target_object_id: &str,
+        actor_id: &str,
+        valid_window: Option<ValidWindow>,
         ring_payload: &bulletin::r#trait::RingPayload,
         attestations: &[PetShareAttestation],
     ) -> Result<()> {
+        // Authorization gate first — an unauthorized caller learns nothing
+        // about whether the tag itself would have matched.
+        check_pet_permission(
+            &*self.app_state.authz,
+            document,
+            audit_target_object_id,
+            actor_id,
+            valid_window,
+        )
+        .await?;
+
         let ctx = PetCheckContext {
             document: document.clone(),
             salt: salt.map(str::to_string),
@@ -233,18 +287,13 @@ where
         let combined = P::combine_pet_check_shares(&shares, threshold, n)
             .map_err(|e| PetError::Crypto(format!("Failed to combine PET check shares: {}", e)))?;
 
-        let target_owner_id = self
-            .app_state
-            .authz
-            .resolve_relation_subject(
-                &document.policy_id,
-                PET_OWNER_RESOURCE,
-                audit_target_object_id,
-                PET_OWNER_RELATION,
-            )
-            .await
-            .map_err(|e| PetError::Acp(e.to_string()))?;
-        let target_fingerprint = P::owner_fingerprint(target_owner_id.as_bytes())
+        // `audit_target_object_id` *is* the plaintext owner identity — the
+        // same value `F()` is computed over — not a handle to resolve via
+        // ACP. `check_pet_permission` above already confirmed the requester
+        // is allowed to test this exact object; a wrong guess here fails
+        // the match below regardless, so no separate identity lookup adds
+        // any protection.
+        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
             .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
         P::verify_pet_match(&tag, &combined, &target_fingerprint).map_err(|_| PetError::Mismatch)
@@ -481,6 +530,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &[],
             )
@@ -510,6 +561,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &attestations,
             )
@@ -541,6 +594,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &[first, second],
             )
@@ -569,6 +624,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &attestations,
             )
@@ -604,6 +661,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &[genuine, forged],
             )
@@ -681,6 +740,8 @@ mod tests {
                 &fixture.document,
                 None,
                 AUDIT_TARGET,
+                "test-actor",
+                None,
                 &fixture.ring_payload,
                 &attestations,
             )
