@@ -20,6 +20,19 @@ impl Authz for DummyAuthZ {
     async fn anchor_time(&self, _anchor: &str) -> Result<u64> {
         Ok(0)
     }
+
+    /// Deterministic stand-in for tests: the object_id itself is the resolved
+    /// owner identifier, so a test can construct a PET tag for a known owner
+    /// without needing to seed a real ACP relationship.
+    async fn resolve_relation_subject(
+        &self,
+        _policy_id: &str,
+        _resource: &str,
+        object_id: &str,
+        _relation: &str,
+    ) -> Result<String> {
+        Ok(object_id.to_string())
+    }
 }
 
 impl DummyAuthZ {

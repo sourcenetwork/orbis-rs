@@ -304,6 +304,8 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -579,6 +581,8 @@ async fn test_pre_with_inline_document_end_to_end() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: Some(document),
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(
                 dummy_bulletin,
@@ -719,6 +723,8 @@ async fn test_pre_with_large_secret() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -866,6 +872,8 @@ async fn test_pre_fails_with_wrong_key() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1004,6 +1012,8 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1162,6 +1172,8 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1530,6 +1542,8 @@ async fn test_pre_fails_with_wrong_derivation() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1717,6 +1731,8 @@ async fn test_pre_fails_with_bad_proof() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1843,6 +1859,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 relay_statement: None,
                 relay_signature: Vec::new(),
                 document: None,
+                audit_target_object_id: None,
+                pet_attestations: Vec::new(),
             },
             PreReportBinding::new(
                 "test-chain".to_string(),
@@ -1892,6 +1910,17 @@ async fn test_check_policy_access_enforces_authz_denial() {
         }
         async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
             Ok(0)
+        }
+        async fn resolve_relation_subject(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> authz::error::Result<String> {
+            Err(authz::error::AuthZError::NotFound(
+                "not implemented in DenyAuthZ".to_string(),
+            ))
         }
     }
 

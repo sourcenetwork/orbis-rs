@@ -1,13 +1,14 @@
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
-    r#trait::{CryptoDeserialize, Pet, PetTag, TagKnowledgeProof},
+    r#trait::{CryptoDeserialize, Pet, PetTag, PubShare, TagKnowledgeProof},
 };
-use ark_ff_05::Zero;
+use ark_ff_05::{One, Zero};
 use ark_serialize_05::CanonicalSerialize;
 use decaf377::{Element, Fr};
 use rand_core::OsRng;
 use sha2::{Digest, Sha512};
+use std::collections::HashSet;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
@@ -47,7 +48,7 @@ impl Pet for PetNode {
         tag: &PetTag,
         tag_transcript_digest: &[u8; 32],
     ) -> Result<TagKnowledgeProof> {
-        let ephemeral_point = Self::decode_ephemeral_point(&tag.ephemeral_point)?;
+        let ephemeral_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
 
         let mut rng = OsRng;
         // Zeroizing: `k` is this proof's secret nonce. If it survived in process
@@ -84,7 +85,7 @@ impl Pet for PetNode {
         proof: &TagKnowledgeProof,
         tag_transcript_digest: &[u8; 32],
     ) -> Result<()> {
-        let ephemeral_point = Self::decode_ephemeral_point(&tag.ephemeral_point)?;
+        let ephemeral_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
 
         if proof.challenge.len() != FR_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
@@ -139,28 +140,115 @@ impl Pet for PetNode {
 
         Ok(())
     }
+
+    fn partial_pet_check(share_i: &Self::ShareValue, tag: &PetTag) -> Result<Self::PublicKey> {
+        let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
+        // No constant-time scalar-multiplication path available for decaf377
+        // in this codebase (same gap as `prove_tag_knowledge`'s `z`
+        // computation) — flagged for the planned Jubjub migration, not
+        // improvised here.
+        Ok(r_point * *share_i)
+    }
+
+    fn combine_pet_check_shares(
+        shares: &[PubShare<Self::PublicKey>],
+        threshold: usize,
+        n: usize,
+    ) -> Result<Self::PublicKey> {
+        if shares.len() < threshold {
+            return Err(CryptoError::ElGamalError(format!(
+                "Insufficient PET check shares: got {}, need {}",
+                shares.len(),
+                threshold
+            )));
+        }
+        let shares_to_use = &shares[..threshold];
+
+        let mut seen_indices = HashSet::new();
+        for share in shares_to_use {
+            if share.i < 1 || share.i > n as u32 {
+                return Err(CryptoError::ElGamalError(format!(
+                    "Invalid PET check share index: {} (must be in range [1, {}])",
+                    share.i, n
+                )));
+            }
+            if !seen_indices.insert(share.i) {
+                return Err(CryptoError::ElGamalError(format!(
+                    "Duplicate PET check share index: {}",
+                    share.i
+                )));
+            }
+        }
+
+        let mut result = Element::default();
+        for (i, share_i) in shares_to_use.iter().enumerate() {
+            let mut num = Fr::one();
+            let mut den = Fr::one();
+            for (j, share_j) in shares_to_use.iter().enumerate() {
+                if i != j {
+                    let xi = Fr::from(share_i.i as u64);
+                    let xj = Fr::from(share_j.i as u64);
+                    num *= xj;
+                    den *= xj - xi;
+                }
+            }
+            let lambda = num * den.inverse().ok_or_else(|| {
+                CryptoError::ElGamalError(
+                    "Division by zero in Lagrange interpolation - this should not happen after validation"
+                        .to_string(),
+                )
+            })?;
+            result += share_i.v * lambda;
+        }
+        Ok(result)
+    }
+
+    fn verify_pet_match(
+        tag: &PetTag,
+        combined_check: &Self::PublicKey,
+        target_fingerprint: &Self::PublicKey,
+    ) -> Result<()> {
+        let masked_fingerprint =
+            Self::decode_group_element(&tag.masked_fingerprint, "masked_fingerprint")?;
+        let expected = *target_fingerprint + *combined_check;
+
+        let mut expected_bytes = Vec::new();
+        expected.serialize_compressed(&mut expected_bytes)?;
+        let mut actual_bytes = Vec::new();
+        masked_fingerprint.serialize_compressed(&mut actual_bytes)?;
+
+        if expected_bytes.ct_ne(&actual_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "PET check failed: tag does not match the audit target".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl PetNode {
-    /// Decompress and validate a tag's `ephemeral_point` (`R`): must be a
-    /// canonically-encoded, non-identity point. decaf377: no separate subgroup
-    /// check needed — the decaf construction guarantees every deserialized
-    /// point is already in the prime-order group.
-    fn decode_ephemeral_point(bytes: &[u8]) -> Result<Element> {
+    /// Decompress and validate a tag component (`ephemeral_point` or
+    /// `masked_fingerprint`): must be a canonically-encoded, non-identity
+    /// point. decaf377: no separate subgroup check needed — the decaf
+    /// construction guarantees every deserialized point is already in the
+    /// prime-order group. `field_name` is used only for error messages.
+    fn decode_group_element(bytes: &[u8], field_name: &str) -> Result<Element> {
         if bytes.len() != ELEMENT_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
-                "Invalid ephemeral_point length: expected {}, got {}",
+                "Invalid {} length: expected {}, got {}",
+                field_name,
                 ELEMENT_COMPRESSED_SIZE,
                 bytes.len()
             )));
         }
         let point = Element::from_bytes(bytes).map_err(|e| {
-            CryptoError::ElGamalError(format!("failed to decompress ephemeral_point: {:?}", e))
+            CryptoError::ElGamalError(format!("failed to decompress {}: {:?}", field_name, e))
         })?;
         if point == Element::default() {
-            return Err(CryptoError::ElGamalError(
-                "Invalid ephemeral_point: cannot be the identity element".to_string(),
-            ));
+            return Err(CryptoError::ElGamalError(format!(
+                "Invalid {}: cannot be the identity element",
+                field_name
+            )));
         }
         Ok(point)
     }

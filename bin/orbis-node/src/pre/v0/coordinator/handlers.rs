@@ -207,6 +207,38 @@ where
             return Err(error);
         }
 
+        // Refuse to release a share for a `requires_pet` ring unless a genuine threshold
+        // PET check already passed — independently re-verified here, not trusted from the
+        // initiator's word. Without this, a compromised or simply modified initiator could
+        // skip PET entirely and still collect valid reencryption shares from every honest
+        // peer, since nothing else in this function consults `requires_pet`. See
+        // `pet::v0::coordinator::verification::verify_pet_admission`'s doc comment for why
+        // this necessarily exposes the audit target to every committee member, not just the
+        // initiator.
+        if ring_payload.requires_pet {
+            let audit_target_object_id = ctx.audit_target_object_id.clone().ok_or_else(|| {
+                PreError::Unauthorized(
+                    "ring requires PET but the request carried no audit_target_object_id"
+                        .to_string(),
+                )
+            })?;
+            let pet_coordinator =
+                crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
+                    self.app_state.clone(),
+                    self.routes,
+                );
+            pet_coordinator
+                .verify_pet_admission(
+                    &document_payload,
+                    ctx.salt.as_deref(),
+                    &audit_target_object_id,
+                    &ring_payload,
+                    &ctx.pet_attestations,
+                )
+                .await
+                .map_err(PreError::from)?;
+        }
+
         // Reject a forwarded JWT this node has already accepted. A responder sees
         // the client token exactly once per PRE, so a duplicate means the leader
         // (or a ring insider) replayed a captured `ReencryptRequest`. Recorded only

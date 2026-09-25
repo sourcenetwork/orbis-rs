@@ -2,6 +2,7 @@ use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::session_state::SessionStateManager;
 use crate::dkg::v0::transport::{CeremonyConfig, MessageId};
 use crate::helpers::jti_replay::JtiReplayGuard;
+use crate::pet::v0::response_state::PetResponseManager;
 use crate::pre::v0::response_state::PreResponseManager;
 use crate::reporting::v0::state::ReportingState;
 use crate::sign::v0::response_state::SignResponseManager;
@@ -303,6 +304,8 @@ where
     pub dkg_session_state: Arc<SessionStateManager<D>>,
     /// PRE response state manager - handles PRE response collection
     pub pre_response_state: Arc<PreResponseManager>,
+    /// PET response state manager - handles threshold PET-check response collection
+    pub pet_response_state: Arc<PetResponseManager>,
     /// Sign response state manager - handles threshold signing response collection
     /// and FROST nonce state between Round 1 and Round 2
     pub sign_response_state: Arc<SignResponseManager>,
@@ -341,6 +344,7 @@ where
             local_storage,
             dkg_session_state: Arc::new(SessionStateManager::new()),
             pre_response_state: Arc::new(PreResponseManager::new()),
+            pet_response_state: Arc::new(PetResponseManager::new()),
             sign_response_state: Arc::new(SignResponseManager::new()),
             authz,
             bulletin,
@@ -362,6 +366,7 @@ where
             .field("network", &"<Network>")
             .field("dkg_session_state", &"<SessionStateManager>")
             .field("pre_response_state", &"<PreResponseManager>")
+            .field("pet_response_state", &"<PetResponseManager>")
             .field("sign_response_state", &"<SignResponseManager>")
             .field("reporting_state", &"<ReportingState>")
             .finish()

@@ -169,8 +169,13 @@ where
             .await?;
         let ciphertext_context = authorized.ciphertext_context.clone();
 
+        // 3.5. PET check (no-op unless the ring requires it). The returned attestations are
+        //      forwarded to every PRE peer so each one independently re-verifies the same
+        //      check before releasing its share.
+        let pet_attestations = self.check_pet_if_required(&authorized).await?;
+
         // 4. Relay setup.
-        let setup = self.prepare_pre_relay(authorized).await?;
+        let setup = self.prepare_pre_relay(authorized, pet_attestations).await?;
 
         // 5. Coordination.
         let result = self.coordinate_pre_reencryption(setup).await?;

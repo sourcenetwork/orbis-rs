@@ -110,6 +110,16 @@ where
         let sign_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             SignCoordinator::<D, S>::with_routes(app_state.clone(), routes),
         )));
+        // PET has no independently-swappable crypto backend to generalize
+        // over — it's tied to whichever curve backend the build selected,
+        // exactly like `crypto::PetImpl` itself — so this uses the concrete
+        // type directly rather than adding a fourth generic parameter.
+        let pet_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
+            crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
+                app_state.clone(),
+                routes,
+            ),
+        )));
         let health_handler = Arc::new(HealthProtocolHandler);
         router_builder =
             router_builder.accept(routes.dkg_control_alpn.to_vec(), dkg_control_handler);
@@ -117,6 +127,7 @@ where
             router_builder.accept(routes.dkg_private_alpn.to_vec(), dkg_private_handler);
         router_builder = router_builder.accept(routes.reencrypt_alpn.to_vec(), pre_handler);
         router_builder = router_builder.accept(routes.sign_alpn.to_vec(), sign_handler);
+        router_builder = router_builder.accept(routes.pet_check_alpn.to_vec(), pet_handler);
         router_builder =
             router_builder.accept(routes.reporting_health_alpn.to_vec(), health_handler);
     }

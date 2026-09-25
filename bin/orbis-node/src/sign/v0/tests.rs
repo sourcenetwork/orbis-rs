@@ -1563,6 +1563,17 @@ async fn test_sign_policy_check_policy_access_enforces_authz_denial() {
         async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
             Ok(0)
         }
+        async fn resolve_relation_subject(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> authz::error::Result<String> {
+            Err(authz::error::AuthZError::NotFound(
+                "not implemented in test mock".to_string(),
+            ))
+        }
     }
 
     let key_derivation = KeyDerivation {
@@ -1616,6 +1627,17 @@ async fn test_sign_policy_check_policy_access_at_uses_supplied_timestamp() {
         }
         async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
             Ok(self.expected_timestamp)
+        }
+        async fn resolve_relation_subject(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> authz::error::Result<String> {
+            Err(authz::error::AuthZError::NotFound(
+                "not implemented in test mock".to_string(),
+            ))
         }
     }
 
@@ -1680,6 +1702,17 @@ async fn test_sign_policy_check_policy_access_expired_valid_window() {
         }
         async fn anchor_time(&self, _: &str) -> authz::error::Result<u64> {
             Ok(0)
+        }
+        async fn resolve_relation_subject(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> authz::error::Result<String> {
+            Err(authz::error::AuthZError::NotFound(
+                "not implemented in test mock".to_string(),
+            ))
         }
     }
 

@@ -8,9 +8,12 @@
 //!  3. [`PreServiceImpl::authorize_pre_request`] (**policy checks**) — on-chain ACP
 //!     check, then single-use JWT enforcement, then Schnorr ciphertext-binding
 //!     verification.
-//!  4. [`PreServiceImpl::prepare_pre_relay`] (**relay setup**) — peer resolution, the
+//!  4. [`PreServiceImpl::check_pet_if_required`] (**PET check**) — a no-op unless
+//!     the ring requires PET, in which case it runs the threshold ownership-tag
+//!     check (see `pet::v0`) and rejects the request on a mismatch.
+//!  5. [`PreServiceImpl::prepare_pre_relay`] (**relay setup**) — peer resolution, the
 //!     signed relay-forwarding statement, and coordinator input assembly.
-//!  5. [`PreServiceImpl::coordinate_pre_reencryption`] (**coordination**) — runs the
+//!  6. [`PreServiceImpl::coordinate_pre_reencryption`] (**coordination**) — runs the
 //!     threshold re-encryption round.
 //!  6. [`encode_pre_response`] (**response encoding**) — turns the coordinator's raw
 //!     result into the wire response.
@@ -54,6 +57,9 @@ pub(super) struct AuthenticatedPreRequest {
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window: Option<ValidWindow>,
+    /// The ACP object naming the audit target, required (and only enforced)
+    /// on a ring that requires PET — see `check_pet_if_required`.
+    audit_target_object_id: Option<String>,
 }
 
 /// Output of stage 2: the document and ring state this request resolves to, plus the
@@ -85,6 +91,7 @@ pub(super) struct AuthorizedPreRequest {
     document_evidence: Option<ReportedDocumentEvidence>,
     actor_id: String,
     pub(super) ciphertext_context: CiphertextContext,
+    audit_target_object_id: Option<String>,
 }
 
 /// Output of stage 4: everything the coordination stage needs to run the threshold
@@ -225,6 +232,7 @@ where
                 derivation: req.derivation,
                 salt: req.salt,
                 valid_window,
+                audit_target_object_id: req.audit_target_object_id,
             },
             inline_document,
         ))
@@ -343,7 +351,57 @@ where
             document_evidence: bulletin_state.document_evidence,
             actor_id: bulletin_state.actor_id,
             ciphertext_context,
+            audit_target_object_id: authenticated.audit_target_object_id,
         })
+    }
+
+    /// Stage 3.5 (PET check): when the ring requires PET, runs the threshold
+    /// ownership-tag check and rejects the request unless it matches the
+    /// authenticated audit target. A no-op (returning no attestations) for a
+    /// ring that doesn't require PET — `audit_target_object_id` is only ever
+    /// required in that case.
+    ///
+    /// Placed after `authorize_pre_request` (ACP access to the document
+    /// itself must already have passed) and before `prepare_pre_relay` (no
+    /// point resolving peers/building the relay statement for a request that
+    /// fails the ownership check).
+    ///
+    /// The returned attestations are forwarded by `prepare_pre_relay` into
+    /// every `ReencryptRequest` so each PRE peer can independently verify
+    /// this same check before releasing its share, instead of trusting this
+    /// node's pass/fail result alone — see
+    /// `pet::v0::coordinator::verification::verify_pet_admission`'s doc
+    /// comment for why that closes a real gap: without it, nothing on the
+    /// peer side ever consulted `requires_pet` at all.
+    pub(super) async fn check_pet_if_required(
+        &self,
+        authorized: &AuthorizedPreRequest,
+    ) -> Result<Vec<crate::pet::v0::attestation::PetShareAttestation>, PreError> {
+        if !authorized.ring_payload.requires_pet {
+            return Ok(Vec::new());
+        }
+        let audit_target_object_id =
+            authorized.audit_target_object_id.clone().ok_or_else(|| {
+                PreError::InvalidInput(
+                    "ring requires PET but no audit_target_object_id was supplied".to_string(),
+                )
+            })?;
+
+        let coordinator =
+            crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
+                self.state.clone(),
+                self.routes,
+            );
+        let request_id = rand::random::<u64>().to_string();
+        coordinator
+            .initiate_pet_check(
+                request_id,
+                authorized.document_payload.clone(),
+                authorized.salt.clone(),
+                audit_target_object_id,
+            )
+            .await
+            .map_err(PreError::from)
     }
 
     /// Stage 4 (relay setup): resolves and validates the ring's peers, builds this
@@ -353,6 +411,7 @@ where
     pub(super) async fn prepare_pre_relay(
         &self,
         authorized: AuthorizedPreRequest,
+        pet_attestations: Vec<crate::pet::v0::attestation::PetShareAttestation>,
     ) -> Result<PreRelaySetup, PreError> {
         let secret_bytes = authorized.document_payload.document.as_bytes().to_vec();
 
@@ -434,6 +493,8 @@ where
             relay_statement: Some(relay_statement),
             relay_signature,
             document: ctx_document,
+            audit_target_object_id: authorized.audit_target_object_id,
+            pet_attestations,
         };
 
         Ok(PreRelaySetup {
