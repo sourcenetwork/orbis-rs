@@ -581,12 +581,12 @@ async fn native_report_and_reshare_recover_certified_completion() {
         }
         .canonical_bytes(),
     };
-    let scheme = "bls12_381_g1_pk_g2_sig_nul";
+    let scheme = "bls12_381_g1_pk_g2_sig_aug_v1";
     let signature = ring_secret
         .sign(
             &report.canonical_bytes(),
-            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-            &[],
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+            &ring_secret.sk_to_pk().to_bytes(),
         )
         .to_bytes()
         .to_vec();
@@ -687,8 +687,8 @@ async fn native_report_and_reshare_recover_certified_completion() {
     let signature = ring_secret
         .sign(
             &pending.reshare_signing_bytes(deployment).unwrap(),
-            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_NUL_",
-            &[],
+            b"BLS_SIG_BLS12381G2_XMD:SHA-256_SSWU_RO_AUG_",
+            &ring_secret.sk_to_pk().to_bytes(),
         )
         .to_bytes()
         .to_vec();
