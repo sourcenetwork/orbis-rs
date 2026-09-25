@@ -14,7 +14,7 @@ use common::blockchain::{
     orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::helpers::generate_keypair;
-use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
+use crypto::r#trait::{EncryptionProof, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
 use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
@@ -1300,6 +1300,322 @@ async fn test_cli_calls_dkg_for_pet_ring() {
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
         &ring_pk_hex[..40.min(ring_pk_hex.len())],
         &pet_pk_hex[..40.min(pet_pk_hex.len())],
+    );
+
+    // ========================================================================
+    // PRE against the PET-enabled ring: a genuine tag matching the audited
+    // owner must succeed; a `requires_pet` ring must reject a document with
+    // no tag at all. Both use the inline-document path (never posted to the
+    // bulletin) — mirrors `pre::v0::tests::test_pre_with_inline_document_end_to_end`.
+    // ========================================================================
+    println!("Setting up ACP for PET-gated PRE (document read/reader + owner lookup)...");
+
+    // A dedicated policy: "document"/"reader"/"read" for ordinary PRE
+    // authorization, plus an "owner" resource for PET's own ACP owner lookup
+    // (`pet::v0::coordinator::verification::{PET_OWNER_RESOURCE, PET_OWNER_RELATION}`,
+    // both "owner"). The ring-governance policy created above has neither.
+    //
+    // "owner" itself is never declared as a relation here — ACP-core reserves
+    // that name and rejects any policy that tries to (confirmed by actually
+    // running this test: "'owner' is a reserved relation name"). Every
+    // resource gets an implicit "owner" relation for free, auto-assigned by
+    // `RegisterObjectCmd` to the DID of whoever registers the object
+    // (acp_core's `RegisterObjectHandler`) — so PET's owner lookup is
+    // satisfied simply by registering the "owner" object as a known signer,
+    // not by a separate `SetRelationship` call. `registrant`/`identify` below
+    // are an unused placeholder relation/permission, only present because
+    // the resource needs *something* declared.
+    const PET_AUDIT_POLICY_YAML: &str = r#"
+name: pet audit policy
+resources:
+- name: document
+  relations:
+  - name: creator
+    types:
+    - actor
+  - name: reader
+    types:
+    - actor
+  permissions:
+  - name: read
+    expr: creator + reader
+  - name: write
+    expr: creator
+- name: owner
+  relations:
+  - name: registrant
+    types:
+    - actor
+  permissions:
+  - name: identify
+    expr: registrant
+"#;
+    let policy_ids_before: std::collections::HashSet<String> = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+    controller_client
+        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
+        .await
+        .expect("create PET audit policy");
+    let pet_audit_policy_id = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !policy_ids_before.contains(id))
+        .expect("new PET audit policy ID not found");
+
+    let document_resource = "document".to_string();
+    let read_permission = "read".to_string();
+    let audit_target_object_id = "pet-audit-target-1".to_string();
+
+    // Registering this object makes its signer's DID the resolvable "owner"
+    // (see the policy comment above) — `controller_client` already signs as
+    // `TEST_ACCOUNT_HEX_KEY`, so that account's derived DID is the owner PET
+    // will look up and the tag below must be built against.
+    controller_client
+        .acp_register_object(
+            &pet_audit_policy_id,
+            common::blockchain::acp::Object {
+                resource: "owner".to_string(),
+                id: audit_target_object_id.clone(),
+            },
+        )
+        .await
+        .expect("register PET audit-target object");
+    let (_owner_pubkey_hex, owner_did) =
+        cli_tool::derive_signer_did(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("derive owner DID from the registering signer's key");
+
+    let (pet_reader_sk, pet_reader_pk) =
+        generate_keypair().expect("generate PET-test reader keypair");
+    let pet_reader_sk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
+    let pet_reader_pk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
+
+    println!("Running PRE against the PET-gated document with a genuine tag...");
+    let secret_message = b"Hello from a PET-gated PRE request!";
+    let prepared = cli_tool::prepare_secret(
+        secret_message,
+        &ring_pk_hex,
+        None,
+        pet_audit_policy_id.clone(),
+        document_resource.clone(),
+        read_permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret for the PET-gated document");
+
+    let pet_tag = cli_tool::prepare_pet_tag(&prepared, &ring_id, &pet_pk_hex, &owner_did)
+        .expect("prepare a genuine PET tag");
+
+    let document_json = String::from_utf8(prepared.encrypted_document.clone())
+        .expect("encrypted_document is valid UTF-8");
+    let proof_json: String = EncryptionProof {
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+    }
+    .try_into()
+    .expect("serialize encryption proof");
+    let tag_json: String = pet_tag.tag.clone().try_into().expect("serialize tag");
+    let tag_proof_json: String = pet_tag
+        .tag_proof
+        .clone()
+        .try_into()
+        .expect("serialize tag proof");
+
+    let pet_object_id = common::blockchain::orbis::generate_document_id(
+        &ring_id,
+        &document_json,
+        &proof_json,
+        &pet_audit_policy_id,
+        &document_resource,
+        &read_permission,
+        None,
+        None,
+        Some(&tag_json),
+        Some(&tag_proof_json),
+    )
+    .expect("generate PET-gated document id");
+
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET-gated document object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET-gated document");
+
+    let inline_document = proto::v0::pre::InlineDocument {
+        ring_id: ring_id.clone(),
+        encrypted_document: prepared.encrypted_document.clone(),
+        enc_cmt: prepared.enc_cmt.clone(),
+        policy_id: pet_audit_policy_id.clone(),
+        resource: document_resource.clone(),
+        permission: read_permission.clone(),
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+        tier: None,
+        timestamp: None,
+        pet_tag: Some(proto::v0::pre::PetTagAttachment {
+            ephemeral_point: pet_tag.tag.ephemeral_point.clone(),
+            masked_fingerprint: pet_tag.tag.masked_fingerprint.clone(),
+            knowledge_proof_challenge: pet_tag.tag_proof.challenge.clone(),
+            knowledge_proof_response: pet_tag.tag_proof.response.clone(),
+        }),
+    };
+
+    let decrypted = cli_tool::do_pre_with_inline_document(
+        endpoint.clone(),
+        ring_pk_hex.clone(),
+        pet_reader_pk_hex.clone(),
+        Some(pet_reader_sk_hex.clone()),
+        pet_object_id.clone(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        inline_document,
+        Some(audit_target_object_id.clone()),
+    )
+    .await
+    .expect("PRE should succeed against a genuinely PET-tagged document");
+    assert_eq!(
+        decrypted, secret_message,
+        "decrypted secret should match the original"
+    );
+    println!("PET-gated PRE succeeded and decrypted correctly.");
+
+    // Negative check: the ring requires PET, but this document carries no tag
+    // at all — `check_pet_if_required` must reject it before any
+    // reencryption is attempted. `audit_target_object_id` is still supplied
+    // (and already registered above) so this specifically exercises the
+    // missing-tag rejection, not the separate missing-audit-target one.
+    println!("Confirming PRE is rejected for a PET-gated ring when no tag is attached...");
+    let secret_message_no_tag = b"This document has no PET tag at all.";
+    let prepared_no_tag = cli_tool::prepare_secret(
+        secret_message_no_tag,
+        &ring_pk_hex,
+        None,
+        pet_audit_policy_id.clone(),
+        document_resource.clone(),
+        read_permission.clone(),
+        None,
+        None,
+        None,
+    )
+    .expect("prepare_secret for the no-tag document");
+    let document_json_no_tag = String::from_utf8(prepared_no_tag.encrypted_document.clone())
+        .expect("encrypted_document is valid UTF-8");
+    let proof_json_no_tag: String = EncryptionProof {
+        challenge: prepared_no_tag.challenge.clone(),
+        response: prepared_no_tag.response.clone(),
+    }
+    .try_into()
+    .expect("serialize encryption proof");
+    let no_tag_object_id = common::blockchain::orbis::generate_document_id(
+        &ring_id,
+        &document_json_no_tag,
+        &proof_json_no_tag,
+        &pet_audit_policy_id,
+        &document_resource,
+        &read_permission,
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("generate no-tag document id");
+
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        no_tag_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register the no-tag document object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        no_tag_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the no-tag document");
+
+    let inline_document_no_tag = proto::v0::pre::InlineDocument {
+        ring_id: ring_id.clone(),
+        encrypted_document: prepared_no_tag.encrypted_document.clone(),
+        enc_cmt: prepared_no_tag.enc_cmt.clone(),
+        policy_id: pet_audit_policy_id.clone(),
+        resource: document_resource.clone(),
+        permission: read_permission.clone(),
+        challenge: prepared_no_tag.challenge.clone(),
+        response: prepared_no_tag.response.clone(),
+        tier: None,
+        timestamp: None,
+        pet_tag: None,
+    };
+
+    let pre_result_no_tag = cli_tool::do_pre_with_inline_document(
+        endpoint.clone(),
+        ring_pk_hex.clone(),
+        pet_reader_pk_hex.clone(),
+        Some(pet_reader_sk_hex.clone()),
+        no_tag_object_id,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        inline_document_no_tag,
+        Some(audit_target_object_id.clone()),
+    )
+    .await;
+
+    assert!(
+        pre_result_no_tag.is_err(),
+        "PRE must be rejected for a requires_pet ring when the document has no tag"
+    );
+    // `{:?}` (anyhow's Debug impl), not `{}` (Display): `do_pre_with_inline_document`
+    // wraps the underlying tonic::Status in `.context("PRE request failed")`, so
+    // `.to_string()` only ever shows that top-level wrapper — the real rejection
+    // reason (e.g. "document has no pet_tag but ring requires PET") lives one
+    // level down in the error's cause chain, which only the Debug format prints.
+    let no_tag_error_message = format!("{:?}", pre_result_no_tag.unwrap_err());
+    assert!(
+        no_tag_error_message.contains("pet_tag") || no_tag_error_message.contains("PET"),
+        "error should indicate the missing PET tag, got: {}",
+        no_tag_error_message
+    );
+    println!(
+        "PRE correctly rejected the untagged document: {}",
+        no_tag_error_message
     );
 
     // A live MsgCreateRing(requires_pet: true) against the real chain also

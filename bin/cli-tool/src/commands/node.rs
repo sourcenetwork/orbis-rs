@@ -261,6 +261,85 @@ pub async fn do_pre(
     valid_window_end: Option<u64>,
     xnc_only: bool,
 ) -> Result<Vec<u8>> {
+    do_pre_impl(
+        endpoint,
+        ring_pk,
+        reader_pk,
+        reader_sk,
+        object_id,
+        reader_did_pk,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+        xnc_only,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Same as [`do_pre`], but supplies the document inline in the request
+/// instead of reading it from the bulletin, and optionally names the ACP
+/// object PET should audit ownership against. `object_id` must still be the
+/// caller's own `generate_document_id(...)` over `document`'s exact fields
+/// (including its `pet_tag`/`pet_tag_proof` when present) — the node
+/// recomputes and checks this before doing anything else with the request.
+///
+/// Exists so a `requires_pet` ring's PET+PRE gate can be exercised end to end
+/// without needing `StoreSecret` at all.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_with_inline_document(
+    endpoint: String,
+    ring_pk: String,
+    reader_pk: String,
+    reader_sk: Option<String>,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    xnc_only: bool,
+    document: proto::v0::pre::InlineDocument,
+    audit_target_object_id: Option<String>,
+) -> Result<Vec<u8>> {
+    do_pre_impl(
+        endpoint,
+        ring_pk,
+        reader_pk,
+        reader_sk,
+        object_id,
+        reader_did_pk,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+        xnc_only,
+        Some(document),
+        audit_target_object_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn do_pre_impl(
+    endpoint: String,
+    ring_pk: String,
+    reader_pk: String,
+    reader_sk: Option<String>,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    xnc_only: bool,
+    document: Option<proto::v0::pre::InlineDocument>,
+    audit_target_object_id: Option<String>,
+) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
     println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
@@ -307,12 +386,12 @@ pub async fn do_pre(
         derivation: derivation.clone(),
         salt: salt.clone(),
         valid_window,
-        document: None,
+        document,
         rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
             challenge: rdr_pk_proof.challenge,
             response: rdr_pk_proof.response,
         }),
-        audit_target_object_id: None,
+        audit_target_object_id,
     };
 
     // JWT work use determinitic key_pair for now
