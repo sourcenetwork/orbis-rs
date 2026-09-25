@@ -15,7 +15,7 @@
 //!     signed relay-forwarding statement, and coordinator input assembly.
 //!  6. [`PreServiceImpl::coordinate_pre_reencryption`] (**coordination**) — runs the
 //!     threshold re-encryption round.
-//!  6. [`encode_pre_response`] (**response encoding**) — turns the coordinator's raw
+//!  7. [`encode_pre_response`] (**response encoding**) — turns the coordinator's raw
 //!     result into the wire response.
 //!
 //! Security-sensitive ordering preserved from the original monolithic handler: stage 3
@@ -355,7 +355,7 @@ where
         })
     }
 
-    /// Stage 3.5 (PET check): when the ring requires PET, runs the threshold
+    /// Stage 4 (PET check): when the ring requires PET, runs the threshold
     /// ownership-tag check and rejects the request unless it matches the
     /// authenticated audit target. A no-op (returning no attestations) for a
     /// ring that doesn't require PET — `audit_target_object_id` is only ever
@@ -404,7 +404,7 @@ where
             .map_err(PreError::from)
     }
 
-    /// Stage 4 (relay setup): resolves and validates the ring's peers, builds this
+    /// Stage 5 (relay setup): resolves and validates the ring's peers, builds this
     /// node's signed relay-forwarding statement (so a peer whose own ACP re-check fails
     /// can attribute the request back to this relay), and assembles the ring/request
     /// context the coordination stage hands to `PreCoordinator`.
@@ -506,7 +506,7 @@ where
         })
     }
 
-    /// Stage 5 (coordination): runs the threshold re-encryption round across the ring's
+    /// Stage 6 (coordination): runs the threshold re-encryption round across the ring's
     /// peers.
     pub(super) async fn coordinate_pre_reencryption(
         &self,

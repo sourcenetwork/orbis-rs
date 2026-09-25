@@ -250,3 +250,447 @@ where
         P::verify_pet_match(&tag, &combined, &target_fingerprint).map_err(|_| PetError::Mismatch)
     }
 }
+
+/// Regression coverage for the peer-side PET admission gate: proves that
+/// `verify_pet_admission` — the check `pre::v0::coordinator::handlers::handle_reencrypt_request`
+/// runs before releasing a reencryption share on a `requires_pet` ring — actually
+/// rejects a request that skips or forges the threshold check, not just that the
+/// happy path still works. Without this gate, nothing on the PRE peer side ever
+/// consulted `requires_pet` at all: a compromised or simply modified initiator
+/// could skip `initiate_pet_check` entirely and still collect valid reencryption
+/// shares from every honest peer.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::helpers::test_helpers::{
+        cleanup_db, create_test_app_state_with_bulletin, test_db_path,
+    };
+    use bulletin::dummy::DummyBulletin;
+    use bulletin::r#trait::{DocumentPayload, RingPayload};
+    use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
+    use crypto::r#trait::CryptoSerialize;
+    use crypto::{DkgImpl, PetImpl};
+    use std::sync::Arc;
+
+    const RING_ID: &str = "pet-admission-test-ring";
+    const AUDIT_TARGET: &str = "pet-admission-audit-target";
+
+    /// A throwaway node-identity signing keypair, generated the same way
+    /// `create_test_app_state_with_bulletin` mints a real node's signing
+    /// key — `verify_node_message` only accepts a real secp256k1 key it can
+    /// parse, not an arbitrary string.
+    struct TestSigner {
+        secret_hex: String,
+        pubkey_hex: String,
+    }
+
+    fn gen_signer() -> TestSigner {
+        let mut key = [0u8; 32];
+        loop {
+            getrandom::getrandom(&mut key).expect("generate test signing key");
+            if TxSigner::new(&key, ChainConfig::local()).is_ok() {
+                break;
+            }
+        }
+        let secret_hex = hex::encode(key);
+        let pubkey_hex = TxSigner::from_hex_key(&secret_hex, ChainConfig::local())
+            .expect("construct test signer")
+            .public_key_hex();
+        TestSigner {
+            secret_hex,
+            pubkey_hex,
+        }
+    }
+
+    /// Everything needed to hand `verify_pet_admission` a genuinely-valid
+    /// tag-knowledge proof, so every rejection below happens at the
+    /// attestation layer under test, not because the tag itself was rejected.
+    struct FixtureBase {
+        ring_payload: RingPayload,
+        document: DocumentPayload,
+        secret: Secret,
+        payload_proof: EncryptionProof,
+        signers: Vec<TestSigner>,
+        r_tag: Fr,
+        r_point: G1Affine,
+    }
+
+    struct TagFixture {
+        ring_payload: RingPayload,
+        document: DocumentPayload,
+        digest: [u8; 32],
+        signers: Vec<TestSigner>,
+    }
+
+    /// Builds everything except the tag's `masked_fingerprint` (callers supply
+    /// that, since rejection tests use garbage bytes — never checked by
+    /// `verify_tag_knowledge`, only the Schnorr proof over `ephemeral_point`
+    /// is — while the one happy-path test needs a real `F(owner) + pet_sk*R`).
+    fn build_base(committee_size: usize, threshold: u32, pet_pk: &G1Affine) -> FixtureBase {
+        let mut signers: Vec<TestSigner> = (0..committee_size).map(|_| gen_signer()).collect();
+        signers.sort_by(|a, b| a.pubkey_hex.cmp(&b.pubkey_hex));
+        let peer_node_keys: Vec<String> = signers.iter().map(|s| s.pubkey_hex.clone()).collect();
+
+        let ring_payload = RingPayload {
+            upgrade_info: Default::default(),
+            ring_pk: "aa".repeat(32),
+            new_peer_node_keys: None,
+            new_threshold: None,
+            peer_node_keys,
+            threshold,
+            pss_interval: 60,
+            block_number_nonce: 0,
+            policy_id: Some("test-policy".to_string()),
+            trusted_auth_relay_dids: None,
+            reporting: Default::default(),
+            requires_pet: true,
+            pet_pk: Some(hex::encode(
+                CryptoSerialize::to_bytes(pet_pk).expect("serialize pet_pk"),
+            )),
+        };
+
+        let (r_tag, r_point) =
+            crypto::helpers::generate_keypair().expect("generate ephemeral tag keypair");
+
+        let secret = Secret {
+            enc_cmt: vec![1, 2, 3],
+            encrypted_data: vec![4, 5, 6],
+            nonce: vec![7, 8, 9],
+        };
+        let payload_proof = EncryptionProof {
+            challenge: vec![10, 11],
+            response: vec![12, 13],
+        };
+        let document = DocumentPayload {
+            ring_id: RING_ID.to_string(),
+            document: serde_json::to_string(&secret).expect("serialize secret"),
+            proof: String::try_from(EncryptionProof {
+                challenge: payload_proof.challenge.clone(),
+                response: payload_proof.response.clone(),
+            })
+            .expect("serialize payload proof"),
+            policy_id: "test-policy".to_string(),
+            resource: "test-resource".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        };
+
+        FixtureBase {
+            ring_payload,
+            document,
+            secret,
+            payload_proof,
+            signers,
+            r_tag,
+            r_point,
+        }
+    }
+
+    /// Completes a [`FixtureBase`] into a genuinely tag-knowledge-verifiable
+    /// [`TagFixture`], given the `masked_fingerprint` bytes the caller wants.
+    fn finalize_fixture(mut base: FixtureBase, masked_fingerprint: Vec<u8>) -> TagFixture {
+        let ephemeral_point =
+            CryptoSerialize::to_bytes(&base.r_point).expect("serialize ephemeral point");
+        let tag = PetTag {
+            ephemeral_point,
+            masked_fingerprint,
+        };
+        let pet_pk_bytes =
+            hex::decode(base.ring_payload.pet_pk.as_ref().unwrap()).expect("decode pet_pk hex");
+        let ciphertext_context =
+            build_ciphertext_context(&base.ring_payload.ring_pk, &base.document, None)
+                .expect("build ciphertext context");
+        let digest = crypto::pet_context::tag_proof_digest(
+            &tag.ephemeral_point,
+            &tag.masked_fingerprint,
+            &pet_pk_bytes,
+            &base.document.ring_id,
+            &ciphertext_context,
+            &base.secret,
+            &base.payload_proof,
+        );
+        let tag_proof =
+            PetImpl::prove_tag_knowledge(&base.r_tag, &tag, &digest).expect("prove tag knowledge");
+
+        base.document.pet_tag = Some(String::try_from(tag).expect("serialize tag"));
+        base.document.pet_tag_proof =
+            Some(String::try_from(tag_proof).expect("serialize tag proof"));
+
+        TagFixture {
+            ring_payload: base.ring_payload,
+            document: base.document,
+            digest,
+            signers: base.signers,
+        }
+    }
+
+    /// A garbage-`masked_fingerprint` fixture — sufficient for every test
+    /// below that expects rejection to happen at the attestation layer, never
+    /// reaching `combine_pet_check_shares`/`verify_pet_match`.
+    fn build_fixture(committee_size: usize, threshold: u32) -> TagFixture {
+        let (_unused_sk, placeholder_pet_pk) =
+            crypto::helpers::generate_keypair().expect("generate placeholder pet keypair");
+        let base = build_base(committee_size, threshold, &placeholder_pet_pk);
+        finalize_fixture(base, vec![9, 9, 9])
+    }
+
+    /// A correctly-signed attestation from committee member `node_id`
+    /// (1-based, matching `signers[node_id - 1]`'s sorted position). The
+    /// partial value doesn't correspond to a real threshold share — fine for
+    /// every test here, since each one is rejected before
+    /// `combine_pet_check_shares` is ever reached.
+    fn valid_attestation(fixture: &TagFixture, node_id: u32) -> PetShareAttestation {
+        let (_throwaway_sk, partial_point) =
+            crypto::helpers::generate_keypair().expect("generate stand-in partial");
+        let partial = CryptoSerialize::to_bytes(&partial_point).expect("serialize partial");
+        let signing_bytes = pet_share_signing_bytes(&fixture.digest, node_id, &partial);
+        let signer = &fixture.signers[(node_id - 1) as usize];
+        let signature = sign_node_message_with_hex_key(&signer.secret_hex, &signing_bytes)
+            .expect("sign attestation");
+        PetShareAttestation {
+            from_node_id: node_id,
+            partial,
+            signature,
+        }
+    }
+
+    async fn test_coordinator(
+        db_name: &str,
+        ring_payload: &RingPayload,
+    ) -> PetCoordinator<DkgImpl, PetImpl> {
+        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
+        dummy_bulletin
+            .set_ring(RING_ID.to_string(), ring_payload.clone())
+            .expect("seed ring");
+        let app_state = create_test_app_state_with_bulletin(true, dummy_bulletin, db_name).await;
+        PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0)
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_missing_attestations() {
+        let db_name = "pet_admission_rejects_missing_attestations";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &[],
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(PetError::InsufficientShares { got: 0, need: 2 })
+            ),
+            "expected InsufficientShares, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_insufficient_attestations() {
+        let db_name = "pet_admission_rejects_insufficient_attestations";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let attestations = vec![valid_attestation(&fixture, 1)];
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &attestations,
+            )
+            .await;
+
+        assert!(
+            matches!(
+                result,
+                Err(PetError::InsufficientShares { got: 1, need: 2 })
+            ),
+            "expected InsufficientShares, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_duplicate_attestation_indices() {
+        let db_name = "pet_admission_rejects_duplicate_indices";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let first = valid_attestation(&fixture, 1);
+        let mut second = valid_attestation(&fixture, 2);
+        second.from_node_id = 1; // claims the same committee slot as `first`
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &[first, second],
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(PetError::Crypto(_))),
+            "expected a duplicate-index rejection, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_out_of_range_node_id() {
+        let db_name = "pet_admission_rejects_out_of_range_node_id";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let mut out_of_range = valid_attestation(&fixture, 1);
+        out_of_range.from_node_id = 99; // outside the 3-member committee
+        let attestations = vec![out_of_range, valid_attestation(&fixture, 2)];
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &attestations,
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(PetError::Crypto(_))),
+            "expected an out-of-range node id rejection, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_forged_signature() {
+        let db_name = "pet_admission_rejects_forged_signature";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let genuine = valid_attestation(&fixture, 1);
+        let mut forged = valid_attestation(&fixture, 2);
+        // Node 2's real signature, but for a *different* partial than the one
+        // actually being submitted under its name — exactly what a
+        // compromised/absent initiator would have to fabricate to bypass PET
+        // without ever contacting node 2 for a genuine contribution.
+        let (_sk, other_point) =
+            crypto::helpers::generate_keypair().expect("generate mismatched partial");
+        forged.partial = CryptoSerialize::to_bytes(&other_point).expect("serialize partial");
+
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &[genuine, forged],
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(PetError::Crypto(_))),
+            "expected a signature-verification rejection, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    /// Confirms the rejections above aren't vacuous against a gate that
+    /// rejects everything: `threshold`-many genuinely signed, correctly
+    /// combining attestations for a tag that really does match the audited
+    /// owner must be admitted. Gated to bls12-381 because constructing a real
+    /// `masked_fingerprint = F(owner) + pet_sk*R` needs one curve-point
+    /// addition with no backend-agnostic primitive exposed for it — see
+    /// `Pet::verify_pet_match`'s own doc comment for the same operation.
+    #[cfg(feature = "bls12-381")]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_accepts_genuine_attestations() {
+        use ark_bls12_381::G1Projective;
+        use ark_ec::CurveGroup;
+
+        let db_name = "pet_admission_accepts_genuine_attestations";
+        let committee_size = 3;
+        let threshold = 2;
+        let (pet_sk, pet_pk) =
+            crypto::helpers::generate_keypair().expect("generate pet checking keypair");
+        let base = build_base(committee_size, threshold, &pet_pk);
+
+        // Simulate a threshold sharing of the PET checking key by giving every
+        // committee member the *same* scalar as its "share" — a degree-0
+        // polynomial, so Lagrange interpolation over any subset of points
+        // recovers it exactly regardless of `threshold`. Same trick as
+        // `crypto`'s own `identical_shares` test helper.
+        let staging_tag = PetTag {
+            ephemeral_point: CryptoSerialize::to_bytes(&base.r_point)
+                .expect("serialize ephemeral point"),
+            masked_fingerprint: Vec::new(),
+        };
+        let combined =
+            PetImpl::partial_pet_check(&pet_sk, &staging_tag).expect("compute pet_sk * R");
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(owner)");
+        let masked =
+            (G1Projective::from(target_fingerprint) + G1Projective::from(combined)).into_affine();
+        let masked_bytes =
+            CryptoSerialize::to_bytes(&masked).expect("serialize masked fingerprint");
+
+        let fixture = finalize_fixture(base, masked_bytes);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let partial_bytes = CryptoSerialize::to_bytes(&combined).expect("serialize partial");
+        let attestations: Vec<PetShareAttestation> = (1..=threshold)
+            .map(|node_id| {
+                let signing_bytes =
+                    pet_share_signing_bytes(&fixture.digest, node_id, &partial_bytes);
+                let signer = &fixture.signers[(node_id - 1) as usize];
+                let signature = sign_node_message_with_hex_key(&signer.secret_hex, &signing_bytes)
+                    .expect("sign attestation");
+                PetShareAttestation {
+                    from_node_id: node_id,
+                    partial: partial_bytes.clone(),
+                    signature,
+                }
+            })
+            .collect();
+
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                AUDIT_TARGET,
+                &fixture.ring_payload,
+                &attestations,
+            )
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "expected genuine attestations to be admitted: {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+}
