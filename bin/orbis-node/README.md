@@ -192,11 +192,11 @@ Integration tests may require Docker (see **`common`** crate **`IntegrationTestN
 
 ## Native Vera service
 
-The native integration is under qualification. This revision includes Orbis's
-augmented BLS signer, but the pinned Vera and Defra versions still verify the
-older basic BLS scheme. Threshold signing, report acceptance, and reshare
-finalization require the consumer verifier updates before this combination can
-be deployed. Do not downgrade the signer or accept both schemes implicitly.
+The native integration is under qualification. The pinned Defra verifier matches
+Orbis's augmented BLS signer. The pinned Vera version still verifies the older
+basic BLS scheme; report acceptance and reshare finalization require its verifier
+update before this combination can be deployed. End-to-end qualification remains
+pending. Do not downgrade the signer or accept both schemes implicitly.
 
 
 Build with `cargo build -p orbis-node --features native`, then start with

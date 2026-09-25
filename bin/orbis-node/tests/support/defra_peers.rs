@@ -63,7 +63,7 @@ impl Peers {
         signing::store_identity(
             &signer_did,
             SigningConfig {
-                key_type: SigningKeyType::Bls,
+                key_type: SigningKeyType::BlsAugV1,
                 private_key_bytes: Vec::new(),
                 public_key_bytes: signer.public_key_bytes().to_vec(),
                 public_key_hex: signer.public_key_hex().to_owned(),
