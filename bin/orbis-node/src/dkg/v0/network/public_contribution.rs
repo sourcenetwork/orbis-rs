@@ -64,7 +64,7 @@ where
         .ok_or_else(|| DkgError::SessionNotFound(contribution.ceremony_id.0.to_string()))?;
     let phase = contribution.payload.phase();
     let allowed = match kind {
-        SessionKind::Fresh => {
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => {
             contribution.origin.scope == CommitteeScope::Current
                 && matches!(
                     phase,

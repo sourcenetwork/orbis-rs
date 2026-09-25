@@ -58,6 +58,7 @@ pub(super) fn is_client_forwarded_start_request(request: &DkgControlMessage) -> 
     matches!(
         request,
         DkgControlMessage::StartFresh { .. }
+            | DkgControlMessage::StartFreshPet { .. }
             | DkgControlMessage::StartReshare { .. }
             | DkgControlMessage::StartRefresh { .. }
             | DkgControlMessage::GetSessionStatus { .. }
@@ -167,6 +168,9 @@ where
 {
     match request {
         DkgControlMessage::StartFresh { ring_id } => on_start_fresh(state, routes, ring_id).await,
+        DkgControlMessage::StartFreshPet { ring_id } => {
+            on_start_fresh_pet(state, routes, ring_id).await
+        }
         DkgControlMessage::GetSessionStatus { ring_id } => {
             coordinate_dkg_session_status(state, routes, ring_id).await
         }
@@ -480,6 +484,22 @@ where
     SignImpl: CoordinatorReportSigner<D>,
 {
     let (ceremony_id, attempt_id) = coordinate_fresh(state, routes, ring_id).await?;
+    Ok(DkgControlMessage::StartAccepted {
+        ceremony_id,
+        attempt_id,
+    })
+}
+
+async fn on_start_fresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let (ceremony_id, attempt_id) = coordinate_fresh_pet(state, routes, ring_id).await?;
     Ok(DkgControlMessage::StartAccepted {
         ceremony_id,
         attempt_id,

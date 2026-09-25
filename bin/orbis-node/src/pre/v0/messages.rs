@@ -3,6 +3,7 @@
 //! This module defines the message types used for PRE (Proxy Re-Encryption)
 //! protocol communication between nodes over the iroh network.
 
+use crate::pet::v0::attestation::PetShareAttestation;
 use authz::vera::ValidWindow;
 use crypto::r#trait::ReaderKeyProof;
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,20 @@ pub struct PreRequestContext {
     /// rather than trusting the relay's word. `None` means the document is read from the bulletin
     /// by `object_id`, exactly as before this field existed.
     pub document: Option<bulletin::r#trait::DocumentPayload>,
+    /// The plaintext owner identity being audited, present only for a `requires_pet` ring — not
+    /// an ACP handle to resolve, see `pet::README.md`'s "no ACP identity-resolution step"
+    /// invariant. Every committee member independently re-checks `check_pet_permission` and
+    /// re-verifies the PET match itself against this value (see
+    /// `pet::v0::coordinator::verification::verify_pet_admission`) rather than trusting this
+    /// node's word that the check passed — that independent verification is only meaningful if
+    /// the verifier knows what it's checking, so unlike every other PET-internal message, this
+    /// deliberately exposes the audit target to the whole ring committee, not just the initiator.
+    pub audit_target_object_id: Option<String>,
+    /// Signed, portable evidence that a genuine threshold PET check passed for this document —
+    /// see `PetShareAttestation`. Empty for a ring that doesn't require PET; exactly `threshold`
+    /// entries otherwise, since `check_pet_if_required` already aborted `start_pre` on any failure
+    /// or shortfall before a `ReencryptRequest` is ever built.
+    pub pet_attestations: Vec<PetShareAttestation>,
 }
 
 /// Wire message sent from the coordinator to each ring node requesting a reencryption share.

@@ -332,6 +332,8 @@ impl DummyBulletin {
             &doc.permission,
             doc.tier.as_deref(),
             doc.timestamp,
+            doc.pet_tag.as_deref(),
+            doc.pet_tag_proof.as_deref(),
         )
         .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
@@ -408,6 +410,7 @@ mod tests {
         let payload = RingFinalizationPayload {
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
+            pet_pk: None,
         };
         let payload_bytes: Vec<u8> = payload.try_into()?;
         bulletin

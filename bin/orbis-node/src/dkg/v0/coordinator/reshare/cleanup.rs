@@ -358,6 +358,8 @@ mod tests {
             policy_id: None,
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         }
     }
 

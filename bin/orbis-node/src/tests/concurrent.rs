@@ -676,6 +676,7 @@ async fn test_delegated_dkg_with_vera_end_to_end() {
         &net.policy_id,
         None,
         vec![relay.did_uri.clone()],
+        false,
     )
     .await;
     let token = relay

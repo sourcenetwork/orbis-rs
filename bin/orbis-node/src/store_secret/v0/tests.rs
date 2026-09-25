@@ -63,6 +63,8 @@ async fn create_app_state_with_ring(db_name: &str) -> crate::app_state::AppState
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     bulletin
@@ -103,6 +105,7 @@ fn create_dummy_request() -> StoreSecretRequest {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     }
 }
 
@@ -322,6 +325,7 @@ async fn test_store_secret_fails_invalid_encrypted_document() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     let tonic_request = create_authenticated_request(request, &token).unwrap();
@@ -425,6 +429,8 @@ async fn test_store_secret_idempotent() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let ring_id = "test-store-secret-valid-ring".to_string();
@@ -504,6 +510,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     // Snapshot post count before any store_secret call. The bulletin already holds
@@ -545,6 +552,7 @@ async fn test_store_secret_idempotent() {
         with_proof: false,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     let tonic_request2 = create_authenticated_request(request2, &token).unwrap();

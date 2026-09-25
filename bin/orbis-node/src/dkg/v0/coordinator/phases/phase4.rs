@@ -368,19 +368,140 @@ where
                 );
             })?;
 
-        ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
-            .await
-            .inspect_err(|error| {
+        // A requires_pet ring holds this main key locally rather than
+        // submitting MsgFinalizeRing on its own: both ceremonies' results are
+        // submitted together in one combined finalize once the PET checking
+        // key's own ceremony also completes (see the FreshPet branch of this
+        // function, and the checking-key lifecycle design in
+        // docs/plans/pet-integration.md). Ordinary rings are unaffected.
+        let ring_payload =
+            read_ring_for_route(&*coord.app_state.bulletin, &ring_id, coord.routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
+
+        if ring_payload.requires_pet {
+            // Only the canonical leader triggers the PET ceremony here. Every
+            // participant reaches this same branch independently (each on its
+            // own copy of the just-finished main-key `Fresh` ceremony), so
+            // without this gate all three would race to call `start_fresh_pet`
+            // at once — this was tried and confirmed to produce three separate
+            // `PrepareSession`s (same ceremony_id, three different random
+            // attempt_ids) for the same ring, none of which ever converges.
+            // The other participants don't need to do anything here: they'll
+            // receive the leader's `Prepare` broadcast over gossip once it
+            // starts, exactly like joining any other ceremony they didn't
+            // personally initiate.
+            let is_leader = canonical_leader(&ring_payload.peer_node_keys)
+                == Some(coord.app_state.node_key.as_str());
+            if is_leader {
+                start_fresh_pet(coord.app_state.clone(), coord.routes, ring_id.clone())
+                    .await
+                    .inspect_err(|error| {
+                        tracing::error!(
+                            ring_id = %ring_id,
+                            error = %error,
+                            "Phase 4: failed to start the ring's PET checking-key ceremony after \
+                             the main key completed locally. This node holds a valid main-key \
+                             share and index entry but has not submitted the (deferred, combined) \
+                             finalize. The ring will remain pending until another participant \
+                             retries or operator intervention. Local state is preserved."
+                        );
+                    })?;
+            }
+        } else {
+            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        ring_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: FinalizeRing chain post failed after local state was written. \
+                         This node holds a valid share and index entry but has not confirmed \
+                         on-chain. The ring will remain pending until another participant \
+                         retries or operator intervention. Local state is preserved."
+                    );
+                })?;
+        }
+    }
+
+    // The PET checking key's own ceremony completing is where the deferred,
+    // combined finalize actually gets submitted — covering both keys in one
+    // MsgFinalizeRing. See the `requires_pet` branch above, which triggered
+    // this ceremony instead of finalizing the main key on its own.
+    if let SessionKind::FreshPet { ring_id } = &kind {
+        match ring_storage::local_ring_pk_by_ring_id(&coord.app_state.local_storage, ring_id) {
+            Ok(Some(main_ring_pk_str)) => {
+                // `main_ring_pk_str` is `aggregate_pk.to_string()` — the local
+                // storage key for the main key's `RingShareBundle`, not a hex
+                // encoding of the key itself. Load the bundle and re-derive
+                // the actual public key bytes (its public polynomial's
+                // constant term) for the on-chain payload.
+                let main_bundle = RingShareBundle::load_by_ring_key(
+                    &coord.app_state.local_storage,
+                    &main_ring_pk_str,
+                )
+                .map_err(DkgError::Bulletin)?;
+                let main_pub_poly_bytes =
+                    hex::decode(&main_bundle.public_polynomial).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "FreshPet: failed to decode main key's stored public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                let main_pub_poly =
+                    <D::PubPoly>::from_bytes(&main_pub_poly_bytes).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                        "FreshPet: failed to deserialize main key's stored public polynomial: {}",
+                        e
+                    ))
+                    })?;
+                let main_ring_pk_bytes = CryptoSerialize::to_bytes(&main_pub_poly.eval(0))
+                    .map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "FreshPet: failed to serialize main key: {}",
+                            e
+                        ))
+                    })?;
+                let main_ring_pk_hex = hex::encode(&main_ring_pk_bytes);
+                ring_storage::post_fresh_pet_ring_finalization(
+                    coord,
+                    ring_id,
+                    &main_ring_pk_hex,
+                    &ring_pk_bytes,
+                )
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        main_ring_pk = %main_ring_pk_hex,
+                        pet_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: combined FinalizeRing chain post failed after local state \
+                         was written. This node holds a valid PET-key share and index entry \
+                         but has not confirmed on-chain. The ring will remain pending until \
+                         another participant retries or operator intervention. Local state \
+                         is preserved."
+                    );
+                })?;
+            }
+            Ok(None) => {
                 tracing::error!(
                     ring_id = %ring_id,
-                    ring_pk = %hex::encode(&ring_pk_bytes),
-                    error = %error,
-                    "Phase 4: FinalizeRing chain post failed after local state was written. \
-                     This node holds a valid share and index entry but has not confirmed \
-                     on-chain. The ring will remain pending until another participant \
-                     retries or operator intervention. Local state is preserved."
+                    pet_pk = %hex::encode(&ring_pk_bytes),
+                    "Phase 4: PET checking-key ceremony completed locally, but this node has \
+                     no local record of the ring's main key — cannot submit the combined \
+                     finalize yet. This node holds a valid PET-key share; the ring will \
+                     remain pending until this node's own main-key ceremony result is \
+                     available (or operator intervention)."
                 );
-            })?;
+                return Err(DkgError::Bulletin(format!(
+                    "Fresh PET DKG for ring {} completed locally with no local main-key record",
+                    ring_id
+                )));
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     tracing::info!(
@@ -414,8 +535,19 @@ where
     // For Reshare non-Dealers the bulletin update still happens below (node 1
     // must sign and post), so defer the unmark until after that completes.
     // Error paths are handled by check_and_trigger_phase4 → remove_session.
+    //
+    // `Fresh` never claims a ring_pss slot in the first place (session_init's
+    // claim is gated on `kind.ring_key()`, which is `None` for `Fresh` — there
+    // is no existing ring to protect against a concurrent refresh/reshare
+    // before its key exists), so this branch is unreachable for it; that's
+    // pre-existing, not something this change alters. `FreshPet` does claim
+    // one (keyed by `ring_id`, same session_init path, now extended for free)
+    // as a cheap safety net against an accidental duplicate PET ceremony for
+    // the same ring, so it must release it here — immediately, the same as
+    // this branch already does for Refresh's non-deferred cases, since
+    // FreshPet has no "bulletin update below" step to wait for.
     if let Some(ring_key) = kind.ring_key() {
-        if matches!(kind, SessionKind::Fresh) {
+        if matches!(kind, SessionKind::Fresh | SessionKind::FreshPet { .. }) {
             coord
                 .app_state
                 .dkg_session_state

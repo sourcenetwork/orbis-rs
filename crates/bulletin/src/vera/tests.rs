@@ -202,13 +202,14 @@ async fn test_bulletin_document() {
             0,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
 
     bulletin
         .chain_client
-        .orbis_finalize_ring(&ring_id, "dummy_ring_pk")
+        .orbis_finalize_ring(&ring_id, "dummy_ring_pk", None)
         .await
         .unwrap();
 
@@ -297,6 +298,7 @@ async fn test_bulletin_ring() {
             0,
             None,
             Some(vec![original_relay_did.clone()]),
+            false,
         )
         .await
         .unwrap();
@@ -382,6 +384,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             0,
             None,
             None,
+            false,
         )
         .await
         .unwrap();
@@ -472,6 +475,7 @@ async fn test_bulletin_ring_reporting_config_and_node_demerits_query_contract() 
             0,
             Some(explicit_reporting),
             None,
+            false,
         )
         .await
         .unwrap();
@@ -525,6 +529,7 @@ async fn test_bulletin_cancel_pending_ring() {
             0,
             None,
             None,
+            false,
         )
         .await
         .unwrap();

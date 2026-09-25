@@ -273,6 +273,72 @@ pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload
     Ok(())
 }
 
+/// Validates the structural state of a `RingPayload` for the PET checking key's
+/// fresh-DKG ceremony (`SessionKind::FreshPet`).
+///
+/// Corrected 2026-09-24: an earlier version of this function required
+/// `ring_pk` to already be non-empty, on the assumption that the main key
+/// would finalize on its own *before* the PET ceremony started. That's wrong
+/// for the agreed flow: both ceremonies run and complete *locally* before
+/// either is submitted to chain, so neither `ring_pk` nor `pet_pk` exists
+/// on-chain yet when the PET ceremony's `SessionInit` is validated — the ring
+/// is still pending, exactly like plain `Fresh`'s own precondition. The only
+/// extra check versus `validate_fresh_dkg_ring_payload` is `requires_pet`.
+/// Peer list, threshold, and policy_id are validated the same way, duplicated
+/// rather than shared per this ceremony's own established convention.
+pub fn validate_fresh_pet_dkg_ring_payload(
+    ring_id: &str,
+    ring_payload: &RingPayload,
+) -> Result<()> {
+    if !ring_payload.requires_pet {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh PET DKG target ring {} does not require PET",
+            ring_id
+        )));
+    }
+    if !ring_payload.ring_pk.is_empty() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh PET DKG target ring {} is not pending",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has no peer_node_keys",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has {} participants, maximum is {}",
+            ring_id,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+    if ring_payload.threshold == 0
+        || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has invalid threshold {} for {} participants",
+            ring_id,
+            ring_payload.threshold,
+            ring_payload.peer_node_keys.len()
+        )));
+    }
+    if ring_payload
+        .policy_id
+        .as_deref()
+        .is_none_or(|id| id.is_empty())
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has no policy_id",
+            ring_id
+        )));
+    }
+    Ok(())
+}
+
 /// Cross-validates the wire params from a Fresh `SessionInit` message against the
 /// authoritative `RingPayload` fetched from the bulletin.
 pub fn validate_fresh_session_init_params(

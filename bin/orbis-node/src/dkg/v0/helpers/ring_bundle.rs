@@ -100,6 +100,21 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 .save(storage, aggregate_pk)
                 .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
         }
+        SessionKind::FreshPet { ring_id } => {
+            // PET checking key: single atomic write of share + polynomial, keyed
+            // by ring_id rather than the just-computed pet_pk — the pet_pk has
+            // no stable identity to key by until this very write completes.
+            // See the checking-key lifecycle design in
+            // docs/plans/pet-integration.md.
+            let bundle = RingShareBundle {
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
+                public_polynomial: hex::encode(pub_poly_bytes),
+                last_pss: now_secs,
+            };
+            bundle.save_by_ring_key(storage, ring_id).map_err(|e| {
+                DkgError::Storage(format!("Fresh PET: failed to store share bundle: {}", e))
+            })?;
+        }
         SessionKind::Refresh { ring_pk_hex } => {
             let new_bundle = build_refresh_ring_bundle(
                 storage,

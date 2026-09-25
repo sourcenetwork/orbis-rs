@@ -148,6 +148,10 @@ where
 }
 
 /// Confirm the completed fresh ring against the pre-created ring on the bulletin.
+///
+/// Only ever called for an ordinary (non-`requires_pet`) ring. A `requires_pet`
+/// ring's main key is held locally instead — see `post_fresh_pet_ring_finalization`,
+/// which submits both keys together once the PET ceremony also completes.
 pub async fn post_fresh_ring_finalization<D>(
     coord: &DkgCoordinator<D>,
     ring_id: &str,
@@ -161,6 +165,7 @@ where
     let payload = RingFinalizationPayload {
         ring_id: ring_id.to_string(),
         ring_pk: ring_pk.clone(),
+        pet_pk: None,
     };
     let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
         DkgError::Serialization(format!(
@@ -186,6 +191,75 @@ where
     );
 
     Ok(())
+}
+
+/// Confirm a `requires_pet` ring's completed PET checking-key ceremony,
+/// submitting it *together* with the ring's main key in one combined
+/// `MsgFinalizeRing` — never two separate finalize rounds. `main_ring_pk_hex`
+/// is this node's own local record of its main-key ceremony's result
+/// (re-derived by the caller from `local_ring_pk_by_ring_id`'s stored bundle,
+/// never taken from the wire — every peer must use its own
+/// independently-computed value here, not one relayed by whichever peer led
+/// the PET ceremony's `SessionInit`).
+pub async fn post_fresh_pet_ring_finalization<D>(
+    coord: &DkgCoordinator<D>,
+    ring_id: &str,
+    main_ring_pk_hex: &str,
+    pet_pk_bytes: &[u8],
+) -> Result<()>
+where
+    D: Dkg + Clone + 'static,
+{
+    let pet_pk = hex::encode(pet_pk_bytes);
+
+    let payload = RingFinalizationPayload {
+        ring_id: ring_id.to_string(),
+        ring_pk: main_ring_pk_hex.to_string(),
+        pet_pk: Some(pet_pk.clone()),
+    };
+    let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
+        DkgError::Serialization(format!(
+            "Failed to serialize fresh PET ring finalization payload: {}",
+            e
+        ))
+    })?;
+
+    let persistence_retries = post_and_verify_fresh_ring_finalization(
+        coord.app_state.bulletin.as_ref(),
+        &coord.app_state.node_key,
+        ring_id,
+        main_ring_pk_hex,
+        payload_bytes,
+    )
+    .await?;
+
+    tracing::info!(
+        ring_pk = %main_ring_pk_hex,
+        pet_pk = %pet_pk,
+        ring_id = %ring_id,
+        persistence_retries = persistence_retries,
+        "DKG Coordinator: Successfully confirmed fresh PET DKG on bulletin"
+    );
+
+    Ok(())
+}
+
+/// Look up this node's own local record of a ring's main key by `ring_id`,
+/// via its `RingIndex` (populated by `add_ring_index_entry` when the main
+/// key's own `Fresh` ceremony completed). Returns `None` if this node has no
+/// such record — e.g. its own main-key ceremony hasn't completed (yet, or at
+/// all), which can happen if this node is unusually slow or joined late; the
+/// caller (the PET ceremony's own phase 4 completion) treats that as a
+/// retryable failure to submit the combined finalize, not a protocol error.
+pub fn local_ring_pk_by_ring_id(
+    storage: &impl LocalStorage,
+    ring_id: &str,
+) -> Result<Option<String>> {
+    let ring_index = read_ring_index(storage, "RingIndex")?;
+    Ok(ring_index
+        .into_iter()
+        .find(|entry| entry.bulletin_post_id == ring_id)
+        .map(|entry| entry.ring_pk_str))
 }
 
 async fn post_and_verify_fresh_ring_finalization(

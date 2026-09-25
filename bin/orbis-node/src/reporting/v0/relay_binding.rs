@@ -87,6 +87,7 @@ pub enum RelayRequestTimestampBinding {
 
 /// Responder-observed request fields that a relayer's signed statement must
 /// describe before we can use it as `unauthorized_request` evidence.
+#[derive(Clone)]
 pub struct RelayRequestBinding {
     pub ring: RingPayload,
     pub ring_id: String,

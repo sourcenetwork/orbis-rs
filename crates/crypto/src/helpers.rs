@@ -53,6 +53,29 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     Ok((sk, pk))
 }
 
+/// Add two group elements: `a + b`.
+///
+/// No crypto-trait method exists for plain point addition (every existing
+/// trait method that needs it, e.g. Lagrange combination, does the whole
+/// computation internally). This is for callers building a value from public
+/// pieces outside any trait impl — e.g. a PET tag's
+/// `masked_fingerprint = F(owner) + r_tag*pet_pk`, computable entirely from
+/// the ring's public `pet_pk` and a fresh nonce, with no secret share
+/// involved (see `cli_tool::prepare_pet_tag`, which mints such a tag as a
+/// stand-in for what Bankd does in production).
+#[cfg(feature = "bls12-381")]
+pub fn add_points(a: &crate::GroupAffine, b: &crate::GroupAffine) -> Result<crate::GroupAffine> {
+    use ark_bls12_381::G1Projective;
+    use ark_ec::CurveGroup;
+    Ok((G1Projective::from(*a) + G1Projective::from(*b)).into_affine())
+}
+
+/// Add two group elements: `a + b`.
+#[cfg(feature = "decaf377")]
+pub fn add_points(a: &crate::GroupAffine, b: &crate::GroupAffine) -> Result<crate::GroupAffine> {
+    Ok(*a + *b)
+}
+
 /// Evaluate `coeffs[0] + coeffs[1]*x + coeffs[2]*x^2 + ...` by accumulating
 /// a running scalar power of `x` alongside the running sum. This is the
 /// shared evaluation loop behind every `PubPoly`/`PolynomialCommitment::eval`

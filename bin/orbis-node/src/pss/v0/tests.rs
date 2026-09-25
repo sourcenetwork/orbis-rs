@@ -201,6 +201,8 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -263,6 +265,8 @@ async fn test_removed_member_reconciliation_preserves_an_active_ring() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
     RingShareBundle {
@@ -319,6 +323,8 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -376,6 +382,8 @@ async fn test_refresh_follower_does_not_fall_back_when_canonical_route_is_missin
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let state = Arc::new(app_state);
@@ -454,6 +462,8 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let post_id = "test-pss-ring-pk-mismatch".to_string();
@@ -501,6 +511,8 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -574,6 +586,8 @@ async fn test_pending_fresh_dkg_cancellation_failure_still_cleans_local_state() 
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -634,6 +648,8 @@ async fn test_pending_fresh_dkg_missing_bulletin_ring_cleans_local_state() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let entry = post_ring_and_seed_index_with_local_key(
         &app_state,
@@ -686,6 +702,8 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -759,6 +777,8 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index_with_local_key(
@@ -922,6 +942,8 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -969,6 +991,8 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1012,6 +1036,8 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1045,6 +1071,8 @@ async fn test_pss_ring_refresh_skips_before_interval_elapsed() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1084,6 +1112,8 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1164,6 +1194,8 @@ fn reshare_test_ring_payload_pending(
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }
 

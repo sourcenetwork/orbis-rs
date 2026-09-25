@@ -63,7 +63,7 @@ impl SessionSnapshot {
     }
 
     pub fn is_fresh(&self) -> bool {
-        matches!(self.kind, SessionKind::Fresh)
+        matches!(self.kind, SessionKind::Fresh | SessionKind::FreshPet { .. })
     }
 
     pub fn phase1_expected_commitments(&self) -> Option<usize> {

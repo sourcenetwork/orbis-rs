@@ -6,9 +6,9 @@
 use anyhow::{anyhow, Result};
 use common::blockchain::ChainConfig;
 use crypto::context::CiphertextContext;
-use crypto::r#trait::ThresholdDealer;
+use crypto::r#trait::{EncryptionProof, Pet, PetTag, Secret, TagKnowledgeProof, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
+use crypto::{GroupAffine as G1Affine, PetImpl, PreImpl as ThresholdDealerNode};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use sha2::{Digest, Sha256};
 
@@ -86,6 +86,90 @@ pub fn prepare_secret(
         response: proof.response,
         context,
     })
+}
+
+/// A PET ownership tag plus its knowledge proof, ready to attach to a
+/// document. Mirrors the role of [`PreparedSecret`] one layer up: a pure,
+/// local computation the caller can inspect, serialize, or attach to a
+/// request without any network dependency.
+// Only constructed via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct PreparedPetTag {
+    pub tag: PetTag,
+    pub tag_proof: TagKnowledgeProof,
+}
+
+/// Build a valid PET ownership tag for `owner_id` against a ring's public PET
+/// checking key — a stand-in for what Bankd does in production when it
+/// encrypts a document on a `requires_pet` ring.
+///
+/// Needs only public information: the ring's `pet_pk` (no secret share is
+/// ever involved — `masked_fingerprint = F(owner_id) + r_tag*pet_pk` is
+/// computable by anyone who knows `pet_pk`) and the already-`prepare_secret`d
+/// payload this tag will be bound to, since the tag-knowledge proof commits
+/// to the complete payload envelope (see
+/// `crypto::pet_context::tag_proof_digest`'s docs) — the same binding
+/// `pet::v0::coordinator::verification::verify_pet_check_request` recomputes
+/// and checks on the node side.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+pub fn prepare_pet_tag(
+    prepared: &PreparedSecret,
+    ring_id: &str,
+    pet_pk_hex: &str,
+    owner_id: &str,
+) -> Result<PreparedPetTag> {
+    let pet_pk_bytes = hex::decode(pet_pk_hex).map_err(|e| anyhow!("Invalid pet_pk hex: {}", e))?;
+    let _: G1Affine =
+        G1Affine::from_bytes(&pet_pk_bytes).map_err(|e| anyhow!("Invalid pet_pk: {}", e))?;
+
+    let (r_tag, r_point) = crypto::helpers::generate_keypair()
+        .map_err(|e| anyhow!("Failed to generate r_tag: {}", e))?;
+    let ephemeral_point =
+        CryptoSerialize::to_bytes(&r_point).map_err(|e| anyhow!("Failed to serialize R: {}", e))?;
+
+    // r_tag * pet_pk, reusing `Pet::partial_pet_check`'s "scalar * arbitrary
+    // point" shape (it doesn't care that `pet_pk` isn't really a tag's
+    // ephemeral point — that field is just a compressed group element to it).
+    let staging_tag = PetTag {
+        ephemeral_point: pet_pk_bytes.clone(),
+        masked_fingerprint: Vec::new(),
+    };
+    let blinding = PetImpl::partial_pet_check(&r_tag, &staging_tag)
+        .map_err(|e| anyhow!("Failed to compute r_tag*pet_pk: {}", e))?;
+    let fingerprint = PetImpl::owner_fingerprint(owner_id.as_bytes())
+        .map_err(|e| anyhow!("Failed to compute owner fingerprint: {}", e))?;
+    let masked_fingerprint_point = crypto::helpers::add_points(&fingerprint, &blinding)
+        .map_err(|e| anyhow!("Failed to combine fingerprint and blinding: {}", e))?;
+    let masked_fingerprint = CryptoSerialize::to_bytes(&masked_fingerprint_point)
+        .map_err(|e| anyhow!("Failed to serialize masked fingerprint: {}", e))?;
+
+    let tag = PetTag {
+        ephemeral_point,
+        masked_fingerprint,
+    };
+
+    let secret: Secret = serde_json::from_slice(&prepared.encrypted_document)
+        .map_err(|e| anyhow!("Failed to parse prepared secret: {}", e))?;
+    let payload_proof = EncryptionProof {
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+    };
+    let digest = crypto::pet_context::tag_proof_digest(
+        &tag.ephemeral_point,
+        &tag.masked_fingerprint,
+        &pet_pk_bytes,
+        ring_id,
+        &prepared.context,
+        &secret,
+        &payload_proof,
+    );
+
+    let tag_proof = PetImpl::prove_tag_knowledge(&r_tag, &tag, &digest)
+        .map_err(|e| anyhow!("Failed to prove tag knowledge: {}", e))?;
+
+    Ok(PreparedPetTag { tag, tag_proof })
 }
 
 pub async fn do_encrypt_secret(
@@ -175,8 +259,12 @@ pub(crate) fn did_seed(s: &str) -> [u8; 32] {
 
 /// Derive the Ed25519 did:key from an arbitrary seed string -- the same scheme
 /// used everywhere `--reader-did-pk` is accepted (JWT-authenticated requests
-/// to orbis-node: pre, sign, store-secret, store-prepared-secret).
-pub(crate) fn reader_did_from_seed(seed: &str) -> String {
+/// to orbis-node: pre, sign, store-secret, store-prepared-secret), and by
+/// `set_relationship_on_chain_with_config`'s own `reader_did_pk` parameter.
+/// Public so a caller granting a relationship to a chosen seed (e.g. an ACP
+/// "owner" relation for a PET audit target) can independently recompute the
+/// exact DID that ends up on-chain.
+pub fn reader_did_from_seed(seed: &str) -> String {
     let hashed = did_seed(seed);
     let key_pair = generate::<DidEd25519KeyPair>(Some(&hashed));
     format!("did:key:{}", key_pair.fingerprint())

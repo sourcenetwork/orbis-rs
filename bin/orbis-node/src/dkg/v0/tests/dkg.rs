@@ -415,6 +415,8 @@ async fn test_start_dkg_fails_on_connection_failure() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -515,6 +517,8 @@ async fn test_start_dkg_barrier_failure_reports_all_missing_peers() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -601,6 +605,8 @@ async fn test_get_dkg_session_status_not_found_for_untouched_ring() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -651,6 +657,8 @@ async fn test_get_dkg_session_status_reflects_live_and_completed_sessions() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -939,6 +947,8 @@ async fn test_dkg_session_init_fails_with_mismatched_claims() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -1072,6 +1082,8 @@ async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed ring");
@@ -1130,6 +1142,8 @@ async fn test_fresh_session_init_publishes_complete_state() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed fresh ring");
@@ -1226,6 +1240,8 @@ async fn test_fresh_session_init_rejects_swapped_vera_route_bindings() {
                 policy_id: Some("test-policy".to_string()),
                 trusted_auth_relay_dids: None,
                 reporting: Default::default(),
+                requires_pet: false,
+                pet_pk: None,
             },
         )
         .expect("seed fresh ring");

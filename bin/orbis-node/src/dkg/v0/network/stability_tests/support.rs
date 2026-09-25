@@ -56,6 +56,8 @@ pub(super) fn pending_reshare_ring() -> RingPayload {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }
 
@@ -539,5 +541,7 @@ pub(super) fn fresh_test_ring(node_key: &str, threshold: u32) -> RingPayload {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }

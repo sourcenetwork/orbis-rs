@@ -711,7 +711,9 @@ impl PrepareSession {
     pub fn leader_committee(&self) -> Option<&CommitteeConfig> {
         match self.kind {
             SessionKind::Reshare { .. } => self.committees.next.as_ref(),
-            SessionKind::Fresh | SessionKind::Refresh { .. } => Some(&self.committees.current),
+            SessionKind::Fresh | SessionKind::FreshPet { .. } | SessionKind::Refresh { .. } => {
+                Some(&self.committees.current)
+            }
         }
     }
 
@@ -739,6 +741,15 @@ impl PrepareSession {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DkgControlMessage {
     StartFresh {
+        ring_id: String,
+    },
+    /// Internally triggered by this node's own coordinator once its main-key
+    /// `Fresh` ceremony completes locally on a `requires_pet` ring — never an
+    /// external API request like `StartFresh`. Forwarded to the canonical
+    /// leader exactly like `StartFresh` (the leader for a ring's committee is
+    /// the same for both ceremonies, since it's a pure function of
+    /// `peer_node_keys`).
+    StartFreshPet {
         ring_id: String,
     },
     StartAccepted {
@@ -1010,6 +1021,7 @@ impl DkgControlMessage {
     pub fn metric_label(&self) -> &'static str {
         match self {
             Self::StartFresh { .. } => "start_fresh",
+            Self::StartFreshPet { .. } => "start_fresh_pet",
             Self::StartAccepted { .. } => "start_accepted",
             Self::GetSessionStatus { .. } => "get_session_status",
             Self::SessionStatusResponse { .. } => "session_status_response",

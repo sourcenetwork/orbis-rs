@@ -31,6 +31,10 @@ pub struct Ring {
     pub block_number_nonce: u64,
     #[prost(string, tag = "10")]
     pub policy_id: String,
+    /// One entry per peer that has submitted a finalize confirmation. On a
+    /// `requires_pet` ring, each entry's `pet_pk` is populated too — a peer
+    /// submits both keys together in one `MsgFinalizeRing`, not as two
+    /// separate rounds.
     #[prost(message, repeated, tag = "11")]
     pub confirmations: Vec<RingConfirmation>,
     #[prost(message, optional, tag = "12")]
@@ -41,6 +45,17 @@ pub struct Ring {
     pub trusted_auth_relay_dids: Vec<String>,
     #[prost(bool, tag = "15")]
     pub allow_trusted_auth_relays: bool,
+    /// Set at creation; true means this ring requires a PET check before PRE
+    /// release, applying to every document in the ring. Immutable for the
+    /// ring's lifetime.
+    #[prost(bool, tag = "16")]
+    pub requires_pet: bool,
+    /// The ring's independently-generated PET public key. Absent until its own
+    /// fresh-DKG ceremony finalizes (mirrors `ring_pk`, but is a distinct key —
+    /// never used for signing).
+    #[prost(string, optional, tag = "17")]
+    pub pet_pk: Option<String>,
+    // tag 18 formerly pet_confirmations; folded into RingConfirmation::pet_pk instead.
 }
 
 #[derive(Clone, Message)]
@@ -84,6 +99,11 @@ pub struct RingConfirmation {
     pub node_key: String,
     #[prost(string, tag = "2")]
     pub ring_pk: String,
+    /// Present only when finalizing a `requires_pet` ring — the peer's claimed
+    /// PET public key, submitted together with `ring_pk` in the same finalize
+    /// message (not an independent confirmation round).
+    #[prost(string, optional, tag = "3")]
+    pub pet_pk: Option<String>,
 }
 
 /// Document state stored in x/orbis.
@@ -109,6 +129,15 @@ pub struct Document {
     pub tier: Option<String>,
     #[prost(uint64, optional, tag = "10")]
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only when the ring requires PET. JSON of
+    /// `{ephemeral_point, masked_fingerprint}`. Present and absent together
+    /// with `pet_tag_proof`.
+    #[prost(string, optional, tag = "11")]
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of `{challenge, response}`.
+    #[prost(string, optional, tag = "12")]
+    pub pet_tag_proof: Option<String>,
 }
 
 /// Key derivation state stored in x/orbis.
@@ -169,11 +198,18 @@ pub struct MsgCreateRing {
     pub trusted_auth_relay_dids: Vec<String>,
     #[prost(bool, tag = "10")]
     pub allow_trusted_auth_relays: bool,
+    /// Opt this ring into requiring a PET check before PRE release, applying
+    /// to every document in the ring (no per-document opt-out). Immutable
+    /// once set. Not yet supported: rejected until the PET checking-key
+    /// lifecycle ships.
+    #[prost(bool, tag = "11")]
+    pub requires_pet: bool,
 }
 
 impl MsgCreateRing {
     pub const TYPE_URL: &'static str = "/vera.orbis.MsgCreateRing";
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         creator: &str,
         peer_node_keys: Vec<String>,
@@ -184,6 +220,7 @@ impl MsgCreateRing {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Self {
         let allow_trusted_auth_relays = trusted_auth_relay_dids.is_some();
         Self {
@@ -197,6 +234,7 @@ impl MsgCreateRing {
             reporting,
             trusted_auth_relay_dids: trusted_auth_relay_dids.unwrap_or_default(),
             allow_trusted_auth_relays,
+            requires_pet,
         }
     }
 }
@@ -442,16 +480,22 @@ pub struct MsgFinalizeRing {
     pub ring_id: String,
     #[prost(string, tag = "3")]
     pub ring_pk: String,
+    /// Required, and only accepted, when the ring's `requires_pet` is true:
+    /// the signer's local fresh-DKG PET key ceremony completed alongside the
+    /// main one, and both are submitted together in this one finalize message.
+    #[prost(string, optional, tag = "4")]
+    pub pet_pk: Option<String>,
 }
 
 impl MsgFinalizeRing {
     pub const TYPE_URL: &'static str = "/vera.orbis.MsgFinalizeRing";
 
-    pub fn new(creator: &str, ring_id: &str, ring_pk: &str) -> Self {
+    pub fn new(creator: &str, ring_id: &str, ring_pk: &str, pet_pk: Option<String>) -> Self {
         Self {
             creator: creator.to_string(),
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
+            pet_pk,
         }
     }
 }
@@ -504,6 +548,15 @@ pub struct MsgStoreDocument {
     pub tier: Option<String>,
     #[prost(uint64, optional, tag = "9")]
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only when the ring requires PET. JSON of
+    /// `{ephemeral_point, masked_fingerprint}`. Present and absent together
+    /// with `pet_tag_proof`.
+    #[prost(string, optional, tag = "10")]
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of `{challenge, response}`.
+    #[prost(string, optional, tag = "11")]
+    pub pet_tag_proof: Option<String>,
 }
 
 impl MsgStoreDocument {

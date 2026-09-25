@@ -290,6 +290,17 @@ pub const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 6
 pub const MAX_PRE_RESPONSES: usize = 1000;
 
 // ============================================================================
+// PET (Ownership-Tag Check) Constants
+// ============================================================================
+
+/// Maximum number of pending PET-check responses.
+///
+/// Mirrors `MAX_PRE_RESPONSES`: PET-check responses are collected
+/// asynchronously from multiple nodes, and this limit prevents unbounded
+/// growth of response storage.
+pub const MAX_PET_RESPONSES: usize = 1000;
+
+// ============================================================================
 // Sign (Threshold BLS Signing) Constants
 // ============================================================================
 

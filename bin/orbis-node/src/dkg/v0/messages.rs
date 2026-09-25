@@ -16,6 +16,18 @@ use crate::reporting::v0::types::{DkgCommitmentStatement, DkgShareStatement};
 pub enum SessionKind {
     /// Standard fresh DKG — all nodes are symmetric, new random secret.
     Fresh,
+    /// Fresh DKG for a ring's independent PET checking key, run sequentially
+    /// after the ring's main-key `Fresh` ceremony finalizes (never in
+    /// parallel with it). Same peer set/threshold as the main ceremony;
+    /// unlike `Fresh`, this carries a storage-key override because `ring_id`
+    /// is known before the ceremony starts while the resulting `pet_pk` is
+    /// not. This key is never used for signing, including health checks.
+    FreshPet {
+        /// Local-storage key for the resulting PET `RingShareBundle`
+        /// (`ring_id`, not a public key — see the checking-key lifecycle
+        /// design in docs/plans/pet-integration.md for why).
+        ring_id: String,
+    },
     /// PSS refresh — same secret, new shares, same committee (zero constant term).
     Refresh {
         /// Local-storage key of the ring being refreshed (`aggregate_pk.to_string()`).
@@ -45,6 +57,7 @@ impl SessionKind {
     pub fn ring_key(&self) -> Option<&str> {
         match self {
             SessionKind::Fresh => None,
+            SessionKind::FreshPet { ring_id } => Some(ring_id.as_str()),
             SessionKind::Refresh { ring_pk_hex } => Some(ring_pk_hex.as_str()),
             SessionKind::Reshare { ring_pk_hex, .. } => Some(ring_pk_hex.as_str()),
         }

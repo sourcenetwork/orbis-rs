@@ -147,6 +147,66 @@ impl TryFrom<EncryptionProof> for String {
     }
 }
 
+/// A PET tag ciphertext: `R = r_tag*G` and `T = F(owner_id) + r_tag*pet_pk`.
+///
+/// Produced by the tag producer (Bankd) under the ring's authoritative PET
+/// public key, using encryption randomness (`r_tag`) independent from the
+/// payload's own. Both components are bound into the [`TagKnowledgeProof`]
+/// transcript; see [`crate::pet_context::tag_proof_digest`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PetTag {
+    pub ephemeral_point: Vec<u8>,
+    pub masked_fingerprint: Vec<u8>,
+}
+
+impl TryFrom<String> for PetTag {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<PetTag> for String {
+    type Error = CryptoError;
+
+    fn try_from(tag: PetTag) -> Result<Self> {
+        serde_json::to_string(&tag).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+/// Schnorr proof of knowledge of `r_tag` for `PetTag::ephemeral_point = r_tag*G`.
+///
+/// Its Fiat-Shamir transcript binds both tag components, the authoritative PET
+/// public key and ring identity, and the complete payload envelope (ciphertext,
+/// its policy/ring context, and its own [`EncryptionProof`]) — see
+/// [`crate::pet_context::tag_proof_digest`]. Generated once by the encryptor;
+/// every PET participant reconstructs the digest and verifies this proof
+/// before joining PET.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TagKnowledgeProof {
+    /// Fiat-Shamir challenge scalar, serialized.
+    pub challenge: Vec<u8>,
+    /// Proof response `z = k + c*r_tag`, serialized.
+    pub response: Vec<u8>,
+}
+
+impl TryFrom<String> for TagKnowledgeProof {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<TagKnowledgeProof> for String {
+    type Error = CryptoError;
+
+    fn try_from(proof: TagKnowledgeProof) -> Result<Self> {
+        serde_json::to_string(&proof).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
 /// Re-encryption reply
 #[derive(Clone, Debug)]
 pub struct ReencryptReply<ShareValue: Zeroize, PublicKey> {

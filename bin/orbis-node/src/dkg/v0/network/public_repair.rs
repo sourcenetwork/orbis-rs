@@ -191,7 +191,7 @@ pub(super) fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPh
         PublicPhase::ReshareParticipantSet,
     ];
     match kind {
-        SessionKind::Fresh => FRESH,
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => FRESH,
         SessionKind::Refresh { .. } => REFRESH,
         SessionKind::Reshare { .. } => RESHARE,
     }

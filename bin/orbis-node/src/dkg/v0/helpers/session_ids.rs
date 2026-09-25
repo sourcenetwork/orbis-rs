@@ -43,6 +43,20 @@ pub fn derive_fresh_dkg_session_id(ring_id: &str) -> Result<u128> {
     Ok(u128::from_le_bytes(digest[..16].try_into()?))
 }
 
+/// Derive a deterministic session ID for a ring's PET checking-key fresh DKG.
+///
+/// A distinct `"fresh-pet"` kind label (not a suffix or variant of `"fresh"`)
+/// guarantees this never collides with the ring's own main-key session ID,
+/// which uses the same `ring_id` input under the `"fresh"` label.
+pub fn derive_fresh_pet_dkg_session_id(ring_id: &str) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "fresh-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}
+
 /// Derive a deterministic reshare session ID from the ring's current generation state
 /// and the authoritative transition announced on the bulletin.
 pub fn derive_reshare_session_id(

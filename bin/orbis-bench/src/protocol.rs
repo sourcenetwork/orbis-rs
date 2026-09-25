@@ -470,6 +470,7 @@ pub async fn pre_call(
                 challenge: rdr_pk_proof.challenge,
                 response: rdr_pk_proof.response,
             }),
+            audit_target_object_id: None,
         },
         &token,
     )?;

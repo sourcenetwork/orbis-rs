@@ -42,6 +42,21 @@ pub(crate) fn document_payload_from_inline(
         PreError::Serialization(format!("Failed to serialize proof: {}", e))
     })?;
 
+    let (pet_tag, pet_tag_proof) = match inline.pet_tag {
+        Some(attachment) => {
+            let (pet_tag, pet_tag_proof) =
+                crate::helpers::pet_tag::pet_tag_attachment_to_document_fields(
+                    attachment.ephemeral_point,
+                    attachment.masked_fingerprint,
+                    attachment.knowledge_proof_challenge,
+                    attachment.knowledge_proof_response,
+                )
+                .map_err(PreError::InvalidInput)?;
+            (Some(pet_tag), Some(pet_tag_proof))
+        }
+        None => (None, None),
+    };
+
     Ok(bulletin::r#trait::DocumentPayload {
         ring_id: inline.ring_id,
         document,
@@ -51,6 +66,8 @@ pub(crate) fn document_payload_from_inline(
         permission: inline.permission,
         tier: inline.tier,
         timestamp: inline.timestamp,
+        pet_tag,
+        pet_tag_proof,
     })
 }
 
@@ -152,13 +169,18 @@ where
             .await?;
         let ciphertext_context = authorized.ciphertext_context.clone();
 
-        // 4. Relay setup.
-        let setup = self.prepare_pre_relay(authorized).await?;
+        // 4. PET check (no-op unless the ring requires it). The returned attestations are
+        //    forwarded to every PRE peer so each one independently re-verifies the same
+        //    check before releasing its share.
+        let pet_attestations = self.check_pet_if_required(&authorized).await?;
 
-        // 5. Coordination.
+        // 5. Relay setup.
+        let setup = self.prepare_pre_relay(authorized, pet_attestations).await?;
+
+        // 6. Coordination.
         let result = self.coordinate_pre_reencryption(setup).await?;
 
-        // 6. Response encoding.
+        // 7. Response encoding.
         let response = encode_pre_response(result, ciphertext_context, current_time as i64)?;
 
         request_metrics.complete();

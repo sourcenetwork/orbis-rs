@@ -321,6 +321,8 @@ pub(super) fn require_inline_document_evidence<'a>(
         &evidence.permission,
         evidence.tier.as_deref(),
         timestamp,
+        None,
+        None,
     )
     .map_err(|e| {
         ReportingError::InvalidReport(format!("inline document evidence is malformed: {e}"))

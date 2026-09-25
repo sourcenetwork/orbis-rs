@@ -179,7 +179,9 @@ pub(crate) fn spawn_pss_offline_observations<D>(
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if matches!(seed.kind, SessionKind::Fresh) || seed.accused.is_empty() {
+    if matches!(seed.kind, SessionKind::Fresh | SessionKind::FreshPet { .. })
+        || seed.accused.is_empty()
+    {
         return;
     }
     if seed.protocol_version != routes.version {
@@ -378,7 +380,7 @@ where
 {
     let is_reshare = matches!(kind, SessionKind::Reshare { .. });
     let (origin_protocol, ring_id) = match kind {
-        SessionKind::Fresh => return Ok(None),
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
         SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
         SessionKind::Reshare {
             bulletin_post_id, ..

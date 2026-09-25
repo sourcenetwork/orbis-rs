@@ -521,6 +521,8 @@ async fn relayed_request_refutation_rejects_authorized_request() {
         permission: "read".to_string(),
         tier: Some("tier-a".to_string()),
         timestamp: Some(10),
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     bulletin.set_post(
         "relay-pre-object".to_string(),
@@ -620,6 +622,8 @@ async fn relayed_request_refutation_accepts_matching_inline_document() {
         &evidence.permission,
         evidence.tier.as_deref(),
         statement.timestamp,
+        None,
+        None,
     )
     .expect("generate object_id");
     statement.document_inline = true;
@@ -801,6 +805,8 @@ async fn pre_proof_refutation_accepts_matching_inline_document() {
         &evidence.permission,
         evidence.tier.as_deref(),
         timestamp,
+        None,
+        None,
     )
     .expect("generate object_id");
 
