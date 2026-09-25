@@ -129,6 +129,15 @@ point instead of a sum):
   `ring_id` rather than by public key) — the PSS-generation TOCTOU handling
   PRE's own initiator has isn't needed here yet, since there is no PET-key
   refresh ceremony to race against. Revisit this once that lands.
-- **No reporting/evidence integration yet.** A PET-check failure surfaces as
-  a clean `PreError::Unauthorized` rejection — no on-chain report, no
-  evidence capture. Deferred to Task 7 in the PET feature's task breakdown.
+- **Relay attribution, not PET-specific evidence.** A relayed request whose
+  PET admission fails is reported exactly like one that fails ACP: PRE's
+  `handle_reencrypt_request` shares one `RelayRequestBinding` between both
+  checks and calls the same `report_relay_if_bound` helper from whichever
+  branch rejects with `PreError::Unauthorized`, provided the relayer signed
+  a `relay_statement` for this exact request. It still resolves to the
+  same generic `unauthorized_request` on-chain report type as an ACP
+  failure — there is no PET-specific report kind or evidence payload, and
+  nothing distinguishes "PET failed" from "ACP failed" in the resulting
+  report. A JWT-validation failure (`resolve_jwt_did`) still isn't reported
+  at all — that gap predates PET, applies identically to Sign, and is a
+  known, deliberately deferred issue, not something this covers.

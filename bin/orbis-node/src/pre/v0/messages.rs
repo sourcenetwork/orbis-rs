@@ -48,11 +48,13 @@ pub struct PreRequestContext {
     /// rather than trusting the relay's word. `None` means the document is read from the bulletin
     /// by `object_id`, exactly as before this field existed.
     pub document: Option<bulletin::r#trait::DocumentPayload>,
-    /// The ACP object naming the audit target, present only for a `requires_pet` ring. Every
-    /// committee member independently re-resolves the owner via ACP and re-verifies the PET match
-    /// itself (see `pet::v0::coordinator::verification::verify_pet_admission`) rather than trusting
-    /// this node's word that the check passed — that independent verification is only meaningful
-    /// if the verifier knows what it's checking, so unlike every other PET-internal message, this
+    /// The plaintext owner identity being audited, present only for a `requires_pet` ring — not
+    /// an ACP handle to resolve, see `pet::README.md`'s "no ACP identity-resolution step"
+    /// invariant. Every committee member independently re-checks `check_pet_permission` and
+    /// re-verifies the PET match itself against this value (see
+    /// `pet::v0::coordinator::verification::verify_pet_admission`) rather than trusting this
+    /// node's word that the check passed — that independent verification is only meaningful if
+    /// the verifier knows what it's checking, so unlike every other PET-internal message, this
     /// deliberately exposes the audit target to the whole ring committee, not just the initiator.
     pub audit_target_object_id: Option<String>,
     /// Signed, portable evidence that a genuine threshold PET check passed for this document —

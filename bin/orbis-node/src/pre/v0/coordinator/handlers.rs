@@ -6,7 +6,7 @@ use crate::pre::v0::helpers::{
     build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
     resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
 };
-use crate::pre::v0::messages::{PreMessage, ReencryptRequest};
+use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::{
     ring_state_sha256, PreReencryptResponseStatement, ReportedDocumentEvidence,
     PRE_REENCRYPT_RESPONSE_DOMAIN,
@@ -91,6 +91,44 @@ where
         }
     }
 
+    /// Attribute the relaying node for a request that failed either the ACP re-check or the
+    /// PET admission check — both share this exact same attribution logic, since the relay
+    /// statement binds to the request itself, not to which check rejected it. Best-effort:
+    /// does nothing when the request carried no relay statement, and only logs (never fails
+    /// the request) when the statement doesn't bind to it.
+    async fn report_relay_if_bound(
+        &self,
+        request_id: &str,
+        ctx: &PreRequestContext,
+        binding: RelayRequestBinding,
+        current_time: u64,
+        document_evidence: Option<ReportedDocumentEvidence>,
+    ) {
+        let Some(statement) = ctx.relay_statement.as_ref() else {
+            return;
+        };
+        match validate_relay_request_binding(statement, binding) {
+            Ok(()) => {
+                report_unauthorized_relay::<D, SignImpl>(
+                    self.app_state.clone(),
+                    self.routes,
+                    statement.clone(),
+                    ctx.relay_signature.clone(),
+                    current_time,
+                    document_evidence,
+                )
+                .await;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    %error,
+                    "Skipping unauthorized_request report: relay statement is not bound to failed PRE request"
+                );
+            }
+        }
+    }
+
     /// Handle a reencryption request (responder side)
     async fn handle_reencrypt_request(&self, req: ReencryptRequest) -> Result<Option<PreMessage>> {
         let ReencryptRequest {
@@ -153,6 +191,25 @@ where
             ctx.salt.as_deref(),
         )?;
 
+        // Both the ACP re-check below and the PET admission check further down reject on the
+        // same request, so a relayer's signed statement binds identically to either failure —
+        // built once and reused by `report_relay_if_bound` from whichever branch rejects.
+        let relay_binding = RelayRequestBinding {
+            ring: ring_payload.clone(),
+            ring_id: document_payload.ring_id.clone(),
+            protocol_version: self.routes.version,
+            chain_id: self.app_state.bulletin.chain_id(),
+            request_id: request_id.clone(),
+            origin_protocol: "pre".to_string(),
+            actor_id: actor_id.clone(),
+            object_id: ctx.object_id.clone(),
+            user_signed_at: token.issued_time,
+            valid_window: ctx.valid_window.clone(),
+            timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
+            from_node_id,
+            document_inline: document_evidence.is_some(),
+        };
+
         if let Err(error) = check_policy_access(
             &*self.app_state.authz,
             &document_payload,
@@ -165,44 +222,14 @@ where
             // A relayed request that fails our ACP re-check is attributable to the relaying node,
             // provided it signed a statement vouching that it forwarded this exact request.
             if let PreError::Unauthorized(_) = &error {
-                if let Some(statement) = &ctx.relay_statement {
-                    let chain_id = self.app_state.bulletin.chain_id();
-                    let binding = RelayRequestBinding {
-                        ring: ring_payload.clone(),
-                        ring_id: document_payload.ring_id.clone(),
-                        protocol_version: self.routes.version,
-                        chain_id,
-                        request_id: request_id.clone(),
-                        origin_protocol: "pre".to_string(),
-                        actor_id: actor_id.clone(),
-                        object_id: ctx.object_id.clone(),
-                        user_signed_at: token.issued_time,
-                        valid_window: ctx.valid_window.clone(),
-                        timestamp: RelayRequestTimestampBinding::Exact(document_payload.timestamp),
-                        from_node_id,
-                        document_inline: document_evidence.is_some(),
-                    };
-                    match validate_relay_request_binding(statement, binding) {
-                        Ok(()) => {
-                            report_unauthorized_relay::<D, SignImpl>(
-                                self.app_state.clone(),
-                                self.routes,
-                                statement.clone(),
-                                ctx.relay_signature.clone(),
-                                current_time,
-                                document_evidence.clone(),
-                            )
-                            .await;
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                request_id = %request_id,
-                                %error,
-                                "Skipping unauthorized_request report: relay statement is not bound to failed PRE request"
-                            );
-                        }
-                    }
-                }
+                self.report_relay_if_bound(
+                    &request_id,
+                    &ctx,
+                    relay_binding.clone(),
+                    current_time,
+                    document_evidence.clone(),
+                )
+                .await;
             }
             return Err(error);
         }
@@ -227,7 +254,7 @@ where
                     self.app_state.clone(),
                     self.routes,
                 );
-            pet_coordinator
+            if let Err(error) = pet_coordinator
                 .verify_pet_admission(
                     &document_payload,
                     ctx.salt.as_deref(),
@@ -238,7 +265,26 @@ where
                     &ctx.pet_attestations,
                 )
                 .await
-                .map_err(PreError::from)?;
+                .map_err(PreError::from)
+            {
+                // A relayed request whose PET admission fails is attributable to the relaying
+                // node exactly like an ACP failure above, provided it signed a statement
+                // vouching that it forwarded this exact request. A node has no way to guess a
+                // matching tag, so a relay that keeps forwarding PET-failing requests for a
+                // `requires_pet` ring is misbehaving in exactly the same way as one that
+                // forwards ACP-failing ones.
+                if let PreError::Unauthorized(_) = &error {
+                    self.report_relay_if_bound(
+                        &request_id,
+                        &ctx,
+                        relay_binding.clone(),
+                        current_time,
+                        document_evidence.clone(),
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
         }
 
         // Reject a forwarded JWT this node has already accepted. A responder sees
