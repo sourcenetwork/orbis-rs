@@ -179,7 +179,9 @@ pub(crate) fn spawn_pss_offline_observations<D>(
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if matches!(seed.kind, SessionKind::Fresh) || seed.accused.is_empty() {
+    if matches!(seed.kind, SessionKind::Fresh | SessionKind::FreshPet { .. })
+        || seed.accused.is_empty()
+    {
         return;
     }
     if seed.protocol_version != routes.version {

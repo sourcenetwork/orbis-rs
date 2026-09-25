@@ -219,7 +219,10 @@ where
     let leader_authorized =
         prepare.canonical_leader_node_key() == Some(prepare.leader_node_key.as_str());
     if !leader_authorized {
-        if !matches!(prepare.kind, SessionKind::Fresh) {
+        if !matches!(
+            prepare.kind,
+            SessionKind::Fresh | SessionKind::FreshPet { .. }
+        ) {
             report_leader_prepare_fault_best_effort(&state, routes, &prepare).await;
             crate::metrics::record_dkg_transport_event("control", "refresh_start_rejected");
         }
@@ -379,7 +382,10 @@ where
         )));
     }
     if matches!(outcome, TransportConfigureOutcome::Configured) {
-        if !matches!(prepare.kind, SessionKind::Fresh) {
+        if !matches!(
+            prepare.kind,
+            SessionKind::Fresh | SessionKind::FreshPet { .. }
+        ) {
             state
                 .dkg_session_state
                 .record_offline_relay_receipt(

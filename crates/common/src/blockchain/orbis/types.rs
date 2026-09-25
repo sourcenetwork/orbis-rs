@@ -47,12 +47,12 @@ pub struct Ring {
     pub allow_trusted_auth_relays: bool,
     /// Set at creation; true means this ring requires a PET check before PRE
     /// release, applying to every document in the ring. Immutable for the
-    /// ring's lifetime. Not yet reachable: ring creation currently rejects true.
+    /// ring's lifetime.
     #[prost(bool, tag = "16")]
     pub requires_pet: bool,
     /// The ring's independently-generated PET public key. Absent until its own
     /// fresh-DKG ceremony finalizes (mirrors `ring_pk`, but is a distinct key —
-    /// never used for signing). Not yet reachable: `requires_pet` is always false.
+    /// never used for signing).
     #[prost(string, optional, tag = "17")]
     pub pet_pk: Option<String>,
     // tag 18 formerly pet_confirmations; folded into RingConfirmation::pet_pk instead.

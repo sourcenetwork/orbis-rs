@@ -195,15 +195,16 @@ where
 
 /// Confirm a `requires_pet` ring's completed PET checking-key ceremony,
 /// submitting it *together* with the ring's main key in one combined
-/// `MsgFinalizeRing` — never two separate finalize rounds. `main_ring_pk` is
-/// this node's own local record of its main-key ceremony's result (looked up
-/// by `local_ring_pk_by_ring_id`, never taken from the wire — every peer must
-/// use its own independently-computed value here, not one relayed by
-/// whichever peer led the PET ceremony's `SessionInit`).
+/// `MsgFinalizeRing` — never two separate finalize rounds. `main_ring_pk_hex`
+/// is this node's own local record of its main-key ceremony's result
+/// (re-derived by the caller from `local_ring_pk_by_ring_id`'s stored bundle,
+/// never taken from the wire — every peer must use its own
+/// independently-computed value here, not one relayed by whichever peer led
+/// the PET ceremony's `SessionInit`).
 pub async fn post_fresh_pet_ring_finalization<D>(
     coord: &DkgCoordinator<D>,
     ring_id: &str,
-    main_ring_pk: &str,
+    main_ring_pk_hex: &str,
     pet_pk_bytes: &[u8],
 ) -> Result<()>
 where
@@ -213,7 +214,7 @@ where
 
     let payload = RingFinalizationPayload {
         ring_id: ring_id.to_string(),
-        ring_pk: main_ring_pk.to_string(),
+        ring_pk: main_ring_pk_hex.to_string(),
         pet_pk: Some(pet_pk.clone()),
     };
     let payload_bytes: Vec<u8> = payload.try_into().map_err(|e| {
@@ -227,13 +228,13 @@ where
         coord.app_state.bulletin.as_ref(),
         &coord.app_state.node_key,
         ring_id,
-        main_ring_pk,
+        main_ring_pk_hex,
         payload_bytes,
     )
     .await?;
 
     tracing::info!(
-        ring_pk = %main_ring_pk,
+        ring_pk = %main_ring_pk_hex,
         pet_pk = %pet_pk,
         ring_id = %ring_id,
         persistence_retries = persistence_retries,

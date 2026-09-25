@@ -92,7 +92,10 @@ where
                 (
                     state.expected_commitment_size(),
                     matches!(state.kind, SessionKind::Refresh { .. }),
-                    matches!(state.kind, SessionKind::Fresh),
+                    matches!(
+                        state.kind,
+                        SessionKind::Fresh | SessionKind::FreshPet { .. }
+                    ),
                     matches!(state.kind, SessionKind::Reshare { .. }),
                     expected_hash_override.or_else(|| {
                         state

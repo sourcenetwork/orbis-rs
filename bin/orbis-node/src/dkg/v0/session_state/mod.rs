@@ -1061,7 +1061,7 @@ impl<D: Dkg> DkgSessionState<D> {
     /// "Refresh/reshare-only" doc comment on the parent field) is populated
     /// unconditionally for Fresh too.
     pub(crate) fn missing_fresh_participants(&self) -> Vec<MissingDkgParticipant> {
-        if !matches!(self.kind, SessionKind::Fresh) {
+        if !matches!(self.kind, SessionKind::Fresh | SessionKind::FreshPet { .. }) {
             return Vec::new();
         }
         let own_node_id = self.node.node_id();

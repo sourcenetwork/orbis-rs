@@ -247,7 +247,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     // catch (e.g. a follower whose leader vanished before ever broadcasting
                     // Abort, or a session stuck in `Initializing` past `Begin`). Client-facing
                     // diagnostic only — not wired into the on-chain reporting pipeline above.
-                    if matches!(state.kind, SessionKind::Fresh) {
+                    if matches!(
+                        state.kind,
+                        SessionKind::Fresh | SessionKind::FreshPet { .. }
+                    ) {
                         let stage = match state.phase {
                             DkgPhase::Phase0CommitmentHashes => DkgFailureStage::CommitmentHashes,
                             DkgPhase::Phase1Commitments => DkgFailureStage::Commitments,
@@ -380,7 +383,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
         // every subsequent tick.
         let mut states = states.write().await;
         for (session_id, state) in states.iter_mut() {
-            if !matches!(state.kind, SessionKind::Fresh) {
+            if !matches!(
+                state.kind,
+                SessionKind::Fresh | SessionKind::FreshPet { .. }
+            ) {
                 continue;
             }
             if state.transport.soft_stall_reported {

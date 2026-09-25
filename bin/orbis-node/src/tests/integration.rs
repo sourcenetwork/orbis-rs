@@ -21,6 +21,8 @@ use tokio::time::{sleep, Duration, Instant};
 
 // Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
 const RING_ID: &str = "integration-test-ring";
+// Fixed PET-enabled ring id pre-seeded into genesis, for the same reason.
+const PET_RING_ID: &str = "integration-test-pet-ring";
 
 use super::constants::{
     reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID,
@@ -1066,6 +1068,276 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     println!("Post-refresh PRE verified: decrypted data matches original secret!");
 
     // Cleanup happens automatically when _network is dropped
+}
+
+/// Docker-based integration test: PET-enabled ring, end to end.
+///
+/// Exercises two things that `test_cli_calls_dkg_and_pre_endpoint` doesn't
+/// cover, both unblocked by the same change (Vera's `MsgCreateRing` no longer
+/// rejects `requires_pet: true` now that the checking-key lifecycle — the
+/// fresh-DKG auto-chain and combined finalize implemented in
+/// `coordinator::phases::phase4`/`network::start_fresh_pet` — actually exists
+/// to service such a ring):
+///
+/// 1. Genesis-seeds a `requires_pet: true` ring (same pss_interval-bypass
+///    trick as the reference test) and runs DKG through the CLI. This drives
+///    the full auto-chain: the main key's `Fresh` ceremony completes locally,
+///    triggers the PET key's own `FreshPet` ceremony internally (no second
+///    external trigger), and once both succeed the node submits one combined
+///    `MsgFinalizeRing` — `ring_pk` and `pet_pk` land on-chain together in
+///    the same commit.
+/// 2. A live `MsgCreateRing(requires_pet: true)` against the real chain (not
+///    genesis) round-trips correctly — the only place that would catch a
+///    proto tag mismatch between orbis-rs's prost types and Vera's gogoproto
+///    types for these fields, since neither side's unit tests cross a real
+///    wire boundary.
+///
+/// PET's own check-and-gate (Task 6: threshold PET verification before PRE
+/// release) doesn't exist yet, so this test stops at "both keys finalized" —
+/// it does not attempt PRE against a PET-gated document.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_cli_calls_dkg_for_pet_ring() {
+    println!("Starting Docker-based PET integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": PET_RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 5,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 3),
+                    "requires_pet": true
+                }]
+            }),
+        )
+        .build();
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("Failed to query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("Failed to query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("Failed to query node3 info");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let threshold = 2u32;
+    let endpoint = endpoints[0].to_string();
+    let node_endpoints = [
+        endpoints[0].to_string(),
+        endpoints[1].to_string(),
+        endpoints[2].to_string(),
+    ];
+
+    let node_keys = [
+        node1_info.node_key.clone(),
+        node2_info.node_key.clone(),
+        node3_info.node_key.clone(),
+    ];
+    assert_eq!(
+        node_keys[0], NODE_KEY_1,
+        "node1 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+    assert_eq!(
+        node_keys[1], NODE_KEY_2,
+        "node2 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+    assert_eq!(
+        node_keys[2], NODE_KEY_3,
+        "node3 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
+    );
+
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = VeraClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    // Must be the first CreatePolicy tx (counter=0) so the returned ID matches
+    // RING_GOVERNANCE_POLICY_ID baked into genesis — see the reference test.
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        PET_RING_ID,
+        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — acp_core may have changed. \
+         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    let ring_id = PET_RING_ID.to_string();
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update NodeInfo peer ID tx failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
+            .await
+            .expect("add ring to NodeInfo whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "add ring to NodeInfo whitelist tx failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for PET-enabled ring {}...", ring_id);
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
+    assert!(
+        dkg_result.is_ok(),
+        "DKG should succeed: {:?}",
+        dkg_result.err()
+    );
+
+    println!(
+        "DKG initiated (session_id: {}), waiting for combined ring+PET finalization...",
+        dkg_result.unwrap().session_id
+    );
+
+    // Two sequential fresh-DKG ceremonies (main key, then auto-chained PET
+    // key), each with its own up-to-~150s prepare-barrier allowance
+    // (DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE) — a
+    // longer budget than the reference test's single-ceremony 90s wait.
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
+
+    let finalized_ring = controller_client
+        .orbis_read_ring(&ring_id)
+        .await
+        .expect("read finalized ring")
+        .expect("finalized ring should exist");
+    assert!(
+        finalized_ring.requires_pet,
+        "finalized ring should still report requires_pet"
+    );
+    assert_eq!(
+        finalized_ring.ring_pk, ring_pk_hex,
+        "ring_pk mismatch between wait_for_ring_finalized and a fresh read-back"
+    );
+    assert!(
+        finalized_ring.confirmations.is_empty(),
+        "confirmations should be cleared once the ring is fully finalized"
+    );
+    let pet_pk_hex = finalized_ring
+        .pet_pk
+        .clone()
+        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
+    assert_ne!(
+        pet_pk_hex, ring_pk_hex,
+        "the PET key must be independent of the main key"
+    );
+
+    // Both keys must be valid, non-identity curve points, not just opaque hex.
+    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
+    let _ = GroupAffine::from_bytes(&ring_pk_bytes)
+        .expect("main key should deserialize to a valid point");
+    let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
+    let _ = GroupAffine::from_bytes(&pet_pk_bytes)
+        .expect("PET key should deserialize to a valid point");
+
+    // The main key's local per-node state (share + polynomial) is consistent
+    // across all three nodes — mirrors the reference test's cross-node check.
+    // The PET key has no RingIndex entry of its own (it's stored keyed by the
+    // ring's ring_id, not its own pubkey, since it's never looked up
+    // independently of the main key) so this check only covers the main key;
+    // agreement on pet_pk is instead guaranteed by Vera's FinalizeRing conflict
+    // check, which deletes the ring outright if any two confirmations disagree.
+    wait_for_ring_state_on_all_nodes(
+        &node_endpoints,
+        &ring_pk_hex,
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
+
+    println!(
+        "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())],
+        &pet_pk_hex[..40.min(pet_pk_hex.len())],
+    );
+
+    // A live MsgCreateRing(requires_pet: true) against the real chain also
+    // round-trips correctly (independent throwaway policy — no dependency on
+    // the deterministic RING_GOVERNANCE_POLICY_ID nonce ordering above). This
+    // ring is never whitelisted or driven through DKG; it only exercises the
+    // create-and-read-back wire path.
+    let live_policy_id =
+        crate::helpers::test_helpers::create_orbis_ring_policy(&chain_config).await;
+    let live_ring_id = crate::helpers::test_helpers::create_ring_on_chain_with_trusted_relays(
+        &chain_config,
+        &node_keys,
+        threshold,
+        &live_policy_id,
+        None,
+        vec![],
+        true,
+    )
+    .await;
+    let live_ring = controller_client
+        .orbis_read_ring(&live_ring_id)
+        .await
+        .expect("read live-created ring")
+        .expect("live-created ring should exist");
+    assert!(
+        live_ring.requires_pet,
+        "live-created ring should have requires_pet set"
+    );
+    assert!(
+        live_ring.ring_pk.is_empty(),
+        "live-created ring should be pending (no ring_pk yet)"
+    );
+    assert!(
+        live_ring.pet_pk.is_none(),
+        "live-created ring should have no pet_pk yet"
+    );
+
+    // Cleanup happens automatically when network is dropped
 }
 
 async fn wait_for_ring_state_on_all_nodes(

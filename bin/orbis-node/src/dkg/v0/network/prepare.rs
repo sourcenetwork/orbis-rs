@@ -30,7 +30,10 @@ where
 {
     let result = coordinate_prepared_inner(state.clone(), routes, prepare.clone()).await;
     if let Err(error) = &result {
-        if matches!(prepare.kind, SessionKind::Fresh) {
+        if matches!(
+            prepare.kind,
+            SessionKind::Fresh | SessionKind::FreshPet { .. }
+        ) {
             if let DkgError::BarrierFailure { failed_peers, .. } = error {
                 state
                     .dkg_session_state

@@ -9,8 +9,8 @@ use crate::dkg::v0::network::{
 };
 use crate::dkg::v0::session_state::{DkgPhase, RefreshHealthCheckCandidate, TopicTaskDisposition};
 use crate::dkg::v0::transport::{
-    derive_private_message_id, encode, AttemptKey, DkgPrivateMessage, DkgPublicPayload,
-    ParticipantRef,
+    canonical_leader, derive_private_message_id, encode, AttemptKey, DkgPrivateMessage,
+    DkgPublicPayload, ParticipantRef,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::ring_state::RingShareBundle;

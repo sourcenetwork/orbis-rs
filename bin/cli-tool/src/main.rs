@@ -148,6 +148,9 @@ pub enum SubCommands {
         /// Trusted auth-relay DIDs allowed to relay requests on this ring's behalf (comma-separated)
         #[clap(long, value_delimiter = ',')]
         trusted_auth_relay_dids: Vec<String>,
+        /// Opt this ring into requiring a PET check before PRE release
+        #[clap(long)]
+        requires_pet: bool,
     },
     /// Start a Distributed Key Generation session
     Dkg {
@@ -611,6 +614,7 @@ async fn main() -> Result<()> {
             nonce,
             current_version,
             trusted_auth_relay_dids,
+            requires_pet,
         } => {
             let signing_key = network.require_signing_key()?;
             let ring_id = create_ring(
@@ -621,6 +625,7 @@ async fn main() -> Result<()> {
                 nonce,
                 current_version,
                 trusted_auth_relay_dids,
+                requires_pet,
                 network.chain_config(),
                 &signing_key,
             )

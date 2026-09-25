@@ -12,7 +12,10 @@ pub(super) enum PublicBatchMode {
 
 pub(super) fn public_batch_mode(kind: &SessionKind, phase: PublicPhase) -> Option<PublicBatchMode> {
     match (kind, phase) {
-        (SessionKind::Fresh, PublicPhase::CommitmentHashes | PublicPhase::Commitments)
+        (
+            SessionKind::Fresh | SessionKind::FreshPet { .. },
+            PublicPhase::CommitmentHashes | PublicPhase::Commitments,
+        )
         | (
             SessionKind::Refresh { .. },
             PublicPhase::Commitments | PublicPhase::RefreshHealthCheck,

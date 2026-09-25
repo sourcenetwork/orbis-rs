@@ -1042,6 +1042,7 @@ pub async fn create_ring_on_chain(
         policy_id,
         nonce,
         vec![],
+        false,
     )
     .await
 }
@@ -1054,6 +1055,7 @@ pub async fn create_ring_on_chain_with_trusted_relays(
     policy_id: &str,
     nonce: Option<&str>,
     trusted_auth_relay_dids: Vec<String>,
+    requires_pet: bool,
 ) -> String {
     cli_tool::create_ring(
         node_keys.to_vec(),
@@ -1063,6 +1065,7 @@ pub async fn create_ring_on_chain_with_trusted_relays(
         nonce.map(String::from),
         network::V0.version,
         trusted_auth_relay_dids,
+        requires_pet,
         chain_config.clone(),
         TEST_ACCOUNT_HEX_KEY,
     )

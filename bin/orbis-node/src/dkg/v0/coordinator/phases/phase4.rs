@@ -380,19 +380,34 @@ where
                 .map_err(DkgError::ProtocolError)?;
 
         if ring_payload.requires_pet {
-            start_fresh_pet(coord.app_state.clone(), coord.routes, ring_id.clone())
-                .await
-                .inspect_err(|error| {
-                    tracing::error!(
-                        ring_id = %ring_id,
-                        error = %error,
-                        "Phase 4: failed to start the ring's PET checking-key ceremony after \
-                         the main key completed locally. This node holds a valid main-key \
-                         share and index entry but has not submitted the (deferred, combined) \
-                         finalize. The ring will remain pending until another participant \
-                         retries or operator intervention. Local state is preserved."
-                    );
-                })?;
+            // Only the canonical leader triggers the PET ceremony here. Every
+            // participant reaches this same branch independently (each on its
+            // own copy of the just-finished main-key `Fresh` ceremony), so
+            // without this gate all three would race to call `start_fresh_pet`
+            // at once — this was tried and confirmed to produce three separate
+            // `PrepareSession`s (same ceremony_id, three different random
+            // attempt_ids) for the same ring, none of which ever converges.
+            // The other participants don't need to do anything here: they'll
+            // receive the leader's `Prepare` broadcast over gossip once it
+            // starts, exactly like joining any other ceremony they didn't
+            // personally initiate.
+            let is_leader = canonical_leader(&ring_payload.peer_node_keys)
+                == Some(coord.app_state.node_key.as_str());
+            if is_leader {
+                start_fresh_pet(coord.app_state.clone(), coord.routes, ring_id.clone())
+                    .await
+                    .inspect_err(|error| {
+                        tracing::error!(
+                            ring_id = %ring_id,
+                            error = %error,
+                            "Phase 4: failed to start the ring's PET checking-key ceremony after \
+                             the main key completed locally. This node holds a valid main-key \
+                             share and index entry but has not submitted the (deferred, combined) \
+                             finalize. The ring will remain pending until another participant \
+                             retries or operator intervention. Local state is preserved."
+                        );
+                    })?;
+            }
         } else {
             ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
                 .await
@@ -416,18 +431,50 @@ where
     // this ceremony instead of finalizing the main key on its own.
     if let SessionKind::FreshPet { ring_id } = &kind {
         match ring_storage::local_ring_pk_by_ring_id(&coord.app_state.local_storage, ring_id) {
-            Ok(Some(main_ring_pk)) => {
+            Ok(Some(main_ring_pk_str)) => {
+                // `main_ring_pk_str` is `aggregate_pk.to_string()` — the local
+                // storage key for the main key's `RingShareBundle`, not a hex
+                // encoding of the key itself. Load the bundle and re-derive
+                // the actual public key bytes (its public polynomial's
+                // constant term) for the on-chain payload.
+                let main_bundle = RingShareBundle::load_by_ring_key(
+                    &coord.app_state.local_storage,
+                    &main_ring_pk_str,
+                )
+                .map_err(DkgError::Bulletin)?;
+                let main_pub_poly_bytes =
+                    hex::decode(&main_bundle.public_polynomial).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "FreshPet: failed to decode main key's stored public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                let main_pub_poly =
+                    <D::PubPoly>::from_bytes(&main_pub_poly_bytes).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                        "FreshPet: failed to deserialize main key's stored public polynomial: {}",
+                        e
+                    ))
+                    })?;
+                let main_ring_pk_bytes = CryptoSerialize::to_bytes(&main_pub_poly.eval(0))
+                    .map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "FreshPet: failed to serialize main key: {}",
+                            e
+                        ))
+                    })?;
+                let main_ring_pk_hex = hex::encode(&main_ring_pk_bytes);
                 ring_storage::post_fresh_pet_ring_finalization(
                     coord,
                     ring_id,
-                    &main_ring_pk,
+                    &main_ring_pk_hex,
                     &ring_pk_bytes,
                 )
                 .await
                 .inspect_err(|error| {
                     tracing::error!(
                         ring_id = %ring_id,
-                        main_ring_pk = %main_ring_pk,
+                        main_ring_pk = %main_ring_pk_hex,
                         pet_pk = %hex::encode(&ring_pk_bytes),
                         error = %error,
                         "Phase 4: combined FinalizeRing chain post failed after local state \
