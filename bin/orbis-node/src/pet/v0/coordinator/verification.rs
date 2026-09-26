@@ -46,7 +46,9 @@ use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::PetCheckContext;
 use crate::reporting::v0::observation::ReportObservation;
 use crate::reporting::v0::queue_report;
-use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
+use crate::reporting::v0::types::{
+    ring_state_sha256, PetCheckResponseStatement, ReportedDocumentEvidence,
+};
 use crate::ring_state::RingShareBundle;
 use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
@@ -243,6 +245,58 @@ where
     /// bulletin as the authoritative source for its own ACP check — reusing
     /// it does not weaken independence, since it is `pre`'s own read, never
     /// anything asserted by the initiator.
+    /// Best-effort: resolve `node_key`'s peer id via the bulletin and queue
+    /// an invalid-crypto report for it. Shared by `verify_pet_admission`'s
+    /// two attributable-failure branches — an authenticated attestation that
+    /// fails to decode (finding #9), and one that decodes but fails its DLEQ
+    /// proof — which differ only in which check failed, not in how the
+    /// report is built or queued. No live connection to the accused node
+    /// exists here (this validates forwarded evidence, not a peer response),
+    /// so `accused_peer_id` is resolved via the bulletin, the same way
+    /// `queue_unauthorized_request_report` does for the same reason.
+    async fn queue_pet_admission_report(
+        &self,
+        ring_id: &str,
+        node_key: &str,
+        statement: PetCheckResponseStatement,
+        response_signature: Vec<u8>,
+        document_evidence: Option<ReportedDocumentEvidence>,
+        from_node_id: u32,
+    ) {
+        let Ok(node_info_post) = self
+            .app_state
+            .bulletin
+            .read(node_key.to_string(), BulletinKind::NodeInfo)
+            .await
+        else {
+            return;
+        };
+        let Ok(node_info) = NodeInfo::try_from(node_info_post) else {
+            return;
+        };
+        let observation = invalid_pet_response_observation(
+            ring_id.to_string(),
+            node_key.to_string(),
+            node_info.peer_id,
+            statement,
+            response_signature,
+            document_evidence,
+        );
+        let _ = queue_report::<D, SignImpl>(
+            self.app_state.clone(),
+            self.routes,
+            ReportObservation::InvalidCryptoResponse(Box::new(observation)),
+        )
+        .await
+        .inspect_err(|error| {
+            tracing::warn!(
+                from_node_id,
+                %error,
+                "Failed to queue PET invalid-proof report observation"
+            );
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn verify_pet_admission(
         &self,
@@ -357,24 +411,30 @@ where
                     attestation.from_node_id, e
                 ))
             })?;
-            let partial = G1Affine::from_bytes(&attestation.partial).map_err(|e| {
-                PetError::Deserialization(format!(
-                    "failed to deserialize PET attestation partial: {}",
-                    e
-                ))
-            })?;
-            let challenge = Fr::from_bytes(&attestation.challenge).map_err(|e| {
-                PetError::Deserialization(format!(
-                    "failed to deserialize PET attestation challenge: {}",
-                    e
-                ))
-            })?;
-            let proof = Fr::from_bytes(&attestation.proof).map_err(|e| {
-                PetError::Deserialization(format!(
-                    "failed to deserialize PET attestation proof: {}",
-                    e
-                ))
-            })?;
+            let (Ok(partial), Ok(challenge), Ok(proof)) = (
+                G1Affine::from_bytes(&attestation.partial),
+                Fr::from_bytes(&attestation.challenge),
+                Fr::from_bytes(&attestation.proof),
+            ) else {
+                // Authenticated (its signature just verified above) but
+                // undecodable — same attributability as a decodable-but-
+                // cryptographically-invalid response below (finding #9): a
+                // malicious node can't dodge reporting just by signing
+                // garbage bytes instead of a well-formed wrong proof.
+                self.queue_pet_admission_report(
+                    &document.ring_id,
+                    &node_key,
+                    statement,
+                    attestation.signature.clone(),
+                    document_evidence.clone(),
+                    attestation.from_node_id,
+                )
+                .await;
+                return Err(PetError::Deserialization(format!(
+                    "failed to deserialize PET attestation from node {}",
+                    attestation.from_node_id
+                )));
+            };
             let reply = PetCheckReply {
                 partial: PubShare {
                     i: attestation.from_node_id,
@@ -386,42 +446,16 @@ where
             if let Err(error) = P::verify_partial_pet_check(&pub_poly, &tag, &reply) {
                 // Authenticated (its signature just verified) but
                 // cryptographically invalid — attributable and reportable,
-                // unlike a signature failure above. No live connection to
-                // the accused node exists here (this validates forwarded
-                // evidence, not a peer response), so `accused_peer_id` is
-                // resolved via the bulletin the same way
-                // `queue_unauthorized_request_report` does for the same
-                // reason.
-                if let Ok(node_info_post) = self
-                    .app_state
-                    .bulletin
-                    .read(node_key.clone(), BulletinKind::NodeInfo)
-                    .await
-                {
-                    if let Ok(node_info) = NodeInfo::try_from(node_info_post) {
-                        let observation = invalid_pet_response_observation(
-                            document.ring_id.clone(),
-                            node_key.clone(),
-                            node_info.peer_id,
-                            statement.clone(),
-                            attestation.signature.clone(),
-                            document_evidence.clone(),
-                        );
-                        let _ = queue_report::<D, SignImpl>(
-                            self.app_state.clone(),
-                            self.routes,
-                            ReportObservation::InvalidCryptoResponse(Box::new(observation)),
-                        )
-                        .await
-                        .inspect_err(|error| {
-                            tracing::warn!(
-                                from_node_id = attestation.from_node_id,
-                                %error,
-                                "Failed to queue PET invalid-proof report observation"
-                            );
-                        });
-                    }
-                }
+                // unlike a signature failure above.
+                self.queue_pet_admission_report(
+                    &document.ring_id,
+                    &node_key,
+                    statement,
+                    attestation.signature.clone(),
+                    document_evidence.clone(),
+                    attestation.from_node_id,
+                )
+                .await;
                 return Err(PetError::Crypto(format!(
                     "PET attestation from node {} failed its per-share proof verification: {}",
                     attestation.from_node_id, error
@@ -547,9 +581,22 @@ where
             tracing::warn!(
                 peer = %peer_id,
                 from_node_id,
-                "PET Coordinator: dropping malformed check share"
+                "PET Coordinator: dropping authenticated but malformed check share"
             );
-            return PetCheckResponseVerification::Rejected;
+            // Authenticated (its signature just verified above) but
+            // undecodable — same attributability as a decodable-but-
+            // cryptographically-invalid response below (finding #9): a
+            // malicious responder can't dodge reporting just by signing
+            // garbage bytes instead of a well-formed wrong proof.
+            let observation = invalid_pet_response_observation(
+                ring_id.to_string(),
+                node_key,
+                peer_id.to_string(),
+                statement,
+                signature,
+                document_evidence.clone(),
+            );
+            return PetCheckResponseVerification::InvalidProof(Box::new(observation));
         };
         // 5. Verify the DLEQ proof against this participant's authoritative
         //    public share.
@@ -1155,6 +1202,62 @@ mod tests {
         cleanup_db(&test_db_path(db_name));
     }
 
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_admission_rejects_and_reports_a_malformed_attestation() {
+        let db_name = "pet_admission_rejects_and_reports_malformed_attestation";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let genuine = valid_attestation(&fixture, 1);
+        // Node 2's real signature, over genuinely undecodable
+        // partial/challenge/proof bytes — distinct from a forged-signature
+        // or a decodable-but-wrong DLEQ proof (finding #9): before the fix
+        // this fell through to a bare deserialization error with no report
+        // ever queued for node 2. `verify_pet_admission` now attempts to
+        // queue an invalid-crypto report for it before returning that same
+        // error (best-effort — this test only asserts the outward
+        // rejection, since queueing itself is fire-and-forget and never
+        // gates the admission decision).
+        let mut malformed = valid_attestation(&fixture, 2);
+        malformed.partial = vec![0xff, 0xff, 0xff];
+        let statement_ctx = test_statement_ctx(&fixture);
+        let signer = &fixture.signers[1];
+        let statement = statement_ctx.statement_for(
+            signer.pubkey_hex.clone(),
+            TEST_REQUEST_ID.to_string(),
+            malformed.signed_at,
+            2,
+            malformed.partial.clone(),
+            malformed.challenge.clone(),
+            malformed.proof.clone(),
+        );
+        malformed.signature =
+            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
+                .expect("sign malformed attestation");
+
+        let result = coordinator
+            .verify_pet_admission(
+                &fixture.document,
+                None,
+                &object_id_for(&fixture),
+                None,
+                AUDIT_TARGET,
+                "test-actor",
+                None,
+                &fixture.ring_payload,
+                &[genuine, malformed],
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(PetError::Deserialization(_))),
+            "expected a deserialization rejection, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
     /// Confirms the rejections above aren't vacuous against a gate that
     /// rejects everything: `threshold`-many genuinely signed, correctly
     /// combining attestations for a tag that really does match the audited
@@ -1286,6 +1389,47 @@ mod tests {
         }
     }
 
+    /// A response genuinely signed by `node_id`'s real key, but whose
+    /// `partial`/`challenge`/`proof` bytes are not valid encodings of a
+    /// group element/scalar at all — distinct from `invalid_proof_response`
+    /// (which decodes fine but fails the DLEQ check). Finding #9: before the
+    /// fix, this case fell through to a bare `Rejected`/deserialization
+    /// error with no report ever queued, letting a malicious responder
+    /// dodge reporting just by signing garbage instead of a well-formed
+    /// wrong proof.
+    fn malformed_response(
+        fixture: &TagFixture,
+        node_id: u32,
+    ) -> crate::pet::v0::messages::PetMessage {
+        let partial_bytes = vec![0xffu8; 3];
+        let challenge_bytes = vec![0xffu8; 3];
+        let proof_bytes = vec![0xffu8; 3];
+        let signed_at = 1_700_000_000u64;
+        let statement_ctx = test_statement_ctx(fixture);
+        let signer = &fixture.signers[(node_id - 1) as usize];
+        let statement = statement_ctx.statement_for(
+            signer.pubkey_hex.clone(),
+            TEST_REQUEST_ID.to_string(),
+            signed_at,
+            node_id,
+            partial_bytes.clone(),
+            challenge_bytes.clone(),
+            proof_bytes.clone(),
+        );
+        let signature =
+            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
+                .expect("sign malformed attestation");
+        crate::pet::v0::messages::PetMessage::CheckResponse {
+            request_id: TEST_REQUEST_ID.to_string(),
+            from_node_id: node_id,
+            partial: partial_bytes,
+            challenge: challenge_bytes,
+            proof: proof_bytes,
+            signed_at,
+            signature,
+        }
+    }
+
     #[test]
     fn spoofed_response_does_not_block_the_honest_participants_later_valid_response() {
         let fixture = build_fixture(3, 2);
@@ -1381,6 +1525,55 @@ mod tests {
         assert!(
             matches!(genuine_result, PetCheckResponseVerification::Verified(..)),
             "node 1's real contribution must still be accepted after its own earlier invalid attempt"
+        );
+    }
+
+    #[test]
+    fn malformed_response_is_reported_and_does_not_consume_the_slot() {
+        let fixture = build_fixture(3, 2);
+        let pub_poly = fixture_pub_poly(&fixture);
+        let tag = fixture_tag(&fixture);
+        let statement_ctx = test_statement_ctx(&fixture);
+        let mut seen_node_ids = HashSet::new();
+
+        let bad = malformed_response(&fixture, 1);
+        let bad_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
+            bad,
+            "peer-1",
+            &fixture.ring_payload,
+            &fixture.document.ring_id,
+            &pub_poly,
+            &tag,
+            &statement_ctx,
+            TEST_REQUEST_ID,
+            &None,
+            &mut seen_node_ids,
+        );
+        assert!(
+            matches!(bad_result, PetCheckResponseVerification::InvalidProof(_)),
+            "an authenticated but undecodable response must be reported, not just dropped (finding #9)"
+        );
+        assert!(
+            !seen_node_ids.contains(&1),
+            "a malformed response must not consume the participant's slot"
+        );
+
+        let genuine = attestation_to_check_response(valid_attestation(&fixture, 1));
+        let genuine_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
+            genuine,
+            "peer-1",
+            &fixture.ring_payload,
+            &fixture.document.ring_id,
+            &pub_poly,
+            &tag,
+            &statement_ctx,
+            TEST_REQUEST_ID,
+            &None,
+            &mut seen_node_ids,
+        );
+        assert!(
+            matches!(genuine_result, PetCheckResponseVerification::Verified(..)),
+            "node 1's real contribution must still be accepted after its own earlier malformed attempt"
         );
     }
 
