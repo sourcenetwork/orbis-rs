@@ -78,15 +78,20 @@ pub fn add_points(a: &crate::GroupAffine, b: &crate::GroupAffine) -> Result<crat
 
 /// Multiply a group element by a scalar: `point * scalar`.
 ///
+/// **Variable-time in `scalar`. Never call this with a secret scalar** (a
+/// nonce, a share, a derived secret) — use [`mul_point_secret`] instead. A
+/// public base point does not make the scalar public: e.g. recovering a
+/// secret `r_tag` from `r_tag*pet_pk` would reveal
+/// `F(owner) = T - r_tag*pet_pk` in a PET tag.
+///
 /// No crypto-trait method exposes plain scalar multiplication against an
 /// arbitrary point (every trait method that needs it, e.g.
 /// `Pet::partial_pet_check`, always pairs it with a DLEQ proof the caller
 /// doesn't necessarily want). For a caller building a value from public
-/// pieces outside any trait impl — e.g. a PET tag's
-/// `masked_fingerprint = F(owner) + r_tag*pet_pk`'s blinding term, computable
-/// entirely from the ring's public `pet_pk` and a fresh nonce, with no
-/// secret share involved (see `cli_tool::prepare_pet_tag`, which mints such
-/// a tag as a stand-in for what Bankd does in production).
+/// pieces outside any trait impl, entirely from already-public points and a
+/// scalar that is *also* already public (e.g. a Lagrange coefficient) — see
+/// [`mul_point_secret`] for the PET tag blinding use case, which does need a
+/// secret scalar.
 #[cfg(feature = "bls12-381")]
 pub fn mul_point(
     point: &crate::GroupAffine,
@@ -98,8 +103,51 @@ pub fn mul_point(
 }
 
 /// Multiply a group element by a scalar: `point * scalar`.
+///
+/// **Variable-time in `scalar`. Never call this with a secret scalar** — see
+/// [`mul_point_secret`].
 #[cfg(feature = "decaf377")]
 pub fn mul_point(
+    point: &crate::GroupAffine,
+    scalar: &crate::ScalarField,
+) -> Result<crate::GroupAffine> {
+    Ok(*point * *scalar)
+}
+
+/// Multiply a group element by a SECRET scalar: `point * scalar`, using a
+/// constant-time scalar-multiplication path where one exists for this
+/// backend.
+///
+/// Unlike [`mul_point`] (variable-time, for scalars that are already
+/// public — e.g. a Lagrange coefficient), this is for a caller multiplying a
+/// point by a genuinely secret scalar it holds (a nonce, a share, a derived
+/// secret) — e.g. a PET tag's `masked_fingerprint = F(owner) + r_tag*pet_pk`,
+/// where `r_tag` is the tag-preparer's own secret ephemeral randomness (see
+/// `cli_tool::prepare_pet_tag`). A public base point (`pet_pk`) does not make
+/// `r_tag` public.
+///
+/// bls12-381: routes through [`crate::bls12_381::ct::ct_mul_g1`], the same
+/// constant-time path already used by `Pet::prove_tag_knowledge` and the
+/// per-share PET-check DLEQ proof for every other secret-scalar
+/// multiplication in this protocol.
+#[cfg(feature = "bls12-381")]
+pub fn mul_point_secret(
+    point: &crate::GroupAffine,
+    scalar: &crate::ScalarField,
+) -> Result<crate::GroupAffine> {
+    crate::bls12_381::ct::ct_mul_g1(point, scalar)
+}
+
+/// Multiply a group element by a SECRET scalar: `point * scalar`.
+///
+/// decaf377 has no constant-time scalar-multiplication path in this
+/// codebase — the same documented, tracked gap as `prove_tag_knowledge`'s
+/// decaf377 twin (`decaf377/pet.rs`). This is the same operation as
+/// [`mul_point`], named separately so call sites document which of their
+/// scalars are secret, and so a future constant-time decaf377 path only
+/// needs to change this one function.
+#[cfg(feature = "decaf377")]
+pub fn mul_point_secret(
     point: &crate::GroupAffine,
     scalar: &crate::ScalarField,
 ) -> Result<crate::GroupAffine> {
@@ -156,12 +204,35 @@ pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8
 
 #[cfg(all(test, feature = "bls12-381"))]
 mod tests {
-    use super::sample_nonzero;
+    use super::{mul_point, mul_point_secret, sample_nonzero};
 
     #[test]
     fn sample_nonzero_retries_zero() {
         let mut draws = [0u64, 0, 7].into_iter();
         assert_eq!(sample_nonzero(|| draws.next().unwrap()), 7);
         assert!(draws.next().is_none());
+    }
+
+    /// Finding #10: `mul_point_secret`'s constant-time path must compute the
+    /// exact same group element `mul_point`'s variable-time path does —
+    /// switching a call site from one to the other must never change the
+    /// resulting point or wire format.
+    #[test]
+    fn mul_point_secret_matches_mul_point() {
+        use ark_ec::Group;
+        use ark_std::UniformRand;
+        use rand_core::OsRng;
+
+        let mut rng = OsRng;
+        for _ in 0..20 {
+            let point: crate::GroupAffine = (ark_bls12_381::G1Projective::generator()
+                * crate::ScalarField::rand(&mut rng))
+            .into();
+            let scalar = crate::ScalarField::rand(&mut rng);
+            assert_eq!(
+                mul_point(&point, &scalar).unwrap(),
+                mul_point_secret(&point, &scalar).unwrap()
+            );
+        }
     }
 }

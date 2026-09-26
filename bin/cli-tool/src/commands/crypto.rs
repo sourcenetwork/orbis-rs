@@ -6,9 +6,11 @@
 use anyhow::{anyhow, Result};
 use common::blockchain::ChainConfig;
 use crypto::context::CiphertextContext;
-use crypto::r#trait::{EncryptionProof, Pet, PetTag, Secret, TagKnowledgeProof, ThresholdDealer};
+use crypto::r#trait::{
+    Dkg, EncryptionProof, Pet, PetTag, Secret, TagKnowledgeProof, ThresholdDealer,
+};
 use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PetImpl, PreImpl as ThresholdDealerNode};
+use crypto::{DkgImpl, GroupAffine as G1Affine, PetImpl, PreImpl as ThresholdDealerNode};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use sha2::{Digest, Sha256};
 
@@ -123,13 +125,22 @@ pub fn prepare_pet_tag(
     let pet_pk_bytes = hex::decode(pet_pk_hex).map_err(|e| anyhow!("Invalid pet_pk hex: {}", e))?;
     let pet_pk: G1Affine =
         G1Affine::from_bytes(&pet_pk_bytes).map_err(|e| anyhow!("Invalid pet_pk: {}", e))?;
+    // An identity checking key would make `r_tag*pet_pk` the identity too,
+    // so the "masked" fingerprint would just be `F(owner)` in the clear —
+    // reject it outright rather than silently producing a tag that exposes
+    // the owner fingerprint.
+    if DkgImpl::public_key_is_identity(&pet_pk) {
+        return Err(anyhow!("Invalid pet_pk: cannot be the identity element"));
+    }
 
     let (r_tag, r_point) = crypto::helpers::generate_keypair()
         .map_err(|e| anyhow!("Failed to generate r_tag: {}", e))?;
     let ephemeral_point =
         CryptoSerialize::to_bytes(&r_point).map_err(|e| anyhow!("Failed to serialize R: {}", e))?;
 
-    let blinding = crypto::helpers::mul_point(&pet_pk, &r_tag)
+    // `r_tag` is secret ephemeral randomness, not a public scalar — must go
+    // through the constant-time path (see `mul_point_secret`'s doc comment).
+    let blinding = crypto::helpers::mul_point_secret(&pet_pk, &r_tag)
         .map_err(|e| anyhow!("Failed to compute r_tag*pet_pk: {}", e))?;
     let fingerprint = PetImpl::owner_fingerprint(owner_id.as_bytes())
         .map_err(|e| anyhow!("Failed to compute owner fingerprint: {}", e))?;
@@ -290,4 +301,78 @@ pub fn derive_signer_did(signing_key_hex: &str, config: ChainConfig) -> Result<(
     let public_key_hex = signer.public_key_hex();
     let did = secp256k1_pubkey_to_did(&public_key_hex)?;
     Ok((public_key_hex, did))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex_encode_point(point: &G1Affine) -> String {
+        hex::encode(CryptoSerialize::to_bytes(point).expect("serialize point"))
+    }
+
+    /// Finding #11: an identity PET checking key would make
+    /// `r_tag*pet_pk` the identity too, so `masked_fingerprint` would just be
+    /// `F(owner)` in the clear. `prepare_pet_tag` must reject it outright.
+    #[test]
+    fn prepare_pet_tag_rejects_an_identity_checking_key() {
+        let (_ring_sk, ring_pk) =
+            crypto::helpers::generate_keypair().expect("generate ring keypair");
+        let prepared = prepare_secret(
+            b"test secret",
+            &hex_encode_point(&ring_pk),
+            None,
+            "test-policy".to_string(),
+            "test-resource".to_string(),
+            "read".to_string(),
+            None,
+            None,
+            None,
+        )
+        .expect("prepare_secret should succeed");
+
+        let identity_pet_pk_hex = hex_encode_point(&G1Affine::default());
+        let result = prepare_pet_tag(&prepared, "test-ring", &identity_pet_pk_hex, "owner-1");
+
+        assert!(
+            result.is_err(),
+            "an identity PET checking key must be rejected, not silently accepted"
+        );
+    }
+
+    /// A genuine, independently generated checking key must retain normal
+    /// behavior — confirms the rejection above isn't vacuous against a
+    /// helper that rejects everything.
+    #[test]
+    fn prepare_pet_tag_accepts_a_genuine_checking_key() {
+        let (_ring_sk, ring_pk) =
+            crypto::helpers::generate_keypair().expect("generate ring keypair");
+        let prepared = prepare_secret(
+            b"test secret",
+            &hex_encode_point(&ring_pk),
+            None,
+            "test-policy".to_string(),
+            "test-resource".to_string(),
+            "read".to_string(),
+            None,
+            None,
+            None,
+        )
+        .expect("prepare_secret should succeed");
+
+        let (_pet_sk, pet_pk) =
+            crypto::helpers::generate_keypair().expect("generate pet checking keypair");
+        let result = prepare_pet_tag(
+            &prepared,
+            "test-ring",
+            &hex_encode_point(&pet_pk),
+            "owner-1",
+        );
+
+        assert!(
+            result.is_ok(),
+            "a genuine checking key must still produce a tag: {:?}",
+            result.err()
+        );
+    }
 }
