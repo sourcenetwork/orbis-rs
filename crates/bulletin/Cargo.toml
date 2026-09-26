@@ -20,6 +20,7 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
 vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
 vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
 alloy-primitives = { version = "1", optional = true }
@@ -30,7 +31,7 @@ zeroize = { workspace = true, optional = true }
 [features]
 default = ["vera"]
 vera = []
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
+native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's
 # what actually compiles the module this re-exports.
@@ -50,7 +51,6 @@ required-features = ["native"]
 
 [dev-dependencies]
 vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true

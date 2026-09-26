@@ -357,14 +357,14 @@ impl Bulletin for NativeBulletin {
             let mut writer = self.writer.lock().await;
             let scheme = serde_json::from_value(serde_json::Value::String(signature_scheme))
                 .map_err(error)?;
-            let signature = hex::encode(signature);
+            let signature_hex = hex::encode(&signature);
             if let Some(call) = writer.pending_call().map_err(error)? {
                 if let Some(previous) =
                     vera_client::rings::decode_ring_reshare(&call).map_err(error)?
                 {
                     if previous.ring_id == id
                         && previous.scheme == scheme
-                        && previous.signature == signature
+                        && previous.signature == signature_hex
                     {
                         return self.finish_retained(&writer).await;
                     }
@@ -373,7 +373,7 @@ impl Bulletin for NativeBulletin {
             self.settle(&mut writer).await?;
             let record = self.ring(&id).await?;
             writer
-                .prepare_ring_reshare(id, record.sequence, scheme, signature)
+                .prepare_ring_reshare(&record, scheme, &signature)
                 .map_err(error)?;
             self.finish_retained(&writer).await
         })

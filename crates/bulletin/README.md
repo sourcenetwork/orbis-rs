@@ -33,7 +33,12 @@ state to existing Orbis DKG types. Cancelled/conflicting records map to not-foun
 for the DKG protocol; `read_ring` exposes the terminal record for inspection.
 
 `prepare_ring_reshare` and `prepare_ring_report` persist aggregate authorizations
-from the existing threshold signers. The report path uses shared canonical IDs,
+from the existing threshold signers. Reshare preparation takes the selected ring
+record and verifies its deployment, pending state and signature before writing the
+journal. A lagging reader or mismatched signature returns an error without saving
+a request; callers can retry after obtaining matching certified state. Exact
+retries of an already-journaled request retain its original sequence.
+The report path uses shared canonical IDs,
 snapshot hashes and bounded large-request delivery.
 
 `prepare_document` and `prepare_key_derivation` use an actor's
@@ -68,7 +73,7 @@ recovery, controller allow-list enforcement, fresh-ring confirmation, document
 and derivation posts, cancellation, duplicate calls and restart:
 
 ```bash
-HUBD_BINARY=/path/to/hubd cargo test -p bulletin --features native --test native_service -- --ignored
+VERAD_BINARY=/path/to/verad cargo test -p bulletin --features native --test native_service -- --ignored
 ```
 
 Node startup can select this backend with `--vera-config`; see the node README.

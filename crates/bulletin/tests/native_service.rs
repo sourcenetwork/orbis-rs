@@ -685,6 +685,10 @@ async fn native_report_and_reshare_recover_certified_completion() {
         .unwrap()
         .record
         .unwrap();
+    VeraClient::new(&reader_url)
+        .read_threshold_ring(&ring_id, pending.revision.block_height, &trusted)
+        .await
+        .unwrap();
     let signature = ring_secret
         .sign(
             &pending.reshare_signing_bytes(deployment).unwrap(),

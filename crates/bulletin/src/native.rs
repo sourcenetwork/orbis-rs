@@ -2,6 +2,8 @@
 
 mod backend;
 mod config;
+#[cfg(test)]
+mod reshare_tests;
 pub use backend::NativeBulletin;
 pub use config::NativeConfig;
 
@@ -203,21 +205,33 @@ impl NativeVeraClient {
         vera_client::rings::ring_deployment_label(self.deployment_root, self.worker.deployment_id())
     }
 
-    /// Persist aggregate authorization produced by the existing ring's threshold signers.
+    /// Verify authorization against the selected ring state before journaling it.
     pub fn prepare_ring_reshare(
         &mut self,
-        ring_id: String,
-        expected_sequence: u64,
+        record: &RingRecord,
         scheme: ThresholdScheme,
-        signature: String,
+        signature: &[u8],
     ) -> Result<B256, ClientError> {
+        if record.deployment_root != self.deployment_root {
+            return Err(ClientError::Signing("reshare deployment mismatch".into()));
+        }
+        let message = record
+            .reshare_signing_bytes(self.worker.deployment_id())
+            .map_err(|e| ClientError::Signing(e.to_string()))?;
+        let RingState::Active { public_key } = &record.state else {
+            return Err(ClientError::Signing("ring is not active".into()));
+        };
+        let public_key =
+            hex::decode(public_key).map_err(|e| ClientError::Signing(e.to_string()))?;
+        vera_crypto::threshold::verify(scheme, &public_key, &message, signature)
+            .map_err(|e| ClientError::Signing(e.to_string()))?;
         self.prepare_call(encode_ring_reshare(&RingReshareRequest {
             deployment_root: self.deployment_root,
             deployment_id: self.worker.deployment_id(),
-            ring_id,
-            expected_sequence,
+            ring_id: record.id.clone(),
+            expected_sequence: record.sequence,
             scheme,
-            signature,
+            signature: hex::encode(signature),
         })?)
     }
 
