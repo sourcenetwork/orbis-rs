@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use bincode::Options;
 use bytes::Bytes;
 use futures::StreamExt;
-use iroh::discovery::static_provider::StaticProvider;
+use iroh::address_lookup::memory::MemoryLookup;
 use iroh::{Endpoint, EndpointAddr, PublicKey, Signature};
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::net::Gossip;
@@ -156,7 +156,7 @@ fn endpoint_id(peer: &PeerId) -> Result<PublicKey> {
 pub struct IrohPubSub {
     endpoint: Endpoint,
     gossip: Gossip,
-    static_provider: StaticProvider,
+    static_provider: MemoryLookup,
     ingress: Arc<IngressController>,
 }
 
@@ -164,7 +164,7 @@ impl IrohPubSub {
     pub(crate) fn new(
         endpoint: Endpoint,
         gossip: Gossip,
-        static_provider: StaticProvider,
+        static_provider: MemoryLookup,
         ingress: Arc<IngressController>,
     ) -> Self {
         Self {

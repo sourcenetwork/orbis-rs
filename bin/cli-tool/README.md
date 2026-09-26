@@ -1,5 +1,118 @@
 # Orbis CLI Tool
 
+## Native Vera administration
+
+`vera-admin` manages native participant nodes and threshold rings.
+
+Build the operator tool with `cargo build -p cli-tool --features native --bin vera-admin`.
+It accepts the same `--vera-config` trust file as `orbis-node`. Its worker identity
+and pending request live in a separate operator directory; the worker key uses the
+existing encrypted local store. Supply its password through `--password-file` or
+`ORBIS_PASSWORD_FILE`.
+
+```sh
+vera-admin --vera-config vera.json --directory operator --password-file password worker
+vera-admin --vera-config vera.json ring-id create.json --actor "$ACTOR_DID"
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  prepare-ring create.json --token-file ring-token
+vera-admin --vera-config vera.json --directory operator --password-file password submit
+vera-admin --vera-config vera.json ring "$RING_ID"
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  acknowledge "$SUBMISSION_ID"
+```
+
+Before preparing a request, obtain a `ManageRings` delegation from the policy actor
+to the DID printed by `worker`. The actor needs the corresponding ACP permission.
+Participant nodes must already be registered. `create.json` contains the SDK's
+`RingCommand` JSON, for example:
+
+```json
+{
+  "Create": {
+    "policy_id": "<64-character policy ID>",
+    "peer_node_keys": ["<compressed participant public key>"],
+    "threshold": 1,
+    "pss_interval": 86400,
+    "current_version": 0,
+    "nonce": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+              0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "trusted_auth_relay_dids": null,
+    "reporting": {
+      "node_offline_demerits": 1,
+      "invalid_crypto_response_demerits": 1,
+      "unauthorized_request_demerits": 1,
+      "reset_interval_seconds": 86400,
+      "kick_threshold": 3,
+      "backup_node_keys": []
+    }
+  }
+}
+```
+
+Choose a distinct nonce for each new ring and sort participant keys. The resulting
+ring is pending DKG; pass its ID to the existing `dkg` command against a native
+Orbis node. `prepare-ring` also accepts SDK `Update` and `Cancel` requests. Read
+the certified ring sequence before constructing an update.
+
+Preparation persists the signed request before network submission. Repeating it
+with identical inputs returns the same ID; different inputs cannot replace a
+pending request. `submit` first checks for its certified receipt, then submits
+the exact journaled bytes if needed. Repeating `submit` recovers the same result
+across process restarts. Rejected commands print `success: false` and exit with an
+error. Both successful and rejected results remain recoverable until explicitly
+acknowledged by ID. Record the result before acknowledging it.
+
+Ring reads include their certified revision and timestamp and enforce the trust
+file's freshness bound. `--minimum-revision` rejects older evidence. The tool
+checks the configured deployment root before opening any worker store or making
+a submission.
+
+For node/controller changes, first read the current certified node record. Its
+`sequence` is the value to sign for the next command; registration uses zero.
+Create `node-command.json` using an SDK `NodeCommand`, such as:
+
+```json
+{"SetPeer":"<peer identity>@127.0.0.1:4555"}
+```
+
+```sh
+vera-admin --vera-config vera.json node "$NODE_KEY"
+vera-admin --vera-config vera.json sign-node node-command.json \
+  --node-key "$NODE_KEY" --sequence "$SEQUENCE" --expires-at "$UNIX_EXPIRY" \
+  --key-file controller-key > signed-node.json
+vera-admin --vera-config vera.json --directory operator --password-file password \
+  prepare-node signed-node.json
+vera-admin --vera-config vera.json --directory operator --password-file password submit
+```
+
+`sign-node` runs locally without contacting the service or opening worker storage.
+The key file accepts 32 raw bytes or a hexadecimal key, optionally prefixed with
+`0x`. Sign on the machine holding the controller key and transfer the resulting
+authorization to the submission machine. Only the signed authorization enters
+the submission journal. It binds the deployment, node, sequence, expiry and exact
+command. `prepare-node` rejects a different deployment before journaling it.
+
+Supported commands are `Register`, `SetPeer`, `TransferController`, `Allow` and
+`Disallow`. Admission targets use `{"Allow":{"Policy":"<policy ID>"}}` or
+`{"Allow":{"Ring":"<ring ID>"}}`; use `Disallow` to remove a target. Controller
+transfer uses `{"TransferController":"<new compressed public key>"}`.
+Registration requires the node's key; subsequent changes require the current
+controller. Transfer preserves the node identity and removes the former
+controller's authority. Node commands use the same explicit receipt
+acknowledgement as ring commands.
+
+The focused process fixture covers creation, certified reads, process-restart
+recovery, rejected requests and acknowledgement guards. A separate node workflow
+covers routes, policy/ring admission, controller transfer and former-controller
+rejection:
+
+```sh
+HUBD_BINARY=/path/to/hubd cargo test -p cli-tool --features native \
+  --test native_admin -- --ignored
+```
+
+## Existing service commands
+
 A command-line tool for interacting with an **Orbis** network. Intended primarily for **development and testing**, but can be pointed at any Vera chain and orbis node via the network flags below.
 
 ## Building

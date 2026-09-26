@@ -6,7 +6,7 @@ use crate::{
 use aes_gcm::Aes256Gcm;
 use argon2::password_hash::SaltString;
 use rand_core::OsRng;
-use redb::{Database, ReadableDatabase, TableDefinition, TableError};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 use std::path::Path;
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -100,6 +100,8 @@ impl LocalStorage for RedbStorage {
             (cipher, salt_bytes)
         };
 
+        migrate_native_worker_keys(&db, &cipher)?;
+
         Ok(Self {
             store: db.into(),
             cipher,
@@ -144,6 +146,72 @@ impl LocalStorage for RedbStorage {
         let value_blob = encrypt_value(&self.cipher, &slot_aad(&key_bytes), &value)?;
         raw_set(&self.store, &key_bytes, &value_blob)
     }
+}
+
+/// Early native builds used tag 4 for worker keys, before develop assigned it to
+/// public ring history. Worker names cannot be ring public keys. Move those slots
+/// to tag 6 and rebind their ciphertext to the new AAD in one durable transaction.
+fn migrate_native_worker_keys(db: &Database, cipher: &Aes256Gcm) -> Result<()> {
+    let storage_error = |e: redb::StorageError| {
+        LocalStorageError::UniqueDBError(format!("Worker key migration failed: {e}"))
+    };
+    let transaction = db.begin_write().map_err(|e| {
+        LocalStorageError::UniqueDBError(format!("Worker key migration transaction failed: {e}"))
+    })?;
+    {
+        let mut table = transaction.open_table(TABLE).map_err(|e| {
+            LocalStorageError::UniqueDBError(format!("Worker key migration table failed: {e}"))
+        })?;
+        let mut migrations = Vec::new();
+        for entry in table
+            .range(4_u32.to_le_bytes().as_slice()..5_u32.to_le_bytes().as_slice())
+            .map_err(storage_error)?
+        {
+            let (key, value) = entry.map_err(storage_error)?;
+            let Ok(LocalStorageKeys::RingPolyHistory(name)) = bincode::deserialize(key.value())
+            else {
+                continue;
+            };
+            let Some(suffix) = name.strip_prefix("vera-worker-") else {
+                continue;
+            };
+            if suffix.len() != 32
+                || !suffix
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                continue;
+            }
+            let new_key = serialize_key(&LocalStorageKeys::NativeWorkerKey(name))?;
+            // Ambiguous state must not replace a newer identity with a stale key.
+            if table
+                .get(new_key.as_slice())
+                .map_err(storage_error)?
+                .is_some()
+            {
+                return Err(LocalStorageError::CorruptData);
+            }
+            let plaintext = Zeroizing::new(
+                decrypt_value(cipher, &slot_aad(key.value()), value.value())
+                    .map_err(|_| LocalStorageError::IntegrityCheckFailed)?,
+            );
+            let ciphertext = encrypt_value(cipher, &slot_aad(&new_key), &plaintext)?;
+            migrations.push((key.value().to_vec(), new_key, ciphertext));
+        }
+        if migrations.is_empty() {
+            return Ok(());
+        }
+        for (old_key, new_key, ciphertext) in migrations {
+            table
+                .insert(new_key.as_slice(), ciphertext.as_slice())
+                .map_err(storage_error)?;
+            table.remove(old_key.as_slice()).map_err(storage_error)?;
+        }
+    }
+    transaction.commit().map_err(|e| {
+        LocalStorageError::UniqueDBError(format!("Worker key migration commit failed: {e}"))
+    })?;
+    Ok(())
 }
 
 /// AAD binding a stored value to its slot. Stops a ciphertext from one slot being

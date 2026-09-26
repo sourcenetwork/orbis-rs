@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::reporting::v0::error::Result;
+use crate::error::Result;
 
 use super::codec::{
     write_bool, write_bytes, write_optional_bytes, write_optional_u64, write_string, write_u32,
