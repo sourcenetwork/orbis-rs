@@ -40,7 +40,17 @@ async fn fetch_document_payload(
 /// on the wire, and one read back from the bulletin (where a match is expected, but recomputing
 /// it in-process fails PRE closed rather than re-encrypting to the wrong identity if the on-chain
 /// and in-process canonicalizations ever diverge).
-fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
+///
+/// `pub(crate)` so `pet::v0::coordinator::verification::verify_pet_check_request` can reuse it
+/// too: PET's own P2P round (`PetCheckRequest`/`PetCheckContext`) carries `document` and
+/// `object_id` as independent fields, supplied directly by the initiator with no upstream check
+/// — unlike PRE's own request handling, which always resolves both together via
+/// `resolve_document_and_ring_payloads` (which already calls this). Without this reuse, a
+/// malicious initiator could pair a genuine document A with a different document B's id, and an
+/// honest PET responder would sign a statement claiming B's id for a proof it actually computed
+/// over A — false evidence a report validator (who loads B by that signed id) could use to accuse
+/// the honest responder.
+pub(crate) fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
     let expected = generate_document_id(
         &document.ring_id,
         &document.document,

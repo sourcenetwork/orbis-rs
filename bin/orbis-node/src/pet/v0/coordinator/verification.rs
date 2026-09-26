@@ -170,6 +170,20 @@ where
                 ctx.document.ring_id
             )));
         }
+
+        // `ctx.document` and `ctx.object_id` are independent fields on the
+        // wire, supplied directly by the initiator over PET's own P2P round
+        // — unlike PRE's own request handling, nothing upstream of this
+        // guarantees they actually describe the same document. Without this
+        // check, a malicious initiator could pair a genuine document A with
+        // a different document B's id; this node would compute and sign a
+        // genuinely correct proof for A while the resulting statement claims
+        // B's id, which a report validator (loading B by that signed id)
+        // could later use to falsely accuse this honest node.
+        crate::pre::v0::helpers::check_document_id_binding(&ctx.object_id, &ctx.document).map_err(
+            |e| PetError::InvalidInput(format!("document does not match object_id: {e}")),
+        )?;
+
         let pet_pk_hex = ring_payload.pet_pk.clone().ok_or_else(|| {
             PetError::InvalidState(format!(
                 "ring {} requires PET but its checking key has not finalized",
@@ -616,8 +630,27 @@ mod tests {
 
     const RING_ID: &str = "pet-admission-test-ring";
     const AUDIT_TARGET: &str = "pet-admission-audit-target";
-    const TEST_OBJECT_ID: &str = "pet-admission-test-object";
     const TEST_REQUEST_ID: &str = "pet-admission-test-request";
+
+    /// The fixture's document genuinely bound to its own `object_id` —
+    /// `verify_pet_check_request` now enforces this (finding #7's fix), so a
+    /// placeholder constant no longer works: every test must derive its
+    /// `object_id` from its own fixture's actual document.
+    fn object_id_for(fixture: &TagFixture) -> String {
+        common::blockchain::orbis::generate_document_id(
+            &fixture.document.ring_id,
+            &fixture.document.document,
+            &fixture.document.proof,
+            &fixture.document.policy_id,
+            &fixture.document.resource,
+            &fixture.document.permission,
+            fixture.document.tier.as_deref(),
+            fixture.document.timestamp,
+            fixture.document.pet_tag.as_deref(),
+            fixture.document.pet_tag_proof.as_deref(),
+        )
+        .expect("compute object_id for fixture document")
+    }
 
     /// A throwaway node-identity signing keypair, generated the same way
     /// `create_test_app_state_with_bulletin` mints a real node's signing
@@ -828,7 +861,7 @@ mod tests {
             ring_pk: fixture.ring_payload.ring_pk.clone(),
             ring_state_sha256: ring_state_sha256(&fixture.ring_payload),
             protocol_version: ::network::V0.version,
-            object_id: TEST_OBJECT_ID.to_string(),
+            object_id: object_id_for(fixture),
             salt: None,
             crypto_backend: PetImpl::name(),
             document_inline: false,
@@ -913,6 +946,43 @@ mod tests {
         PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0)
     }
 
+    // ========================================================================
+    // Audit finding #7: `document` and `object_id` are independent fields on
+    // `PetCheckContext`'s wire — nothing upstream of `verify_pet_check_request`
+    // guarantees a live PET request's initiator supplied a genuinely matching
+    // pair, unlike PRE's own request handling (which always resolves both
+    // together via `resolve_document_and_ring_payloads`).
+    // ========================================================================
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
+        let db_name = "pet_check_request_rejects_document_object_id_mismatch";
+        // Same ring, two different documents (distinct random tags/proofs) —
+        // `fixture_a.document`, `fixture_b`'s id: exactly finding #7's attack
+        // shape, a malicious coordinator pairing a genuine document with a
+        // different document's claimed identity.
+        let fixture_a = build_fixture(3, 2);
+        let fixture_b = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture_a.ring_payload).await;
+
+        let ctx = PetCheckContext {
+            document: fixture_a.document.clone(),
+            salt: None,
+            object_id: object_id_for(&fixture_b),
+            document_inline: false,
+        };
+
+        let result = coordinator.verify_pet_check_request(&ctx).await;
+        assert!(
+            matches!(result, Err(PetError::InvalidInput(_))),
+            "document = A paired with object_id = id(B) must be rejected before any proof is \
+             computed or signed, got {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn verify_pet_admission_rejects_missing_attestations() {
@@ -924,7 +994,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
@@ -957,7 +1027,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
@@ -994,7 +1064,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
@@ -1026,7 +1096,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
@@ -1065,7 +1135,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
@@ -1104,7 +1174,7 @@ mod tests {
             .verify_pet_admission(
                 &fixture.document,
                 None,
-                TEST_OBJECT_ID,
+                &object_id_for(&fixture),
                 None,
                 AUDIT_TARGET,
                 "test-actor",
