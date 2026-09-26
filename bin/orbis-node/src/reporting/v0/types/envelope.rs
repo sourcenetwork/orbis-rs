@@ -28,6 +28,15 @@ pub struct ReportedDocumentEvidence {
     pub resource: String,
     pub permission: String,
     pub tier: Option<String>,
+    /// The document's PET ownership tag and its knowledge proof — `None` for
+    /// a non-`requires_pet` document. Needed both to recompute `object_id`
+    /// via `generate_document_id` (which hashes these in whenever present,
+    /// so omitting them here would recompute the wrong id for any inline,
+    /// PET-gated document) and, for an `invalid_crypto_response`/`Pet`
+    /// report, to independently re-derive `tag.ephemeral_point` for
+    /// `Pet::verify_partial_pet_check`.
+    pub pet_tag: Option<String>,
+    pub pet_tag_proof: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -263,6 +263,8 @@ where
             resource: document_payload.resource.clone(),
             permission: document_payload.permission.clone(),
             tier: document_payload.tier.clone(),
+            pet_tag: document_payload.pet_tag.clone(),
+            pet_tag_proof: document_payload.pet_tag_proof.clone(),
         });
         let actor_id = request_actor(token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
@@ -398,6 +400,8 @@ where
                 request_id,
                 authorized.document_payload.clone(),
                 authorized.salt.clone(),
+                authorized.object_id.clone(),
+                authorized.document_evidence.clone(),
                 audit_target_object_id,
                 authorized.actor_id.clone(),
                 authorized.valid_window.clone(),

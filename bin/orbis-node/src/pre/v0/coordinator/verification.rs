@@ -602,6 +602,8 @@ mod tests {
             resource: "document".to_string(),
             permission: "read".to_string(),
             tier: None,
+            pet_tag: None,
+            pet_tag_proof: None,
         };
         context.timestamp = Some(1_700_000_000);
         context.inline_document = Some(evidence.clone());

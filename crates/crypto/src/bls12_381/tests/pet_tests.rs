@@ -1,7 +1,9 @@
 use crate::bls12_381::pet::PetNode;
-use crate::r#trait::{CryptoSerialize, Pet, PetTag, PubShare};
+use crate::r#trait::{CryptoSerialize, Dkg, Pet, PetCheckReply, PetTag, PubShare};
+use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
+use ark_ff::{Field, One};
 use ark_std::UniformRand;
 use rand_core::OsRng;
 
@@ -45,9 +47,11 @@ fn make_valid_tag(owner_id: &[u8], pet_sk: Fr) -> (PetTag, G1Affine) {
 /// needing a real Shamir split for this crypto-level test.
 fn identical_shares(pet_sk: Fr, tag: &PetTag, threshold: usize) -> Vec<PubShare<G1Affine>> {
     (1..=threshold as u32)
-        .map(|i| PubShare {
-            i,
-            v: PetNode::partial_pet_check(&pet_sk, tag).unwrap(),
+        .map(|i| {
+            PetNode::partial_pet_check(&pet_sk, i, tag)
+                .unwrap()
+                .partial
+                .clone()
         })
         .collect()
 }
@@ -93,7 +97,10 @@ fn threshold_check_rejects_insufficient_shares() {
 fn threshold_check_rejects_duplicate_share_indices() {
     let pet_sk = Fr::rand(&mut OsRng);
     let (tag, _) = make_valid_tag(b"alice", pet_sk);
-    let partial = PetNode::partial_pet_check(&pet_sk, &tag).unwrap();
+    let partial = PetNode::partial_pet_check(&pet_sk, 1, &tag)
+        .unwrap()
+        .partial
+        .v;
     let shares = vec![
         PubShare { i: 1, v: partial },
         PubShare { i: 1, v: partial },
@@ -110,7 +117,10 @@ fn threshold_check_rejects_duplicate_share_indices() {
 fn threshold_check_rejects_out_of_range_share_index() {
     let pet_sk = Fr::rand(&mut OsRng);
     let (tag, _) = make_valid_tag(b"alice", pet_sk);
-    let partial = PetNode::partial_pet_check(&pet_sk, &tag).unwrap();
+    let partial = PetNode::partial_pet_check(&pet_sk, 1, &tag)
+        .unwrap()
+        .partial
+        .v;
     let shares = vec![
         PubShare { i: 0, v: partial },
         PubShare { i: 1, v: partial },
@@ -120,5 +130,215 @@ fn threshold_check_rejects_out_of_range_share_index() {
     assert!(
         PetNode::combine_pet_check_shares(&shares, 3, 5).is_err(),
         "a share index of 0 is out of the valid [1, n] range and must be rejected"
+    );
+}
+
+// ============================================================================
+// Per-share DLEQ proof: `partial_pet_check`/`verify_partial_pet_check`
+// ============================================================================
+
+/// Runs a real 3-of-3 DKG ceremony and returns `(aggregate_pk, shares, pub_poly)`
+/// — genuine Shamir shares consistent with `pub_poly`, exactly like the PET
+/// checking key's own fresh-DKG ceremony produces in production.
+fn run_pet_key_dkg() -> (
+    G1Affine,
+    Vec<crate::r#trait::PriShare<Fr>>,
+    crate::bls12_381::common::PubPoly,
+) {
+    let mut coordinator = DKGCoordinator::new(
+        |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
+            <crate::bls12_381::dkg::DKGNode as Dkg>::new(
+                id,
+                threshold,
+                total_nodes,
+                session_id,
+                role,
+            )
+        },
+        3,
+        3,
+    )
+    .unwrap();
+    coordinator.run_dkg().unwrap()
+}
+
+fn share_for(shares: &[crate::r#trait::PriShare<Fr>], i: u32) -> Fr {
+    shares.iter().find(|s| s.i == i).unwrap().v
+}
+
+/// A tag with a genuine ephemeral point `R = r_tag*G` and an unused
+/// `masked_fingerprint` — sufficient for `partial_pet_check`/
+/// `verify_partial_pet_check`, which never read `masked_fingerprint` at all
+/// (only `verify_pet_match` does).
+fn sample_ephemeral_tag() -> PetTag {
+    let r_tag = Fr::rand(&mut OsRng);
+    let r_point: G1Affine = (G1Projective::generator() * r_tag).into();
+    PetTag {
+        ephemeral_point: r_point.to_bytes().unwrap(),
+        masked_fingerprint: vec![1, 2, 3],
+    }
+}
+
+#[test]
+fn partial_pet_check_proof_verifies_against_the_authoritative_public_share() {
+    let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
+    let tag = sample_ephemeral_tag();
+    let reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+
+    PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply)
+        .expect("a genuine per-share proof must verify against the authoritative public share");
+}
+
+#[test]
+fn partial_pet_check_rejects_tampered_partial() {
+    let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
+    let tag = sample_ephemeral_tag();
+    let mut reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+    reply.partial.v = (G1Projective::from(reply.partial.v) + G1Projective::generator()).into();
+
+    assert!(
+        PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply).is_err(),
+        "a tampered partial value must fail verification"
+    );
+}
+
+#[test]
+fn partial_pet_check_rejects_tampered_challenge() {
+    let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
+    let tag = sample_ephemeral_tag();
+    let mut reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+    reply.challenge += Fr::one();
+
+    assert!(
+        PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply).is_err(),
+        "a tampered challenge must fail verification"
+    );
+}
+
+#[test]
+fn partial_pet_check_rejects_tampered_proof() {
+    let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
+    let tag = sample_ephemeral_tag();
+    let mut reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+    reply.proof += Fr::one();
+
+    assert!(
+        PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply).is_err(),
+        "a tampered proof response must fail verification"
+    );
+}
+
+#[test]
+fn partial_pet_check_rejects_a_proof_relabeled_under_a_different_index() {
+    let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
+    let tag = sample_ephemeral_tag();
+    // Genuinely computed and proved for node 1, then relabeled as node 2's
+    // contribution — node 2's real public share differs from node 1's, so
+    // the proof (bound to node 1's index and public share) must not verify.
+    let mut reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+    reply.partial.i = 2;
+
+    assert!(
+        PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply).is_err(),
+        "a proof genuinely computed for one index must not verify when relabeled as another's"
+    );
+}
+
+/// Headline regression scenario: per-share verification exists specifically
+/// because the final-equation check alone is insufficient. Two genuinely
+/// honest contributions (nodes 1 and 2, real DKG shares) plus a fabricated
+/// third contribution — never derived from node 3's real secret share, and
+/// requiring no knowledge of it — chosen so the Lagrange combination still
+/// satisfies the tag's defining equation for a target the attacker chose
+/// (here: framing "mallory" for a tag that was never issued to them).
+/// `combine_pet_check_shares`/`verify_pet_match` alone are fooled by this;
+/// `verify_partial_pet_check` is not.
+#[test]
+fn per_share_verification_rejects_a_cancellation_attack_that_would_otherwise_frame_a_wrong_target()
+{
+    let (pet_pk, shares, pub_poly) = run_pet_key_dkg();
+
+    // A genuine tag, actually issued for "alice" — never for "mallory".
+    let r_tag = Fr::rand(&mut OsRng);
+    let r_point: G1Affine = (G1Projective::generator() * r_tag).into();
+    let alice_fingerprint = PetNode::owner_fingerprint(b"alice").unwrap();
+    let masked: G1Affine =
+        (G1Projective::from(alice_fingerprint) + G1Projective::from(pet_pk) * r_tag).into();
+    let tag = PetTag {
+        ephemeral_point: r_point.to_bytes().unwrap(),
+        masked_fingerprint: masked.to_bytes().unwrap(),
+    };
+    let mallory_fingerprint = PetNode::owner_fingerprint(b"mallory").unwrap();
+
+    // Two genuine, honestly-computed contributions.
+    let reply_1 = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
+    let reply_2 = PetNode::partial_pet_check(&share_for(&shares, 2), 2, &tag).unwrap();
+    let p1 = reply_1.partial.v;
+    let p2 = reply_2.partial.v;
+
+    // Lagrange coefficients for index set {1, 2, 3} evaluated at x=0 — the
+    // same computation `combine_pet_check_shares` performs internally.
+    let lagrange_coeff_at_zero = |indices: &[u32], i: u32| -> Fr {
+        let xi = Fr::from(i as u64);
+        let mut num = Fr::one();
+        let mut den = Fr::one();
+        for &j in indices {
+            if j != i {
+                let xj = Fr::from(j as u64);
+                num *= xj;
+                den *= xj - xi;
+            }
+        }
+        num * den.inverse().unwrap()
+    };
+    let indices = [1u32, 2, 3];
+    let lambda1 = lagrange_coeff_at_zero(&indices, 1);
+    let lambda2 = lagrange_coeff_at_zero(&indices, 2);
+    let lambda3 = lagrange_coeff_at_zero(&indices, 3);
+
+    // What `combined` must equal for `verify_pet_match` to (incorrectly)
+    // accept "mallory" as the audit target: T == F(mallory) + combined.
+    let combined_target = G1Projective::from(masked) - G1Projective::from(mallory_fingerprint);
+    // Solve for the fabricated third contribution — computable from public
+    // information alone (the tag, the two honest contributions observed on
+    // the wire, and the chosen target), no secret share needed:
+    //   combined_target = lambda1*p1 + lambda2*p2 + lambda3*p3'
+    let rhs = combined_target - G1Projective::from(p1) * lambda1 - G1Projective::from(p2) * lambda2;
+    let fabricated_p3: G1Affine = (rhs * lambda3.inverse().unwrap()).into();
+
+    // Sanity check: confirm the vulnerability this feature closes is real —
+    // combining {p1, p2, fabricated_p3} and checking only the final equation
+    // is fooled into accepting "mallory".
+    let shares_for_combine = vec![
+        PubShare { i: 1, v: p1 },
+        PubShare { i: 2, v: p2 },
+        PubShare {
+            i: 3,
+            v: fabricated_p3,
+        },
+    ];
+    let combined = PetNode::combine_pet_check_shares(&shares_for_combine, 3, 3).unwrap();
+    PetNode::verify_pet_match(&tag, &combined, &mallory_fingerprint).expect(
+        "sanity: the fabricated contribution must fool the final-equation-only check, proving \
+         the cancellation attack this feature closes is real",
+    );
+
+    // The actual regression: per-share verification rejects the fabricated
+    // contribution on its own terms, before it ever reaches combination —
+    // any (challenge, proof) pair works here, since no valid DLEQ proof can
+    // exist for a point that isn't genuinely `share_3 * R` for node 3's real
+    // secret share.
+    let fabricated_reply = PetCheckReply {
+        partial: PubShare {
+            i: 3,
+            v: fabricated_p3,
+        },
+        challenge: Fr::one(),
+        proof: Fr::one(),
+    };
+    assert!(
+        PetNode::verify_partial_pet_check(&pub_poly, &tag, &fabricated_reply).is_err(),
+        "verify_partial_pet_check must reject the fabricated contribution even though it fools \
+         the final equation and combine_pet_check_shares alone"
     );
 }

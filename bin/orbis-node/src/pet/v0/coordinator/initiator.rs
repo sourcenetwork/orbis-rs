@@ -6,21 +6,29 @@
 //! computing its own contribution locally if it happens to be a member.
 
 use super::PetCoordinator;
-use crate::helpers::identity::{determine_session_node_id, is_self_peer_id, node_key_for_id};
+use crate::helpers::identity::{determine_session_node_id, is_self_peer_id};
 use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::helpers::response_manager::ResponseInitOutcome;
-use crate::pet::v0::attestation::{pet_share_signing_bytes, PetShareAttestation};
+use crate::pet::v0::attestation::{PetCheckStatementContext, PetShareAttestation};
+use crate::pet::v0::coordinator::verification::PetCheckResponseVerification;
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::{PetCheckContext, PetCheckRequest, PetMessage};
+use crate::reporting::v0::observation::ReportObservation;
+use crate::reporting::v0::queue_report;
+use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
 use crate::ring_state::RingShareBundle;
 use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
-use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
-use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, Dkg, Pet, PriShare, PubShare};
+use common::blockchain::sign_node_message_with_hex_key;
+use crypto::r#trait::{
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PriShare, PubShare, ThresholdSigner,
+};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
+use crypto::{SigShareInner, SignImpl, SignaturePoint};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 
 /// Overall deadline for collecting threshold PET-check shares, mirroring
@@ -31,7 +39,17 @@ const PET_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 impl<D, P> PetCoordinator<D, P>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
-    P: Pet<ShareValue = Fr, PublicKey = G1Affine> + Send + Sync + 'static,
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine, PubPoly = D::PubPoly> + Send + Sync + 'static,
+    SignImpl: ThresholdSigner<
+            ShareValue = Fr,
+            PublicKey = G1Affine,
+            DistKeyShare = DistKeyShare<Fr>,
+            PubPoly = D::PubPoly,
+            Signature = SignaturePoint,
+            SigShare = PubShare<SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
 {
     /// Run a threshold PET check for `document` against the owner registered
     /// on `audit_target_object_id`, returning the `threshold` signed
@@ -46,15 +64,19 @@ where
     /// Called only from PRE's own `start_pre` pipeline (`pre::v0::service::stages`),
     /// once per PET-gated request — see `pet/README.md`. Never called for a
     /// ring that doesn't require PET.
+    #[allow(clippy::too_many_arguments)]
     pub async fn initiate_pet_check(
         &self,
         request_id: String,
         document: DocumentPayload,
         salt: Option<String>,
+        object_id: String,
+        document_evidence: Option<ReportedDocumentEvidence>,
         audit_target_object_id: String,
         actor_id: String,
         valid_window: Option<ValidWindow>,
     ) -> Result<Vec<PetShareAttestation>> {
+        let document_inline = document_evidence.is_some();
         let ring_payload = read_ring_for_route(
             &*self.app_state.bulletin,
             &document.ring_id,
@@ -85,17 +107,57 @@ where
 
         let ctx = PetCheckContext {
             document: document.clone(),
-            salt,
+            salt: salt.clone(),
+            object_id: object_id.clone(),
+            document_inline,
         };
         // This node's own independent verification — matches
         // `Pet::verify_tag_knowledge`'s doc: "every PET participant,
-        // including the initiator, must call this." The resulting `tag` is
-        // reused below both for this node's own share (if it is a ring
-        // member) and for the final threshold-match check.
-        let (tag, _pet_pk_hex, digest) = self.verify_pet_check_request(&ctx).await?;
+        // including the initiator, must call this." The resolved
+        // `ring_payload` here is discarded in favor of the one already
+        // fetched above — same live read either way, no double-trust.
+        let (tag, _pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
+
+        // The one canonical statement every contribution in this round is
+        // checked against — see `attestation`'s module doc comment for why
+        // this is the same statement used for live verification, PRE-peer
+        // admission, and (on failure) report evidence.
+        let statement_ctx = PetCheckStatementContext {
+            chain_id: self.app_state.bulletin.chain_id(),
+            ring_id: document.ring_id.clone(),
+            ring_pk: ring_payload.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256(&ring_payload),
+            protocol_version: self.routes.version,
+            object_id: object_id.clone(),
+            salt: salt.clone(),
+            crypto_backend: P::name(),
+            document_inline,
+        };
 
         let node_id_opt =
             determine_session_node_id(&self.app_state.node_key, &ring_payload.peer_node_keys);
+
+        // Per-share verification needs the checking key's own public
+        // polynomial, not the main ring key's — loading it here also
+        // enforces the pipeline's real, pre-existing invariant (see
+        // `pet/README.md`) that whoever drives a `requires_pet` PRE round
+        // must be a PET-committee (== main-ring) member, since PRE's own
+        // later relay-setup stage already hard-requires this; failing here
+        // instead just fails it earlier and more clearly.
+        let bundle =
+            RingShareBundle::load_by_ring_key(&self.app_state.local_storage, &document.ring_id)
+                .map_err(|e| {
+                    PetError::Storage(format!("Failed to load PET share bundle: {}", e))
+                })?;
+        let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+            PetError::Deserialization(format!("Failed to decode PET public polynomial hex: {}", e))
+        })?;
+        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
+            PetError::Deserialization(format!(
+                "Failed to deserialize PET public polynomial: {}",
+                e
+            ))
+        })?;
 
         let resolved = resolve_node_routes(&self.app_state.bulletin, &ring_payload.peer_node_keys)
             .await
@@ -123,22 +185,46 @@ where
         let mut attestations: Vec<PetShareAttestation> = Vec::with_capacity(committee_size);
         let mut seen_node_ids = HashSet::new();
 
+        // This node's own local contribution — still individually
+        // DLEQ-verified before being accepted, same as any peer's (defense
+        // in depth: catches a local storage/computation bug, not just a
+        // remote attacker).
         if let Some(node_id) = node_id_opt {
-            let bundle =
-                RingShareBundle::load_by_ring_key(&self.app_state.local_storage, &document.ring_id)
-                    .map_err(|e| {
-                        PetError::Storage(format!("Failed to load share bundle: {}", e))
-                    })?;
             let pri_share: PriShare<Fr> =
                 PriShare::from_bytes(&bundle.share_bytes).map_err(|e| {
                     PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
                 })?;
-            let partial = P::partial_pet_check(&pri_share.v, &tag).map_err(|e| {
+            let reply = P::partial_pet_check(&pri_share.v, node_id, &tag).map_err(|e| {
                 PetError::Crypto(format!("Failed to compute PET check share: {}", e))
             })?;
-            let partial_bytes = CryptoSerialize::to_bytes(&partial).map_err(|e| {
-                PetError::Serialization(format!("Failed to serialize PET check share: {}", e))
+            P::verify_partial_pet_check(&pub_poly, &tag, &reply).map_err(|e| {
+                PetError::Crypto(format!(
+                    "this node's own PET check contribution failed its own proof verification: {}",
+                    e
+                ))
             })?;
+            let partial_bytes = CryptoSerialize::to_bytes(&reply.partial.v).map_err(|e| {
+                PetError::Serialization(format!("Failed to serialize partial: {}", e))
+            })?;
+            let challenge_bytes = CryptoSerialize::to_bytes(&reply.challenge).map_err(|e| {
+                PetError::Serialization(format!("Failed to serialize challenge: {}", e))
+            })?;
+            let proof_bytes = CryptoSerialize::to_bytes(&reply.proof).map_err(|e| {
+                PetError::Serialization(format!("Failed to serialize proof: {}", e))
+            })?;
+            let signed_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| PetError::InvalidState(format!("Failed to get timestamp: {}", e)))?
+                .as_secs();
+            let statement = statement_ctx.statement_for(
+                self.app_state.node_key.clone(),
+                request_id.clone(),
+                signed_at,
+                node_id,
+                partial_bytes.clone(),
+                challenge_bytes.clone(),
+                proof_bytes.clone(),
+            );
             let signing_key = self
                 .app_state
                 .local_storage
@@ -150,19 +236,23 @@ where
             let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|e| {
                 PetError::Storage(format!("stored node signing key is not utf-8: {e}"))
             })?;
-            let signature = sign_node_message_with_hex_key(
-                &signing_key_hex,
-                &pet_share_signing_bytes(&digest, node_id, &partial_bytes),
-            )
-            .map_err(|e| PetError::Crypto(format!("failed to sign PET check share: {e}")))?;
+            let signature =
+                sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
+                    .map_err(|e| {
+                        PetError::Crypto(format!("failed to sign PET check share: {e}"))
+                    })?;
             seen_node_ids.insert(node_id);
             shares.push(PubShare {
                 i: node_id,
-                v: partial,
+                v: reply.partial.v,
             });
             attestations.push(PetShareAttestation {
+                request_id: request_id.clone(),
                 from_node_id: node_id,
                 partial: partial_bytes,
+                challenge: challenge_bytes,
+                proof: proof_bytes,
+                signed_at,
                 signature,
             });
         }
@@ -200,57 +290,44 @@ where
                         }
                     };
                     match result {
-                        Ok(Some(PetMessage::CheckResponse {
-                            from_node_id,
-                            partial,
-                            signature,
-                            ..
-                        })) => {
-                            if !seen_node_ids.insert(from_node_id) {
-                                continue;
-                            }
-                            let Some(node_key) =
-                                node_key_for_id(from_node_id, &ring_payload.peer_node_keys)
-                            else {
-                                tracing::warn!(
-                                    peer = %peer_id,
-                                    from_node_id,
-                                    "PET Coordinator: dropping check share from an out-of-range node id"
-                                );
-                                continue;
-                            };
-                            let signing_bytes =
-                                pet_share_signing_bytes(&digest, from_node_id, &partial);
-                            if let Err(error) =
-                                verify_node_message(&node_key, &signing_bytes, &signature)
-                            {
-                                tracing::warn!(
-                                    peer = %peer_id,
-                                    from_node_id,
-                                    %error,
-                                    "PET Coordinator: dropping check share with an invalid signature"
-                                );
-                                continue;
-                            }
-                            match G1Affine::from_bytes(&partial) {
-                                Ok(parsed) => {
-                                    shares.push(PubShare {
-                                        i: from_node_id,
-                                        v: parsed,
-                                    });
-                                    attestations.push(PetShareAttestation {
-                                        from_node_id,
-                                        partial,
-                                        signature,
+                        Ok(Some(response @ PetMessage::CheckResponse { .. })) => {
+                            // Required acceptance order (fixes a slot-preemption
+                            // bug: a rejected response must never consume an
+                            // honest participant's id) — see `pet/README.md`
+                            // and `verify_check_response`'s own doc comment for
+                            // the exact ordering this enforces.
+                            match Self::verify_check_response(
+                                response,
+                                &peer_id,
+                                &ring_payload,
+                                &document.ring_id,
+                                &pub_poly,
+                                &tag,
+                                &statement_ctx,
+                                &request_id,
+                                &document_evidence,
+                                &mut seen_node_ids,
+                            ) {
+                                PetCheckResponseVerification::Verified(share, attestation) => {
+                                    shares.push(share);
+                                    attestations.push(*attestation);
+                                }
+                                PetCheckResponseVerification::InvalidProof(observation) => {
+                                    let _ = queue_report::<D, SignImpl>(
+                                        self.app_state.clone(),
+                                        self.routes,
+                                        ReportObservation::InvalidCryptoResponse(observation),
+                                    )
+                                    .await
+                                    .inspect_err(|error| {
+                                        tracing::warn!(
+                                            peer = %peer_id,
+                                            %error,
+                                            "Failed to queue PET invalid-proof report observation"
+                                        );
                                     });
                                 }
-                                Err(error) => {
-                                    tracing::warn!(
-                                        peer = %peer_id,
-                                        %error,
-                                        "PET Coordinator: dropping malformed check share"
-                                    );
-                                }
+                                PetCheckResponseVerification::Rejected => {}
                             }
                         }
                         Ok(_) => {}

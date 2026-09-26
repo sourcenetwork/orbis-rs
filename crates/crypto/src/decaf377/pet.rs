@@ -1,7 +1,10 @@
-use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
+use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
-    r#trait::{CryptoDeserialize, Pet, PetTag, PubShare, TagKnowledgeProof},
+    r#trait::{
+        CryptoDeserialize, Pet, PetCheckReply, PetTag, PubPoly as PubPolyTrait, PubShare,
+        TagKnowledgeProof,
+    },
 };
 use ark_ff_05::{One, Zero};
 use ark_serialize_05::CanonicalSerialize;
@@ -19,6 +22,11 @@ const NAME: &str = "pet/decaf377";
 const FINGERPRINT_DOMAIN: &[u8] = b"orbis-pet-fingerprint-v1";
 /// Domain separator for the tag-knowledge proof's Fiat-Shamir challenge.
 const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-pet-tag-knowledge-proof-v1";
+/// Domain separator for the per-share PET-check DLEQ proof's Fiat-Shamir
+/// challenge. Distinct from `TAG_KNOWLEDGE_PROOF_DOMAIN` and from PRE's own
+/// reencryption-proof domain so a proof from one scheme can never be
+/// confused for or replayed as another's.
+const PET_CHECK_DLEQ_DOMAIN: &[u8] = b"orbis-pet-check-dleq-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct PetNode {}
@@ -26,6 +34,7 @@ pub struct PetNode {}
 impl Pet for PetNode {
     type PublicKey = Element;
     type ShareValue = Fr;
+    type PubPoly = PubPoly;
 
     fn new() -> Self {
         PetNode {}
@@ -141,13 +150,96 @@ impl Pet for PetNode {
         Ok(())
     }
 
-    fn partial_pet_check(share_i: &Self::ShareValue, tag: &PetTag) -> Result<Self::PublicKey> {
+    fn partial_pet_check(
+        share_i: &Self::ShareValue,
+        node_id: u32,
+        tag: &PetTag,
+    ) -> Result<PetCheckReply<Self::ShareValue, Self::PublicKey>> {
         let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
         // No constant-time scalar-multiplication path available for decaf377
         // in this codebase (same gap as `prove_tag_knowledge`'s `z`
         // computation) — flagged for the planned Jubjub migration, not
         // improvised here.
-        Ok(r_point * *share_i)
+        let partial = r_point * *share_i;
+        // Recomputed locally so the challenge below binds this node's own
+        // claimed public share — see `bls12_381::pet`'s equivalent comment
+        // for why an honest prover's value here equals `pub_poly.eval(node_id)`
+        // and a dishonest one's does not.
+        let public_share = Element::GENERATOR * *share_i;
+
+        let mut rng = OsRng;
+        // Zeroizing: `ri` is this proof's secret nonce — same rationale as
+        // `prove_tag_knowledge`'s `k`.
+        let ri = Zeroizing::new(loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        });
+        let ui_hat = r_point * *ri;
+        let hi_hat = Element::GENERATOR * *ri;
+
+        let challenge = Self::pet_check_proof_challenge(
+            node_id,
+            &r_point,
+            &public_share,
+            &partial,
+            &[ui_hat, hi_hat],
+        )?;
+        // proof = ri + challenge*share_i. Same non-constant-time gap as
+        // `prove_tag_knowledge`'s `z` computation — not improvised here.
+        let proof = *ri + (challenge * share_i);
+
+        Ok(PetCheckReply {
+            partial: PubShare {
+                i: node_id,
+                v: partial,
+            },
+            challenge,
+            proof,
+        })
+    }
+
+    fn verify_partial_pet_check(
+        pub_poly: &Self::PubPoly,
+        tag: &PetTag,
+        reply: &PetCheckReply<Self::ShareValue, Self::PublicKey>,
+    ) -> Result<()> {
+        let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
+        let node_id = reply.partial.i;
+        // Authoritative — never the prover's own claimed value.
+        let public_share = pub_poly.eval(node_id);
+
+        // UiHat = f*R - e*partial
+        let ui_hat = r_point * reply.proof - reply.partial.v * reply.challenge;
+        // HiHat = f*G - e*public_share
+        let hi_hat = Element::GENERATOR * reply.proof - public_share * reply.challenge;
+
+        let recomputed_challenge = Self::pet_check_proof_challenge(
+            node_id,
+            &r_point,
+            &public_share,
+            &reply.partial.v,
+            &[ui_hat, hi_hat],
+        )?;
+
+        let mut claimed_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        reply
+            .challenge
+            .serialize_compressed(&mut &mut claimed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if claimed_bytes.ct_ne(&recomputed_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "PET check share verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn combine_pet_check_shares(
@@ -271,6 +363,34 @@ impl PetNode {
             hasher.update(&bytes);
         }
         hasher.update(tag_transcript_digest);
+
+        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+    }
+
+    /// Fiat-Shamir challenge for the per-share PET-check DLEQ proof — see
+    /// `bls12_381::pet`'s equivalent for the exact binding rationale.
+    fn pet_check_proof_challenge(
+        node_id: u32,
+        r_point: &Element,
+        public_share: &Element,
+        partial: &Element,
+        proof_points: &[Element],
+    ) -> Result<Fr> {
+        let mut hasher = Sha512::new();
+        hasher.update(PET_CHECK_DLEQ_DOMAIN);
+        hasher.update(node_id.to_le_bytes());
+
+        let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
+        for point in [r_point, public_share, partial] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
+        for point in proof_points {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
 
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }

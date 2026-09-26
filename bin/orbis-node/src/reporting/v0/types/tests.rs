@@ -137,6 +137,29 @@ fn pre_statement() -> PreReencryptResponseStatement {
     }
 }
 
+fn pet_statement() -> PetCheckResponseStatement {
+    PetCheckResponseStatement {
+        domain: PET_CHECK_RESPONSE_DOMAIN.to_string(),
+        chain_id: "vera-test".to_string(),
+        ring_id: "ring-1".to_string(),
+        ring_pk: "aabb".to_string(),
+        ring_state_sha256: "11".repeat(32),
+        protocol_version: 7,
+        request_id: "pet-request-1".to_string(),
+        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+        responder_node_key: "accused".to_string(),
+        origin_protocol: "pet".to_string(),
+        object_id: "object-1".to_string(),
+        salt: Some("salt-1".to_string()),
+        from_node_id: 2,
+        partial: vec![7, 8],
+        challenge: vec![9, 10],
+        proof: vec![11, 12],
+        crypto_backend: "pet/test".to_string(),
+        document_inline: false,
+    }
+}
+
 fn dkg_commitment_statement() -> DkgCommitmentStatement {
     DkgCommitmentStatement {
         domain: DKG_COMMITMENT_DOMAIN.to_string(),
@@ -216,6 +239,42 @@ fn pre_response_statement_with_document_inline_round_trips() {
 fn invalid_crypto_response_pre_payload_round_trips() {
     let payload = InvalidCryptoResponse::Pre {
         statement: pre_statement(),
+        response_signature: vec![42; 64],
+    };
+
+    assert_eq!(
+        InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+        payload
+    );
+}
+
+#[test]
+fn pet_response_statement_round_trips_and_is_domain_separated() {
+    let statement = pet_statement();
+    assert_eq!(
+        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+
+    let mut changed = pet_statement();
+    changed.domain = "other".to_string();
+    assert_ne!(pet_statement().canonical_bytes(), changed.canonical_bytes());
+}
+
+#[test]
+fn pet_response_statement_with_no_salt_round_trips() {
+    let mut statement = pet_statement();
+    statement.salt = None;
+    assert_eq!(
+        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+}
+
+#[test]
+fn invalid_crypto_response_pet_payload_round_trips() {
+    let payload = InvalidCryptoResponse::Pet {
+        statement: pet_statement(),
         response_signature: vec![42; 64],
     };
 

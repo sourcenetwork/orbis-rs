@@ -187,6 +187,16 @@ impl<'a> Decoder<'a> {
         }
     }
 
+    pub(super) fn read_optional_string(&mut self, label: &str) -> Result<Option<String>> {
+        match self.read_u8(&format!("{label}_present"))? {
+            0 => Ok(None),
+            1 => self.read_string(label).map(Some),
+            value => Err(ReportingError::InvalidReport(format!(
+                "invalid optional {label} tag {value}"
+            ))),
+        }
+    }
+
     pub(super) fn read_optional_u64(&mut self, label: &str) -> Result<Option<u64>> {
         match self.read_u8(&format!("{label}_present"))? {
             0 => Ok(None),

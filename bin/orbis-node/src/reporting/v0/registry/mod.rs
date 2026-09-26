@@ -24,15 +24,16 @@ use crate::reporting::v0::types::{
     DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind,
     DkgLeaderPublicFaultStatement, DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement,
     DkgShareStatement, EndpointSignedContribution, InvalidCryptoResponse, NodeOffline,
-    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, ReportedDocumentEvidence,
-    SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_BATCH_MISMATCH_DOMAIN,
-    DKG_LEADER_EQUIVOCATION_DOMAIN, DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN,
-    DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    PetCheckResponseStatement, PreReencryptResponseStatement, RelayRequestStatement,
+    ReportEnvelope, ReportedDocumentEvidence, SignResponseStatement, UnauthorizedRequestPayload,
+    CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN,
+    DKG_LEADER_BATCH_MISMATCH_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
+    DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
+    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PET_CHECK_RESPONSE_DOMAIN,
     PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
     SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
-use crate::ring_state::{RingPolyHistory, RingPolyState};
+use crate::ring_state::{RingPolyHistory, RingPolyState, RingShareBundle};
 use crate::sign::v0::coordinator::SigningOptions;
 use crate::sign::v0::helpers::{
     deserialize_commitments, refresh_health_check_message,
@@ -48,11 +49,12 @@ use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
 use crypto::r#trait::{
-    CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PubShare,
-    ReencryptReply, ThresholdDealer, ThresholdSigner,
+    CryptoDeserialize, Dkg, Pet, PetCheckReply, PetTag,
+    PolynomialCommitment as PolynomialCommitmentTrait, PubShare, ReencryptReply, ThresholdDealer,
+    ThresholdSigner,
 };
 use crypto::{
-    DkgImpl, GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
+    DkgImpl, GroupAffine, PetImpl, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
     SignaturePoint, GROUP_POINT_SIZE,
 };
 use local_storage::LocalStorageImpl;

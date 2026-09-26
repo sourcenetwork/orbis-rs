@@ -177,6 +177,8 @@ where
             resource: doc.resource.clone(),
             permission: doc.permission.clone(),
             tier: doc.tier.clone(),
+            pet_tag: doc.pet_tag.clone(),
+            pet_tag_proof: doc.pet_tag_proof.clone(),
         });
         let actor_id = request_actor(&token, ring_payload.trusted_auth_relay_dids.as_deref())
             .map_err(PreError::Unauthorized)?;
@@ -258,6 +260,8 @@ where
                 .verify_pet_admission(
                     &document_payload,
                     ctx.salt.as_deref(),
+                    &ctx.object_id,
+                    document_evidence.clone(),
                     &audit_target_object_id,
                     &actor_id,
                     ctx.valid_window.clone(),

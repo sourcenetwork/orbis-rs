@@ -96,6 +96,9 @@ mod tests {
             request_id: request_id.to_string(),
             from_node_id,
             partial: vec![1, 2, 3],
+            challenge: vec![7, 8, 9],
+            proof: vec![10, 11, 12],
+            signed_at: 1_700_000_000,
             signature: vec![4, 5, 6],
         }
     }

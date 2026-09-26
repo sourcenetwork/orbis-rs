@@ -17,7 +17,10 @@ pre::v0::service::stages (a new stage, gated on ring_payload.requires_pet)
        reveals whether the tag itself would have matched)
     -> this node's own independent tag-knowledge verification
     -> threshold check-share round (peer-to-peer, mirrors PRE's reencrypt round)
-    -> combine shares -> pet_sk * R
+       — each contribution individually DLEQ-verified against its own
+       authoritative public share as it's collected (verify_check_response),
+       not just signature-checked; see "Per-share proof of correctness" below
+    -> combine (only) verified shares -> pet_sk * R
     -> F(audit_target_object_id) — the plaintext owner identity itself,
        not resolved via ACP; see the invariant below
     -> verify T == F(target) + pet_sk*R
@@ -27,7 +30,7 @@ network message (PET's own check-share round)
     -> protocol_handler.rs
     -> PetCoordinator::handle_message
     -> handlers.rs: verify request, load local PET share, reply with a
-       signed partial (PetShareAttestation)
+       signed partial + its DLEQ proof (PetShareAttestation)
 
 pre::v0::coordinator::handlers::handle_reencrypt_request (every PRE peer,
 gated on ring_payload.requires_pet, using the attestations forwarded in
@@ -35,8 +38,8 @@ PreRequestContext rather than re-running the threshold round above)
     -> PetCoordinator::verify_pet_admission
     -> same check_pet_permission gate, independently re-checked
     -> independently re-verifies the tag-knowledge proof
-    -> verifies each attestation's signature, recombines, does its own
-       final match against F(audit_target_object_id)
+    -> verifies each attestation's signature *and* its DLEQ proof,
+       recombines, does its own final match against F(audit_target_object_id)
     -> only then releases its reencryption share
 ```
 
@@ -128,16 +131,55 @@ point instead of a sum):
   is write-once (only fresh-DKG writes it via `save_by_ring_key`, keyed by
   `ring_id` rather than by public key) — the PSS-generation TOCTOU handling
   PRE's own initiator has isn't needed here yet, since there is no PET-key
-  refresh ceremony to race against. Revisit this once that lands.
-- **Relay attribution, not PET-specific evidence.** A relayed request whose
-  PET admission fails is reported exactly like one that fails ACP: PRE's
-  `handle_reencrypt_request` shares one `RelayRequestBinding` between both
-  checks and calls the same `report_relay_if_bound` helper from whichever
-  branch rejects with `PreError::Unauthorized`, provided the relayer signed
-  a `relay_statement` for this exact request. It still resolves to the
-  same generic `unauthorized_request` on-chain report type as an ACP
-  failure — there is no PET-specific report kind or evidence payload, and
-  nothing distinguishes "PET failed" from "ACP failed" in the resulting
-  report. A JWT-validation failure (`resolve_jwt_did`) still isn't reported
-  at all — that gap predates PET, applies identically to Sign, and is a
-  known, deliberately deferred issue, not something this covers.
+  refresh ceremony to race against. Revisit this once that lands. This also
+  means the per-share DLEQ verification below (Step 4 of this feature's plan)
+  only ever checks against the current, sole generation of the checking
+  key's public polynomial — no "recently retired generation" candidate list
+  like PRE's `candidate_public_polynomials`, since there's nothing to retire
+  yet.
+- **Relay attribution for ACP failures, not PET-specific evidence.** A
+  relayed request whose PET *admission* check fails (not the per-share proof
+  below — the final `check_pet_permission`/tag-match gate) is reported
+  exactly like one that fails ACP: PRE's `handle_reencrypt_request` shares
+  one `RelayRequestBinding` between both checks and calls the same
+  `report_relay_if_bound` helper from whichever branch rejects with
+  `PreError::Unauthorized`, provided the relayer signed a `relay_statement`
+  for this exact request. It resolves to the same generic
+  `unauthorized_request` on-chain report type as an ACP failure — nothing
+  distinguishes "PET admission failed" from "ACP failed" in that report. A
+  JWT-validation failure (`resolve_jwt_did`) still isn't reported at all —
+  that gap predates PET, applies identically to Sign, and is a known,
+  deliberately deferred issue, not something this covers.
+- **Per-share proof of correctness, with its own report kind.** Unlike the
+  bullet above, a single committee member's *threshold contribution* being
+  wrong is independently detectable and reportable — mirrors PRE's own
+  Chaum–Pedersen DLEQ proof (`ThresholdDealer::reencrypt`/`verify`) almost
+  exactly, just against one base point (`R`) instead of a summed pair.
+  `Pet::partial_pet_check` always returns a `PetCheckReply` (partial +
+  DLEQ proof), never a bare value, so a caller can't skip verification by
+  construction; `Pet::verify_partial_pet_check` checks it against
+  `pub_poly.eval(node_id)` — that node's own authoritative public share —
+  with no secret needed. This matters beyond "catch a buggy node": because
+  `combine_pet_check_shares` combines contributions *linearly*, checking
+  only the final equation is insufficient — a malicious committee member can
+  submit a fabricated, correctly-*signed* contribution chosen so that
+  combining it with honest ones still satisfies the tag's equation for a
+  target the attacker picked (a cancellation/framing attack, see the crypto
+  crate's `per_share_verification_rejects_a_cancellation_attack_...` test
+  for a worked example). Wired into both collection points
+  (`initiator.rs`'s live loop via `verify_check_response`,
+  `verify_pet_admission`'s forwarded-attestation loop) with a specific
+  acceptance order — resolve identity, verify signature, decode, verify the
+  DLEQ proof, *only then* record the participant as seen — so a rejected or
+  cryptographically invalid response can never preempt an honest
+  participant's slot (a real bug found and fixed while building this: the
+  original ordering let a spoofed response with a bad signature permanently
+  occupy the claimed slot). An authenticated-but-invalid contribution
+  produces its own `InvalidCryptoResponse::Pet` report — a real,
+  PET-specific report kind (unlike the relay-attribution bullet above),
+  reusing the exact same `PetCheckResponseStatement` the responder signed
+  live, no separate evidence design. `verify_check_response`'s own doc
+  comment has the exact seven-step order; `pet_admission_rejects_*`/
+  `verify_pet_admission_accepts_genuine_attestations` and the four
+  `*_does_not_*`/`three_of_five_*` tests in `verification.rs` are the
+  regression coverage.

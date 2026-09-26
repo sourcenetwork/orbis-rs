@@ -18,8 +18,21 @@ where
         + Send
         + Sync
         + 'static,
-    P: crypto::r#trait::Pet<ShareValue = crypto::ScalarField, PublicKey = crypto::GroupAffine>
-        + Send
+    P: crypto::r#trait::Pet<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    crypto::SignImpl: crypto::r#trait::ThresholdSigner<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
+        > + Send
         + Sync
         + 'static,
 {

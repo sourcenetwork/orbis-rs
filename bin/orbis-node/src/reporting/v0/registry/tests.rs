@@ -587,6 +587,8 @@ fn matching_document_evidence() -> ReportedDocumentEvidence {
         resource: "document".to_string(),
         permission: "read".to_string(),
         tier: Some("tier-a".to_string()),
+        pet_tag: None,
+        pet_tag_proof: None,
     }
 }
 
@@ -728,6 +730,8 @@ async fn pre_proof_refutation_rejects_mismatched_inline_document() {
             resource: "document".to_string(),
             permission: "read".to_string(),
             tier: None,
+            pet_tag: None,
+            pet_tag_proof: None,
         }),
         ..base_context
     };
@@ -789,6 +793,8 @@ async fn pre_proof_refutation_accepts_matching_inline_document() {
         resource: "document".to_string(),
         permission: "read".to_string(),
         tier: None,
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     let context = ReportValidationContext {
         inline_document: Some(evidence.clone()),

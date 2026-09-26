@@ -103,6 +103,13 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 self.validate_sign_evidence(envelope, context, &ring, statement, response_signature)
                     .await
             }
+            InvalidCryptoResponse::Pet {
+                statement,
+                response_signature,
+            } => {
+                self.validate_pet_evidence(envelope, context, &ring, statement, response_signature)
+                    .await
+            }
             InvalidCryptoResponse::DkgShare {
                 statement,
                 response_signature,
@@ -320,6 +327,7 @@ pub(super) fn is_valid_invalid_crypto_dkg_origin(origin_protocol: &str) -> bool 
 mod control_message;
 mod dkg_share;
 mod leader_delivery;
+mod pet;
 mod pre_sign;
 mod public_origin;
 
@@ -327,5 +335,5 @@ mod public_origin;
 // test module reaches them through mod.rs's flatten glob.
 #[allow(unused_imports)]
 pub(crate) use self::{
-    control_message::*, dkg_share::*, leader_delivery::*, pre_sign::*, public_origin::*,
+    control_message::*, dkg_share::*, leader_delivery::*, pet::*, pre_sign::*, public_origin::*,
 };

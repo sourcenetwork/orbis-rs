@@ -221,3 +221,22 @@ impl<ShareValue: Zeroize, PublicKey> Drop for ReencryptReply<ShareValue, PublicK
         self.proof.zeroize();
     }
 }
+
+/// A committee member's threshold PET-check contribution, together with a
+/// Chaum–Pedersen DLEQ proof that `partial.v` was computed as `share_i * R`
+/// using the same `share_i` as the node's known public share
+/// (`pub_poly.eval(partial.i)`) — the PET analog of [`ReencryptReply`]. See
+/// [`crate::r#trait::Pet::verify_partial_pet_check`].
+#[derive(Clone, Debug)]
+pub struct PetCheckReply<ShareValue: Zeroize, PublicKey> {
+    pub partial: PubShare<PublicKey>,
+    pub challenge: ShareValue,
+    pub proof: ShareValue,
+}
+
+impl<ShareValue: Zeroize, PublicKey> Drop for PetCheckReply<ShareValue, PublicKey> {
+    fn drop(&mut self) {
+        self.challenge.zeroize();
+        self.proof.zeroize();
+    }
+}

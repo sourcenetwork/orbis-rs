@@ -8,12 +8,14 @@ mod codec;
 mod dkg;
 mod envelope;
 mod invalid_crypto;
+mod pet;
 mod pre_sign;
 mod relay;
 
 pub use dkg::*;
 pub use envelope::*;
 pub use invalid_crypto::*;
+pub use pet::*;
 pub use pre_sign::*;
 pub use relay::*;
 
@@ -29,6 +31,7 @@ pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
 pub const UNAUTHORIZED_REQUEST_REPORT_TYPE: &str = "unauthorized_request";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
+pub const PET_CHECK_RESPONSE_DOMAIN: &str = "orbis-pet-check-response-v1";
 pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";

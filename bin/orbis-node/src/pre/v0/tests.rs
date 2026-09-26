@@ -515,6 +515,8 @@ async fn test_pre_with_inline_document_end_to_end() {
         resource: document.resource.clone(),
         permission: document.permission.clone(),
         tier: document.tier.clone(),
+        pet_tag: document.pet_tag.clone(),
+        pet_tag_proof: document.pet_tag_proof.clone(),
     };
     let document_timestamp = document.timestamp;
 

@@ -30,6 +30,14 @@ pub struct PetCheckContext {
     /// the tag) was bound to. Not stored on `DocumentPayload` itself — mirrors
     /// `PreRequestContext::salt`.
     pub salt: Option<String>,
+    /// The underlying PRE request's bulletin object id — bound into every
+    /// responder's signed `PetCheckResponseStatement` (see
+    /// `attestation::PetCheckStatementContext`) so a report co-signer that
+    /// never saw this live round can still locate the same document.
+    pub object_id: String,
+    /// Whether the underlying PRE request's document was supplied inline
+    /// rather than read from the bulletin — mirrors `PetCheckResponseStatement::document_inline`.
+    pub document_inline: bool,
 }
 
 /// Wire message sent from the coordinator to each ring node requesting this
@@ -53,9 +61,18 @@ pub enum PetMessage {
         from_node_id: u32,
         /// Serialized `Pet::PublicKey` — this node's `share_i * R`.
         partial: Vec<u8>,
-        /// Signature over `attestation::pet_share_signing_bytes(digest, from_node_id, partial)`,
-        /// so this contribution can be forwarded to and independently
-        /// verified by a PRE peer that never received it directly — see
+        /// Serialized `Pet::ShareValue` — the per-share DLEQ proof's
+        /// Fiat-Shamir challenge.
+        challenge: Vec<u8>,
+        /// Serialized `Pet::ShareValue` — the per-share DLEQ proof's
+        /// response.
+        proof: Vec<u8>,
+        /// Unix seconds at which this node produced and signed
+        /// `signature` — part of the signed `PetCheckResponseStatement`.
+        signed_at: u64,
+        /// Signature over `PetCheckResponseStatement::canonical_bytes()`, so
+        /// this contribution can be forwarded to and independently verified
+        /// by a PRE peer that never received it directly — see
         /// `attestation::PetShareAttestation`.
         signature: Vec<u8>,
     },

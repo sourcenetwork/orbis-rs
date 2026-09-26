@@ -1,7 +1,10 @@
-use super::common::{FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
+use super::common::{PubPoly, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
-    r#trait::{CryptoDeserialize, Pet, PetTag, PubShare, TagKnowledgeProof},
+    r#trait::{
+        CryptoDeserialize, Pet, PetCheckReply, PetTag, PubPoly as PubPolyTrait, PubShare,
+        TagKnowledgeProof,
+    },
 };
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, Group};
@@ -21,6 +24,11 @@ const NAME: &str = "pet/bls12_381";
 const FINGERPRINT_DOMAIN: &[u8] = b"orbis-pet-fingerprint-v1";
 /// Domain separator for the tag-knowledge proof's Fiat-Shamir challenge.
 const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-pet-tag-knowledge-proof-v1";
+/// Domain separator for the per-share PET-check DLEQ proof's Fiat-Shamir
+/// challenge. Distinct from `TAG_KNOWLEDGE_PROOF_DOMAIN` and from PRE's own
+/// reencryption-proof domain (`bls12_381::pre::PROTOCOL`) so a proof from one
+/// scheme can never be confused for or replayed as another's.
+const PET_CHECK_DLEQ_DOMAIN: &[u8] = b"orbis-pet-check-dleq-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct PetNode {}
@@ -28,6 +36,7 @@ pub struct PetNode {}
 impl Pet for PetNode {
     type PublicKey = G1Affine;
     type ShareValue = Fr;
+    type PubPoly = PubPoly;
 
     fn new() -> Self {
         PetNode {}
@@ -145,10 +154,105 @@ impl Pet for PetNode {
         Ok(())
     }
 
-    fn partial_pet_check(share_i: &Self::ShareValue, tag: &PetTag) -> Result<Self::PublicKey> {
+    fn partial_pet_check(
+        share_i: &Self::ShareValue,
+        node_id: u32,
+        tag: &PetTag,
+    ) -> Result<PetCheckReply<Self::ShareValue, Self::PublicKey>> {
         let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
         // Constant-time: share_i is this node's secret DKG share.
-        crate::bls12_381::ct::ct_mul_g1(&r_point, share_i)
+        let partial = crate::bls12_381::ct::ct_mul_g1(&r_point, share_i)?;
+
+        let generator = G1Affine::from(G1Projective::generator());
+        // Recomputed locally so the challenge below binds this node's own
+        // claimed public share: an honest prover's value here equals
+        // `pub_poly.eval(node_id)`; `verify_partial_pet_check` uses the
+        // authoritative polynomial value instead, so a dishonest prover's
+        // mismatched share makes the challenge recomputation there fail to
+        // match. Constant-time: share_i is secret.
+        let public_share = crate::bls12_381::ct::ct_mul_g1(&generator, share_i)?;
+
+        // Zeroizing: `ri` is this proof's secret nonce — same rationale as
+        // `prove_tag_knowledge`'s `k`.
+        let mut rng = OsRng;
+        let ri = Zeroizing::new(loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        });
+        // `ri` is this proof's fresh nonce — constant-time.
+        let ui_hat = crate::bls12_381::ct::ct_mul_g1(&r_point, &ri)?;
+        let hi_hat = crate::bls12_381::ct::ct_mul_g1(&generator, &ri)?;
+
+        let challenge = Self::pet_check_proof_challenge(
+            node_id,
+            &r_point,
+            &public_share,
+            &partial,
+            &[ui_hat, hi_hat],
+        )?;
+        // proof = ri + challenge*share_i — constant-time scalar arithmetic,
+        // since share_i is secret. Matches `prove_tag_knowledge`'s
+        // convention, intentionally stricter than `bls12_381::pre`'s older
+        // plain-arithmetic response computation.
+        let proof = crate::bls12_381::ct::ct_scalar_mul_add(&ri, &challenge, share_i)?;
+
+        Ok(PetCheckReply {
+            partial: PubShare {
+                i: node_id,
+                v: partial,
+            },
+            challenge,
+            proof,
+        })
+    }
+
+    fn verify_partial_pet_check(
+        pub_poly: &Self::PubPoly,
+        tag: &PetTag,
+        reply: &PetCheckReply<Self::ShareValue, Self::PublicKey>,
+    ) -> Result<()> {
+        let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
+        let node_id = reply.partial.i;
+        // Authoritative — never the prover's own claimed value.
+        let public_share = pub_poly.eval(node_id);
+
+        // UiHat = f*R - e*partial
+        let ui_hat: G1Affine = (G1Projective::from(r_point) * reply.proof
+            - G1Projective::from(reply.partial.v) * reply.challenge)
+            .into();
+        // HiHat = f*G - e*public_share
+        let hi_hat: G1Affine = (G1Projective::generator() * reply.proof
+            - G1Projective::from(public_share) * reply.challenge)
+            .into();
+
+        let recomputed_challenge = Self::pet_check_proof_challenge(
+            node_id,
+            &r_point,
+            &public_share,
+            &reply.partial.v,
+            &[ui_hat, hi_hat],
+        )?;
+
+        // Constant-time comparison. Fr serializes to exactly 32 bytes for BLS12-381.
+        let mut claimed_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        reply
+            .challenge
+            .serialize_compressed(&mut &mut claimed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if claimed_bytes.ct_ne(&recomputed_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "PET check share verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     fn combine_pet_check_shares(
@@ -278,6 +382,41 @@ impl PetNode {
             hasher.update(&bytes);
         }
         hasher.update(tag_transcript_digest);
+
+        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+    }
+
+    /// Fiat-Shamir challenge for the per-share PET-check DLEQ proof:
+    /// `Fr::from_le_bytes_mod_order(SHA512(PET_CHECK_DLEQ_DOMAIN || node_id
+    ///   || compress(R) || compress(public_share) || compress(partial)
+    ///   || compress(each of proof_points)))`.
+    ///
+    /// Binds the claimed index, the (claimed or authoritative, depending on
+    /// caller) public share, the input point, and the contribution itself —
+    /// under-binding any of these would let a proof computed for one
+    /// index/share/context be replayed against another.
+    fn pet_check_proof_challenge(
+        node_id: u32,
+        r_point: &G1Affine,
+        public_share: &G1Affine,
+        partial: &G1Affine,
+        proof_points: &[G1Affine],
+    ) -> Result<Fr> {
+        let mut hasher = Sha512::new();
+        hasher.update(PET_CHECK_DLEQ_DOMAIN);
+        hasher.update(node_id.to_le_bytes());
+
+        let mut bytes = Vec::with_capacity(G1_COMPRESSED_SIZE);
+        for point in [r_point, public_share, partial] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
+        for point in proof_points {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
 
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }

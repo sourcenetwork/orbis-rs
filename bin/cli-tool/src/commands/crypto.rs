@@ -121,7 +121,7 @@ pub fn prepare_pet_tag(
     owner_id: &str,
 ) -> Result<PreparedPetTag> {
     let pet_pk_bytes = hex::decode(pet_pk_hex).map_err(|e| anyhow!("Invalid pet_pk hex: {}", e))?;
-    let _: G1Affine =
+    let pet_pk: G1Affine =
         G1Affine::from_bytes(&pet_pk_bytes).map_err(|e| anyhow!("Invalid pet_pk: {}", e))?;
 
     let (r_tag, r_point) = crypto::helpers::generate_keypair()
@@ -129,14 +129,7 @@ pub fn prepare_pet_tag(
     let ephemeral_point =
         CryptoSerialize::to_bytes(&r_point).map_err(|e| anyhow!("Failed to serialize R: {}", e))?;
 
-    // r_tag * pet_pk, reusing `Pet::partial_pet_check`'s "scalar * arbitrary
-    // point" shape (it doesn't care that `pet_pk` isn't really a tag's
-    // ephemeral point — that field is just a compressed group element to it).
-    let staging_tag = PetTag {
-        ephemeral_point: pet_pk_bytes.clone(),
-        masked_fingerprint: Vec::new(),
-    };
-    let blinding = PetImpl::partial_pet_check(&r_tag, &staging_tag)
+    let blinding = crypto::helpers::mul_point(&pet_pk, &r_tag)
         .map_err(|e| anyhow!("Failed to compute r_tag*pet_pk: {}", e))?;
     let fingerprint = PetImpl::owner_fingerprint(owner_id.as_bytes())
         .map_err(|e| anyhow!("Failed to compute owner fingerprint: {}", e))?;

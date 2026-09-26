@@ -12,7 +12,7 @@ use super::dkg::{
     DkgLeaderPublicFaultStatement, DkgPublicOriginFaultStatement, DkgShareStatement,
 };
 use super::pre_sign::{PreReencryptResponseStatement, SignResponseStatement};
-use super::CommitteeScope;
+use super::{CommitteeScope, PetCheckResponseStatement};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidCryptoResponse {
@@ -22,6 +22,15 @@ pub enum InvalidCryptoResponse {
     },
     Sign {
         statement: SignResponseStatement,
+        response_signature: Vec<u8>,
+    },
+    /// A PET committee member's threshold check-share contribution whose
+    /// per-share DLEQ proof fails to verify against its own authoritative
+    /// public share — see `Pet::verify_partial_pet_check`. Mirrors `Pre`
+    /// exactly: no committee-scope fields, since PET has no refresh/reshare
+    /// yet.
+    Pet {
+        statement: PetCheckResponseStatement,
         response_signature: Vec<u8>,
     },
     DkgShare {
@@ -102,6 +111,14 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
+            Self::Pet {
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "pet");
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
             Self::DkgShare {
                 statement,
                 response_signature,
@@ -173,6 +190,14 @@ impl InvalidCryptoResponse {
                 let response_signature = decoder.read_bytes("response_signature")?;
                 Self::Sign {
                     statement: SignResponseStatement::from_canonical_bytes(&statement_bytes)?,
+                    response_signature,
+                }
+            }
+            "pet" => {
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::Pet {
+                    statement: PetCheckResponseStatement::from_canonical_bytes(&statement_bytes)?,
                     response_signature,
                 }
             }
@@ -264,6 +289,7 @@ impl InvalidCryptoResponse {
         match self {
             Self::Pre { statement, .. } => &statement.request_id,
             Self::Sign { statement, .. } => &statement.request_id,
+            Self::Pet { statement, .. } => &statement.request_id,
             Self::DkgShare { statement, .. } => &statement.request_id,
             Self::DkgInvalidRefreshCommitment { statement, .. } => &statement.request_id,
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
@@ -275,15 +301,16 @@ impl InvalidCryptoResponse {
         }
     }
 
-    /// The DKG attempt this evidence targets, or `None` for `Pre`/`Sign` —
-    /// those aren't DKG-ceremony-scoped and have no `attempt_id` field at
-    /// all (matches RPT-16's chain-side dedupe key, which folds this in for
-    /// exactly the same set of DKG evidence kinds and leaves PRE/Sign
-    /// ceremony-scoped by `request_id` alone).
+    /// The DKG attempt this evidence targets, or `None` for `Pre`/`Sign`/`Pet`
+    /// — none of those are DKG-ceremony-scoped and have no `attempt_id` field
+    /// at all (matches RPT-16's chain-side dedupe key, which folds this in
+    /// for exactly the same set of DKG evidence kinds and leaves PRE/Sign/PET
+    /// scoped by `request_id` alone).
     pub fn attempt_id(&self) -> Option<[u8; 32]> {
         match self {
             Self::Pre { .. } => None,
             Self::Sign { .. } => None,
+            Self::Pet { .. } => None,
             Self::DkgShare { statement, .. } => Some(statement.commitment_statement.attempt_id),
             Self::DkgInvalidRefreshCommitment { statement, .. } => Some(statement.attempt_id),
             Self::DkgEquivocation { commitment_a, .. } => Some(commitment_a.statement.attempt_id),
@@ -298,6 +325,7 @@ impl InvalidCryptoResponse {
     pub fn signing_committee_scope(&self) -> CommitteeScope {
         match self {
             Self::Pre { .. } => CommitteeScope::Current,
+            Self::Pet { .. } => CommitteeScope::Current,
             Self::Sign { statement, .. } => statement.signing_committee_scope,
             Self::DkgShare { statement, .. } => statement.signing_committee_scope,
             Self::DkgInvalidRefreshCommitment { statement, .. } => {

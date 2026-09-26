@@ -1,6 +1,8 @@
 use super::codec::{CryptoDeserialize, CryptoSerialize};
-use super::types::{PetTag, PubShare, TagKnowledgeProof};
+use super::dkg::PubPoly;
+use super::types::{PetCheckReply, PetTag, PubShare, TagKnowledgeProof};
 use crate::error::Result;
+use zeroize::Zeroize;
 
 /// PET (ownership-tag) primitives, defined once per curve backend alongside the
 /// existing PRE ([`super::pre::ThresholdDealer`]) and signing
@@ -19,7 +21,12 @@ pub trait Pet {
     /// Group element type (matches the curve's `ThresholdDealer::PublicKey`).
     type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
     /// Scalar field type (matches the curve's `ThresholdDealer::ShareValue`).
-    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone;
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Zeroize;
+    /// Public polynomial commitment type (matches the curve's
+    /// `ThresholdDealer::PubPoly`/`Dkg::PubPoly` — the PET checking key is
+    /// generated via the same `Dkg` implementation as the main ring key, see
+    /// `pet::v0`'s fresh-DKG auto-chain).
+    type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
 
     fn new() -> Self;
     fn name() -> String;
@@ -57,18 +64,55 @@ pub trait Pet {
         tag_transcript_digest: &[u8; 32],
     ) -> Result<()>;
 
-    /// A committee member's raw contribution to the threshold PET check:
+    /// A committee member's contribution to the threshold PET check:
     /// `share_i * R`, where `share_i` is this node's DKG share of the ring's
-    /// PET secret key and `R = tag.ephemeral_point`. Structurally the same
-    /// "apply my secret share to a public group element" shape as
+    /// PET secret key and `R = tag.ephemeral_point`, together with a
+    /// Chaum–Pedersen DLEQ proof that the same `share_i` was used here as in
+    /// this node's known public share (verifiable via
+    /// [`Pet::verify_partial_pet_check`] against `pub_poly.eval(i)`, no
+    /// secret needed). Structurally the same "apply my secret share to a
+    /// public group element" shape as
     /// [`super::pre::ThresholdDealer::reencrypt`]'s `ski * (xG + rG)`, just
-    /// against a single point instead of a sum of two.
+    /// against a single point instead of a sum of two — and, like
+    /// `reencrypt`, always produces a proof rather than a bare value, so a
+    /// caller can never skip verification by construction.
     ///
     /// Never reveals `share_i` or the PET secret key: recovering either from
     /// this output alone requires solving discrete log. Combine
-    /// `threshold`-many of these via [`Pet::combine_pet_check_shares`] to
-    /// recover `pet_sk * R`.
-    fn partial_pet_check(share_i: &Self::ShareValue, tag: &PetTag) -> Result<Self::PublicKey>;
+    /// `threshold`-many verified contributions' `.partial` via
+    /// [`Pet::combine_pet_check_shares`] to recover `pet_sk * R`.
+    ///
+    /// Per-share verification exists because final-equation verification
+    /// alone is insufficient: because [`Pet::combine_pet_check_shares`]
+    /// combines contributions *linearly* (Lagrange interpolation), a
+    /// malicious committee member can submit a fabricated, correctly-signed
+    /// contribution chosen so that combining it with genuinely honest ones
+    /// still satisfies the tag's final equation — a cancellation attack that
+    /// only per-share verification against each node's own public share
+    /// catches.
+    fn partial_pet_check(
+        share_i: &Self::ShareValue,
+        node_id: u32,
+        tag: &PetTag,
+    ) -> Result<PetCheckReply<Self::ShareValue, Self::PublicKey>>;
+
+    /// Verify a [`PetCheckReply`] from committee member `reply.partial.i`
+    /// against `pub_poly.eval(reply.partial.i)` — that node's own public
+    /// share — and `tag`, with no secret needed. The PET analog of
+    /// [`super::pre::ThresholdDealer::verify`].
+    ///
+    /// Callers must ensure `pub_poly` genuinely belongs to this ring's PET
+    /// checking key (e.g. loaded via the PET-key-specific
+    /// `RingShareBundle::load_by_ring_key(storage, ring_id)`, never the main
+    /// ring key's `RingShareBundle::load(storage, ring_pk)`) — this method
+    /// has no way to check that itself, since it receives only the
+    /// polynomial, not its provenance. Fails if `reply.partial.i` doesn't
+    /// match the index the caller is checking against.
+    fn verify_partial_pet_check(
+        pub_poly: &Self::PubPoly,
+        tag: &PetTag,
+        reply: &PetCheckReply<Self::ShareValue, Self::PublicKey>,
+    ) -> Result<()>;
 
     /// Lagrange-combine `shares` (each indexed by its contributor's DKG
     /// share index, 1-based) into `pet_sk * R`. Requires at least
