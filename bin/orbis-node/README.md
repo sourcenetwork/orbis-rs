@@ -194,9 +194,10 @@ Integration tests may require Docker (see **`common`** crate **`IntegrationTestN
 
 The native integration is under qualification. The pinned Vera and Defra
 verifiers use Orbis's augmented BLS signature suite. Legacy basic-BLS signature
-types and verification paths are removed. The aligned dependency set still
-requires end-to-end validation before deployment.
-
+types and verification paths are removed. Local process fixtures cover Defra
+signing and replication, permission revocation, PRE, graceful restart, and
+committee replacement. Deployment qualification still requires sustained load,
+multi-host networks, crash/power-loss recovery, and operational security review.
 
 Build with `cargo build -p orbis-node --features native`, then start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
@@ -244,7 +245,7 @@ Vera members and checks certified registration and identity/journal persistence
 across restart:
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
   --test native_startup native_startup_registers_and_preserves_identity_on_restart -- --ignored
 ```
 
@@ -274,7 +275,7 @@ query verifies its effect on the unavailable member and the absence of penalties
 for healthy members.
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
   --test native_startup native_distributed_threshold_workflows -- --ignored
 ```
 
@@ -304,6 +305,6 @@ It shares the
 DKG setup and stops before the PRE and resharing portions of the broader fixture.
 
 ```sh
-HUBD_BINARY=/path/to/hubd cargo test -p orbis-node --features native \
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
   --test native_startup native_defra_signing -- --ignored
 ```
