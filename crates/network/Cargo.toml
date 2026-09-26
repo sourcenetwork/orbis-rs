@@ -6,8 +6,8 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-iroh = "0.95"
-iroh-gossip = "0.95"
+iroh.workspace = true
+iroh-gossip.workspace = true
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
