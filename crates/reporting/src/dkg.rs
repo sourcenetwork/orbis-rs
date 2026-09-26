@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::reporting::v0::error::{ReportingError, Result};
+use crate::error::{ReportingError, Result};
 
 use super::codec::{write_bytes, write_string, write_u32, write_u64, Decoder};
 use super::CommitteeScope;
@@ -75,7 +75,7 @@ impl DkgCommitmentStatement {
     /// Returns true when two statements contain the conflicting commitment
     /// pair required to prove dealer equivocation. Callers remain responsible
     /// for validating the statements' signatures and surrounding bindings.
-    pub(crate) fn proves_equivocation_with(&self, other: &Self) -> bool {
+    pub fn proves_equivocation_with(&self, other: &Self) -> bool {
         self.attempt_id == other.attempt_id
             && self.session_nonce == other.session_nonce
             && self.from_node_id == other.from_node_id
@@ -910,4 +910,10 @@ impl DkgShareStatement {
             crypto_backend,
         })
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedDkgCommitment {
+    pub statement: DkgCommitmentStatement,
+    pub signature: Vec<u8>,
 }

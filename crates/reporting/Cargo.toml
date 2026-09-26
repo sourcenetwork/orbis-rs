@@ -1,0 +1,15 @@
+[package]
+name = "orbis-reporting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Canonical Orbis report and fault-evidence formats"
+
+[dependencies]
+serde.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

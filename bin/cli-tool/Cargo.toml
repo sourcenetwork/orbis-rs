@@ -26,10 +26,33 @@ sha2 = { workspace = true }
 rpassword = "7.3"
 bs58 = "0.5"
 
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
+alloy-primitives = { version = "1", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
+local-storage = { path = "../../crates/local-storage", default-features = false, features = ["redb"], optional = true }
+zeroize = { workspace = true, optional = true }
+
+[[bin]]
+name = "vera-admin"
+path = "src/bin/vera-admin.rs"
+required-features = ["native"]
+
 [features]
+native = ["bulletin/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
 decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
+
+[[test]]
+name = "native_admin"
+required-features = ["native"]
+
+[dev-dependencies]
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
+commonware-codec = "2026.9.0"
+k256.workspace = true
+tempfile.workspace = true
 
 
 [lints]

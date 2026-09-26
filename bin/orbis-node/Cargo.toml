@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+orbis-reporting = { path = "../../crates/reporting" }
 network = { path = "../../crates/network" }
 crypto = { path = "../../crates/crypto", default-features = false }
 local-storage = { path = "../../crates/local-storage", default-features = false }
@@ -48,7 +49,29 @@ hyper = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2", optional = true }
+commonware-codec = { version = "2026.9.0", optional = true }
+k256 = { workspace = true, optional = true }
+
 [dev-dependencies]
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "a5a005e64b23110c604ec8b86784bbdb825432de" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+did-key.workspace = true
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+alloy-primitives = "1"
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
 bulletin = { path = "../../crates/bulletin", features = ["dummy-type"] }
 bs58 = "0.5"
@@ -65,7 +88,12 @@ tempfile = { workspace = true }
 # Docker Compose integration-test harness (Vera + orbis-node containers).
 test-support = { path = "../../crates/test-support" }
 
+[[test]]
+name = "native_startup"
+required-features = ["native"]
+
 [features]
+native = ["authz/native", "bulletin/native", "local-storage/redb", "dep:vera-client", "dep:vera-domain", "dep:commonware-codec", "dep:k256"]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
 decaf377 = ["crypto/decaf377", "cli-tool?/decaf377", "common/decaf377", "bulletin/decaf377"]
