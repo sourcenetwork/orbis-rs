@@ -314,6 +314,7 @@ where
             object_id: object_id.to_string(),
             salt: salt.map(str::to_string),
             crypto_backend: P::name(),
+            timestamp: document.timestamp,
             document_inline,
         };
 
@@ -864,6 +865,7 @@ mod tests {
             object_id: object_id_for(fixture),
             salt: None,
             crypto_backend: PetImpl::name(),
+            timestamp: fixture.document.timestamp,
             document_inline: false,
         }
     }

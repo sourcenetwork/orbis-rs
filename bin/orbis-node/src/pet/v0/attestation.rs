@@ -91,6 +91,10 @@ pub(crate) struct PetCheckStatementContext {
     pub object_id: String,
     pub salt: Option<String>,
     pub crypto_backend: String,
+    /// The document's own ACP timestamp — see
+    /// `PetCheckResponseStatement::timestamp`'s doc comment for why this is
+    /// required, not just `signed_at`.
+    pub timestamp: Option<u64>,
     pub document_inline: bool,
 }
 
@@ -124,6 +128,7 @@ impl PetCheckStatementContext {
             challenge,
             proof,
             crypto_backend: self.crypto_backend.clone(),
+            timestamp: self.timestamp,
             document_inline: self.document_inline,
         }
     }

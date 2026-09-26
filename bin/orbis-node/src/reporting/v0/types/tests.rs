@@ -156,6 +156,7 @@ fn pet_statement() -> PetCheckResponseStatement {
         challenge: vec![9, 10],
         proof: vec![11, 12],
         crypto_backend: "pet/test".to_string(),
+        timestamp: Some(1_700_000_000),
         document_inline: false,
     }
 }
@@ -268,6 +269,24 @@ fn pet_response_statement_with_no_salt_round_trips() {
     assert_eq!(
         PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
         statement
+    );
+}
+
+#[test]
+fn pet_response_statement_with_no_timestamp_round_trips() {
+    let mut statement = pet_statement();
+    statement.timestamp = None;
+    assert_eq!(
+        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+    // An untimestamped document's canonical bytes must differ from a
+    // timestamped one's (finding #8: a report validator must not confuse
+    // "no timestamp" with any particular timestamp value when
+    // reconstructing the document id).
+    assert_ne!(
+        statement.canonical_bytes(),
+        pet_statement().canonical_bytes()
     );
 }
 

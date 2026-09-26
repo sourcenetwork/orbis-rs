@@ -131,6 +131,7 @@ where
             object_id: object_id.clone(),
             salt: salt.clone(),
             crypto_backend: P::name(),
+            timestamp: document.timestamp,
             document_inline,
         };
 

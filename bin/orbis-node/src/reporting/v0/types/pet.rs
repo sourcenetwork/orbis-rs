@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::reporting::v0::error::Result;
 
 use super::codec::{
-    write_bool, write_bytes, write_optional_string, write_string, write_u32, write_u64, Decoder,
+    write_bool, write_bytes, write_optional_string, write_optional_u64, write_string, write_u32,
+    write_u64, Decoder,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +54,16 @@ pub struct PetCheckResponseStatement {
     /// Serialized `Pet::ShareValue` — the per-share DLEQ proof's response.
     pub proof: Vec<u8>,
     pub crypto_backend: String,
+    /// The document's ACP timestamp (`DocumentPayload.timestamp`) — not the
+    /// same thing as `signed_at` above. Not needed for the crypto
+    /// re-verification itself, but required to recompute the *document's*
+    /// content id via `generate_document_id` when resolving out-of-band
+    /// inline evidence for a report (`require_inline_document_evidence`
+    /// hashes it in whenever the original document had one) — mirrors
+    /// `PreReencryptResponseStatement::timestamp` exactly, and for the same
+    /// reason: omitting it made every timestamped inline PET document's
+    /// report fail id reconstruction.
+    pub timestamp: Option<u64>,
     /// `true` when the request's document was supplied inline rather than
     /// read from the bulletin — mirrors `PreReencryptResponseStatement`'s
     /// field of the same name exactly.
@@ -81,6 +92,7 @@ impl PetCheckResponseStatement {
         write_bytes(&mut out, &self.challenge);
         write_bytes(&mut out, &self.proof);
         write_string(&mut out, &self.crypto_backend);
+        write_optional_u64(&mut out, self.timestamp);
         write_bool(&mut out, self.document_inline);
         out
     }
@@ -104,6 +116,7 @@ impl PetCheckResponseStatement {
         let challenge = decoder.read_bytes("challenge")?;
         let proof = decoder.read_bytes("proof")?;
         let crypto_backend = decoder.read_string("crypto_backend")?;
+        let timestamp = decoder.read_optional_u64("timestamp")?;
         let document_inline = decoder.read_bool("document_inline")?;
         decoder.finish()?;
         Ok(Self {
@@ -124,6 +137,7 @@ impl PetCheckResponseStatement {
             challenge,
             proof,
             crypto_backend,
+            timestamp,
             document_inline,
         })
     }

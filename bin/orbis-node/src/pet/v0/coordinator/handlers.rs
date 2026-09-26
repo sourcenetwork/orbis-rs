@@ -100,6 +100,7 @@ where
             object_id: ctx.object_id.clone(),
             salt: ctx.salt.clone(),
             crypto_backend: P::name(),
+            timestamp: ctx.document.timestamp,
             document_inline: ctx.document_inline,
         };
         let statement = statement_ctx.statement_for(

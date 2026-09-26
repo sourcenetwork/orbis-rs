@@ -135,7 +135,7 @@ async fn resolve_pet_tag(
             context,
             &statement.ring_id,
             &statement.object_id,
-            None,
+            statement.timestamp,
         )?;
         (evidence.pet_tag.clone(), evidence.pet_tag_proof.clone())
     } else {
