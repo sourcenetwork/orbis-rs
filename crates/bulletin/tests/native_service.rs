@@ -28,7 +28,8 @@ async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = reader.read_receipt(id, trusted).await.unwrap() {
-                assert!(proof.verify(id, trusted).unwrap().success());
+                let receipt = proof.verify(id, trusted).unwrap();
+                assert!(receipt.success(), "submission {id} failed: {receipt:?}");
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -68,7 +69,7 @@ fn open(
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() {
     let deployment = 9072;
     let trusted = *KeySet::builder()
@@ -391,7 +392,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_report_and_reshare_recover_certified_completion() {
     use bulletin::native::{RingParticipantCommand, RingUpdate};
     use bulletin::r#trait::BulletinReportSubmission;
