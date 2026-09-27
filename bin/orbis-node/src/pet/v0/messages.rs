@@ -4,6 +4,7 @@
 //! orbis nodes. Never exposed externally — the only caller is PRE's own
 //! `start_pre` pipeline, gated on a ring's `requires_pet`.
 
+use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +39,30 @@ pub struct PetCheckContext {
     /// Whether the underlying PRE request's document was supplied inline
     /// rather than read from the bulletin — mirrors `PetCheckResponseStatement::document_inline`.
     pub document_inline: bool,
+    /// Raw JWT authorizing this specific audit request (the same token the
+    /// underlying PRE request was authorized with — a PET check never runs
+    /// standalone). `handle_check_request` — the one entry point reachable
+    /// from a raw wire message with no other upstream authentication —
+    /// independently re-verifies it and binds it to `object_id`/`salt`
+    /// before this node's secret share is ever touched, exactly like PRE's
+    /// own responders re-verify `PreRequestContext::token_string`. Without
+    /// this, a direct peer request could obtain a genuine contribution (and,
+    /// combined with every other peer's, an equality oracle) for any
+    /// document/target without ever going through the ACP-gated normal PRE
+    /// entry point — see the PET audit fix checklist, finding #3.
+    pub token_string: String,
+    /// The plaintext owner identity being audited — not an ACP handle to
+    /// resolve, see `pet::README.md`'s "no ACP identity-resolution step"
+    /// invariant and `pre::v0::messages::PreRequestContext::audit_target_object_id`'s
+    /// identical reasoning: this travels as a plain field because ACP
+    /// itself (via `check_pet_permission`) is what protects it, not
+    /// cryptographic binding to `token_string` — naming a target gets a
+    /// caller nowhere without `token_string`'s authenticated actor genuinely
+    /// holding permission on that exact object.
+    pub audit_target_object_id: String,
+    /// Time-bounded ACP validity window, forwarded from the same JWT-backed
+    /// request that authorized the underlying PRE round.
+    pub valid_window: Option<ValidWindow>,
 }
 
 /// Wire message sent from the coordinator to each ring node requesting this

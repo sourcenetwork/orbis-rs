@@ -75,6 +75,7 @@ where
         audit_target_object_id: String,
         actor_id: String,
         valid_window: Option<ValidWindow>,
+        token_string: String,
     ) -> Result<Vec<PetShareAttestation>> {
         let document_inline = document_evidence.is_some();
         let ring_payload = read_ring_for_route(
@@ -98,7 +99,7 @@ where
             &document,
             &audit_target_object_id,
             &actor_id,
-            valid_window,
+            valid_window.clone(),
         )
         .await?;
 
@@ -110,6 +111,9 @@ where
             salt: salt.clone(),
             object_id: object_id.clone(),
             document_inline,
+            token_string,
+            audit_target_object_id: audit_target_object_id.clone(),
+            valid_window,
         };
         // This node's own independent verification — matches
         // `Pet::verify_tag_knowledge`'s doc: "every PET participant,

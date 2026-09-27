@@ -69,6 +69,24 @@ where
 
         let (tag, _pet_pk_hex, _digest, ring_payload) = self.verify_pet_check_request(&ctx).await?;
 
+        // A raw `CheckRequest` has no other upstream authentication (unlike
+        // the normal initiator's own entry point, or `verify_pet_admission`,
+        // whose caller already re-verified the same JWT) — independently
+        // authenticate and authorize this exact audit request before this
+        // node's secret share is ever touched. See finding #3 in the PET
+        // audit fix checklist.
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| PetError::InvalidState(format!("Failed to get timestamp: {}", e)))?
+            .as_secs();
+        crate::pet::v0::coordinator::verification::verify_pet_audit_authorization(
+            &*self.app_state.authz,
+            &ctx,
+            ring_payload.trusted_auth_relay_dids.as_deref(),
+            current_time,
+        )
+        .await?;
+
         let bundle = RingShareBundle::load_by_pet_ring_key(
             &self.app_state.local_storage,
             &ctx.document.ring_id,

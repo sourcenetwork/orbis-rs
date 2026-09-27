@@ -405,6 +405,7 @@ where
                 audit_target_object_id,
                 authorized.actor_id.clone(),
                 authorized.valid_window.clone(),
+                authorized.token_str.clone(),
             )
             .await
             .map_err(PreError::from)

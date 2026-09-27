@@ -50,6 +50,7 @@ use crate::reporting::v0::types::{
     ring_state_sha256, PetCheckResponseStatement, ReportedDocumentEvidence,
 };
 use crate::ring_state::RingShareBundle;
+use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{BulletinKind, NodeInfo};
@@ -101,6 +102,64 @@ pub(crate) async fn check_pet_permission(
     }
 
     Ok(())
+}
+
+/// Independently authenticate and authorize a PET check request received
+/// directly over the wire — closes the gap `handle_check_request` alone has:
+/// unlike the normal initiator's own entry point (`initiate_pet_check`,
+/// which calls `check_pet_permission` before doing anything), and unlike
+/// `verify_pet_admission` (whose caller already independently re-verified
+/// the same JWT before ever reaching it), `handle_check_request` is
+/// reachable from a raw wire message with no other upstream authentication
+/// at all. Without this, a direct peer request could obtain a genuine
+/// contribution (and, combined with every other peer's, an equality oracle)
+/// for any document/target without ever going through the ACP-gated normal
+/// PRE entry point — see the PET audit fix checklist, finding #3.
+///
+/// Re-verifies `ctx.token_string` the same way PRE's own responders
+/// re-verify `PreRequestContext::token_string`, binds it to *this* request's
+/// `object_id`/`salt` (so a token authorizing one document/round can't be
+/// replayed against a different one), derives the actor from it, and then
+/// runs the exact same `check_pet_permission` gate the normal initiator
+/// already runs.
+pub(crate) async fn verify_pet_audit_authorization(
+    authz: &(dyn Authz + Send + Sync),
+    ctx: &PetCheckContext,
+    trusted_auth_relay_dids: Option<&[String]>,
+    current_time: u64,
+) -> Result<()> {
+    let token: BearerToken<PreClaims> = resolve_jwt_did(
+        &ctx.token_string,
+        current_time,
+        crate::constants::MAX_TOKEN_LIFETIME_SECS,
+        crate::constants::MAX_JWT_BYTES,
+        crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .map_err(|e| PetError::InvalidInput(format!("JWT validation failed: {}", e)))?;
+
+    if token.claims.object_id != ctx.object_id {
+        return Err(PetError::InvalidInput(format!(
+            "Token object_id '{}' does not match request object_id '{}'",
+            token.claims.object_id, ctx.object_id
+        )));
+    }
+    if token.claims.salt != ctx.salt {
+        return Err(PetError::InvalidInput(
+            "Token salt does not match request salt".to_string(),
+        ));
+    }
+
+    let actor_id = crate::helpers::auth::request_actor(&token, trusted_auth_relay_dids)
+        .map_err(PetError::InvalidInput)?;
+
+    check_pet_permission(
+        authz,
+        &ctx.document,
+        &ctx.audit_target_object_id,
+        &actor_id,
+        ctx.valid_window.clone(),
+    )
+    .await
 }
 
 fn deserialize_secret(document_json: &str) -> Result<Secret> {
@@ -318,7 +377,7 @@ where
             document,
             audit_target_object_id,
             actor_id,
-            valid_window,
+            valid_window.clone(),
         )
         .await?;
 
@@ -327,6 +386,17 @@ where
             salt: salt.map(str::to_string),
             object_id: object_id.to_string(),
             document_inline,
+            // Unused on this path: `verify_pet_check_request` never reads
+            // `token_string`/`audit_target_object_id`/`valid_window` itself
+            // (only `handle_check_request` re-verifies those, for the raw
+            // wire-message entry point — see finding #3 in the PET audit fix
+            // checklist). This function already performed its own,
+            // equivalent authorization above using the real
+            // `actor_id`/`audit_target_object_id`/`valid_window`, so a
+            // placeholder here is correct, not a gap.
+            token_string: String::new(),
+            audit_target_object_id: audit_target_object_id.to_string(),
+            valid_window,
         };
         let (tag, _pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
 
@@ -666,15 +736,25 @@ pub(crate) enum PetCheckResponseVerification {
 mod tests {
     use super::*;
     use crate::helpers::test_helpers::{
-        cleanup_db, create_test_app_state_with_bulletin, test_db_path,
+        cleanup_db, create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
     };
+    use crate::pet::v0::messages::{PetCheckRequest, PetMessage};
+    use authz::dummy::DummyAuthZ;
     use bulletin::dummy::DummyBulletin;
     use bulletin::r#trait::{DocumentPayload, RingPayload};
     use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
     use crypto::r#trait::{CryptoSerialize, PriShare};
     use crypto::{DkgImpl, PetImpl};
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use zeroize::Zeroizing;
+
+    fn current_unix_time() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs()
+    }
 
     const RING_ID: &str = "pet-admission-test-ring";
     const AUDIT_TARGET: &str = "pet-admission-audit-target";
@@ -1020,6 +1100,9 @@ mod tests {
             salt: None,
             object_id: object_id_for(&fixture_b),
             document_inline: false,
+            token_string: String::new(),
+            audit_target_object_id: String::new(),
+            valid_window: None,
         };
 
         let result = coordinator.verify_pet_check_request(&ctx).await;
@@ -1659,5 +1742,212 @@ mod tests {
              and invalid-proof attempts on nodes 1 and 2"
         );
         assert_eq!(shares.len(), 3, "threshold must be reached");
+    }
+
+    // ========================================================================
+    // Finding #3 (PET audit fix checklist): `handle_check_request` is the
+    // one entry point reachable from a raw wire message with no other
+    // upstream authentication. `verify_pet_audit_authorization` closes that
+    // gap; it needs only an `Authz` impl (no coordinator/bulletin/local
+    // storage), so most of these tests call it directly.
+    // ========================================================================
+
+    /// A throwaway document + object_id sufficient for
+    /// `verify_pet_audit_authorization`, which never reads
+    /// `document.document`/`.proof`/`.pet_tag*` — only the policy fields
+    /// `check_pet_permission` needs.
+    fn audit_authz_fixture() -> (TestKeyPair, DocumentPayload, String) {
+        let signer = TestKeyPair::new();
+        let document = DocumentPayload {
+            ring_id: "audit-authz-ring".to_string(),
+            document: String::new(),
+            proof: String::new(),
+            policy_id: "test-policy".to_string(),
+            resource: "test-resource".to_string(),
+            permission: "read".to_string(),
+            tier: None,
+            timestamp: None,
+            pet_tag: None,
+            pet_tag_proof: None,
+        };
+        (signer, document, "audit-authz-object".to_string())
+    }
+
+    #[tokio::test]
+    async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
+        let (_signer, document, object_id) = audit_authz_fixture();
+        let ctx = PetCheckContext {
+            document,
+            salt: None,
+            object_id,
+            document_inline: false,
+            token_string: "not-a-jwt".to_string(),
+            audit_target_object_id: "any-target".to_string(),
+            valid_window: None,
+        };
+        let authz = DummyAuthZ;
+        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+        assert!(
+            matches!(result, Err(PetError::InvalidInput(_))),
+            "a garbage token must be rejected: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_id() {
+        let (signer, document, object_id) = audit_authz_fixture();
+        let token = signer
+            .create_pre_jwt(b"unused".to_vec(), "a-different-object-id", None, None)
+            .expect("sign token");
+        let ctx = PetCheckContext {
+            document,
+            salt: None,
+            object_id,
+            document_inline: false,
+            token_string: token,
+            audit_target_object_id: "any-target".to_string(),
+            valid_window: None,
+        };
+        let authz = DummyAuthZ;
+        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+        assert!(
+            matches!(result, Err(PetError::InvalidInput(_))),
+            "a token authorizing a different object_id must be rejected: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
+        let (signer, document, object_id) = audit_authz_fixture();
+        let token = signer
+            .create_pre_jwt(
+                b"unused".to_vec(),
+                &object_id,
+                None,
+                Some("original-salt".to_string()),
+            )
+            .expect("sign token");
+        let ctx = PetCheckContext {
+            document,
+            salt: Some("different-salt".to_string()),
+            object_id,
+            document_inline: false,
+            token_string: token,
+            audit_target_object_id: "any-target".to_string(),
+            valid_window: None,
+        };
+        let authz = DummyAuthZ;
+        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+        assert!(
+            matches!(result, Err(PetError::InvalidInput(_))),
+            "a token authorizing a different salt must be rejected: {:?}",
+            result
+        );
+    }
+
+    /// Confirms the rejections above aren't vacuous: a genuinely matching,
+    /// valid token must still be accepted (and, with `DummyAuthZ` always
+    /// authorizing, reach `Ok(())`).
+    #[tokio::test]
+    async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
+        let (signer, document, object_id) = audit_authz_fixture();
+        let token = signer
+            .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
+            .expect("sign token");
+        let ctx = PetCheckContext {
+            document,
+            salt: None,
+            object_id,
+            document_inline: false,
+            token_string: token,
+            audit_target_object_id: "any-target".to_string(),
+            valid_window: None,
+        };
+        let authz = DummyAuthZ;
+        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+        assert!(
+            result.is_ok(),
+            "a genuinely matching, valid token must be accepted: {:?}",
+            result
+        );
+    }
+
+    /// End-to-end wiring check (not just the standalone function): a raw
+    /// `CheckRequest` with no valid audit authorization must be rejected by
+    /// the real `handle_message`/`handle_check_request` path, before this
+    /// node's secret share is ever touched.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn handle_check_request_rejects_a_request_with_no_valid_audit_authorization() {
+        let db_name = "pet_handle_check_request_rejects_unauthorized_audit";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let request = PetCheckRequest {
+            request_id: TEST_REQUEST_ID.to_string(),
+            from_node_id: 1,
+            context: PetCheckContext {
+                document: fixture.document.clone(),
+                salt: None,
+                object_id: object_id_for(&fixture),
+                document_inline: false,
+                token_string: "not-a-jwt".to_string(),
+                audit_target_object_id: AUDIT_TARGET.to_string(),
+                valid_window: None,
+            },
+        };
+
+        let result = coordinator
+            .handle_message(PetMessage::CheckRequest(Box::new(request)))
+            .await;
+
+        assert!(
+            matches!(result, Err(PetError::InvalidInput(_))),
+            "a CheckRequest with no valid audit authorization must be rejected: {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
+    }
+
+    /// Confirms the rejection above isn't vacuous against a gate that
+    /// rejects every `CheckRequest`: a valid, correctly-bound audit token
+    /// must still be accepted end-to-end.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn handle_check_request_accepts_a_request_with_valid_audit_authorization() {
+        let db_name = "pet_handle_check_request_accepts_valid_audit_authorization";
+        let fixture = build_fixture(3, 2);
+        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+
+        let object_id = object_id_for(&fixture);
+        let token = TestKeyPair::new()
+            .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
+            .expect("sign token");
+        let request = PetCheckRequest {
+            request_id: TEST_REQUEST_ID.to_string(),
+            from_node_id: 1,
+            context: PetCheckContext {
+                document: fixture.document.clone(),
+                salt: None,
+                object_id,
+                document_inline: false,
+                token_string: token,
+                audit_target_object_id: AUDIT_TARGET.to_string(),
+                valid_window: None,
+            },
+        };
+
+        let result = coordinator
+            .handle_message(PetMessage::CheckRequest(Box::new(request)))
+            .await;
+
+        assert!(
+            matches!(result, Ok(Some(PetMessage::CheckResponse { .. }))),
+            "a CheckRequest with a valid, correctly-bound audit token must be accepted: {:?}",
+            result
+        );
+        cleanup_db(&test_db_path(db_name));
     }
 }
