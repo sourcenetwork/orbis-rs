@@ -81,6 +81,7 @@ mod tests {
             tier: None,
             timestamp: None,
             salt: None,
+            pet_tag: None,
         }
     }
 

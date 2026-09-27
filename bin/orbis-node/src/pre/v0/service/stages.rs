@@ -321,6 +321,7 @@ where
             &bulletin_state.ring_payload.ring_pk,
             &bulletin_state.document_payload,
             authenticated.salt.as_deref(),
+            bulletin_state.ring_payload.pet_pk.as_deref(),
         )?;
         verify_encryption_binding(
             &ciphertext_context,

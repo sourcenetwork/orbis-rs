@@ -754,6 +754,7 @@ async fn prepare_online_fixtures_in_process(
         None,
         None,
         None,
+        None,
     )?;
     let stored = cli_tool::store_prepared_secret(
         endpoint.grpc_url.clone(),

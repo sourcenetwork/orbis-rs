@@ -44,6 +44,7 @@ fn generate_test_context(ring_pk_bytes: &[u8]) -> CiphertextContext {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     }
 }
 

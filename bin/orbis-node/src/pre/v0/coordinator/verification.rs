@@ -326,6 +326,7 @@ mod tests {
             tier: None,
             timestamp: None,
             salt: None,
+            pet_tag: None,
         };
         let (_, encrypted_secret, _) = PreImpl::encrypt_secret(
             &aggregate_pk,

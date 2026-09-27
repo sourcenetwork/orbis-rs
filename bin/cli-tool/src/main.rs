@@ -884,6 +884,7 @@ async fn main() -> Result<()> {
                 tier,
                 timestamp,
                 salt,
+                None,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");

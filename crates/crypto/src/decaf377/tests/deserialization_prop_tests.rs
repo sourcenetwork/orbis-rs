@@ -115,6 +115,7 @@ proptest! {
             tier: None,
             timestamp: None,
             salt: None,
+            pet_tag: None,
         };
         let proof = EncryptionProof { challenge, response };
 
@@ -205,6 +206,7 @@ fn pre_proof_component_lengths_are_exact() {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&dkg_pk, b"proof length test", None, &ctx).unwrap();

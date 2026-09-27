@@ -470,6 +470,7 @@ async fn test_store_secret_idempotent() {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let (_enc_cmt, secret, proof) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, plaintext, None, &ciphertext_context)

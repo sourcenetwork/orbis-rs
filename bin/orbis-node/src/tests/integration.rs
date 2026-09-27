@@ -314,6 +314,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
             tier: tier.clone(),
             timestamp,
             salt: None,
+            pet_tag: None,
         };
         let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
             &ring_pk_point,
@@ -357,6 +358,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret should succeed");
     let derivation = b"test_derivation".to_vec();
@@ -370,6 +372,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         tier.clone(),
         timestamp,
         salt.clone(),
+        None,
     )
     .expect("prepare_secret should succeed");
 
@@ -1010,6 +1013,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret post-refresh");
 
@@ -1406,6 +1410,19 @@ resources:
 
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
+    // Required noncircular construction order (PET audit fix checklist,
+    // finding #5): generate the tag *before* encrypting the payload, so the
+    // payload's own encryption can bind to it, then prove tag knowledge over
+    // the now-completed payload.
+    let (generated_tag, tag_r_tag) =
+        cli_tool::generate_pet_tag(&pet_pk_hex, &audit_target_object_id)
+            .expect("generate a genuine PET tag");
+    let pet_tag_binding = crypto::context::PetTagBinding {
+        ring_id: ring_id.clone(),
+        pet_pk: hex::decode(&pet_pk_hex).expect("decode pet_pk hex"),
+        ephemeral_point: generated_tag.ephemeral_point.clone(),
+        masked_fingerprint: generated_tag.masked_fingerprint.clone(),
+    };
     let prepared = cli_tool::prepare_secret(
         secret_message,
         &ring_pk_hex,
@@ -1416,12 +1433,18 @@ resources:
         None,
         None,
         None,
+        Some(pet_tag_binding),
     )
     .expect("prepare_secret for the PET-gated document");
 
-    let pet_tag =
-        cli_tool::prepare_pet_tag(&prepared, &ring_id, &pet_pk_hex, &audit_target_object_id)
-            .expect("prepare a genuine PET tag");
+    let pet_tag = cli_tool::prove_pet_tag_knowledge(
+        &prepared,
+        &ring_id,
+        &pet_pk_hex,
+        generated_tag,
+        tag_r_tag,
+    )
+    .expect("prove genuine PET tag knowledge");
 
     let document_json = String::from_utf8(prepared.encrypted_document.clone())
         .expect("encrypted_document is valid UTF-8");
@@ -1527,6 +1550,7 @@ resources:
         pet_audit_policy_id.clone(),
         document_resource.clone(),
         read_permission.clone(),
+        None,
         None,
         None,
         None,

@@ -10,8 +10,8 @@ use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
-use crypto::context::CiphertextContext;
-use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
+use crypto::context::{CiphertextContext, PetTagBinding};
+use crypto::r#trait::{EncryptionProof, PetTag, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
 use std::sync::Arc;
@@ -157,16 +157,53 @@ pub fn deserialize_secret(document_json: &str) -> Result<Secret> {
         .map_err(|e| PreError::Deserialization(format!("Failed to deserialize secret: {}", e)))
 }
 
+/// Rebuilds the PET tag binding a `requires_pet` ring's encryptor folded into
+/// the payload's own encryption proof (see [`PetTagBinding`]'s doc comment
+/// and the PET audit fix checklist, finding #5) — `None` when the document
+/// carries no tag at all (an ordinary, non-PET-gated document). Errors if the
+/// document has a tag but no `pet_pk_hex` was supplied: an inconsistent
+/// ring/document state must never silently verify against a mismatched or
+/// absent binding. Shared with `pet::v0::coordinator::verification`'s own
+/// `build_ciphertext_context`, mirroring how `check_document_id_binding` is
+/// already reused across both modules.
+pub(crate) fn build_pet_tag_binding(
+    document: &DocumentPayload,
+    pet_pk_hex: Option<&str>,
+) -> Result<Option<PetTagBinding>> {
+    let Some(tag_json) = document.pet_tag.as_deref() else {
+        return Ok(None);
+    };
+    let pet_pk_hex = pet_pk_hex.ok_or_else(|| {
+        PreError::InvalidState(
+            "document has a PET tag but the ring has no PET checking key".to_string(),
+        )
+    })?;
+    let tag = PetTag::try_from(tag_json.to_string())
+        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize PET tag: {}", e)))?;
+    let pet_pk = hex::decode(pet_pk_hex)
+        .map_err(|e| PreError::InvalidInput(format!("Invalid pet_pk hex encoding: {}", e)))?;
+    Ok(Some(PetTagBinding {
+        ring_id: document.ring_id.clone(),
+        pet_pk,
+        ephemeral_point: tag.ephemeral_point,
+        masked_fingerprint: tag.masked_fingerprint,
+    }))
+}
+
 /// Rebuilds the [`CiphertextContext`] that the encryptor bound into the
 /// encryption proof: the ring key, the policy fields from the resolved on-chain
-/// (or inline, id-checked) document, and the reader-supplied `salt`.
+/// (or inline, id-checked) document, the reader-supplied `salt`, and (for a
+/// `requires_pet` ring) the document's PET tag binding — see
+/// [`build_pet_tag_binding`].
 pub fn build_ciphertext_context(
     ring_pk_hex: &str,
     document: &DocumentPayload,
     salt: Option<&str>,
+    pet_pk_hex: Option<&str>,
 ) -> Result<CiphertextContext> {
     let ring_pk = hex::decode(ring_pk_hex)
         .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+    let pet_tag = build_pet_tag_binding(document, pet_pk_hex)?;
     Ok(CiphertextContext {
         ring_pk,
         policy_id: document.policy_id.clone(),
@@ -175,6 +212,7 @@ pub fn build_ciphertext_context(
         tier: document.tier.clone(),
         timestamp: document.timestamp,
         salt: salt.map(str::to_string),
+        pet_tag,
     })
 }
 

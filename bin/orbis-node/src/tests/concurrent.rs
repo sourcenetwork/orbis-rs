@@ -895,6 +895,7 @@ async fn test_concurrent_pre_requests() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -1027,6 +1028,7 @@ async fn test_concurrent_sign_requests() {
                 policy_id.clone(),
                 resource.clone(),
                 permission.clone(),
+                None,
                 None,
                 None,
                 None,

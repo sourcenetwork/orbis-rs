@@ -616,6 +616,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret");
 
@@ -1619,6 +1620,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret");
 
@@ -1803,6 +1805,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,
@@ -2010,6 +2013,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,
@@ -4366,6 +4370,7 @@ async fn test_report_kick_promotes_backup_node() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,

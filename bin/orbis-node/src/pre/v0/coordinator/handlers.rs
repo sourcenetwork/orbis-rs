@@ -191,6 +191,7 @@ where
             &ring_payload.ring_pk,
             &document_payload,
             ctx.salt.as_deref(),
+            ring_payload.pet_pk.as_deref(),
         )?;
 
         // Both the ACP re-check below and the PET admission check further down reject on the

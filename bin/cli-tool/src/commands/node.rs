@@ -243,6 +243,7 @@ pub async fn do_store_secret(
         tier,
         timestamp,
         salt,
+        None,
     )?;
     store_prepared_secret(endpoint, &prepared, ring_id, reader_did_pk, with_proof).await
 }

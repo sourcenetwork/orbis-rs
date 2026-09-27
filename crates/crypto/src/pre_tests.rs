@@ -19,7 +19,7 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
-use crate::context::{context_digest, CiphertextContext};
+use crate::context::{context_digest, CiphertextContext, PetTagBinding};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReaderKeyProof,
@@ -37,6 +37,7 @@ use aes_gcm::{
 /// fresh identical value is valid at encrypt, verify, and decrypt time.
 fn test_ctx() -> CiphertextContext {
     CiphertextContext {
+        pet_tag: None,
         ring_pk: b"pre-tests-ring-pk".to_vec(),
         policy_id: "policy".to_string(),
         resource: "resource".to_string(),
@@ -51,6 +52,7 @@ fn test_ctx() -> CiphertextContext {
 /// "wrong context" negative tests.
 fn other_ctx() -> CiphertextContext {
     CiphertextContext {
+        pet_tag: None,
         ring_pk: b"a-different-ring-pk".to_vec(),
         policy_id: "other-policy".to_string(),
         resource: "other-resource".to_string(),
@@ -247,6 +249,7 @@ where
     let plaintext = b"threshold PRE participation is required to recover this plaintext";
     let (_dkg_sk, dkg_pk) = make_keypair();
     let ctx = CiphertextContext {
+        pet_tag: None,
         ring_pk: b"ring-pk".to_vec(),
         policy_id: "policy".to_string(),
         resource: "documents/report".to_string(),
@@ -1150,6 +1153,7 @@ where
 {
     let (_, dkg_pk) = make_keypair();
     let ctx = CiphertextContext {
+        pet_tag: None,
         ring_pk: b"ring".to_vec(),
         policy_id: "123".to_string(),
         resource: "file.txt".to_string(),
@@ -1411,6 +1415,12 @@ where
 {
     let (_, dkg_pk) = make_keypair();
     let correct = CiphertextContext {
+        pet_tag: Some(PetTagBinding {
+            ring_id: "ring-1".to_string(),
+            pet_pk: b"pet-pk-1".to_vec(),
+            ephemeral_point: b"ephemeral-1".to_vec(),
+            masked_fingerprint: b"masked-fingerprint-1".to_vec(),
+        }),
         ring_pk: b"ring-1".to_vec(),
         policy_id: "policy-1".to_string(),
         resource: "resource-1".to_string(),
@@ -1420,6 +1430,10 @@ where
         salt: Some("salt-xyz".to_string()),
     };
     let (_, secret, proof) = T::encrypt_secret(&dkg_pk, b"test secret", None, &correct)?;
+    assert!(
+        T::verify_encryption(&proof, &correct, &secret).is_ok(),
+        "the untampered context, including its PET tag binding, must verify"
+    );
 
     let mut tampered: Vec<CiphertextContext> = Vec::new();
     let mut c = correct.clone();
@@ -1451,6 +1465,31 @@ where
     tampered.push(c);
     let mut c = correct.clone();
     c.salt = None;
+    tampered.push(c);
+    // Finding #5 (PET audit fix checklist): a reattached tag — same
+    // ciphertext/proof, a different tag binding — must fail exactly like
+    // any other tampered field, and stripping the tag entirely must fail
+    // too, once one was bound at encryption time.
+    let mut c = correct.clone();
+    c.pet_tag = Some(PetTagBinding {
+        masked_fingerprint: b"TAMPERED".to_vec(),
+        ..correct.pet_tag.clone().unwrap()
+    });
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.pet_tag = Some(PetTagBinding {
+        ring_id: "TAMPERED".to_string(),
+        ..correct.pet_tag.clone().unwrap()
+    });
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.pet_tag = Some(PetTagBinding {
+        pet_pk: b"TAMPERED".to_vec(),
+        ..correct.pet_tag.clone().unwrap()
+    });
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.pet_tag = None;
     tampered.push(c);
 
     for variant in &tampered {

@@ -2514,6 +2514,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let (_, encrypted_secret, proof) = PreImpl::encrypt_secret(
         &aggregate_pk,

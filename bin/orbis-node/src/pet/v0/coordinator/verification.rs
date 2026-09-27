@@ -171,9 +171,15 @@ fn build_ciphertext_context(
     ring_pk_hex: &str,
     document: &bulletin::r#trait::DocumentPayload,
     salt: Option<&str>,
+    pet_pk_hex: Option<&str>,
 ) -> Result<CiphertextContext> {
     let ring_pk = hex::decode(ring_pk_hex)
         .map_err(|e| PetError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+    // Shared with `pre::v0::helpers::build_ciphertext_context`, mirroring how
+    // `check_document_id_binding` is already reused across both modules —
+    // see finding #5 in the PET audit fix checklist.
+    let pet_tag = crate::pre::v0::helpers::build_pet_tag_binding(document, pet_pk_hex)
+        .map_err(|e| PetError::InvalidInput(format!("PET tag binding: {e}")))?;
     Ok(CiphertextContext {
         ring_pk,
         policy_id: document.policy_id.clone(),
@@ -182,6 +188,7 @@ fn build_ciphertext_context(
         tier: document.tier.clone(),
         timestamp: document.timestamp,
         salt: salt.map(str::to_string),
+        pet_tag,
     })
 }
 
@@ -272,8 +279,12 @@ where
         let payload_proof = EncryptionProof::try_from(ctx.document.proof.clone()).map_err(|e| {
             PetError::Deserialization(format!("Failed to deserialize proof: {}", e))
         })?;
-        let ciphertext_context =
-            build_ciphertext_context(&ring_payload.ring_pk, &ctx.document, ctx.salt.as_deref())?;
+        let ciphertext_context = build_ciphertext_context(
+            &ring_payload.ring_pk,
+            &ctx.document,
+            ctx.salt.as_deref(),
+            Some(&pet_pk_hex),
+        )?;
 
         let digest = crypto::pet_context::tag_proof_digest(
             &tag.ephemeral_point,
@@ -914,11 +925,21 @@ mod tests {
             ephemeral_point,
             masked_fingerprint,
         };
-        let pet_pk_bytes =
-            hex::decode(base.ring_payload.pet_pk.as_ref().unwrap()).expect("decode pet_pk hex");
-        let ciphertext_context =
-            build_ciphertext_context(&base.ring_payload.ring_pk, &base.document, None)
-                .expect("build ciphertext context");
+        let pet_pk_hex = base.ring_payload.pet_pk.clone().unwrap();
+        let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
+        // Required noncircular construction order (PET audit fix checklist,
+        // finding #5): the tag must be on the document *before* the context
+        // it's bound into is built, since `build_ciphertext_context` reads
+        // `document.pet_tag` to reconstruct the binding — mirrors the real
+        // order `cli_tool::generate_pet_tag`/`prepare_secret` now enforce.
+        base.document.pet_tag = Some(String::try_from(tag.clone()).expect("serialize tag"));
+        let ciphertext_context = build_ciphertext_context(
+            &base.ring_payload.ring_pk,
+            &base.document,
+            None,
+            Some(&pet_pk_hex),
+        )
+        .expect("build ciphertext context");
         let digest = crypto::pet_context::tag_proof_digest(
             &tag.ephemeral_point,
             &tag.masked_fingerprint,
@@ -931,7 +952,6 @@ mod tests {
         let tag_proof =
             PetImpl::prove_tag_knowledge(&base.r_tag, &tag, &digest).expect("prove tag knowledge");
 
-        base.document.pet_tag = Some(String::try_from(tag).expect("serialize tag"));
         base.document.pet_tag_proof =
             Some(String::try_from(tag_proof).expect("serialize tag proof"));
 
