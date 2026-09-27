@@ -102,9 +102,10 @@ pub trait Pet {
     /// [`super::pre::ThresholdDealer::verify`].
     ///
     /// Callers must ensure `pub_poly` genuinely belongs to this ring's PET
-    /// checking key (e.g. loaded via the PET-key-specific
-    /// `RingShareBundle::load_by_ring_key(storage, ring_id)`, never the main
-    /// ring key's `RingShareBundle::load(storage, ring_pk)`) — this method
+    /// checking key (e.g. loaded via the PET-key-specific, separately
+    /// namespaced `RingShareBundle::load_by_pet_ring_key(storage, ring_id)`,
+    /// never the main ring key's `RingShareBundle::load(storage, ring_pk)`
+    /// or `load_by_ring_key`) — this method
     /// has no way to check that itself, since it receives only the
     /// polynomial, not its provenance. Fails if `reply.partial.i` doesn't
     /// match the index the caller is checking against.

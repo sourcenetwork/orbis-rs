@@ -557,7 +557,26 @@ where
             )
             .await?
         }
-        SessionKind::FreshPet { .. } => {
+        SessionKind::FreshPet {
+            ring_id: kind_ring_id,
+        } => {
+            // `kind.ring_id` (used below to derive the PET storage key at
+            // finalization) and the outer `ring_id` (used here and by
+            // `validate_fresh_pet_init` for authorization) are independent
+            // fields on the wire — nothing before this point guarantees a
+            // sender kept them in sync. Without this check, a leader
+            // genuinely authorized for a real, pending, `requires_pet` ring A
+            // could name an unrelated ring B in `kind.ring_id`: authorization
+            // above would pass (it only ever sees "A"), the full ceremony
+            // would run with A's real committee, and finalization would
+            // persist the resulting (unrelated) share bundle under B's
+            // storage key — see the PET audit fix checklist, finding #4.
+            if kind_ring_id != &ring_id {
+                return Err(DkgError::Unauthorized(format!(
+                    "Fresh PET SessionInit ring_id mismatch: authorized for ring {} but kind names ring {}",
+                    ring_id, kind_ring_id
+                )));
+            }
             validate_fresh_pet_init(
                 coord,
                 threshold,

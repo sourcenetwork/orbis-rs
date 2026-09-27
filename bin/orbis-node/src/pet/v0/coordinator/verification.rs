@@ -345,7 +345,7 @@ where
         // for this same main-ring committee (see `initiator.rs`'s identical
         // comment for why that implies PET-committee membership too).
         let bundle =
-            RingShareBundle::load_by_ring_key(&self.app_state.local_storage, &document.ring_id)
+            RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
                 .map_err(|e| {
                     PetError::Storage(format!("Failed to load PET share bundle: {}", e))
                 })?;
@@ -989,7 +989,7 @@ mod tests {
             last_pss: 0,
         };
         bundle
-            .save_by_ring_key(&app_state.local_storage, RING_ID)
+            .save_by_pet_ring_key(&app_state.local_storage, RING_ID)
             .expect("seed PET bundle");
 
         PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0)

@@ -10,6 +10,18 @@ pub enum LocalStorageKeys {
     /// and updated atomically on every PSS refresh. Never holds ring configuration
     /// (peer_ids, threshold, pss_interval) — that lives on the bulletin.
     RingKey(String),
+    /// Encrypted `RingShareBundle` for one ring's independent PET checking
+    /// key, keyed by `ring_id` (the chain ring identifier, not a public key —
+    /// the checking key has no stable public identity to key by until its
+    /// own ceremony finishes, see `SessionKind::FreshPet`). Deliberately a
+    /// separate variant from `RingKey`, even though both wrap a plain
+    /// `String` and both hold a `RingShareBundle`: a `ring_id` and a main
+    /// key's `aggregate_pk.to_string()` are drawn from unrelated namespaces
+    /// with no structural reason they can never collide, and a `FreshPet`
+    /// ceremony must never be able to overwrite a main-key bundle (or a
+    /// different ring's PET bundle) by naming the wrong identifier — see the
+    /// PET audit fix checklist, finding #4.
+    PetRingKey(String),
     /// JSON-encoded `Vec<RingIndexEntry>` of rings this node has joined.
     /// Each entry contains the local storage key (`ring_pk_str`) and the bulletin
     /// `post_id` needed to fetch the canonical `RingPayload`. This is the single

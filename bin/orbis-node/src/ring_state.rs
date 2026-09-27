@@ -177,6 +177,41 @@ impl RingShareBundle {
             .map_err(|e| format!("Failed to store RingShareBundle: {}", e))
     }
 
+    /// Load a ring's independent PET checking-key bundle, keyed by `ring_id`
+    /// — a distinct namespace from [`Self::load_by_ring_key`]'s main-key
+    /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
+    pub fn load_by_pet_ring_key(
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<Self, String> {
+        let bytes = storage
+            .get_encrypted(LocalStorageKeys::PetRingKey(ring_id.to_string()))
+            .map_err(|e| format!("Failed to read PET RingShareBundle: {}", e))?
+            .ok_or_else(|| format!("PET RingShareBundle not found for ring_id {}", ring_id))?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Save a ring's independent PET checking-key bundle, keyed by `ring_id`
+    /// — a distinct namespace from [`Self::save_by_ring_key`]'s main-key
+    /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
+    ///
+    /// No polynomial-history stashing here (unlike `save_by_ring_key`): PET
+    /// has no refresh/reshare yet, so there is never a "previous generation"
+    /// to retire — see `require_pet_proof_verification_failure`'s identical
+    /// reasoning on the read side.
+    pub fn save_by_pet_ring_key(
+        &self,
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<(), String> {
+        storage
+            .set_encrypted(
+                LocalStorageKeys::PetRingKey(ring_id.to_string()),
+                self.to_bytes(),
+            )
+            .map_err(|e| format!("Failed to store PET RingShareBundle: {}", e))
+    }
+
     /// Best-effort: read whatever bundle currently occupies this ring's slot and,
     /// if its polynomial differs from the one about to be written, retain it in
     /// `RingPolyHistory` so invalid-crypto report verification can still check a
@@ -259,6 +294,54 @@ mod tests {
             result.unwrap_err(),
             "RingShareBundle: buffer too short (u32)"
         );
+    }
+
+    /// Finding #4 (PET audit fix checklist): `RingKey` (main-key storage) and
+    /// `PetRingKey` (PET checking-key storage) must be genuinely separate
+    /// namespaces, not merely separate by convention — a `FreshPet` write
+    /// keyed by `ring_id` must never be able to land on a main-key bundle
+    /// (or vice versa) even if the two strings happen to collide. Uses the
+    /// *same* string as both keys deliberately: if the two methods secretly
+    /// shared one storage slot, this test would see one bundle clobber the
+    /// other.
+    #[test]
+    fn pet_ring_key_and_ring_key_are_separate_namespaces() {
+        use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+        use local_storage::r#trait::LocalStorage;
+        use local_storage::redb::RedbStorage;
+
+        let db_path = test_db_path("ring_state_pet_ring_key_namespace_separation");
+        let storage =
+            RedbStorage::new("test-password".to_string(), db_path.clone()).expect("open storage");
+
+        let same_key = "collision-candidate";
+        let main_bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(vec![1, 1, 1]),
+            public_polynomial: "main-poly".to_string(),
+            last_pss: 100,
+        };
+        let pet_bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(vec![2, 2, 2]),
+            public_polynomial: "pet-poly".to_string(),
+            last_pss: 200,
+        };
+
+        main_bundle
+            .save_by_ring_key(&storage, same_key)
+            .expect("save main bundle");
+        pet_bundle
+            .save_by_pet_ring_key(&storage, same_key)
+            .expect("save PET bundle under the same string key");
+
+        let loaded_main =
+            RingShareBundle::load_by_ring_key(&storage, same_key).expect("load main bundle");
+        let loaded_pet =
+            RingShareBundle::load_by_pet_ring_key(&storage, same_key).expect("load PET bundle");
+
+        assert_eq!(loaded_main.public_polynomial, "main-poly");
+        assert_eq!(loaded_pet.public_polynomial, "pet-poly");
+
+        cleanup_db(&db_path);
     }
 
     #[test]

@@ -146,7 +146,7 @@ where
         // later relay-setup stage already hard-requires this; failing here
         // instead just fails it earlier and more clearly.
         let bundle =
-            RingShareBundle::load_by_ring_key(&self.app_state.local_storage, &document.ring_id)
+            RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
                 .map_err(|e| {
                     PetError::Storage(format!("Failed to load PET share bundle: {}", e))
                 })?;

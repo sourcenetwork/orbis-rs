@@ -105,13 +105,17 @@ pub fn persist_ring_bundle<S: LocalStorage>(
             // by ring_id rather than the just-computed pet_pk — the pet_pk has
             // no stable identity to key by until this very write completes.
             // See the checking-key lifecycle design in
-            // docs/plans/pet-integration.md.
+            // docs/plans/pet-integration.md. A dedicated namespace
+            // (`save_by_pet_ring_key`, not `save_by_ring_key`) — a ring_id and
+            // a main key's `aggregate_pk.to_string()` share no structural
+            // guarantee against collision, so this write must never be able
+            // to land on a main-key (or a different ring's PET) storage slot.
             let bundle = RingShareBundle {
                 share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
                 public_polynomial: hex::encode(pub_poly_bytes),
                 last_pss: now_secs,
             };
-            bundle.save_by_ring_key(storage, ring_id).map_err(|e| {
+            bundle.save_by_pet_ring_key(storage, ring_id).map_err(|e| {
                 DkgError::Storage(format!("Fresh PET: failed to store share bundle: {}", e))
             })?;
         }

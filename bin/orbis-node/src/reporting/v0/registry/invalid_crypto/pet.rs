@@ -192,7 +192,7 @@ pub(crate) async fn require_pet_proof_verification_failure(
     // PET has no refresh/reshare yet, so there is exactly one generation to
     // check against — no `candidate_public_polynomials`-style history list
     // needed (unlike PRE/Sign).
-    let bundle = RingShareBundle::load_by_ring_key(&context.local_storage, &statement.ring_id)
+    let bundle = RingShareBundle::load_by_pet_ring_key(&context.local_storage, &statement.ring_id)
         .map_err(ReportingError::InvalidReport)?;
     let pub_poly_bytes = hex::decode(&bundle.public_polynomial)
         .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;

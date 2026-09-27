@@ -1049,6 +1049,107 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     cleanup_db(&db_path);
 }
 
+/// Finding #4 (PET audit fix checklist): a `FreshPet` `SessionInit` carries
+/// two independent `ring_id`-shaped fields — the outer `ring_id` (used for
+/// authorization) and `kind`'s own inner `ring_id` (used, downstream at
+/// finalization, to derive the PET checking-key storage key). Nothing
+/// upstream of `handle_session_init` guarantees a sender kept them in sync,
+/// so a leader legitimately authorized for one ring could otherwise name a
+/// different ring internally and cause that other ring's stored bundle to
+/// be overwritten once the (unrelated) ceremony finishes. This must be
+/// rejected immediately — before any bulletin read, which is why this test
+/// seeds no ring at all.
+#[tokio::test]
+async fn test_dkg_session_init_rejects_fresh_pet_ring_id_mismatch() {
+    let db_name = "test_dkg_session_init_rejects_fresh_pet_ring_id_mismatch";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
+
+    let peer_ids = vec![
+        "peer1".to_string(),
+        "peer2".to_string(),
+        "peer3".to_string(),
+    ];
+    let session_init = TestSessionInit {
+        session_id: 12345,
+        threshold: 2,
+        total_participants: 3,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_ids,
+        node_id_assignments: std::collections::HashMap::new(),
+        kind: SessionKind::FreshPet {
+            ring_id: "ring-b".to_string(),
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: "ring-a".to_string(),
+    };
+
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = invoke_session_init(&coordinator, session_init, &dummy_peer_id).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "a FreshPet SessionInit whose kind.ring_id disagrees with the outer, \
+         authorized ring_id must be rejected: {:?}",
+        result
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("ring_id mismatch"),
+        "error should name the ring_id mismatch: {}",
+        error
+    );
+    cleanup_db(&db_path);
+}
+
+/// Confirms the rejection above isn't vacuous against a check that rejects
+/// every `FreshPet` `SessionInit`: a matching `ring_id` must pass this
+/// specific check (it may still fail further downstream for lack of a
+/// seeded bulletin ring in this minimal fixture, but never on the mismatch
+/// check itself).
+#[tokio::test]
+async fn test_dkg_session_init_fresh_pet_matching_ring_id_passes_the_mismatch_check() {
+    let db_name = "test_dkg_session_init_fresh_pet_matching_ring_id_passes_the_mismatch_check";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
+
+    let peer_ids = vec![
+        "peer1".to_string(),
+        "peer2".to_string(),
+        "peer3".to_string(),
+    ];
+    let session_init = TestSessionInit {
+        session_id: 12346,
+        threshold: 2,
+        total_participants: 3,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_ids,
+        node_id_assignments: std::collections::HashMap::new(),
+        kind: SessionKind::FreshPet {
+            ring_id: "ring-a".to_string(),
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: "ring-a".to_string(),
+    };
+
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = invoke_session_init(&coordinator, session_init, &dummy_peer_id).await;
+
+    let error = result.expect_err("no ring is seeded, so this must still fail downstream");
+    assert!(
+        !error.to_string().contains("ring_id mismatch"),
+        "a matching ring_id must pass the mismatch check itself: {}",
+        error
+    );
+    cleanup_db(&db_path);
+}
+
 #[tokio::test]
 async fn test_dkg_session_init_rejects_nodeinfo_deny_before_session_creation() {
     let db_name = "test_dkg_session_init_rejects_nodeinfo_deny";

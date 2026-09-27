@@ -69,9 +69,11 @@ where
 
         let (tag, _pet_pk_hex, _digest, ring_payload) = self.verify_pet_check_request(&ctx).await?;
 
-        let bundle =
-            RingShareBundle::load_by_ring_key(&self.app_state.local_storage, &ctx.document.ring_id)
-                .map_err(|e| PetError::Storage(format!("Failed to load share bundle: {}", e)))?;
+        let bundle = RingShareBundle::load_by_pet_ring_key(
+            &self.app_state.local_storage,
+            &ctx.document.ring_id,
+        )
+        .map_err(|e| PetError::Storage(format!("Failed to load share bundle: {}", e)))?;
         let pri_share: PriShare<Fr> = PriShare::from_bytes(&bundle.share_bytes).map_err(|e| {
             PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
         })?;
