@@ -1,5 +1,6 @@
 use crate::helpers::identity::extract_node_part;
 use crate::helpers::ring::RingConfig;
+use crate::pet::v0::error::PetError;
 use crate::pre::v0::error::PreError;
 use crate::reporting::v0::types::{
     CommitteeScope, InvalidCryptoResponse, ReportedDocumentEvidence, UnauthorizedRequestPayload,
@@ -159,6 +160,49 @@ fn is_reportable_sign_offline_error(error: &SignError) -> bool {
     }
 }
 
+fn is_reportable_pet_offline_error(error: &PetError) -> bool {
+    match error {
+        PetError::NetworkConnection(_) => true,
+        PetError::NetworkCommunication(message) if message.starts_with("Failed to send") => true,
+        PetError::NetworkCommunication(message) if message.starts_with("Failed to receive") => true,
+        PetError::Timeout(_) => true,
+        _ => false,
+    }
+}
+
+/// PET has no `RingConfig` of its own (its coordinator works directly from a
+/// live-resolved `RingPayload` plus a separately-resolved peer-route list,
+/// never assembling the PRE/Sign-shaped config type) — takes the raw pieces
+/// directly rather than forcing a throwaway `RingConfig` into existence.
+/// `peer_ids` must be index-aligned with `peer_node_keys` (i.e. unfiltered —
+/// built straight from `resolve_node_routes`'s output, before any
+/// self/exclusion filtering), exactly like `offline_observation_from_ring_config`
+/// requires of `RingConfig::peer_ids`.
+pub fn offline_observation_from_pet_error(
+    ring_id: &str,
+    peer_ids: &[String],
+    peer_node_keys: &[String],
+    peer_id: &str,
+    error: &PetError,
+    protocol_version: u64,
+    session_id: &str,
+) -> Option<OfflineObservation> {
+    if !is_reportable_pet_offline_error(error) {
+        return None;
+    }
+    offline_observation_from_peer_routes(
+        ring_id,
+        peer_ids,
+        peer_node_keys,
+        peer_id,
+        "pet",
+        protocol_version,
+        CommitteeScope::Current,
+        CommitteeScope::Current,
+        session_id,
+    )
+}
+
 pub fn offline_observation_from_peer_routes(
     ring_id: &str,
     peer_ids: &[String],
@@ -295,6 +339,29 @@ mod tests {
             &SignError::VerificationFailed("bad share".into()),
             0,
             "sign-request-1",
+        )
+        .is_none());
+
+        let pet_observation = offline_observation_from_pet_error(
+            &ring.ring_id,
+            &ring.peer_ids,
+            &ring.peer_node_keys,
+            &ring.peer_ids[0],
+            &PetError::Timeout("timeout".into()),
+            0,
+            "pet-attempt-1",
+        )
+        .unwrap();
+        assert_eq!(pet_observation.origin_protocol, "pet");
+        assert_eq!(pet_observation.session_id, "pet-attempt-1");
+        assert!(offline_observation_from_pet_error(
+            &ring.ring_id,
+            &ring.peer_ids,
+            &ring.peer_node_keys,
+            &ring.peer_ids[0],
+            &PetError::Crypto("bad proof".into()),
+            0,
+            "pet-attempt-1",
         )
         .is_none());
     }

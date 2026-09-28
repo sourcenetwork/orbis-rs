@@ -212,12 +212,40 @@ fn build_ciphertext_context(
     })
 }
 
+/// The outcome of checking one committee member's contribution against a
+/// signed statement, distinguishing *why* it failed rather than leaving
+/// callers to infer that from an error's variant or message text — the two
+/// live per-phase verifiers (`verify_reveal_response`/`verify_decrypt_response`)
+/// need this distinction to decide `Rejected` vs `InvalidProof`, and a
+/// string-matched proxy for it is exactly the kind of check a future,
+/// unrelated wording change could silently break.
+enum ContributionCheckOutcome<T> {
+    Verified(T),
+    /// Never reached the point of being this node's own authenticated,
+    /// signed claim — an unresolvable identity, a bad signature, or content
+    /// that could equally be a coordinator/list-binding problem rather than
+    /// this responder's fault. Never independently reportable.
+    NotAttributable(PetError),
+    /// Signed by this node (its signature over these exact bytes verified),
+    /// but the content itself is cryptographically invalid — genuinely
+    /// reportable misconduct.
+    Invalid(PetError),
+}
+
+impl<T> ContributionCheckOutcome<T> {
+    fn into_result(self) -> Result<T> {
+        match self {
+            Self::Verified(value) => Ok(value),
+            Self::NotAttributable(error) | Self::Invalid(error) => Err(error),
+        }
+    }
+}
+
 /// `C_i`'s opening plus its blinding-correctness proof, verified against
 /// `tag`/`target_fingerprint`, for one selected participant. Shared by
 /// [`build_and_verify_pet_blind_certificate`] and the live reveal-phase
-/// collector (`initiator::verify_reveal_response`) — both need the exact
-/// same checks (signature, opening, proof), differing only in how a failure
-/// is reported.
+/// collector (`verify_reveal_response`) — both need the exact same checks
+/// (signature, opening, proof), differing only in how a failure is reported.
 fn verify_one_reveal<P>(
     statement: &PetBlindRevealStatement,
     response_signature: &[u8],
@@ -226,39 +254,42 @@ fn verify_one_reveal<P>(
     target_fingerprint: &P::PublicKey,
     expected_commitment: [u8; 32],
     selection_digest: [u8; 32],
-) -> Result<(G1Affine, G1Affine)>
+) -> ContributionCheckOutcome<(G1Affine, G1Affine)>
 where
     P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
 {
-    let node_key = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
-        .ok_or_else(|| {
-            PetError::Crypto(format!(
-                "reveal from_node_id {} is not in the ring committee",
-                statement.from_node_id
-            ))
-        })?;
+    use ContributionCheckOutcome::{Invalid, NotAttributable, Verified};
+
+    let Some(node_key) = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
+    else {
+        return NotAttributable(PetError::Crypto(format!(
+            "reveal from_node_id {} is not in the ring committee",
+            statement.from_node_id
+        )));
+    };
     if node_key != statement.responder_node_key {
-        return Err(PetError::Crypto(format!(
+        return NotAttributable(PetError::Crypto(format!(
             "reveal responder_node_key does not match the resolved committee identity for node {}",
             statement.from_node_id
         )));
     }
-    verify_node_message(&node_key, &statement.canonical_bytes(), response_signature).map_err(
-        |e| {
-            PetError::Crypto(format!(
-                "invalid reveal signature from node {}: {e}",
-                statement.from_node_id
-            ))
-        },
-    )?;
+    if let Err(e) = verify_node_message(&node_key, &statement.canonical_bytes(), response_signature)
+    {
+        return NotAttributable(PetError::Crypto(format!(
+            "invalid reveal signature from node {}: {e}",
+            statement.from_node_id
+        )));
+    }
+    // Everything from here on is this node's own authenticated, signed
+    // claim — any failure below is genuinely attributable to it.
     if statement.commitment.as_slice() != expected_commitment {
-        return Err(PetError::Crypto(format!(
+        return NotAttributable(PetError::Crypto(format!(
             "reveal commitment for node {} does not match the selected list",
             statement.from_node_id
         )));
     }
     if statement.selection_digest != selection_digest {
-        return Err(PetError::Crypto(format!(
+        return NotAttributable(PetError::Crypto(format!(
             "reveal selection_digest for node {} does not match the selected list",
             statement.from_node_id
         )));
@@ -272,7 +303,7 @@ where
         &statement.blinded_diff,
     );
     if recomputed_commitment != expected_commitment {
-        return Err(PetError::Crypto(format!(
+        return Invalid(PetError::Crypto(format!(
             "reveal from node {} does not open its own commitment",
             statement.from_node_id
         )));
@@ -284,7 +315,7 @@ where
         Fr::from_bytes(&statement.challenge),
         Fr::from_bytes(&statement.proof),
     ) else {
-        return Err(PetError::Deserialization(format!(
+        return Invalid(PetError::Deserialization(format!(
             "failed to decode reveal fields from node {}",
             statement.from_node_id
         )));
@@ -302,15 +333,16 @@ where
         statement.from_node_id,
         &expected_commitment,
     );
-    P::verify_blinding_correctness(tag, target_fingerprint, &reply, &blind_transcript_digest)
-        .map_err(|e| {
-            PetError::Crypto(format!(
-                "blinding-correctness proof failed for node {}: {e}",
-                statement.from_node_id
-            ))
-        })?;
+    if let Err(e) =
+        P::verify_blinding_correctness(tag, target_fingerprint, &reply, &blind_transcript_digest)
+    {
+        return Invalid(PetError::Crypto(format!(
+            "blinding-correctness proof failed for node {}: {e}",
+            statement.from_node_id
+        )));
+    }
 
-    Ok((blinded_r, blinded_diff))
+    Verified((blinded_r, blinded_diff))
 }
 
 /// The single shared certificate-validation routine — see this module's doc
@@ -407,7 +439,8 @@ where
             target_fingerprint,
             expected_commitment,
             selection_digest,
-        )?;
+        )
+        .into_result()?;
 
         aggregate_r = Some(match aggregate_r {
             Some(acc) => crypto::helpers::add_points(&acc, &blinded_r)
@@ -450,61 +483,63 @@ fn verify_one_decrypt<P>(
     expected_attempt_id: &str,
     expected_aggregate_r: &[u8],
     expected_aggregate_diff: &[u8],
-) -> Result<PubShare<G1Affine>>
+) -> ContributionCheckOutcome<PubShare<G1Affine>>
 where
     P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
 {
+    use ContributionCheckOutcome::{Invalid, NotAttributable, Verified};
+
     if statement.attempt_id != expected_attempt_id {
-        return Err(PetError::Crypto(
+        return NotAttributable(PetError::Crypto(
             "decrypt statement attempt_id does not match the certificate".to_string(),
         ));
     }
     if statement.context_digest != expected_context_digest {
-        return Err(PetError::Crypto(
+        return NotAttributable(PetError::Crypto(
             "decrypt statement context_digest does not match this attempt".to_string(),
         ));
     }
     if statement.certificate_digest != expected_certificate_digest {
-        return Err(PetError::Crypto(
+        return NotAttributable(PetError::Crypto(
             "decrypt statement certificate_digest does not match the certificate".to_string(),
         ));
     }
     if statement.aggregate_r != expected_aggregate_r
         || statement.aggregate_diff != expected_aggregate_diff
     {
-        return Err(PetError::Crypto(
+        return NotAttributable(PetError::Crypto(
             "decrypt statement aggregate points do not match the certificate's own reconstruction"
                 .to_string(),
         ));
     }
-    let node_key = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
-        .ok_or_else(|| {
-            PetError::Crypto(format!(
-                "decrypt from_node_id {} is not in the ring committee",
-                statement.from_node_id
-            ))
-        })?;
+    let Some(node_key) = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
+    else {
+        return NotAttributable(PetError::Crypto(format!(
+            "decrypt from_node_id {} is not in the ring committee",
+            statement.from_node_id
+        )));
+    };
     if node_key != statement.responder_node_key {
-        return Err(PetError::Crypto(format!(
+        return NotAttributable(PetError::Crypto(format!(
             "decrypt responder_node_key does not match the resolved committee identity for node {}",
             statement.from_node_id
         )));
     }
-    verify_node_message(&node_key, &statement.canonical_bytes(), response_signature).map_err(
-        |e| {
-            PetError::Crypto(format!(
-                "invalid decrypt signature from node {}: {e}",
-                statement.from_node_id
-            ))
-        },
-    )?;
-
+    if let Err(e) = verify_node_message(&node_key, &statement.canonical_bytes(), response_signature)
+    {
+        return NotAttributable(PetError::Crypto(format!(
+            "invalid decrypt signature from node {}: {e}",
+            statement.from_node_id
+        )));
+    }
+    // Everything from here on is this node's own authenticated, signed
+    // claim — any failure below is genuinely attributable to it.
     let (Ok(partial), Ok(challenge), Ok(proof)) = (
         G1Affine::from_bytes(&statement.partial),
         Fr::from_bytes(&statement.challenge),
         Fr::from_bytes(&statement.proof),
     ) else {
-        return Err(PetError::Deserialization(format!(
+        return Invalid(PetError::Deserialization(format!(
             "failed to decode decrypt fields from node {}",
             statement.from_node_id
         )));
@@ -521,14 +556,14 @@ where
         ephemeral_point: expected_aggregate_r.to_vec(),
         masked_fingerprint: Vec::new(),
     };
-    P::verify_partial_pet_check(pub_poly, &synthetic_tag, &reply).map_err(|e| {
-        PetError::Crypto(format!(
+    if let Err(e) = P::verify_partial_pet_check(pub_poly, &synthetic_tag, &reply) {
+        return Invalid(PetError::Crypto(format!(
             "decrypt share from node {} failed its per-share proof verification: {e}",
             statement.from_node_id
-        ))
-    })?;
+        )));
+    }
 
-    Ok(PubShare {
+    Verified(PubShare {
         i: statement.from_node_id,
         v: partial,
     })
@@ -757,6 +792,7 @@ where
                 &aggregate_r_bytes,
                 &aggregate_diff_bytes,
             )
+            .into_result()
             .map_err(|_| PetError::Mismatch)?;
             if !seen_indices.insert(share.i) {
                 return Err(PetError::Mismatch);
@@ -893,94 +929,47 @@ where
         selection_digest,
         responder_node_key: node_key.clone(),
         from_node_id,
-        commitment: commitment.clone(),
-        blinded_r: blinded_r.clone(),
-        blinded_diff: blinded_diff.clone(),
+        commitment,
+        blinded_r,
+        blinded_diff,
         commit_salt,
-        challenge: challenge.clone(),
-        proof: proof.clone(),
+        challenge,
+        proof,
         signed_at,
     };
-    if verify_node_message(&node_key, &statement.canonical_bytes(), &response_signature).is_err() {
-        return PetRevealResponseVerification::Rejected;
-    }
-    if commitment.as_slice() != expected_commitment {
-        return PetRevealResponseVerification::Rejected;
-    }
-    let recomputed_commitment = pet_blind_commit_hash(
-        &statement.attempt_id,
-        &context_digest,
-        from_node_id,
-        &commit_salt,
-        &blinded_r,
-        &blinded_diff,
-    );
-    if recomputed_commitment != expected_commitment {
-        // Signed, but does not open its own claimed commitment — attributable.
-        let observation = invalid_pet_blind_reveal_observation(
-            ring_id.to_string(),
-            node_key,
-            String::new(),
-            blind_context.clone(),
-            statement,
-            response_signature,
-            document_evidence.clone(),
-        );
-        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
-    }
 
-    let (Ok(parsed_r), Ok(parsed_diff), Ok(parsed_challenge), Ok(parsed_proof)) = (
-        G1Affine::from_bytes(&blinded_r),
-        G1Affine::from_bytes(&blinded_diff),
-        Fr::from_bytes(&challenge),
-        Fr::from_bytes(&proof),
-    ) else {
-        let observation = invalid_pet_blind_reveal_observation(
-            ring_id.to_string(),
-            node_key,
-            String::new(),
-            blind_context.clone(),
-            statement,
-            response_signature,
-            document_evidence.clone(),
-        );
-        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
-    };
-    let reply = BlindingReply {
-        blinded_r: parsed_r,
-        blinded_diff: parsed_diff,
-        challenge: parsed_challenge,
-        proof: parsed_proof,
-    };
-    let blind_transcript_digest = pet_blind_proof_transcript_digest(
-        &statement.attempt_id,
-        &context_digest,
-        &selection_digest,
-        from_node_id,
-        &expected_commitment,
-    );
-    if P::verify_blinding_correctness(tag, target_fingerprint, &reply, &blind_transcript_digest)
-        .is_err()
-    {
-        let observation = invalid_pet_blind_reveal_observation(
-            ring_id.to_string(),
-            node_key,
-            String::new(),
-            blind_context.clone(),
-            statement,
-            response_signature,
-            document_evidence.clone(),
-        );
-        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
+    match verify_one_reveal::<P>(
+        &statement,
+        &response_signature,
+        ring_payload,
+        tag,
+        target_fingerprint,
+        expected_commitment,
+        selection_digest,
+    ) {
+        ContributionCheckOutcome::Verified(_) => {
+            if !seen_node_ids.insert(from_node_id) {
+                return PetRevealResponseVerification::Rejected;
+            }
+            PetRevealResponseVerification::Verified(Box::new(PetBlindSignedReveal {
+                statement,
+                response_signature,
+            }))
+        }
+        ContributionCheckOutcome::Invalid(_) => {
+            let observation = invalid_pet_blind_reveal_observation(
+                ring_id.to_string(),
+                node_key,
+                String::new(),
+                blind_context.clone(),
+                statement,
+                response_signature,
+                document_evidence.clone(),
+            );
+            PetRevealResponseVerification::InvalidProof(Box::new(observation))
+        }
+        ContributionCheckOutcome::NotAttributable(_) => PetRevealResponseVerification::Rejected,
     }
-
-    if !seen_node_ids.insert(from_node_id) {
-        return PetRevealResponseVerification::Rejected;
-    }
-    PetRevealResponseVerification::Verified(Box::new(PetBlindSignedReveal {
-        statement,
-        response_signature,
-    }))
 }
 
 pub(crate) enum PetDecryptResponseVerification {
@@ -1062,7 +1051,7 @@ where
         expected_aggregate_r,
         expected_aggregate_diff,
     ) {
-        Ok(share) => {
+        ContributionCheckOutcome::Verified(share) => {
             if !seen_node_ids.insert(from_node_id) {
                 return PetDecryptResponseVerification::Rejected;
             }
@@ -1072,7 +1061,7 @@ where
             };
             PetDecryptResponseVerification::Verified(Box::new(signed_decrypt), share)
         }
-        Err(PetError::Deserialization(_)) => {
+        ContributionCheckOutcome::Invalid(_) => {
             let observation = invalid_pet_blind_decrypt_observation(
                 ring_id.to_string(),
                 node_key,
@@ -1084,19 +1073,7 @@ where
             );
             PetDecryptResponseVerification::InvalidProof(Box::new(observation))
         }
-        Err(PetError::Crypto(msg)) if msg.contains("per-share proof verification") => {
-            let observation = invalid_pet_blind_decrypt_observation(
-                ring_id.to_string(),
-                node_key,
-                String::new(),
-                blind_context.clone(),
-                statement,
-                response_signature,
-                document_evidence.clone(),
-            );
-            PetDecryptResponseVerification::InvalidProof(Box::new(observation))
-        }
-        Err(_) => PetDecryptResponseVerification::Rejected,
+        ContributionCheckOutcome::NotAttributable(_) => PetDecryptResponseVerification::Rejected,
     }
 }
 
@@ -1216,10 +1193,10 @@ mod tests {
         context_digest: [u8; 32],
         node_id: u32,
     ) -> Contribution {
-        let (z_i, _unused) =
-            crypto::helpers::generate_keypair().expect("sample blinding scalar");
-        let preliminary = PetImpl::prove_blinding_correctness(&z_i, tag, target_fingerprint, &[0u8; 32])
-            .expect("compute blinding points");
+        let (z_i, _unused) = crypto::helpers::generate_keypair().expect("sample blinding scalar");
+        let preliminary =
+            PetImpl::prove_blinding_correctness(&z_i, tag, target_fingerprint, &[0u8; 32])
+                .expect("compute blinding points");
         let blinded_r_bytes =
             CryptoSerialize::to_bytes(&preliminary.blinded_r).expect("serialize blinded_r");
         let blinded_diff_bytes =
@@ -1302,8 +1279,20 @@ mod tests {
     ) -> PetBlindCertificate {
         let attempt_id = "attempt-1".to_string();
         let context_digest = [7u8; 32];
-        let c1 = commit(&fixture.tag, target_fingerprint, &attempt_id, context_digest, 1);
-        let c2 = commit(&fixture.tag, target_fingerprint, &attempt_id, context_digest, 2);
+        let c1 = commit(
+            &fixture.tag,
+            target_fingerprint,
+            &attempt_id,
+            context_digest,
+            1,
+        );
+        let c2 = commit(
+            &fixture.tag,
+            target_fingerprint,
+            &attempt_id,
+            context_digest,
+            2,
+        );
         let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
         let r1 = reveal(
             &fixture.tag,

@@ -43,12 +43,12 @@ use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::{
     CommitRequest, DecryptRequest, PetCheckContext, PetMessage, RevealRequest,
 };
-use crate::reporting::v0::observation::ReportObservation;
-use crate::reporting::v0::queue_report;
+use crate::reporting::v0::observation::{offline_observation_from_pet_error, ReportObservation};
 use crate::reporting::v0::types::{
     pet_blind_selection_digest, PetBlindCertificate, PetBlindSignedDecrypt, PetBlindSignedReveal,
     ReportedDocumentEvidence,
 };
+use crate::reporting::v0::{queue_report, spawn_error_drain};
 use crate::ring_state::RingShareBundle;
 use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
@@ -74,6 +74,43 @@ where
         + Sync
         + 'static,
 {
+    /// Hand a phase's remaining in-flight peer tasks to the shared
+    /// background drain (`reporting::v0::spawn_error_drain`) instead of
+    /// letting them get silently cancelled when `tasks` is dropped — a late
+    /// transport failure from a peer slower than this phase's collection
+    /// deadline is still attributable as `node_offline`, exactly mirroring
+    /// `sign/v0/coordinator/rounds`'s own drain — see the design doc's
+    /// "Reuse the sign/v0/coordinator/rounds scheduling and background-drain
+    /// pattern... Drain late responses for attribution" requirement.
+    fn spawn_pet_offline_drain(
+        &self,
+        tasks: tokio::task::JoinSet<(String, Result<Option<PetMessage>>)>,
+        ring_id: String,
+        all_peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
+        attempt_id: String,
+    ) {
+        let protocol_version = self.routes.version;
+        spawn_error_drain::<D, SignImpl, _, _, _>(
+            tasks,
+            self.app_state.clone(),
+            self.routes,
+            PET_COLLECTION_TIMEOUT,
+            move |peer_id, error| {
+                offline_observation_from_pet_error(
+                    &ring_id,
+                    &all_peer_ids,
+                    &peer_node_keys,
+                    &peer_id,
+                    &error,
+                    protocol_version,
+                    &attempt_id,
+                )
+                .map(ReportObservation::NodeOffline)
+            },
+        );
+    }
+
     /// Run the three-round blind equality test for `document` against the
     /// owner registered on `audit_target_object_id`, returning the portable
     /// [`PetBlindEvidence`] backing the check only when the tag genuinely
@@ -167,6 +204,12 @@ where
         let resolved = resolve_node_routes(&self.app_state.bulletin, &ring_payload.peer_node_keys)
             .await
             .map_err(PetError::ProtocolError)?;
+        // Index-aligned with `ring_payload.peer_node_keys` (unfiltered) — the
+        // shape `offline_observation_from_pet_error` needs; `remote_peer_ids`
+        // below is the same list with self removed for actually sending
+        // requests, which breaks that alignment.
+        let all_peer_ids: Vec<String> =
+            resolved.iter().map(|route| route.peer_id.clone()).collect();
         let remote_peer_ids: Vec<String> = resolved
             .iter()
             .map(|route| route.peer_id.clone())
@@ -293,6 +336,13 @@ where
                     "PET Coordinator: commit collection deadline reached before threshold shares arrived"
                 );
             }
+            self.spawn_pet_offline_drain(
+                tasks,
+                document.ring_id.clone(),
+                all_peer_ids.clone(),
+                ring_payload.peer_node_keys.clone(),
+                attempt_id.clone(),
+            );
             self.app_state
                 .pet_response_state
                 .remove_response_for_version(self.routes.version, &commit_request_id)
@@ -479,6 +529,13 @@ where
                      participant responded"
                 );
             }
+            self.spawn_pet_offline_drain(
+                tasks,
+                document.ring_id.clone(),
+                all_peer_ids.clone(),
+                ring_payload.peer_node_keys.clone(),
+                attempt_id.clone(),
+            );
             self.app_state
                 .pet_response_state
                 .remove_response_for_version(self.routes.version, &reveal_request_id)
@@ -689,6 +746,13 @@ where
                     "PET Coordinator: decrypt collection deadline reached before threshold shares arrived"
                 );
             }
+            self.spawn_pet_offline_drain(
+                tasks,
+                document.ring_id.clone(),
+                all_peer_ids.clone(),
+                ring_payload.peer_node_keys.clone(),
+                attempt_id.clone(),
+            );
             self.app_state
                 .pet_response_state
                 .remove_response_for_version(self.routes.version, &decrypt_request_id)
