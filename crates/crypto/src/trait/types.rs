@@ -240,3 +240,31 @@ impl<ShareValue: Zeroize, PublicKey> Drop for PetCheckReply<ShareValue, PublicKe
         self.proof.zeroize();
     }
 }
+
+/// One participant's blinding contribution to the PET blind equality test
+/// (audit finding #2's replacement for direct `x*R` decryption — see
+/// `docs/plans/pet-blind-equality-test-design.md`), together with a
+/// Chaum–Pedersen proof that the same secret `z_i` relates `(R, blinded_r)`
+/// and `(D, blinded_diff)`, where `R` is the tag's ephemeral point and
+/// `D = masked_fingerprint - target_fingerprint`. See
+/// [`crate::r#trait::Pet::verify_blinding_correctness`].
+///
+/// Unlike [`PetCheckReply`]/[`ReencryptReply`], `blinded_diff` may
+/// legitimately be the identity element (when `D` itself is, i.e. an exact
+/// pre-blinding match) — callers must not apply a blanket
+/// reject-the-identity rule to this field the way they do to `partial`/
+/// `share`.
+#[derive(Clone, Debug)]
+pub struct BlindingReply<ShareValue: Zeroize, PublicKey> {
+    pub blinded_r: PublicKey,
+    pub blinded_diff: PublicKey,
+    pub challenge: ShareValue,
+    pub proof: ShareValue,
+}
+
+impl<ShareValue: Zeroize, PublicKey> Drop for BlindingReply<ShareValue, PublicKey> {
+    fn drop(&mut self) {
+        self.challenge.zeroize();
+        self.proof.zeroize();
+    }
+}

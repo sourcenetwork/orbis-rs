@@ -1,6 +1,6 @@
 use super::codec::{CryptoDeserialize, CryptoSerialize};
 use super::dkg::PubPoly;
-use super::types::{PetCheckReply, PetTag, PubShare, TagKnowledgeProof};
+use super::types::{BlindingReply, PetCheckReply, PetTag, PubShare, TagKnowledgeProof};
 use crate::error::Result;
 use zeroize::Zeroize;
 
@@ -141,5 +141,55 @@ pub trait Pet {
         tag: &PetTag,
         combined_check: &Self::PublicKey,
         target_fingerprint: &Self::PublicKey,
+    ) -> Result<()>;
+
+    /// A blinding participant's contribution to the PET blind equality test
+    /// (audit finding #2 — see `docs/plans/pet-blind-equality-test-design.md`):
+    /// `(z_i * R, z_i * D)`, where `R = tag.ephemeral_point` and
+    /// `D = tag.masked_fingerprint - target_fingerprint`, together with a
+    /// Chaum–Pedersen proof that the same fresh secret `z_i` was used for
+    /// both. This is what lets the committee threshold-decrypt `Z*R`
+    /// (`Z = sum(z_i)`) instead of `R` directly, so the raw combined value
+    /// `x*R` — and hence the deterministic owner fingerprint `T - x*R` — is
+    /// never exposed to whoever runs the check; only the blinded difference
+    /// `Z*(F(owner) - F(target))` is, which is the identity element on a
+    /// match and an unpredictable point otherwise, provided `z_i` stays
+    /// secret.
+    ///
+    /// `z_i` must be freshly and independently sampled per attempt — see
+    /// finding #2's design doc for why reusing it, or substituting a
+    /// different participant's contribution into an already-revealed
+    /// aggregate, reintroduces the exact fingerprint leak this construction
+    /// exists to close.
+    ///
+    /// Never reveals `z_i`: recovering it from this output alone requires
+    /// solving discrete log. Unlike [`Pet::partial_pet_check`], `D` (and
+    /// hence `blinded_diff`) may legitimately be the identity element (an
+    /// exact pre-blinding match) — implementations must not reject that case
+    /// the way they reject an identity `R`, `T`, or `blinded_r`.
+    fn prove_blinding_correctness(
+        z_i: &Self::ShareValue,
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<BlindingReply<Self::ShareValue, Self::PublicKey>>;
+
+    /// Verify a [`BlindingReply`] against `tag`, the same
+    /// `target_fingerprint` the prover used, and an independently
+    /// reconstructed `blind_transcript_digest` (binding the attempt,
+    /// context, selection, and claimed participant — computed by the
+    /// orbis-node layer). Rejects `blinded_r == O` (equivalently `z_i == 0`,
+    /// since `R` is required nonidentity) but permits `blinded_diff == O`
+    /// when `D` itself is the identity.
+    ///
+    /// Does not check that the aggregate `sum(blinded_r)` across a whole
+    /// blinding certificate is nonidentity — that is a property of the
+    /// *aggregate*, not any single reply, and must be checked separately by
+    /// the caller once every reply in a certificate has been verified.
+    fn verify_blinding_correctness(
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        reply: &BlindingReply<Self::ShareValue, Self::PublicKey>,
+        blind_transcript_digest: &[u8; 32],
     ) -> Result<()>;
 }

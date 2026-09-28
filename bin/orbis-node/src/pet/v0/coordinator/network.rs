@@ -13,19 +13,26 @@ where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
     P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
 {
-    /// Send a PET-check request to a peer and wait for the response on the
-    /// same connection. Mirrors
+    /// Send any PET request (commit/reveal/decrypt) to a peer and wait for
+    /// the response on the same connection. Mirrors
     /// `pre::v0::coordinator::network::send_request_and_receive_response`
-    /// exactly.
-    pub(crate) async fn send_check_request_and_receive_response(
+    /// exactly. Generic across the three phases' ALPN, since each phase's
+    /// request/response pair follows the identical open/send/recv shape.
+    pub(crate) async fn send_pet_request_and_receive_response(
         &self,
         peer_id_str: &str,
         message: PetMessage,
         request_id: &str,
     ) -> Result<Option<PetMessage>> {
-        if !matches!(&message, PetMessage::CheckRequest(_)) {
+        if !matches!(
+            &message,
+            PetMessage::CommitRequest(_)
+                | PetMessage::RevealRequest(_)
+                | PetMessage::DecryptRequest(_)
+        ) {
             return Err(PetError::ProtocolError(
-                "send_check_request_and_receive_response requires a CheckRequest".to_string(),
+                "send_pet_request_and_receive_response requires a Commit/Reveal/DecryptRequest"
+                    .to_string(),
             ));
         }
 
@@ -92,7 +99,9 @@ where
         let authenticated_peer_id = stream.peer_id().clone();
         let authenticated_peer_hex = hex::encode(authenticated_peer_id.as_bytes());
         match response {
-            response @ PetMessage::CheckResponse { .. } => {
+            response @ (PetMessage::CommitResponse { .. }
+            | PetMessage::RevealResponse { .. }
+            | PetMessage::DecryptResponse { .. }) => {
                 let store_outcome = self
                     .app_state
                     .pet_response_state

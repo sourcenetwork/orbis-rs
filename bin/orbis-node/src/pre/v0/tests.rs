@@ -306,7 +306,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -585,7 +585,7 @@ async fn test_pre_with_inline_document_end_to_end() {
                 relay_signature: Vec::new(),
                 document: Some(document),
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(
                 dummy_bulletin,
@@ -727,7 +727,7 @@ async fn test_pre_with_large_secret() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -876,7 +876,7 @@ async fn test_pre_fails_with_wrong_key() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1016,7 +1016,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1176,7 +1176,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1546,7 +1546,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1735,7 +1735,7 @@ async fn test_pre_fails_with_bad_proof() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
         )
@@ -1863,7 +1863,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 relay_signature: Vec::new(),
                 document: None,
                 audit_target_object_id: None,
-                pet_attestations: Vec::new(),
+                pet_evidence: None,
             },
             PreReportBinding::new(
                 "test-chain".to_string(),

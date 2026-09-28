@@ -137,27 +137,60 @@ fn pre_statement() -> PreReencryptResponseStatement {
     }
 }
 
-fn pet_statement() -> PetCheckResponseStatement {
-    PetCheckResponseStatement {
-        domain: PET_CHECK_RESPONSE_DOMAIN.to_string(),
+fn pet_blind_context() -> PetBlindContext {
+    PetBlindContext {
         chain_id: "vera-test".to_string(),
+        protocol_version: 7,
+        crypto_backend: "pet/test".to_string(),
         ring_id: "ring-1".to_string(),
         ring_pk: "aabb".to_string(),
         ring_state_sha256: "11".repeat(32),
-        protocol_version: 7,
-        request_id: "pet-request-1".to_string(),
-        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
-        responder_node_key: "accused".to_string(),
-        origin_protocol: "pet".to_string(),
+        pet_pk: "ccdd".to_string(),
         object_id: "object-1".to_string(),
         salt: Some("salt-1".to_string()),
+        timestamp: Some(1_700_000_000),
+        document_inline: false,
+        audit_target_object_id: "target-1".to_string(),
+        actor_id: "did:key:z6Mkactor".to_string(),
+        valid_window_start: Some(1_699_999_000),
+        valid_window_end: Some(1_700_001_000),
+        coordinator_node_key: "coordinator".to_string(),
+        attempt_id: "attempt-1".to_string(),
+    }
+}
+
+fn pet_blind_reveal_statement() -> PetBlindRevealStatement {
+    PetBlindRevealStatement {
+        domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+        attempt_id: "attempt-1".to_string(),
+        context_digest: [1u8; 32],
+        selection_digest: [2u8; 32],
+        responder_node_key: "accused".to_string(),
         from_node_id: 2,
+        commitment: vec![3, 4],
+        blinded_r: vec![5, 6],
+        blinded_diff: vec![7, 8],
+        commit_salt: [9u8; 32],
+        challenge: vec![10, 11],
+        proof: vec![12, 13],
+        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+    }
+}
+
+fn pet_blind_decrypt_statement() -> PetBlindDecryptStatement {
+    PetBlindDecryptStatement {
+        domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+        attempt_id: "attempt-1".to_string(),
+        context_digest: [1u8; 32],
+        certificate_digest: [2u8; 32],
+        responder_node_key: "accused".to_string(),
+        from_node_id: 2,
+        aggregate_r: vec![3, 4],
+        aggregate_diff: vec![5, 6],
         partial: vec![7, 8],
         challenge: vec![9, 10],
         proof: vec![11, 12],
-        crypto_backend: "pet/test".to_string(),
-        timestamp: Some(1_700_000_000),
-        document_inline: false,
+        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
     }
 }
 
@@ -250,50 +283,68 @@ fn invalid_crypto_response_pre_payload_round_trips() {
 }
 
 #[test]
-fn pet_response_statement_round_trips_and_is_domain_separated() {
-    let statement = pet_statement();
+fn pet_blind_reveal_statement_round_trips_and_is_domain_separated() {
+    let statement = pet_blind_reveal_statement();
     assert_eq!(
-        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        PetBlindRevealStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
         statement
     );
 
-    let mut changed = pet_statement();
+    let mut changed = pet_blind_reveal_statement();
     changed.domain = "other".to_string();
-    assert_ne!(pet_statement().canonical_bytes(), changed.canonical_bytes());
-}
-
-#[test]
-fn pet_response_statement_with_no_salt_round_trips() {
-    let mut statement = pet_statement();
-    statement.salt = None;
-    assert_eq!(
-        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
-        statement
-    );
-}
-
-#[test]
-fn pet_response_statement_with_no_timestamp_round_trips() {
-    let mut statement = pet_statement();
-    statement.timestamp = None;
-    assert_eq!(
-        PetCheckResponseStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
-        statement
-    );
-    // An untimestamped document's canonical bytes must differ from a
-    // timestamped one's (finding #8: a report validator must not confuse
-    // "no timestamp" with any particular timestamp value when
-    // reconstructing the document id).
     assert_ne!(
-        statement.canonical_bytes(),
-        pet_statement().canonical_bytes()
+        pet_blind_reveal_statement().canonical_bytes(),
+        changed.canonical_bytes()
     );
 }
 
 #[test]
-fn invalid_crypto_response_pet_payload_round_trips() {
-    let payload = InvalidCryptoResponse::Pet {
-        statement: pet_statement(),
+fn pet_blind_reveal_statement_with_identity_diff_round_trips() {
+    // blinded_diff may legitimately be an empty/identity encoding (an exact
+    // pre-blinding match) — this must still round-trip cleanly.
+    let mut statement = pet_blind_reveal_statement();
+    statement.blinded_diff = vec![];
+    assert_eq!(
+        PetBlindRevealStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+}
+
+#[test]
+fn invalid_crypto_response_pet_blind_reveal_payload_round_trips() {
+    let payload = InvalidCryptoResponse::PetBlindReveal {
+        context: pet_blind_context(),
+        statement: pet_blind_reveal_statement(),
+        response_signature: vec![42; 64],
+    };
+
+    assert_eq!(
+        InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+        payload
+    );
+}
+
+#[test]
+fn pet_blind_decrypt_statement_round_trips_and_is_domain_separated() {
+    let statement = pet_blind_decrypt_statement();
+    assert_eq!(
+        PetBlindDecryptStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+
+    let mut changed = pet_blind_decrypt_statement();
+    changed.domain = "other".to_string();
+    assert_ne!(
+        pet_blind_decrypt_statement().canonical_bytes(),
+        changed.canonical_bytes()
+    );
+}
+
+#[test]
+fn invalid_crypto_response_pet_blind_decrypt_payload_round_trips() {
+    let payload = InvalidCryptoResponse::PetBlindDecrypt {
+        context: pet_blind_context(),
+        statement: pet_blind_decrypt_statement(),
         response_signature: vec![42; 64],
     };
 

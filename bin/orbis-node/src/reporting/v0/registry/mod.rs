@@ -20,16 +20,18 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgControlMessageFaultKind,
-    DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind,
-    DkgLeaderPublicFaultStatement, DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement,
-    DkgShareStatement, EndpointSignedContribution, InvalidCryptoResponse, NodeOffline,
-    PetCheckResponseStatement, PreReencryptResponseStatement, RelayRequestStatement,
-    ReportEnvelope, ReportedDocumentEvidence, SignResponseStatement, UnauthorizedRequestPayload,
-    CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN,
-    DKG_LEADER_BATCH_MISMATCH_DOMAIN, DKG_LEADER_EQUIVOCATION_DOMAIN,
-    DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN, DKG_SHARE_DOMAIN,
-    INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE, PET_CHECK_RESPONSE_DOMAIN,
+    pet_blind_commit_hash, pet_blind_proof_transcript_digest, ring_state_sha256, CommitteeScope,
+    DkgCommitmentStatement, DkgControlMessageFaultKind, DkgControlMessageFaultStatement,
+    DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind, DkgLeaderPublicFaultStatement,
+    DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement, DkgShareStatement,
+    EndpointSignedContribution, InvalidCryptoResponse, NodeOffline, PetBlindContext,
+    PetBlindDecryptStatement, PetBlindRevealStatement, PreReencryptResponseStatement,
+    RelayRequestStatement, ReportEnvelope, ReportedDocumentEvidence, SignResponseStatement,
+    UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
+    DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_BATCH_MISMATCH_DOMAIN,
+    DKG_LEADER_EQUIVOCATION_DOMAIN, DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN,
+    DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    PET_BLIND_DECRYPT_RESPONSE_DOMAIN, PET_BLIND_REVEAL_RESPONSE_DOMAIN,
     PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
     SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };

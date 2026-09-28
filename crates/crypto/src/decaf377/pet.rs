@@ -2,8 +2,8 @@ use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
-        CryptoDeserialize, Pet, PetCheckReply, PetTag, PubPoly as PubPolyTrait, PubShare,
-        TagKnowledgeProof,
+        BlindingReply, CryptoDeserialize, Pet, PetCheckReply, PetTag, PubPoly as PubPolyTrait,
+        PubShare, TagKnowledgeProof,
     },
 };
 use ark_ff_05::{One, Zero};
@@ -27,6 +27,11 @@ const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-pet-tag-knowledge-proof-v1";
 /// reencryption-proof domain so a proof from one scheme can never be
 /// confused for or replayed as another's.
 const PET_CHECK_DLEQ_DOMAIN: &[u8] = b"orbis-pet-check-dleq-proof-v1";
+/// Domain separator for the blind-equality-test blinding-correctness proof
+/// Distinct from every other proof domain in this file
+/// so a proof from one scheme can never be confused for or replayed as
+/// another's.
+const BLIND_PROOF_DOMAIN: &[u8] = b"orbis-pet-blind-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct PetNode {}
@@ -316,6 +321,119 @@ impl Pet for PetNode {
         }
         Ok(())
     }
+
+    fn prove_blinding_correctness(
+        z_i: &Self::ShareValue,
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<BlindingReply<Self::ShareValue, Self::PublicKey>> {
+        let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
+        let masked_fingerprint =
+            Self::decode_group_element(&tag.masked_fingerprint, "masked_fingerprint")?;
+        // D = T - Y (no Sub impl on Element — negate and add). Unlike R/T
+        // individually, D may legitimately be the identity element (an
+        // exact pre-blinding match) — see
+        // `Pet::prove_blinding_correctness`'s docs.
+        let diff_point = masked_fingerprint + (-(*target_fingerprint));
+
+        // No constant-time scalar-multiplication path available for
+        // decaf377 in this codebase (same gap as `partial_pet_check`'s
+        // computation) — flagged for the planned Jubjub migration, not
+        // improvised here.
+        let blinded_r = r_point * *z_i;
+        let blinded_diff = diff_point * *z_i;
+        // R is nonidentity, so blinded_r == O iff z_i == 0 — reject here
+        // rather than producing a degenerate (and unblinding) contribution.
+        if blinded_r == Element::default() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid blinding scalar: z_i cannot be zero".to_string(),
+            ));
+        }
+
+        let mut rng = OsRng;
+        // Zeroizing: `w_i` is this proof's secret nonce — same rationale as
+        // `prove_tag_knowledge`'s `k`.
+        let w_i = Zeroizing::new(loop {
+            let candidate = Fr::rand(&mut rng);
+            if candidate != Fr::zero() {
+                break candidate;
+            }
+        });
+        let u_i = r_point * *w_i;
+        let v_i = diff_point * *w_i;
+
+        let challenge = Self::blinding_proof_challenge(
+            &r_point,
+            &diff_point,
+            &blinded_r,
+            &blinded_diff,
+            &u_i,
+            &v_i,
+            blind_transcript_digest,
+        )?;
+        // proof = w_i + challenge*z_i. Same non-constant-time gap as
+        // `partial_pet_check`'s response computation — not improvised here.
+        let proof = *w_i + (challenge * z_i);
+
+        Ok(BlindingReply {
+            blinded_r,
+            blinded_diff,
+            challenge,
+            proof,
+        })
+    }
+
+    fn verify_blinding_correctness(
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        reply: &BlindingReply<Self::ShareValue, Self::PublicKey>,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<()> {
+        let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
+        let masked_fingerprint =
+            Self::decode_group_element(&tag.masked_fingerprint, "masked_fingerprint")?;
+        let diff_point = masked_fingerprint + (-(*target_fingerprint));
+
+        if reply.blinded_r == Element::default() {
+            return Err(CryptoError::ElGamalError(
+                "Invalid blinding contribution: blinded_r cannot be the identity element"
+                    .to_string(),
+            ));
+        }
+
+        // UiHat = s*R - c*A, ViHat = s*D - c*B
+        let u_i = r_point * reply.proof - reply.blinded_r * reply.challenge;
+        let v_i = diff_point * reply.proof - reply.blinded_diff * reply.challenge;
+
+        let recomputed_challenge = Self::blinding_proof_challenge(
+            &r_point,
+            &diff_point,
+            &reply.blinded_r,
+            &reply.blinded_diff,
+            &u_i,
+            &v_i,
+            blind_transcript_digest,
+        )?;
+
+        let mut claimed_bytes = [0u8; 32];
+        let mut recomputed_bytes = [0u8; 32];
+        reply
+            .challenge
+            .serialize_compressed(&mut &mut claimed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+        recomputed_challenge
+            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
+
+        if claimed_bytes.ct_ne(&recomputed_bytes).into() {
+            return Err(CryptoError::ElGamalError(
+                "Blinding-correctness proof verification failed".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl PetNode {
@@ -391,6 +509,45 @@ impl PetNode {
             point.serialize_compressed(&mut bytes)?;
             hasher.update(&bytes);
         }
+
+        Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
+    }
+
+    /// Fiat-Shamir challenge for the blinding-correctness proof — see
+    /// `bls12_381::pet`'s equivalent for the exact binding rationale. `D`/
+    /// `B`/`V` may be the identity element; `serialize_compressed` handles
+    /// that encoding like any other point.
+    /// Widened to `pub(crate)` (unlike this file's other challenge helpers)
+    /// solely so `decaf377::tests::pet_tests` can hand-construct a
+    /// genuinely valid Chaum–Pedersen proof for a zero blinding scalar, to
+    /// confirm `verify_blinding_correctness`'s explicit identity check is
+    /// load-bearing rather than redundant with the proof math itself.
+    pub(crate) fn blinding_proof_challenge(
+        r_point: &Element,
+        diff_point: &Element,
+        blinded_r: &Element,
+        blinded_diff: &Element,
+        u_point: &Element,
+        v_point: &Element,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<Fr> {
+        let mut hasher = Sha512::new();
+        hasher.update(BLIND_PROOF_DOMAIN);
+
+        let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
+        for point in [
+            r_point,
+            diff_point,
+            blinded_r,
+            blinded_diff,
+            u_point,
+            v_point,
+        ] {
+            bytes.clear();
+            point.serialize_compressed(&mut bytes)?;
+            hasher.update(&bytes);
+        }
+        hasher.update(blind_transcript_digest);
 
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }

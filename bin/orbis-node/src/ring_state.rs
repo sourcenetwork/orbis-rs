@@ -197,8 +197,8 @@ impl RingShareBundle {
     ///
     /// No polynomial-history stashing here (unlike `save_by_ring_key`): PET
     /// has no refresh/reshare yet, so there is never a "previous generation"
-    /// to retire — see `require_pet_proof_verification_failure`'s identical
-    /// reasoning on the read side.
+    /// to retire — see `require_pet_blind_decrypt_verification_failure`'s
+    /// identical reasoning on the read side.
     pub fn save_by_pet_ring_key(
         &self,
         storage: &impl LocalStorage,

@@ -125,3 +125,144 @@ where
     );
     Ok(())
 }
+
+// ============================================================================
+// Blinding-correctness-proof suite (audit finding #2's blind equality test —
+// see `docs/plans/pet-blind-equality-test-design.md`)
+// ============================================================================
+//
+// Field-level tampering (mutating a computed proof's scalar/point fields
+// directly, and hand-constructing a proof for a zero blinding scalar) is
+// covered per backend, alongside `partial_pet_check`'s equivalent tests,
+// since `P::ShareValue`/`P::PublicKey` expose no generic arithmetic here.
+// This suite covers round-tripping and cross-context rejection only.
+
+fn sample_tag_with_fingerprint<PK: CryptoSerialize>(
+    ephemeral_pk: &PK,
+    masked_fingerprint: &PK,
+) -> Result<PetTag> {
+    Ok(PetTag {
+        ephemeral_point: ephemeral_pk.to_bytes()?,
+        masked_fingerprint: masked_fingerprint.to_bytes()?,
+    })
+}
+
+/// Runs the full generic blinding-correctness-proof suite against `P`.
+///
+/// `make_keypair` mints a random `(scalar, scalar*G)` pair — reused here to
+/// produce fresh, valid, nonidentity group elements standing in for `R`,
+/// `T`, and the audit target `Y`, and fresh blinding scalars `z_i`, without
+/// needing a generic "multiply an arbitrary point by an arbitrary scalar"
+/// primitive on the `Pet` trait itself.
+pub fn run_all_blinding_proof_tests<P, F>(make_keypair: F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    test_blinding_proof_round_trip::<P, F>(&make_keypair)?;
+    test_blinding_proof_round_trip_with_identity_diff::<P, F>(&make_keypair)?;
+    test_blinding_proof_rejects_wrong_digest::<P, F>(&make_keypair)?;
+    test_blinding_proof_rejects_wrong_target::<P, F>(&make_keypair)?;
+    test_blinding_proof_rejects_swapped_tag::<P, F>(&make_keypair)?;
+    Ok(())
+}
+
+pub fn test_blinding_proof_round_trip<P, F>(make_keypair: &F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    let (_, ephemeral_pk) = make_keypair();
+    let (_, masked_pk) = make_keypair();
+    let (_, target_pk) = make_keypair();
+    let tag = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk, &masked_pk)?;
+    let (z_i, _) = make_keypair();
+    let digest = fixed_digest(7);
+
+    let reply = P::prove_blinding_correctness(&z_i, &tag, &target_pk, &digest)?;
+    P::verify_blinding_correctness(&tag, &target_pk, &reply, &digest)?;
+    Ok(())
+}
+
+/// `masked_fingerprint == target_fingerprint`, so `D = T - Y` is the
+/// identity element — a legitimate edge case (an exact pre-blinding match),
+/// not an error. Unlike `R`/`T` individually, `D` (and `blinded_diff`) must
+/// not be rejected for being the identity.
+pub fn test_blinding_proof_round_trip_with_identity_diff<P, F>(make_keypair: &F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    let (_, ephemeral_pk) = make_keypair();
+    let (_, same_pk) = make_keypair();
+    let tag = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk, &same_pk)?;
+    let (z_i, _) = make_keypair();
+    let digest = fixed_digest(7);
+
+    let reply = P::prove_blinding_correctness(&z_i, &tag, &same_pk, &digest)?;
+    P::verify_blinding_correctness(&tag, &same_pk, &reply, &digest)?;
+    Ok(())
+}
+
+pub fn test_blinding_proof_rejects_wrong_digest<P, F>(make_keypair: &F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    let (_, ephemeral_pk) = make_keypair();
+    let (_, masked_pk) = make_keypair();
+    let (_, target_pk) = make_keypair();
+    let tag = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk, &masked_pk)?;
+    let (z_i, _) = make_keypair();
+
+    let reply = P::prove_blinding_correctness(&z_i, &tag, &target_pk, &fixed_digest(7))?;
+    assert!(
+        P::verify_blinding_correctness(&tag, &target_pk, &reply, &fixed_digest(9)).is_err(),
+        "a proof bound to one transcript digest must not verify against another"
+    );
+    Ok(())
+}
+
+pub fn test_blinding_proof_rejects_wrong_target<P, F>(make_keypair: &F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    let (_, ephemeral_pk) = make_keypair();
+    let (_, masked_pk) = make_keypair();
+    let (_, target_pk) = make_keypair();
+    let (_, other_target_pk) = make_keypair();
+    let tag = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk, &masked_pk)?;
+    let (z_i, _) = make_keypair();
+    let digest = fixed_digest(7);
+
+    let reply = P::prove_blinding_correctness(&z_i, &tag, &target_pk, &digest)?;
+    assert!(
+        P::verify_blinding_correctness(&tag, &other_target_pk, &reply, &digest).is_err(),
+        "a proof computed against one target fingerprint (hence one D = T-Y) must not verify \
+         against a different target"
+    );
+    Ok(())
+}
+
+pub fn test_blinding_proof_rejects_swapped_tag<P, F>(make_keypair: &F) -> Result<()>
+where
+    P: Pet,
+    F: Fn() -> (P::ShareValue, P::PublicKey),
+{
+    let (_, ephemeral_pk_a) = make_keypair();
+    let (_, ephemeral_pk_b) = make_keypair();
+    let (_, masked_pk) = make_keypair();
+    let tag_a = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk_a, &masked_pk)?;
+    let tag_b = sample_tag_with_fingerprint::<P::PublicKey>(&ephemeral_pk_b, &masked_pk)?;
+    let (_, target_pk) = make_keypair();
+    let (z_i, _) = make_keypair();
+    let digest = fixed_digest(7);
+
+    let reply = P::prove_blinding_correctness(&z_i, &tag_a, &target_pk, &digest)?;
+    assert!(
+        P::verify_blinding_correctness(&tag_b, &target_pk, &reply, &digest).is_err(),
+        "a proof computed against R_a must not verify against a different R_b"
+    );
+    Ok(())
+}

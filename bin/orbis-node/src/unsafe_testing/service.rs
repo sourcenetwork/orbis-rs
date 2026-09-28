@@ -814,7 +814,7 @@ async fn forward_unauthorized_pre(
             relay_signature,
             document: inline_document,
             audit_target_object_id: None,
-            pet_attestations: Vec::new(),
+            pet_evidence: None,
         },
     }));
     let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);

@@ -1,68 +1,61 @@
-//! Shared verification logic used by the initiator's own local
-//! contribution, every incoming `PetCheckRequest` handler, and every PRE
-//! peer gating its own reencryption-share release — the same
-//! `verify_pet_check_request` code path runs identically in all three
-//! places, so there is exactly one place that decides "is this tag
-//! genuinely Bankd's, for this exact document."
+//! Shared verification logic for the PET blind equality test (audit finding
+//! #2 — see `docs/plans/pet-blind-equality-test-design.md`).
 //!
-//! `verify_pet_check_request` deliberately does *not* resolve or need the
-//! audit target: computing a threshold contribution (`share_i * R`) reveals
-//! nothing about which owner it will ultimately be checked against, and
-//! nothing about whether the check will pass — that comparison happens
-//! exactly once, by the initiator, after combining every contribution (see
-//! `initiator.rs`). Responders only need to confirm the request is for a
-//! real, Bankd-issued tag before touching their secret share with it: an
-//! unverified `R` could otherwise be used to probe the checking key.
+//! [`verify_pet_check_request`] independently verifies the underlying tag
+//! itself (unchanged from the old single-round protocol — the tag-knowledge
+//! proof and its transcript digest are unaffected by *how* the threshold
+//! check that follows is run). It is shared by every one of the three
+//! phases' handlers (`coordinator::handlers`) and the initiator's own local
+//! contribution.
 //!
-//! [`PetCoordinator::verify_pet_admission`] is different: it exists so a PRE
-//! peer can refuse to release its reencryption share for a `requires_pet`
-//! ring unless it is independently convinced a genuine threshold PET check
-//! already passed (see `pre::v0::coordinator::handlers::handle_reencrypt_request`).
-//! That independent verification is only meaningful if the verifier knows
-//! what it is verifying, so — unlike every other function in this file —
-//! it does take the audit target as an input, and every ring committee
-//! member that could release a share for a PET-gated document now learns
-//! it. This is a deliberate, reviewed trade-off: the alternative (a
-//! target-blind proof of correct match) would need a ZK circuit, well out
-//! of scope here. The exposure stays committee-internal, the same trust
-//! boundary as `actor_id`/`object_id`, which peers already see in
-//! `PreRequestContext` today.
+//! [`build_and_verify_pet_blind_certificate`] is the single shared
+//! certificate-validation routine used identically by the decrypt-phase
+//! responder handler, the initiator's own certificate assembly, and PRE
+//! admission's independent re-check — see the design doc's "Round 2 —
+//! Reveal" section: "Validating this complete certificate is a shared
+//! operation used by the initiator, every decryptor, PRE admission, and
+//! relevant reporting verifiers."
 //!
-//! `audit_target_object_id` is the plaintext owner identity itself — the
-//! exact value `Pet::owner_fingerprint` is computed over — not a handle
-//! that gets resolved to some other identity via ACP. There is deliberately
-//! no such resolution step: a caller can name any object it likes, but
-//! that alone gets it nowhere without both [`check_pet_permission`] (real
-//! ACP permission on that exact object) and a tag that genuinely encodes
-//! that exact identity (unforgeable without knowing Bankd's tag secret).
+//! [`PetCoordinator::verify_pet_admission`] exists so a PRE peer can refuse
+//! to release its reencryption share for a `requires_pet` ring unless it is
+//! independently convinced a genuine blind equality test already passed (see
+//! `pre::v0::coordinator::handlers::handle_reencrypt_request`). Unlike every
+//! other function in this file, it does take the audit target as an input —
+//! see this module's original design note (still accurate) on why that
+//! committee-internal exposure is a deliberate, reviewed trade-off.
 
 use super::PetCoordinator;
-use crate::helpers::identity::node_key_for_id;
+use crate::helpers::identity::{extract_node_part, node_key_for_id};
+use crate::helpers::node_routes::resolve_node_routes;
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::pet::v0::attestation::{
-    invalid_pet_response_observation, PetCheckStatementContext, PetShareAttestation,
+    build_pet_blind_context, invalid_pet_blind_decrypt_observation,
+    invalid_pet_blind_reveal_observation, PetBlindEvidence,
 };
 use crate::pet::v0::error::{PetError, Result};
 use crate::pet::v0::messages::PetCheckContext;
-use crate::reporting::v0::observation::ReportObservation;
-use crate::reporting::v0::queue_report;
+use crate::reporting::v0::observation::InvalidCryptoResponseObservation;
 use crate::reporting::v0::types::{
-    ring_state_sha256, PetCheckResponseStatement, ReportedDocumentEvidence,
+    pet_blind_commit_hash, pet_blind_proof_transcript_digest, pet_blind_selection_digest,
+    PetBlindCertificate, PetBlindContext, PetBlindDecryptStatement, PetBlindRevealStatement,
+    PetBlindSignedReveal, ReportedDocumentEvidence,
 };
 use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
-use bulletin::r#trait::{BulletinKind, NodeInfo};
+use bulletin::r#trait::Bulletin;
 use common::blockchain::verify_node_message;
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{
-    CryptoDeserialize, DistKeyShare, Dkg, EncryptionProof, Pet, PetCheckReply, PetTag, PubShare,
-    Secret, TagKnowledgeProof, ThresholdSigner,
+    BlindingReply, CryptoDeserialize, DistKeyShare, Dkg, EncryptionProof, Pet, PetCheckReply,
+    PetTag, PubShare, Secret, TagKnowledgeProof, ThresholdSigner,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{SigShareInner, SignImpl, SignaturePoint};
+use network::PeerId;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Authorization gate for PET, additive to the cryptographic tag-match
 /// below, not a replacement for it: a genuinely matching tag still proves
@@ -105,29 +98,28 @@ pub(crate) async fn check_pet_permission(
 }
 
 /// Independently authenticate and authorize a PET check request received
-/// directly over the wire — closes the gap `handle_check_request` alone has:
-/// unlike the normal initiator's own entry point (`initiate_pet_check`,
-/// which calls `check_pet_permission` before doing anything), and unlike
-/// `verify_pet_admission` (whose caller already independently re-verified
-/// the same JWT before ever reaching it), `handle_check_request` is
-/// reachable from a raw wire message with no other upstream authentication
-/// at all. Without this, a direct peer request could obtain a genuine
-/// contribution (and, combined with every other peer's, an equality oracle)
-/// for any document/target without ever going through the ACP-gated normal
-/// PRE entry point — see the PET audit fix checklist, finding #3.
+/// directly over the wire, for whichever phase is currently running. Unlike
+/// the normal initiator's own entry point (which calls `check_pet_permission`
+/// before doing anything) and unlike PRE admission (whose caller already
+/// independently re-verified the same JWT before ever reaching it), every
+/// phase's handler is reachable from a raw wire message with no other
+/// upstream authentication at all. Without this, a direct peer request could
+/// obtain a genuine contribution for any document/target without ever going
+/// through the ACP-gated normal PRE entry point — see the PET audit fix
+/// checklist, finding #3.
 ///
 /// Re-verifies `ctx.token_string` the same way PRE's own responders
 /// re-verify `PreRequestContext::token_string`, binds it to *this* request's
-/// `object_id`/`salt` (so a token authorizing one document/round can't be
-/// replayed against a different one), derives the actor from it, and then
-/// runs the exact same `check_pet_permission` gate the normal initiator
-/// already runs.
+/// `object_id`/`salt`, derives the actor from it, and then runs the exact
+/// same `check_pet_permission` gate the normal initiator already runs.
+/// Returns the derived `actor_id` — needed by every caller to build this
+/// attempt's canonical `PetBlindContext`.
 pub(crate) async fn verify_pet_audit_authorization(
     authz: &(dyn Authz + Send + Sync),
     ctx: &PetCheckContext,
     trusted_auth_relay_dids: Option<&[String]>,
     current_time: u64,
-) -> Result<()> {
+) -> Result<String> {
     let token: BearerToken<PreClaims> = resolve_jwt_did(
         &ctx.token_string,
         current_time,
@@ -159,7 +151,35 @@ pub(crate) async fn verify_pet_audit_authorization(
         &actor_id,
         ctx.valid_window.clone(),
     )
-    .await
+    .await?;
+
+    Ok(actor_id)
+}
+
+/// Resolve the authenticated transport sender's ring-committee node key —
+/// `from_node_id`/any request field is a claim to validate, never proof of
+/// coordinator identity (see the design doc's "Protocol: three rounds"
+/// section). Used to bind `PetBlindContext::coordinator_node_key` from a
+/// live connection's own peer id, exactly as `resolve_node_routes` already
+/// lets the initiator resolve the reverse direction.
+pub(crate) async fn resolve_coordinator_node_key(
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    peer_id: &PeerId,
+    ring_payload: &bulletin::r#trait::RingPayload,
+) -> Result<String> {
+    let routes = resolve_node_routes(bulletin, &ring_payload.peer_node_keys)
+        .await
+        .map_err(PetError::ProtocolError)?;
+    let peer_hex = hex::encode(peer_id.as_bytes());
+    routes
+        .into_iter()
+        .find(|route| extract_node_part(&route.peer_id).eq_ignore_ascii_case(&peer_hex))
+        .map(|route| route.node_key)
+        .ok_or_else(|| {
+            PetError::InvalidInput(
+                "requesting peer is not a member of the ring committee".to_string(),
+            )
+        })
 }
 
 fn deserialize_secret(document_json: &str) -> Result<Secret> {
@@ -192,6 +212,328 @@ fn build_ciphertext_context(
     })
 }
 
+/// `C_i`'s opening plus its blinding-correctness proof, verified against
+/// `tag`/`target_fingerprint`, for one selected participant. Shared by
+/// [`build_and_verify_pet_blind_certificate`] and the live reveal-phase
+/// collector (`initiator::verify_reveal_response`) — both need the exact
+/// same checks (signature, opening, proof), differing only in how a failure
+/// is reported.
+fn verify_one_reveal<P>(
+    statement: &PetBlindRevealStatement,
+    response_signature: &[u8],
+    ring_payload: &bulletin::r#trait::RingPayload,
+    tag: &PetTag,
+    target_fingerprint: &P::PublicKey,
+    expected_commitment: [u8; 32],
+    selection_digest: [u8; 32],
+) -> Result<(G1Affine, G1Affine)>
+where
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
+{
+    let node_key = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
+        .ok_or_else(|| {
+            PetError::Crypto(format!(
+                "reveal from_node_id {} is not in the ring committee",
+                statement.from_node_id
+            ))
+        })?;
+    if node_key != statement.responder_node_key {
+        return Err(PetError::Crypto(format!(
+            "reveal responder_node_key does not match the resolved committee identity for node {}",
+            statement.from_node_id
+        )));
+    }
+    verify_node_message(&node_key, &statement.canonical_bytes(), response_signature).map_err(
+        |e| {
+            PetError::Crypto(format!(
+                "invalid reveal signature from node {}: {e}",
+                statement.from_node_id
+            ))
+        },
+    )?;
+    if statement.commitment.as_slice() != expected_commitment {
+        return Err(PetError::Crypto(format!(
+            "reveal commitment for node {} does not match the selected list",
+            statement.from_node_id
+        )));
+    }
+    if statement.selection_digest != selection_digest {
+        return Err(PetError::Crypto(format!(
+            "reveal selection_digest for node {} does not match the selected list",
+            statement.from_node_id
+        )));
+    }
+    let recomputed_commitment = pet_blind_commit_hash(
+        &statement.attempt_id,
+        &statement.context_digest,
+        statement.from_node_id,
+        &statement.commit_salt,
+        &statement.blinded_r,
+        &statement.blinded_diff,
+    );
+    if recomputed_commitment != expected_commitment {
+        return Err(PetError::Crypto(format!(
+            "reveal from node {} does not open its own commitment",
+            statement.from_node_id
+        )));
+    }
+
+    let (Ok(blinded_r), Ok(blinded_diff), Ok(challenge), Ok(proof)) = (
+        G1Affine::from_bytes(&statement.blinded_r),
+        G1Affine::from_bytes(&statement.blinded_diff),
+        Fr::from_bytes(&statement.challenge),
+        Fr::from_bytes(&statement.proof),
+    ) else {
+        return Err(PetError::Deserialization(format!(
+            "failed to decode reveal fields from node {}",
+            statement.from_node_id
+        )));
+    };
+    let reply = BlindingReply {
+        blinded_r,
+        blinded_diff,
+        challenge,
+        proof,
+    };
+    let blind_transcript_digest = pet_blind_proof_transcript_digest(
+        &statement.attempt_id,
+        &statement.context_digest,
+        &selection_digest,
+        statement.from_node_id,
+        &expected_commitment,
+    );
+    P::verify_blinding_correctness(tag, target_fingerprint, &reply, &blind_transcript_digest)
+        .map_err(|e| {
+            PetError::Crypto(format!(
+                "blinding-correctness proof failed for node {}: {e}",
+                statement.from_node_id
+            ))
+        })?;
+
+    Ok((blinded_r, blinded_diff))
+}
+
+/// The single shared certificate-validation routine — see this module's doc
+/// comment for the four call sites that must all use exactly this function.
+/// Validates the selected list's shape, every selected node's signature,
+/// commitment opening, and blinding-correctness proof, then returns the
+/// reconstructed aggregate points `(Z·R, Z·(T-Y))`. Rejects a zero aggregate
+/// `Z·R` — the one check that cannot be expressed per-reply, only over the
+/// complete, verified set (see `Pet::verify_blinding_correctness`'s own doc
+/// comment on this exact division of responsibility).
+pub(crate) fn build_and_verify_pet_blind_certificate<D, P>(
+    certificate: &PetBlindCertificate,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    tag: &PetTag,
+    target_fingerprint: &P::PublicKey,
+) -> Result<(G1Affine, G1Affine)>
+where
+    D: Dkg<PublicKey = G1Affine>,
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
+{
+    let threshold = ring_payload.threshold as usize;
+    if certificate.all_commitments.len() != threshold {
+        return Err(PetError::Crypto(format!(
+            "certificate selected list has {} entries, ring threshold is {}",
+            certificate.all_commitments.len(),
+            threshold
+        )));
+    }
+    if certificate.reveals.len() != threshold {
+        return Err(PetError::Crypto(format!(
+            "certificate has {} reveals, ring threshold is {}",
+            certificate.reveals.len(),
+            threshold
+        )));
+    }
+
+    let mut expected_commitments: Vec<(u32, [u8; 32])> = Vec::with_capacity(threshold);
+    let mut seen_commitment_ids = HashSet::new();
+    for (node_id, bytes) in &certificate.all_commitments {
+        if !seen_commitment_ids.insert(*node_id) {
+            return Err(PetError::Crypto(format!(
+                "duplicate node id {node_id} in certificate selected list"
+            )));
+        }
+        let arr: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            PetError::Deserialization("certificate commitment is not 32 bytes".to_string())
+        })?;
+        expected_commitments.push((*node_id, arr));
+    }
+    let selection_digest = pet_blind_selection_digest(
+        &certificate.attempt_id,
+        &certificate.context_digest,
+        &expected_commitments,
+    );
+
+    let mut aggregate_r: Option<G1Affine> = None;
+    let mut aggregate_diff: Option<G1Affine> = None;
+    let mut seen_reveal_ids = HashSet::new();
+
+    for signed_reveal in &certificate.reveals {
+        let statement = &signed_reveal.statement;
+        if statement.attempt_id != certificate.attempt_id {
+            return Err(PetError::Crypto(
+                "reveal attempt_id does not match the certificate".to_string(),
+            ));
+        }
+        if statement.context_digest != certificate.context_digest {
+            return Err(PetError::Crypto(
+                "reveal context_digest does not match the certificate".to_string(),
+            ));
+        }
+        if !seen_reveal_ids.insert(statement.from_node_id) {
+            return Err(PetError::Crypto(format!(
+                "duplicate reveal for node {}",
+                statement.from_node_id
+            )));
+        }
+        let expected_commitment = expected_commitments
+            .iter()
+            .find(|(id, _)| *id == statement.from_node_id)
+            .map(|(_, bytes)| *bytes)
+            .ok_or_else(|| {
+                PetError::Crypto(format!(
+                    "reveal from node {} is not present in the selected list",
+                    statement.from_node_id
+                ))
+            })?;
+
+        let (blinded_r, blinded_diff) = verify_one_reveal::<P>(
+            statement,
+            &signed_reveal.response_signature,
+            ring_payload,
+            tag,
+            target_fingerprint,
+            expected_commitment,
+            selection_digest,
+        )?;
+
+        aggregate_r = Some(match aggregate_r {
+            Some(acc) => crypto::helpers::add_points(&acc, &blinded_r)
+                .map_err(|e| PetError::Crypto(e.to_string()))?,
+            None => blinded_r,
+        });
+        aggregate_diff = Some(match aggregate_diff {
+            Some(acc) => crypto::helpers::add_points(&acc, &blinded_diff)
+                .map_err(|e| PetError::Crypto(e.to_string()))?,
+            None => blinded_diff,
+        });
+    }
+
+    let aggregate_r =
+        aggregate_r.ok_or_else(|| PetError::Crypto("certificate has no reveals".to_string()))?;
+    let aggregate_diff =
+        aggregate_diff.ok_or_else(|| PetError::Crypto("certificate has no reveals".to_string()))?;
+
+    if D::public_key_is_identity(&aggregate_r) {
+        return Err(PetError::Crypto(
+            "certificate's aggregate ephemeral point is the identity — a corrupted or colluding \
+             blinding set"
+                .to_string(),
+        ));
+    }
+
+    Ok((aggregate_r, aggregate_diff))
+}
+
+/// One decrypt-phase share, verified against the certificate's own
+/// reconstructed aggregate points. Shared by the live decrypt-phase
+/// collector and PRE admission — both need the exact same checks.
+fn verify_one_decrypt<P>(
+    statement: &PetBlindDecryptStatement,
+    response_signature: &[u8],
+    ring_payload: &bulletin::r#trait::RingPayload,
+    pub_poly: &P::PubPoly,
+    expected_context_digest: [u8; 32],
+    expected_certificate_digest: [u8; 32],
+    expected_attempt_id: &str,
+    expected_aggregate_r: &[u8],
+    expected_aggregate_diff: &[u8],
+) -> Result<PubShare<G1Affine>>
+where
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
+{
+    if statement.attempt_id != expected_attempt_id {
+        return Err(PetError::Crypto(
+            "decrypt statement attempt_id does not match the certificate".to_string(),
+        ));
+    }
+    if statement.context_digest != expected_context_digest {
+        return Err(PetError::Crypto(
+            "decrypt statement context_digest does not match this attempt".to_string(),
+        ));
+    }
+    if statement.certificate_digest != expected_certificate_digest {
+        return Err(PetError::Crypto(
+            "decrypt statement certificate_digest does not match the certificate".to_string(),
+        ));
+    }
+    if statement.aggregate_r != expected_aggregate_r
+        || statement.aggregate_diff != expected_aggregate_diff
+    {
+        return Err(PetError::Crypto(
+            "decrypt statement aggregate points do not match the certificate's own reconstruction"
+                .to_string(),
+        ));
+    }
+    let node_key = node_key_for_id(statement.from_node_id, &ring_payload.peer_node_keys)
+        .ok_or_else(|| {
+            PetError::Crypto(format!(
+                "decrypt from_node_id {} is not in the ring committee",
+                statement.from_node_id
+            ))
+        })?;
+    if node_key != statement.responder_node_key {
+        return Err(PetError::Crypto(format!(
+            "decrypt responder_node_key does not match the resolved committee identity for node {}",
+            statement.from_node_id
+        )));
+    }
+    verify_node_message(&node_key, &statement.canonical_bytes(), response_signature).map_err(
+        |e| {
+            PetError::Crypto(format!(
+                "invalid decrypt signature from node {}: {e}",
+                statement.from_node_id
+            ))
+        },
+    )?;
+
+    let (Ok(partial), Ok(challenge), Ok(proof)) = (
+        G1Affine::from_bytes(&statement.partial),
+        Fr::from_bytes(&statement.challenge),
+        Fr::from_bytes(&statement.proof),
+    ) else {
+        return Err(PetError::Deserialization(format!(
+            "failed to decode decrypt fields from node {}",
+            statement.from_node_id
+        )));
+    };
+    let reply = PetCheckReply {
+        partial: PubShare {
+            i: statement.from_node_id,
+            v: partial,
+        },
+        challenge,
+        proof,
+    };
+    let synthetic_tag = PetTag {
+        ephemeral_point: expected_aggregate_r.to_vec(),
+        masked_fingerprint: Vec::new(),
+    };
+    P::verify_partial_pet_check(pub_poly, &synthetic_tag, &reply).map_err(|e| {
+        PetError::Crypto(format!(
+            "decrypt share from node {} failed its per-share proof verification: {e}",
+            statement.from_node_id
+        ))
+    })?;
+
+    Ok(PubShare {
+        i: statement.from_node_id,
+        v: partial,
+    })
+}
+
 impl<D, P> PetCoordinator<D, P>
 where
     D: Dkg<ShareValue = Fr, PublicKey = G1Affine> + Clone + Send + Sync + 'static,
@@ -211,15 +553,9 @@ where
     /// live ring, rebuilds the tag-knowledge-proof transcript digest from
     /// primary sources, and verifies the proof. Never trusts anything the
     /// initiator merely asserts: every value used here is either read live
-    /// from the bulletin or bound into the proof itself.
-    ///
-    /// Returns the verified tag, the ring's resolved `pet_pk` hex (so
-    /// callers that also need it — e.g. to sanity-check their local share —
-    /// don't have to re-read the ring a second time), the transcript digest
-    /// the proof was checked against, and the live-resolved `ring_payload`
-    /// itself (so a caller that doesn't already have one to hand — like
-    /// `handlers::handle_check_request` — doesn't need a second bulletin
-    /// read just to build its signed statement's `ring_pk`/`ring_state_sha256`).
+    /// from the bulletin or bound into the proof itself. Unchanged from the
+    /// old single-round protocol — this only validates the underlying tag,
+    /// not how the threshold check around it is run.
     pub(crate) async fn verify_pet_check_request(
         &self,
         ctx: &PetCheckContext,
@@ -240,14 +576,9 @@ where
         }
 
         // `ctx.document` and `ctx.object_id` are independent fields on the
-        // wire, supplied directly by the initiator over PET's own P2P round
-        // — unlike PRE's own request handling, nothing upstream of this
-        // guarantees they actually describe the same document. Without this
-        // check, a malicious initiator could pair a genuine document A with
-        // a different document B's id; this node would compute and sign a
-        // genuinely correct proof for A while the resulting statement claims
-        // B's id, which a report validator (loading B by that signed id)
-        // could later use to falsely accuse this honest node.
+        // wire — nothing upstream of this guarantees they actually describe
+        // the same document. Without this check, a malicious initiator could
+        // pair a genuine document A with a different document B's id.
         crate::pre::v0::helpers::check_document_id_binding(&ctx.object_id, &ctx.document).map_err(
             |e| PetError::InvalidInput(format!("document does not match object_id: {e}")),
         )?;
@@ -302,71 +633,20 @@ where
         Ok((tag, pet_pk_hex, digest, ring_payload))
     }
 
-    /// The PRE-release gate: verify that a genuine threshold PET check
-    /// passed for `document`/`salt`, using `attestations` as portable,
-    /// signature-backed evidence rather than re-running the threshold
-    /// fan-out itself. Called by every PRE committee member before it will
-    /// release a reencryption share for a `requires_pet` ring — see this
-    /// file's module doc comment for the target-visibility trade-off this
-    /// implies.
+    /// The PRE-release gate: verify that a genuine blind equality test
+    /// passed for `document`/`salt`, using `evidence` (the certificate plus
+    /// its threshold decrypt responses) as portable, signature-backed
+    /// evidence rather than re-running the three-round fan-out itself.
+    /// Called by every PRE committee member before it will release a
+    /// reencryption share for a `requires_pet` ring.
     ///
-    /// `ring_payload` is passed in rather than re-read here because the
-    /// caller (`handle_reencrypt_request`) already resolved it from the
-    /// bulletin as the authoritative source for its own ACP check — reusing
-    /// it does not weaken independence, since it is `pre`'s own read, never
-    /// anything asserted by the initiator.
-    /// Best-effort: resolve `node_key`'s peer id via the bulletin and queue
-    /// an invalid-crypto report for it. Shared by `verify_pet_admission`'s
-    /// two attributable-failure branches — an authenticated attestation that
-    /// fails to decode (finding #9), and one that decodes but fails its DLEQ
-    /// proof — which differ only in which check failed, not in how the
-    /// report is built or queued. No live connection to the accused node
-    /// exists here (this validates forwarded evidence, not a peer response),
-    /// so `accused_peer_id` is resolved via the bulletin, the same way
-    /// `queue_unauthorized_request_report` does for the same reason.
-    async fn queue_pet_admission_report(
-        &self,
-        ring_id: &str,
-        node_key: &str,
-        statement: PetCheckResponseStatement,
-        response_signature: Vec<u8>,
-        document_evidence: Option<ReportedDocumentEvidence>,
-        from_node_id: u32,
-    ) {
-        let Ok(node_info_post) = self
-            .app_state
-            .bulletin
-            .read(node_key.to_string(), BulletinKind::NodeInfo)
-            .await
-        else {
-            return;
-        };
-        let Ok(node_info) = NodeInfo::try_from(node_info_post) else {
-            return;
-        };
-        let observation = invalid_pet_response_observation(
-            ring_id.to_string(),
-            node_key.to_string(),
-            node_info.peer_id,
-            statement,
-            response_signature,
-            document_evidence,
-        );
-        let _ = queue_report::<D, SignImpl>(
-            self.app_state.clone(),
-            self.routes,
-            ReportObservation::InvalidCryptoResponse(Box::new(observation)),
-        )
-        .await
-        .inspect_err(|error| {
-            tracing::warn!(
-                from_node_id,
-                %error,
-                "Failed to queue PET invalid-proof report observation"
-            );
-        });
-    }
-
+    /// `evidence.coordinator_node_key` is an unauthenticated claim at the
+    /// wire level, but self-correcting: it feeds into the independently
+    /// recomputed `context_digest` this function checks against the
+    /// certificate, and every reveal inside the certificate was itself
+    /// signed by a committee member who resolved the *real* coordinator
+    /// identity from its own live connection — a wrong claim here simply
+    /// fails that comparison.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn verify_pet_admission(
         &self,
@@ -378,7 +658,7 @@ where
         actor_id: &str,
         valid_window: Option<ValidWindow>,
         ring_payload: &bulletin::r#trait::RingPayload,
-        attestations: &[PetShareAttestation],
+        evidence: &PetBlindEvidence,
     ) -> Result<()> {
         let document_inline = document_evidence.is_some();
         // Authorization gate first — an unauthorized caller learns nothing
@@ -397,34 +677,51 @@ where
             salt: salt.map(str::to_string),
             object_id: object_id.to_string(),
             document_inline,
-            // Unused on this path: `verify_pet_check_request` never reads
-            // `token_string`/`audit_target_object_id`/`valid_window` itself
-            // (only `handle_check_request` re-verifies those, for the raw
-            // wire-message entry point — see finding #3 in the PET audit fix
-            // checklist). This function already performed its own,
-            // equivalent authorization above using the real
-            // `actor_id`/`audit_target_object_id`/`valid_window`, so a
-            // placeholder here is correct, not a gap.
+            // Unused on this path — see `handle_check_request`'s original
+            // note (still accurate): this function already performed its
+            // own, equivalent authorization above.
             token_string: String::new(),
             audit_target_object_id: audit_target_object_id.to_string(),
             valid_window,
         };
-        let (tag, _pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
+        let (tag, pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
+
+        let blind_context = build_pet_blind_context(
+            self.app_state.bulletin.chain_id(),
+            ring_payload,
+            &pet_pk_hex,
+            self.routes.version,
+            P::name(),
+            &ctx,
+            actor_id.to_string(),
+            evidence.coordinator_node_key.clone(),
+            evidence.certificate.attempt_id.clone(),
+        );
+        let context_digest = blind_context.context_digest();
+        if context_digest != evidence.certificate.context_digest {
+            return Err(PetError::Mismatch);
+        }
+
+        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
+            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+
+        let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(
+            &evidence.certificate,
+            ring_payload,
+            &tag,
+            &target_fingerprint,
+        )
+        .map_err(|_| PetError::Mismatch)?;
 
         let threshold = ring_payload.threshold as usize;
         let n = ring_payload.peer_node_keys.len();
-        if attestations.len() < threshold {
+        if evidence.decrypt_responses.len() < threshold {
             return Err(PetError::InsufficientShares {
-                got: attestations.len(),
+                got: evidence.decrypt_responses.len(),
                 need: threshold,
             });
         }
 
-        // Per-share verification needs the checking key's own public
-        // polynomial, not the main ring key's — this node already has one
-        // locally, since it's about to release its own reencryption share
-        // for this same main-ring committee (see `initiator.rs`'s identical
-        // comment for why that implies PET-committee membership too).
         let bundle =
             RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
                 .map_err(|e| {
@@ -440,361 +737,390 @@ where
             ))
         })?;
 
-        let statement_ctx = PetCheckStatementContext {
-            chain_id: self.app_state.bulletin.chain_id(),
-            ring_id: document.ring_id.clone(),
-            ring_pk: ring_payload.ring_pk.clone(),
-            ring_state_sha256: ring_state_sha256(ring_payload),
-            protocol_version: self.routes.version,
-            object_id: object_id.to_string(),
-            salt: salt.map(str::to_string),
-            crypto_backend: P::name(),
-            timestamp: document.timestamp,
-            document_inline,
-        };
+        let aggregate_r_bytes = crypto::r#trait::CryptoSerialize::to_bytes(&aggregate_r)
+            .map_err(|e| PetError::Serialization(e.to_string()))?;
+        let aggregate_diff_bytes = crypto::r#trait::CryptoSerialize::to_bytes(&aggregate_diff)
+            .map_err(|e| PetError::Serialization(e.to_string()))?;
+        let certificate_digest = evidence.certificate.certificate_digest();
 
         let mut shares = Vec::with_capacity(threshold);
         let mut seen_indices = HashSet::new();
-        for attestation in attestations.iter().take(threshold) {
-            // Required order — mirrors `initiator.rs`'s live collection loop
-            // exactly, for the same reason (see that file's comment):
-            // resolve identity, verify signature, decode, verify the DLEQ
-            // proof, and only then record the index as seen. This function
-            // validates a fixed, already-selected list with hard-fail
-            // semantics (any problem aborts the whole admission check via
-            // `?`), so the ordering here is about not misattributing a
-            // rejection to an unauthenticated claimed identity, not about
-            // resilience to a live, streaming attack.
-            let node_key = node_key_for_id(attestation.from_node_id, &ring_payload.peer_node_keys)
-                .ok_or_else(|| {
-                    PetError::Crypto(format!(
-                        "PET attestation from_node_id {} is not in the ring committee",
-                        attestation.from_node_id
-                    ))
-                })?;
-            let statement = statement_ctx.statement_for(
-                node_key.clone(),
-                attestation.request_id.clone(),
-                attestation.signed_at,
-                attestation.from_node_id,
-                attestation.partial.clone(),
-                attestation.challenge.clone(),
-                attestation.proof.clone(),
-            );
-            verify_node_message(
-                &node_key,
-                &statement.canonical_bytes(),
-                &attestation.signature,
+        for signed_decrypt in evidence.decrypt_responses.iter().take(threshold) {
+            let share = verify_one_decrypt::<P>(
+                &signed_decrypt.statement,
+                &signed_decrypt.response_signature,
+                ring_payload,
+                &pub_poly,
+                context_digest,
+                certificate_digest,
+                &evidence.certificate.attempt_id,
+                &aggregate_r_bytes,
+                &aggregate_diff_bytes,
             )
-            .map_err(|e| {
-                PetError::Crypto(format!(
-                    "invalid PET attestation signature from node {}: {}",
-                    attestation.from_node_id, e
-                ))
-            })?;
-            let (Ok(partial), Ok(challenge), Ok(proof)) = (
-                G1Affine::from_bytes(&attestation.partial),
-                Fr::from_bytes(&attestation.challenge),
-                Fr::from_bytes(&attestation.proof),
-            ) else {
-                // Authenticated (its signature just verified above) but
-                // undecodable — same attributability as a decodable-but-
-                // cryptographically-invalid response below (finding #9): a
-                // malicious node can't dodge reporting just by signing
-                // garbage bytes instead of a well-formed wrong proof.
-                self.queue_pet_admission_report(
-                    &document.ring_id,
-                    &node_key,
-                    statement,
-                    attestation.signature.clone(),
-                    document_evidence.clone(),
-                    attestation.from_node_id,
-                )
-                .await;
-                return Err(PetError::Deserialization(format!(
-                    "failed to deserialize PET attestation from node {}",
-                    attestation.from_node_id
-                )));
-            };
-            let reply = PetCheckReply {
-                partial: PubShare {
-                    i: attestation.from_node_id,
-                    v: partial,
-                },
-                challenge,
-                proof,
-            };
-            if let Err(error) = P::verify_partial_pet_check(&pub_poly, &tag, &reply) {
-                // Authenticated (its signature just verified) but
-                // cryptographically invalid — attributable and reportable,
-                // unlike a signature failure above.
-                self.queue_pet_admission_report(
-                    &document.ring_id,
-                    &node_key,
-                    statement,
-                    attestation.signature.clone(),
-                    document_evidence.clone(),
-                    attestation.from_node_id,
-                )
-                .await;
-                return Err(PetError::Crypto(format!(
-                    "PET attestation from node {} failed its per-share proof verification: {}",
-                    attestation.from_node_id, error
-                )));
+            .map_err(|_| PetError::Mismatch)?;
+            if !seen_indices.insert(share.i) {
+                return Err(PetError::Mismatch);
             }
-            if !seen_indices.insert(attestation.from_node_id) {
-                return Err(PetError::Crypto(format!(
-                    "duplicate PET attestation index {}",
-                    attestation.from_node_id
-                )));
-            }
-            shares.push(PubShare {
-                i: attestation.from_node_id,
-                v: partial,
-            });
+            shares.push(share);
         }
 
-        let combined = P::combine_pet_check_shares(&shares, threshold, n)
-            .map_err(|e| PetError::Crypto(format!("Failed to combine PET check shares: {}", e)))?;
+        let combined = P::combine_pet_check_shares(&shares, threshold, n).map_err(|e| {
+            PetError::Crypto(format!("Failed to combine PET decrypt shares: {}", e))
+        })?;
+        let combined_bytes = crypto::r#trait::CryptoSerialize::to_bytes(&combined)
+            .map_err(|e| PetError::Serialization(e.to_string()))?;
 
-        // `audit_target_object_id` *is* the plaintext owner identity — the
-        // same value `F()` is computed over — not a handle to resolve via
-        // ACP. `check_pet_permission` above already confirmed the requester
-        // is allowed to test this exact object; a wrong guess here fails
-        // the match below regardless, so no separate identity lookup adds
-        // any protection.
-        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
-
-        P::verify_pet_match(&tag, &combined, &target_fingerprint).map_err(|_| PetError::Mismatch)
-    }
-
-    /// Verify one live `PetCheckResponse` and decide whether it can be
-    /// accepted into `seen_node_ids` — shared by `initiator.rs`'s collection
-    /// loop, extracted (mirroring `pre::v0::coordinator::verification::verify_peer_response`)
-    /// so the acceptance ordering (audit finding #6's fix) is directly unit
-    /// testable without a live network. Required acceptance order,
-    /// enforced by early-returning `Rejected`/`InvalidProof` at every step
-    /// before the one line that mutates `seen_node_ids`:
-    ///
-    /// 1. Fast-path peek only (`seen_node_ids.contains`) — never a mutating
-    ///    insert at this point.
-    /// 2. Resolve the claimed id against the authoritative committee.
-    /// 3. Verify the signature over the reconstructed statement — a
-    ///    signature failure is never attributed to the claimed id, since the
-    ///    sender was never authenticated as that node.
-    /// 4. Decode the contribution and proof.
-    /// 5. Verify the DLEQ proof against this participant's authoritative
-    ///    public share — authenticated but invalid is reportable
-    ///    (`InvalidProof`), unlike an earlier rejection.
-    /// 6. Only now consume the participant's slot (`seen_node_ids.insert`).
-    /// 7. Accept.
-    ///
-    /// A rejected or invalid-proof response never touches `seen_node_ids`,
-    /// so a spoofed or cryptographically bad response claiming an honest
-    /// participant's id can never block that participant's later genuine
-    /// response from being accepted.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn verify_check_response(
-        response: crate::pet::v0::messages::PetMessage,
-        peer_id: &str,
-        ring_payload: &bulletin::r#trait::RingPayload,
-        ring_id: &str,
-        pub_poly: &P::PubPoly,
-        tag: &PetTag,
-        statement_ctx: &PetCheckStatementContext,
-        request_id: &str,
-        document_evidence: &Option<ReportedDocumentEvidence>,
-        seen_node_ids: &mut HashSet<u32>,
-    ) -> PetCheckResponseVerification {
-        let crate::pet::v0::messages::PetMessage::CheckResponse {
-            from_node_id,
-            partial,
-            challenge,
-            proof,
-            signed_at,
-            signature,
-            ..
-        } = response
-        else {
-            return PetCheckResponseVerification::Rejected;
-        };
-
-        // 1. Fast-path only — a cheap peek, never a mutating insert.
-        if seen_node_ids.contains(&from_node_id) {
-            return PetCheckResponseVerification::Rejected;
+        if combined_bytes != aggregate_diff_bytes {
+            return Err(PetError::Mismatch);
         }
-        // 2. Resolve the claimed id against the authoritative committee.
-        let Some(node_key) = node_key_for_id(from_node_id, &ring_payload.peer_node_keys) else {
-            tracing::warn!(
-                peer = %peer_id,
-                from_node_id,
-                "PET Coordinator: dropping check share from an out-of-range node id"
-            );
-            return PetCheckResponseVerification::Rejected;
-        };
-        // 3. Verify the signature over the reconstructed statement.
-        let statement = statement_ctx.statement_for(
-            node_key.clone(),
-            request_id.to_string(),
-            signed_at,
-            from_node_id,
-            partial.clone(),
-            challenge.clone(),
-            proof.clone(),
-        );
-        if let Err(error) = verify_node_message(&node_key, &statement.canonical_bytes(), &signature)
-        {
-            tracing::warn!(
-                peer = %peer_id,
-                from_node_id,
-                %error,
-                "PET Coordinator: dropping check share with an invalid signature"
-            );
-            return PetCheckResponseVerification::Rejected;
-        }
-        // 4. Decode the contribution and proof.
-        let (Ok(parsed_partial), Ok(parsed_challenge), Ok(parsed_proof)) = (
-            G1Affine::from_bytes(&partial),
-            Fr::from_bytes(&challenge),
-            Fr::from_bytes(&proof),
-        ) else {
-            tracing::warn!(
-                peer = %peer_id,
-                from_node_id,
-                "PET Coordinator: dropping authenticated but malformed check share"
-            );
-            // Authenticated (its signature just verified above) but
-            // undecodable — same attributability as a decodable-but-
-            // cryptographically-invalid response below (finding #9): a
-            // malicious responder can't dodge reporting just by signing
-            // garbage bytes instead of a well-formed wrong proof.
-            let observation = invalid_pet_response_observation(
-                ring_id.to_string(),
-                node_key,
-                peer_id.to_string(),
-                statement,
-                signature,
-                document_evidence.clone(),
-            );
-            return PetCheckResponseVerification::InvalidProof(Box::new(observation));
-        };
-        // 5. Verify the DLEQ proof against this participant's authoritative
-        //    public share.
-        let reply = PetCheckReply {
-            partial: PubShare {
-                i: from_node_id,
-                v: parsed_partial,
-            },
-            challenge: parsed_challenge,
-            proof: parsed_proof,
-        };
-        if let Err(error) = P::verify_partial_pet_check(pub_poly, tag, &reply) {
-            tracing::warn!(
-                peer = %peer_id,
-                from_node_id,
-                %error,
-                "PET Coordinator: dropping authenticated but cryptographically invalid check share"
-            );
-            let observation = invalid_pet_response_observation(
-                ring_id.to_string(),
-                node_key,
-                peer_id.to_string(),
-                statement,
-                signature,
-                document_evidence.clone(),
-            );
-            return PetCheckResponseVerification::InvalidProof(Box::new(observation));
-        }
-        // 6. Only now consume the participant's slot.
-        if !seen_node_ids.insert(from_node_id) {
-            return PetCheckResponseVerification::Rejected;
-        }
-        // 7. Accept.
-        PetCheckResponseVerification::Verified(
-            PubShare {
-                i: from_node_id,
-                v: parsed_partial,
-            },
-            Box::new(PetShareAttestation {
-                request_id: request_id.to_string(),
-                from_node_id,
-                partial,
-                challenge,
-                proof,
-                signed_at,
-                signature,
-            }),
-        )
+        Ok(())
     }
 }
 
-pub(crate) enum PetCheckResponseVerification {
-    Verified(PubShare<G1Affine>, Box<PetShareAttestation>),
-    InvalidProof(Box<crate::reporting::v0::observation::InvalidCryptoResponseObservation>),
+/// Outcome of verifying one live `CommitResponse` during the initiator's
+/// round-1 collection loop. Commit responses carry no signature (they are
+/// transport-authenticated only, per the design doc's Round 1 section: a
+/// hiding commitment has nothing yet worth attributing misconduct over), so
+/// there is no reportable failure mode here — only accept or reject.
+pub(crate) enum PetCommitResponseVerification {
+    Verified { node_id: u32, commitment: [u8; 32] },
     Rejected,
 }
 
-/// Regression coverage for the peer-side PET admission gate: proves that
-/// `verify_pet_admission` — the check `pre::v0::coordinator::handlers::handle_reencrypt_request`
-/// runs before releasing a reencryption share on a `requires_pet` ring — actually
-/// rejects a request that skips or forges the threshold check, not just that the
-/// happy path still works. Without this gate, nothing on the PRE peer side ever
-/// consulted `requires_pet` at all: a compromised or simply modified initiator
-/// could skip `initiate_pet_check` entirely and still collect valid reencryption
-/// shares from every honest peer.
+/// Verify one live `PetMessage::CommitResponse` and decide whether it can be
+/// accepted into `seen_node_ids`. Mirrors the old protocol's
+/// `verify_check_response`'s acceptance ordering: peek, resolve identity,
+/// check the response's own recomputed context digest, only then consume
+/// the participant's slot.
+pub(crate) fn verify_commit_response(
+    response: crate::pet::v0::messages::PetMessage,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    expected_context_digest: [u8; 32],
+    seen_node_ids: &mut HashSet<u32>,
+) -> PetCommitResponseVerification {
+    let crate::pet::v0::messages::PetMessage::CommitResponse {
+        from_node_id,
+        context_digest,
+        commitment,
+        ..
+    } = response
+    else {
+        return PetCommitResponseVerification::Rejected;
+    };
+    if seen_node_ids.contains(&from_node_id) {
+        return PetCommitResponseVerification::Rejected;
+    }
+    if node_key_for_id(from_node_id, &ring_payload.peer_node_keys).is_none() {
+        return PetCommitResponseVerification::Rejected;
+    }
+    if context_digest != expected_context_digest {
+        return PetCommitResponseVerification::Rejected;
+    }
+    let Ok(commitment): std::result::Result<[u8; 32], _> = commitment.try_into() else {
+        return PetCommitResponseVerification::Rejected;
+    };
+    if !seen_node_ids.insert(from_node_id) {
+        return PetCommitResponseVerification::Rejected;
+    }
+    PetCommitResponseVerification::Verified {
+        node_id: from_node_id,
+        commitment,
+    }
+}
+
+pub(crate) enum PetRevealResponseVerification {
+    Verified(Box<PetBlindSignedReveal>),
+    InvalidProof(Box<InvalidCryptoResponseObservation>),
+    Rejected,
+}
+
+/// Verify one live `PetMessage::RevealResponse` against the exact selected
+/// list fixed after round 1. `all_commitments` must already be the
+/// canonical, sorted selected list; `selection_digest` is its digest.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_reveal_response<P>(
+    response: crate::pet::v0::messages::PetMessage,
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    tag: &PetTag,
+    target_fingerprint: &P::PublicKey,
+    all_commitments: &[(u32, [u8; 32])],
+    selection_digest: [u8; 32],
+    blind_context: &PetBlindContext,
+    document_evidence: &Option<ReportedDocumentEvidence>,
+    seen_node_ids: &mut HashSet<u32>,
+) -> PetRevealResponseVerification
+where
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
+{
+    let crate::pet::v0::messages::PetMessage::RevealResponse {
+        attempt_id,
+        context_digest,
+        selection_digest: response_selection_digest,
+        from_node_id,
+        commitment,
+        blinded_r,
+        blinded_diff,
+        commit_salt,
+        challenge,
+        proof,
+        signed_at,
+        response_signature,
+        ..
+    } = response
+    else {
+        return PetRevealResponseVerification::Rejected;
+    };
+    if seen_node_ids.contains(&from_node_id) {
+        return PetRevealResponseVerification::Rejected;
+    }
+    let Some(node_key) = node_key_for_id(from_node_id, &ring_payload.peer_node_keys) else {
+        return PetRevealResponseVerification::Rejected;
+    };
+    if response_selection_digest != selection_digest {
+        return PetRevealResponseVerification::Rejected;
+    }
+    let Some(&(_, expected_commitment)) =
+        all_commitments.iter().find(|(id, _)| *id == from_node_id)
+    else {
+        return PetRevealResponseVerification::Rejected;
+    };
+
+    let statement = PetBlindRevealStatement {
+        domain: crate::reporting::v0::types::PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+        attempt_id,
+        context_digest,
+        selection_digest,
+        responder_node_key: node_key.clone(),
+        from_node_id,
+        commitment: commitment.clone(),
+        blinded_r: blinded_r.clone(),
+        blinded_diff: blinded_diff.clone(),
+        commit_salt,
+        challenge: challenge.clone(),
+        proof: proof.clone(),
+        signed_at,
+    };
+    if verify_node_message(&node_key, &statement.canonical_bytes(), &response_signature).is_err() {
+        return PetRevealResponseVerification::Rejected;
+    }
+    if commitment.as_slice() != expected_commitment {
+        return PetRevealResponseVerification::Rejected;
+    }
+    let recomputed_commitment = pet_blind_commit_hash(
+        &statement.attempt_id,
+        &context_digest,
+        from_node_id,
+        &commit_salt,
+        &blinded_r,
+        &blinded_diff,
+    );
+    if recomputed_commitment != expected_commitment {
+        // Signed, but does not open its own claimed commitment — attributable.
+        let observation = invalid_pet_blind_reveal_observation(
+            ring_id.to_string(),
+            node_key,
+            String::new(),
+            blind_context.clone(),
+            statement,
+            response_signature,
+            document_evidence.clone(),
+        );
+        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
+    }
+
+    let (Ok(parsed_r), Ok(parsed_diff), Ok(parsed_challenge), Ok(parsed_proof)) = (
+        G1Affine::from_bytes(&blinded_r),
+        G1Affine::from_bytes(&blinded_diff),
+        Fr::from_bytes(&challenge),
+        Fr::from_bytes(&proof),
+    ) else {
+        let observation = invalid_pet_blind_reveal_observation(
+            ring_id.to_string(),
+            node_key,
+            String::new(),
+            blind_context.clone(),
+            statement,
+            response_signature,
+            document_evidence.clone(),
+        );
+        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
+    };
+    let reply = BlindingReply {
+        blinded_r: parsed_r,
+        blinded_diff: parsed_diff,
+        challenge: parsed_challenge,
+        proof: parsed_proof,
+    };
+    let blind_transcript_digest = pet_blind_proof_transcript_digest(
+        &statement.attempt_id,
+        &context_digest,
+        &selection_digest,
+        from_node_id,
+        &expected_commitment,
+    );
+    if P::verify_blinding_correctness(tag, target_fingerprint, &reply, &blind_transcript_digest)
+        .is_err()
+    {
+        let observation = invalid_pet_blind_reveal_observation(
+            ring_id.to_string(),
+            node_key,
+            String::new(),
+            blind_context.clone(),
+            statement,
+            response_signature,
+            document_evidence.clone(),
+        );
+        return PetRevealResponseVerification::InvalidProof(Box::new(observation));
+    }
+
+    if !seen_node_ids.insert(from_node_id) {
+        return PetRevealResponseVerification::Rejected;
+    }
+    PetRevealResponseVerification::Verified(Box::new(PetBlindSignedReveal {
+        statement,
+        response_signature,
+    }))
+}
+
+pub(crate) enum PetDecryptResponseVerification {
+    Verified(
+        Box<crate::reporting::v0::types::PetBlindSignedDecrypt>,
+        PubShare<G1Affine>,
+    ),
+    InvalidProof(Box<InvalidCryptoResponseObservation>),
+    Rejected,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_decrypt_response<P>(
+    response: crate::pet::v0::messages::PetMessage,
+    ring_id: &str,
+    ring_payload: &bulletin::r#trait::RingPayload,
+    pub_poly: &P::PubPoly,
+    expected_context_digest: [u8; 32],
+    expected_certificate_digest: [u8; 32],
+    expected_attempt_id: &str,
+    expected_aggregate_r: &[u8],
+    expected_aggregate_diff: &[u8],
+    blind_context: &PetBlindContext,
+    document_evidence: &Option<ReportedDocumentEvidence>,
+    seen_node_ids: &mut HashSet<u32>,
+) -> PetDecryptResponseVerification
+where
+    P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
+{
+    let crate::pet::v0::messages::PetMessage::DecryptResponse {
+        attempt_id,
+        context_digest,
+        certificate_digest,
+        from_node_id,
+        aggregate_r,
+        aggregate_diff,
+        partial,
+        challenge,
+        proof,
+        signed_at,
+        response_signature,
+        ..
+    } = response
+    else {
+        return PetDecryptResponseVerification::Rejected;
+    };
+    if seen_node_ids.contains(&from_node_id) {
+        return PetDecryptResponseVerification::Rejected;
+    }
+    let Some(node_key) = node_key_for_id(from_node_id, &ring_payload.peer_node_keys) else {
+        return PetDecryptResponseVerification::Rejected;
+    };
+    let statement = PetBlindDecryptStatement {
+        domain: crate::reporting::v0::types::PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+        attempt_id,
+        context_digest,
+        certificate_digest,
+        responder_node_key: node_key.clone(),
+        from_node_id,
+        aggregate_r,
+        aggregate_diff,
+        partial,
+        challenge,
+        proof,
+        signed_at,
+    };
+    if verify_node_message(&node_key, &statement.canonical_bytes(), &response_signature).is_err() {
+        return PetDecryptResponseVerification::Rejected;
+    }
+
+    match verify_one_decrypt::<P>(
+        &statement,
+        &response_signature,
+        ring_payload,
+        pub_poly,
+        expected_context_digest,
+        expected_certificate_digest,
+        expected_attempt_id,
+        expected_aggregate_r,
+        expected_aggregate_diff,
+    ) {
+        Ok(share) => {
+            if !seen_node_ids.insert(from_node_id) {
+                return PetDecryptResponseVerification::Rejected;
+            }
+            let signed_decrypt = crate::reporting::v0::types::PetBlindSignedDecrypt {
+                statement,
+                response_signature,
+            };
+            PetDecryptResponseVerification::Verified(Box::new(signed_decrypt), share)
+        }
+        Err(PetError::Deserialization(_)) => {
+            let observation = invalid_pet_blind_decrypt_observation(
+                ring_id.to_string(),
+                node_key,
+                String::new(),
+                blind_context.clone(),
+                statement,
+                response_signature,
+                document_evidence.clone(),
+            );
+            PetDecryptResponseVerification::InvalidProof(Box::new(observation))
+        }
+        Err(PetError::Crypto(msg)) if msg.contains("per-share proof verification") => {
+            let observation = invalid_pet_blind_decrypt_observation(
+                ring_id.to_string(),
+                node_key,
+                String::new(),
+                blind_context.clone(),
+                statement,
+                response_signature,
+                document_evidence.clone(),
+            );
+            PetDecryptResponseVerification::InvalidProof(Box::new(observation))
+        }
+        Err(_) => PetDecryptResponseVerification::Rejected,
+    }
+}
+
+/// Regression coverage for [`build_and_verify_pet_blind_certificate`] — the
+/// single shared certificate-validation routine every other layer (the
+/// initiator, every decryptor, PRE admission) relies on. Reuses the old
+/// single-round protocol's exact fixture-building pattern (a degree-0
+/// "identical shares" polynomial, so a genuinely DLEQ-verifiable
+/// contribution needs no real DKG ceremony) — see `crypto::PetImpl`'s own
+/// generic suite for the underlying `prove_blinding_correctness`/
+/// `verify_blinding_correctness` coverage; this module's job is the
+/// certificate-shape checks built *around* that primitive.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::helpers::test_helpers::{
-        cleanup_db, create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
+    use crate::reporting::v0::types::{
+        pet_blind_selection_digest, PetBlindCertificate, PetBlindSignedReveal,
+        PET_BLIND_REVEAL_RESPONSE_DOMAIN,
     };
-    use crate::pet::v0::messages::{PetCheckRequest, PetMessage};
-    use authz::dummy::DummyAuthZ;
-    use bulletin::dummy::DummyBulletin;
-    use bulletin::r#trait::{DocumentPayload, RingPayload};
+    use bulletin::r#trait::RingPayload;
     use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
-    use crypto::r#trait::{CryptoSerialize, PriShare};
+    use crypto::r#trait::CryptoSerialize;
     use crypto::{DkgImpl, PetImpl};
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use zeroize::Zeroizing;
 
-    fn current_unix_time() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_secs()
-    }
-
-    const RING_ID: &str = "pet-admission-test-ring";
-    const AUDIT_TARGET: &str = "pet-admission-audit-target";
-    const TEST_REQUEST_ID: &str = "pet-admission-test-request";
-
-    /// The fixture's document genuinely bound to its own `object_id` —
-    /// `verify_pet_check_request` now enforces this (finding #7's fix), so a
-    /// placeholder constant no longer works: every test must derive its
-    /// `object_id` from its own fixture's actual document.
-    fn object_id_for(fixture: &TagFixture) -> String {
-        common::blockchain::orbis::generate_document_id(
-            &fixture.document.ring_id,
-            &fixture.document.document,
-            &fixture.document.proof,
-            &fixture.document.policy_id,
-            &fixture.document.resource,
-            &fixture.document.permission,
-            fixture.document.tier.as_deref(),
-            fixture.document.timestamp,
-            fixture.document.pet_tag.as_deref(),
-            fixture.document.pet_tag_proof.as_deref(),
-        )
-        .expect("compute object_id for fixture document")
-    }
-
-    /// A throwaway node-identity signing keypair, generated the same way
-    /// `create_test_app_state_with_bulletin` mints a real node's signing
-    /// key — `verify_node_message` only accepts a real secp256k1 key it can
-    /// parse, not an arbitrary string.
     struct TestSigner {
         secret_hex: String,
         pubkey_hex: String,
@@ -818,45 +1144,23 @@ mod tests {
         }
     }
 
-    /// Everything needed to hand `verify_pet_admission` a genuinely-valid
-    /// tag-knowledge proof, so every rejection below happens at the
-    /// attestation layer under test, not because the tag itself was rejected.
-    struct FixtureBase {
-        ring_payload: RingPayload,
-        document: DocumentPayload,
-        secret: Secret,
-        payload_proof: EncryptionProof,
-        signers: Vec<TestSigner>,
-        r_tag: Fr,
-        r_point: G1Affine,
-        /// The ring's PET checking-key secret. Every committee member is
-        /// given this *same* scalar as its "share" — a degree-0 polynomial,
-        /// so any subset's Lagrange combination recovers it exactly — mirrors
-        /// `crypto`'s own `identical_shares` test helper. This lets
-        /// `valid_attestation` compute genuine, individually-DLEQ-verifiable
-        /// contributions rather than random points.
-        pet_sk: Fr,
-    }
-
+    /// A ring plus a genuinely tag-knowledge-verifiable document/tag, whose
+    /// checking-key secret (`pet_sk`) is shared identically by every
+    /// committee member (a degree-0 polynomial) — mirrors this file's own
+    /// pre-existing fixture pattern for the old protocol.
     struct TagFixture {
         ring_payload: RingPayload,
-        document: DocumentPayload,
+        tag: PetTag,
         signers: Vec<TestSigner>,
-        pet_sk: Fr,
     }
 
-    /// Builds everything except the tag's `masked_fingerprint` (callers supply
-    /// that, since rejection tests use garbage bytes — never checked by
-    /// `verify_tag_knowledge`, only the Schnorr proof over `ephemeral_point`
-    /// is — while the one happy-path test needs a real `F(owner) + pet_sk*R`).
-    fn build_base(committee_size: usize, threshold: u32) -> FixtureBase {
+    fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixture {
         let mut signers: Vec<TestSigner> = (0..committee_size).map(|_| gen_signer()).collect();
         signers.sort_by(|a, b| a.pubkey_hex.cmp(&b.pubkey_hex));
         let peer_node_keys: Vec<String> = signers.iter().map(|s| s.pubkey_hex.clone()).collect();
 
         let (pet_sk, pet_pk) =
             crypto::helpers::generate_keypair().expect("generate pet checking keypair");
-
         let ring_payload = RingPayload {
             upgrade_info: Default::default(),
             ring_pk: "aa".repeat(32),
@@ -875,1099 +1179,285 @@ mod tests {
             )),
         };
 
-        let (r_tag, r_point) =
+        let (_r_tag, r_point) =
             crypto::helpers::generate_keypair().expect("generate ephemeral tag keypair");
-
-        let secret = Secret {
-            enc_cmt: vec![1, 2, 3],
-            encrypted_data: vec![4, 5, 6],
-            nonce: vec![7, 8, 9],
-        };
-        let payload_proof = EncryptionProof {
-            challenge: vec![10, 11],
-            response: vec![12, 13],
-        };
-        let document = DocumentPayload {
-            ring_id: RING_ID.to_string(),
-            document: serde_json::to_string(&secret).expect("serialize secret"),
-            proof: String::try_from(EncryptionProof {
-                challenge: payload_proof.challenge.clone(),
-                response: payload_proof.response.clone(),
-            })
-            .expect("serialize payload proof"),
-            policy_id: "test-policy".to_string(),
-            resource: "test-resource".to_string(),
-            permission: "read".to_string(),
-            tier: None,
-            timestamp: None,
-            pet_tag: None,
-            pet_tag_proof: None,
-        };
-
-        FixtureBase {
-            ring_payload,
-            document,
-            secret,
-            payload_proof,
-            signers,
-            r_tag,
-            r_point,
-            pet_sk,
-        }
-    }
-
-    /// Completes a [`FixtureBase`] into a genuinely tag-knowledge-verifiable
-    /// [`TagFixture`], given the `masked_fingerprint` bytes the caller wants.
-    fn finalize_fixture(mut base: FixtureBase, masked_fingerprint: Vec<u8>) -> TagFixture {
-        let ephemeral_point =
-            CryptoSerialize::to_bytes(&base.r_point).expect("serialize ephemeral point");
-        let tag = PetTag {
-            ephemeral_point,
-            masked_fingerprint,
-        };
-        let pet_pk_hex = base.ring_payload.pet_pk.clone().unwrap();
-        let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
-        // Required noncircular construction order (PET audit fix checklist,
-        // finding #5): the tag must be on the document *before* the context
-        // it's bound into is built, since `build_ciphertext_context` reads
-        // `document.pet_tag` to reconstruct the binding — mirrors the real
-        // order `cli_tool::generate_pet_tag`/`prepare_secret` now enforce.
-        base.document.pet_tag = Some(String::try_from(tag.clone()).expect("serialize tag"));
-        let ciphertext_context = build_ciphertext_context(
-            &base.ring_payload.ring_pk,
-            &base.document,
-            None,
-            Some(&pet_pk_hex),
-        )
-        .expect("build ciphertext context");
-        let digest = crypto::pet_context::tag_proof_digest(
-            &tag.ephemeral_point,
-            &tag.masked_fingerprint,
-            &pet_pk_bytes,
-            &base.document.ring_id,
-            &ciphertext_context,
-            &base.secret,
-            &base.payload_proof,
-        );
-        let tag_proof =
-            PetImpl::prove_tag_knowledge(&base.r_tag, &tag, &digest).expect("prove tag knowledge");
-
-        base.document.pet_tag_proof =
-            Some(String::try_from(tag_proof).expect("serialize tag proof"));
-
-        TagFixture {
-            ring_payload: base.ring_payload,
-            document: base.document,
-            signers: base.signers,
-            pet_sk: base.pet_sk,
-        }
-    }
-
-    /// A garbage-`masked_fingerprint` fixture — sufficient for every test
-    /// below that expects rejection to happen at the attestation layer, never
-    /// reaching `combine_pet_check_shares`/`verify_pet_match`.
-    fn build_fixture(committee_size: usize, threshold: u32) -> TagFixture {
-        let base = build_base(committee_size, threshold);
-        finalize_fixture(base, vec![9, 9, 9])
-    }
-
-    /// A fixture whose tag genuinely matches `target` — needed only by the
-    /// one happy-path test, which must reach `verify_pet_match` and have it
-    /// succeed.
-    fn build_fixture_with_real_target(
-        committee_size: usize,
-        threshold: u32,
-        target: &str,
-    ) -> TagFixture {
-        let base = build_base(committee_size, threshold);
-        let combined =
-            crypto::helpers::mul_point(&base.r_point, &base.pet_sk).expect("compute pet_sk*R");
+        let combined = crypto::helpers::mul_point(&r_point, &pet_sk).expect("compute pet_sk*R");
         let target_fingerprint =
             PetImpl::owner_fingerprint(target.as_bytes()).expect("compute F(target)");
         let masked = crypto::helpers::add_points(&target_fingerprint, &combined)
             .expect("combine fingerprint and blinding");
-        let masked_bytes =
-            CryptoSerialize::to_bytes(&masked).expect("serialize masked fingerprint");
-        finalize_fixture(base, masked_bytes)
-    }
+        let tag = PetTag {
+            ephemeral_point: CryptoSerialize::to_bytes(&r_point).expect("serialize R"),
+            masked_fingerprint: CryptoSerialize::to_bytes(&masked).expect("serialize T"),
+        };
 
-    /// A correctly-signed, genuinely DLEQ-valid attestation from committee
-    /// member `node_id` (1-based, matching `signers[node_id - 1]`'s sorted
-    /// position) — computed from the fixture's real (shared) `pet_sk`, so
-    /// every rejection test below isolates the one specific defect it
-    /// introduces rather than failing at an earlier, unrelated proof check.
-    /// Matches `DummyBulletin::chain_id()` (`"vera-localnet"`) and
-    /// `::network::V0.version` exactly, so a statement built here verifies
-    /// identically whether reconstructed by `verify_pet_admission` (which
-    /// reads them from a real, if dummy, `AppState`) or by
-    /// `verify_check_response` (a pure function, given these fixed test
-    /// values directly — no coordinator needed).
-    fn test_statement_ctx(fixture: &TagFixture) -> PetCheckStatementContext {
-        PetCheckStatementContext {
-            chain_id: "vera-localnet".to_string(),
-            ring_id: fixture.document.ring_id.clone(),
-            ring_pk: fixture.ring_payload.ring_pk.clone(),
-            ring_state_sha256: ring_state_sha256(&fixture.ring_payload),
-            protocol_version: ::network::V0.version,
-            object_id: object_id_for(fixture),
-            salt: None,
-            crypto_backend: PetImpl::name(),
-            timestamp: fixture.document.timestamp,
-            document_inline: false,
+        TagFixture {
+            ring_payload,
+            tag,
+            signers,
         }
     }
 
-    fn valid_attestation(fixture: &TagFixture, node_id: u32) -> PetShareAttestation {
-        let tag = PetTag::try_from(fixture.document.pet_tag.clone().expect("fixture has a tag"))
-            .expect("parse fixture tag");
-        let reply = PetImpl::partial_pet_check(&fixture.pet_sk, node_id, &tag)
-            .expect("compute genuine partial");
-        let partial_bytes = CryptoSerialize::to_bytes(&reply.partial.v).expect("serialize partial");
-        let challenge_bytes =
-            CryptoSerialize::to_bytes(&reply.challenge).expect("serialize challenge");
-        let proof_bytes = CryptoSerialize::to_bytes(&reply.proof).expect("serialize proof");
-        let signed_at = 1_700_000_000u64;
-        let statement_ctx = test_statement_ctx(fixture);
-        let signer = &fixture.signers[(node_id - 1) as usize];
-        let statement = statement_ctx.statement_for(
-            signer.pubkey_hex.clone(),
-            TEST_REQUEST_ID.to_string(),
-            signed_at,
-            node_id,
-            partial_bytes.clone(),
-            challenge_bytes.clone(),
-            proof_bytes.clone(),
-        );
-        let signature =
-            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
-                .expect("sign attestation");
-        PetShareAttestation {
-            request_id: TEST_REQUEST_ID.to_string(),
-            from_node_id: node_id,
-            partial: partial_bytes,
-            challenge: challenge_bytes,
-            proof: proof_bytes,
-            signed_at,
-            signature,
-        }
-    }
-
-    async fn test_coordinator(
-        db_name: &str,
-        ring_payload: &RingPayload,
-    ) -> PetCoordinator<DkgImpl, PetImpl> {
-        let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
-        dummy_bulletin
-            .set_ring(RING_ID.to_string(), ring_payload.clone())
-            .expect("seed ring");
-        let app_state = create_test_app_state_with_bulletin(true, dummy_bulletin, db_name).await;
-
-        // `verify_pet_admission` loads this ring's PET checking-key bundle to
-        // get a public polynomial to verify per-share DLEQ proofs against.
-        // Every fixture's "threshold sharing" is the degree-0 "identical
-        // shares" trick (see `FixtureBase::pet_sk`), so a single-commit
-        // polynomial pinned to the ring's own `pet_pk` is exactly the
-        // matching public commitment. `share_bytes` itself is never read by
-        // `verify_pet_admission`, so a throwaway placeholder is fine there.
-        let pet_pk_bytes = hex::decode(ring_payload.pet_pk.as_ref().expect("ring_payload.pet_pk"))
-            .expect("decode pet_pk hex");
-        let pet_pk = G1Affine::from_bytes(&pet_pk_bytes).expect("decode pet_pk point");
-        let pub_poly = crypto::PubPolyImpl {
-            commits: vec![pet_pk],
-        };
-        let placeholder_share = PriShare {
-            i: 1,
-            v: Fr::from(1u64),
-        };
-        let bundle = RingShareBundle {
-            share_bytes: Zeroizing::new(
-                CryptoSerialize::to_bytes(&placeholder_share).expect("serialize placeholder share"),
-            ),
-            public_polynomial: hex::encode(
-                CryptoSerialize::to_bytes(&pub_poly).expect("serialize pub_poly"),
-            ),
-            last_pss: 0,
-        };
-        bundle
-            .save_by_pet_ring_key(&app_state.local_storage, RING_ID)
-            .expect("seed PET bundle");
-
-        PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0)
-    }
-
-    // ========================================================================
-    // Audit finding #7: `document` and `object_id` are independent fields on
-    // `PetCheckContext`'s wire — nothing upstream of `verify_pet_check_request`
-    // guarantees a live PET request's initiator supplied a genuinely matching
-    // pair, unlike PRE's own request handling (which always resolves both
-    // together via `resolve_document_and_ring_payloads`).
-    // ========================================================================
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
-        let db_name = "pet_check_request_rejects_document_object_id_mismatch";
-        // Same ring, two different documents (distinct random tags/proofs) —
-        // `fixture_a.document`, `fixture_b`'s id: exactly finding #7's attack
-        // shape, a malicious coordinator pairing a genuine document with a
-        // different document's claimed identity.
-        let fixture_a = build_fixture(3, 2);
-        let fixture_b = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture_a.ring_payload).await;
-
-        let ctx = PetCheckContext {
-            document: fixture_a.document.clone(),
-            salt: None,
-            object_id: object_id_for(&fixture_b),
-            document_inline: false,
-            token_string: String::new(),
-            audit_target_object_id: String::new(),
-            valid_window: None,
-        };
-
-        let result = coordinator.verify_pet_check_request(&ctx).await;
-        assert!(
-            matches!(result, Err(PetError::InvalidInput(_))),
-            "document = A paired with object_id = id(B) must be rejected before any proof is \
-             computed or signed, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_missing_attestations() {
-        let db_name = "pet_admission_rejects_missing_attestations";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &[],
-            )
-            .await;
-
-        assert!(
-            matches!(
-                result,
-                Err(PetError::InsufficientShares { got: 0, need: 2 })
-            ),
-            "expected InsufficientShares, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_insufficient_attestations() {
-        let db_name = "pet_admission_rejects_insufficient_attestations";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let attestations = vec![valid_attestation(&fixture, 1)];
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &attestations,
-            )
-            .await;
-
-        assert!(
-            matches!(
-                result,
-                Err(PetError::InsufficientShares { got: 1, need: 2 })
-            ),
-            "expected InsufficientShares, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_duplicate_attestation_indices() {
-        let db_name = "pet_admission_rejects_duplicate_indices";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let first = valid_attestation(&fixture, 1);
-        // A second, independently "genuine" contribution for the *same*
-        // slot — signature and DLEQ proof both pass (it's a byte-identical
-        // rebuild), so this isolates the duplicate-index check specifically.
-        let second = valid_attestation(&fixture, 1);
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &[first, second],
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(PetError::Crypto(_))),
-            "expected a duplicate-index rejection, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_out_of_range_node_id() {
-        let db_name = "pet_admission_rejects_out_of_range_node_id";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let mut out_of_range = valid_attestation(&fixture, 1);
-        out_of_range.from_node_id = 99; // outside the 3-member committee
-        let attestations = vec![out_of_range, valid_attestation(&fixture, 2)];
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &attestations,
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(PetError::Crypto(_))),
-            "expected an out-of-range node id rejection, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_forged_signature() {
-        let db_name = "pet_admission_rejects_forged_signature";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let genuine = valid_attestation(&fixture, 1);
-        let mut forged = valid_attestation(&fixture, 2);
-        // Node 2's real signature, but for a *different* partial than the one
-        // actually being submitted under its name — exactly what a
-        // compromised/absent initiator would have to fabricate to bypass PET
-        // without ever contacting node 2 for a genuine contribution.
-        let (_sk, other_point) =
-            crypto::helpers::generate_keypair().expect("generate mismatched partial");
-        forged.partial = CryptoSerialize::to_bytes(&other_point).expect("serialize partial");
-
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &[genuine, forged],
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(PetError::Crypto(_))),
-            "expected a signature-verification rejection, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_rejects_and_reports_a_malformed_attestation() {
-        let db_name = "pet_admission_rejects_and_reports_malformed_attestation";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let genuine = valid_attestation(&fixture, 1);
-        // Node 2's real signature, over genuinely undecodable
-        // partial/challenge/proof bytes — distinct from a forged-signature
-        // or a decodable-but-wrong DLEQ proof (finding #9): before the fix
-        // this fell through to a bare deserialization error with no report
-        // ever queued for node 2. `verify_pet_admission` now attempts to
-        // queue an invalid-crypto report for it before returning that same
-        // error (best-effort — this test only asserts the outward
-        // rejection, since queueing itself is fire-and-forget and never
-        // gates the admission decision).
-        let mut malformed = valid_attestation(&fixture, 2);
-        malformed.partial = vec![0xff, 0xff, 0xff];
-        let statement_ctx = test_statement_ctx(&fixture);
-        let signer = &fixture.signers[1];
-        let statement = statement_ctx.statement_for(
-            signer.pubkey_hex.clone(),
-            TEST_REQUEST_ID.to_string(),
-            malformed.signed_at,
-            2,
-            malformed.partial.clone(),
-            malformed.challenge.clone(),
-            malformed.proof.clone(),
-        );
-        malformed.signature =
-            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
-                .expect("sign malformed attestation");
-
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &[genuine, malformed],
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(PetError::Deserialization(_))),
-            "expected a deserialization rejection, got {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    /// Confirms the rejections above aren't vacuous against a gate that
-    /// rejects everything: `threshold`-many genuinely signed, correctly
-    /// combining attestations for a tag that really does match the audited
-    /// owner must be admitted.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn verify_pet_admission_accepts_genuine_attestations() {
-        let db_name = "pet_admission_accepts_genuine_attestations";
-        let committee_size = 3;
-        let threshold = 2;
-        let fixture = build_fixture_with_real_target(committee_size, threshold, AUDIT_TARGET);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
-
-        let attestations: Vec<PetShareAttestation> = (1..=threshold)
-            .map(|node_id| valid_attestation(&fixture, node_id))
-            .collect();
-
-        let result = coordinator
-            .verify_pet_admission(
-                &fixture.document,
-                None,
-                &object_id_for(&fixture),
-                None,
-                AUDIT_TARGET,
-                "test-actor",
-                None,
-                &fixture.ring_payload,
-                &attestations,
-            )
-            .await;
-
-        assert!(
-            result.is_ok(),
-            "expected genuine attestations to be admitted: {:?}",
-            result
-        );
-        cleanup_db(&test_db_path(db_name));
-    }
-
-    // ========================================================================
-    // `verify_check_response`'s acceptance ordering must
-    // never let a rejected or invalid response consume a participant's slot.
-    // `verify_check_response` is a pure function (no `AppState`/local
-    // storage/network), so these tests call it directly — no coordinator,
-    // no tokio runtime, no on-disk db.
-    // ========================================================================
-
-    fn fixture_tag(fixture: &TagFixture) -> PetTag {
-        PetTag::try_from(fixture.document.pet_tag.clone().expect("fixture has a tag"))
-            .expect("parse fixture tag")
-    }
-
-    fn fixture_pub_poly(fixture: &TagFixture) -> crypto::PubPolyImpl {
-        let pet_pk_bytes = hex::decode(fixture.ring_payload.pet_pk.as_ref().expect("pet_pk"))
-            .expect("decode pet_pk hex");
-        let pet_pk = G1Affine::from_bytes(&pet_pk_bytes).expect("decode pet_pk point");
-        crypto::PubPolyImpl {
-            commits: vec![pet_pk],
-        }
-    }
-
-    fn attestation_to_check_response(
-        attestation: PetShareAttestation,
-    ) -> crate::pet::v0::messages::PetMessage {
-        crate::pet::v0::messages::PetMessage::CheckResponse {
-            request_id: attestation.request_id,
-            from_node_id: attestation.from_node_id,
-            partial: attestation.partial,
-            challenge: attestation.challenge,
-            proof: attestation.proof,
-            signed_at: attestation.signed_at,
-            signature: attestation.signature,
-        }
-    }
-
-    /// A response claiming `node_id`'s slot with an invalid signature —
-    /// exactly what a malicious responder sends to try to preempt an honest
-    /// participant's id without ever having a real key or share for it.
-    fn spoofed_response(
-        fixture: &TagFixture,
+    /// This node's round-1 output plus everything round 2 needs to open it —
+    /// `z_i` stays around so the test can build the real, selection-bound
+    /// proof once `all_commitments` is fixed, exactly like
+    /// `pending_blind::PendingBlinding` does in production.
+    struct Contribution {
         node_id: u32,
-    ) -> crate::pet::v0::messages::PetMessage {
-        let mut response = attestation_to_check_response(valid_attestation(fixture, node_id));
-        if let crate::pet::v0::messages::PetMessage::CheckResponse { signature, .. } = &mut response
-        {
-            signature[0] ^= 0x01;
-        }
-        response
+        z_i: Fr,
+        commit_salt: [u8; 32],
+        commitment: [u8; 32],
     }
 
-    /// A response genuinely signed by `node_id`'s real key, but over a
-    /// partial/challenge/proof that was never computed via
-    /// `Pet::partial_pet_check` — authenticated, but cryptographically
-    /// invalid. Mirrors the shape a compromised (but key-holding) committee
-    /// member, or a bug, would produce.
-    fn invalid_proof_response(
-        fixture: &TagFixture,
+    fn commit(
+        tag: &PetTag,
+        target_fingerprint: &G1Affine,
+        attempt_id: &str,
+        context_digest: [u8; 32],
         node_id: u32,
-    ) -> crate::pet::v0::messages::PetMessage {
-        let (_sk, garbage_point) =
-            crypto::helpers::generate_keypair().expect("generate garbage partial");
-        let partial_bytes = CryptoSerialize::to_bytes(&garbage_point).expect("serialize partial");
-        let challenge_bytes =
-            CryptoSerialize::to_bytes(&Fr::from(7u64)).expect("serialize challenge");
-        let proof_bytes = CryptoSerialize::to_bytes(&Fr::from(9u64)).expect("serialize proof");
-        let signed_at = 1_700_000_000u64;
-        let statement_ctx = test_statement_ctx(fixture);
-        let signer = &fixture.signers[(node_id - 1) as usize];
-        let statement = statement_ctx.statement_for(
-            signer.pubkey_hex.clone(),
-            TEST_REQUEST_ID.to_string(),
-            signed_at,
+    ) -> Contribution {
+        let (z_i, _unused) =
+            crypto::helpers::generate_keypair().expect("sample blinding scalar");
+        let preliminary = PetImpl::prove_blinding_correctness(&z_i, tag, target_fingerprint, &[0u8; 32])
+            .expect("compute blinding points");
+        let blinded_r_bytes =
+            CryptoSerialize::to_bytes(&preliminary.blinded_r).expect("serialize blinded_r");
+        let blinded_diff_bytes =
+            CryptoSerialize::to_bytes(&preliminary.blinded_diff).expect("serialize blinded_diff");
+        let commit_salt: [u8; 32] = rand::random();
+        let commitment = pet_blind_commit_hash(
+            attempt_id,
+            &context_digest,
             node_id,
-            partial_bytes.clone(),
-            challenge_bytes.clone(),
-            proof_bytes.clone(),
+            &commit_salt,
+            &blinded_r_bytes,
+            &blinded_diff_bytes,
         );
-        let signature =
-            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
-                .expect("sign attestation");
-        crate::pet::v0::messages::PetMessage::CheckResponse {
-            request_id: TEST_REQUEST_ID.to_string(),
-            from_node_id: node_id,
-            partial: partial_bytes,
-            challenge: challenge_bytes,
-            proof: proof_bytes,
-            signed_at,
-            signature,
+        Contribution {
+            node_id,
+            z_i,
+            commit_salt,
+            commitment,
         }
     }
 
-    /// A response genuinely signed by `node_id`'s real key, but whose
-    /// `partial`/`challenge`/`proof` bytes are not valid encodings of a
-    /// group element/scalar at all — distinct from `invalid_proof_response`
-    /// (which decodes fine but fails the DLEQ check). Finding #9: before the
-    /// fix, this case fell through to a bare `Rejected`/deserialization
-    /// error with no report ever queued, letting a malicious responder
-    /// dodge reporting just by signing garbage instead of a well-formed
-    /// wrong proof.
-    fn malformed_response(
+    #[allow(clippy::too_many_arguments)]
+    fn reveal(
+        tag: &PetTag,
+        target_fingerprint: &G1Affine,
+        attempt_id: &str,
+        context_digest: [u8; 32],
+        all_commitments: &[(u32, [u8; 32])],
+        contribution: &Contribution,
+        signer: &TestSigner,
+    ) -> PetBlindSignedReveal {
+        let selection_digest =
+            pet_blind_selection_digest(attempt_id, &context_digest, all_commitments);
+        let blind_transcript_digest = pet_blind_proof_transcript_digest(
+            attempt_id,
+            &context_digest,
+            &selection_digest,
+            contribution.node_id,
+            &contribution.commitment,
+        );
+        let real_reply = PetImpl::prove_blinding_correctness(
+            &contribution.z_i,
+            tag,
+            target_fingerprint,
+            &blind_transcript_digest,
+        )
+        .expect("compute blinding-correctness proof");
+        let statement = PetBlindRevealStatement {
+            domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+            attempt_id: attempt_id.to_string(),
+            context_digest,
+            selection_digest,
+            responder_node_key: signer.pubkey_hex.clone(),
+            from_node_id: contribution.node_id,
+            commitment: contribution.commitment.to_vec(),
+            blinded_r: CryptoSerialize::to_bytes(&real_reply.blinded_r)
+                .expect("serialize blinded_r"),
+            blinded_diff: CryptoSerialize::to_bytes(&real_reply.blinded_diff)
+                .expect("serialize blinded_diff"),
+            commit_salt: contribution.commit_salt,
+            challenge: CryptoSerialize::to_bytes(&real_reply.challenge)
+                .expect("serialize challenge"),
+            proof: CryptoSerialize::to_bytes(&real_reply.proof).expect("serialize proof"),
+            signed_at: 1_700_000_000,
+        };
+        let response_signature =
+            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
+                .expect("sign reveal");
+        PetBlindSignedReveal {
+            statement,
+            response_signature,
+        }
+    }
+
+    /// Builds a genuine, fully valid 2-of-3 certificate — the shared base
+    /// every rejection test below tampers with exactly one thing.
+    fn build_valid_certificate(
         fixture: &TagFixture,
-        node_id: u32,
-    ) -> crate::pet::v0::messages::PetMessage {
-        let partial_bytes = vec![0xffu8; 3];
-        let challenge_bytes = vec![0xffu8; 3];
-        let proof_bytes = vec![0xffu8; 3];
-        let signed_at = 1_700_000_000u64;
-        let statement_ctx = test_statement_ctx(fixture);
-        let signer = &fixture.signers[(node_id - 1) as usize];
-        let statement = statement_ctx.statement_for(
-            signer.pubkey_hex.clone(),
-            TEST_REQUEST_ID.to_string(),
-            signed_at,
-            node_id,
-            partial_bytes.clone(),
-            challenge_bytes.clone(),
-            proof_bytes.clone(),
+        target_fingerprint: &G1Affine,
+    ) -> PetBlindCertificate {
+        let attempt_id = "attempt-1".to_string();
+        let context_digest = [7u8; 32];
+        let c1 = commit(&fixture.tag, target_fingerprint, &attempt_id, context_digest, 1);
+        let c2 = commit(&fixture.tag, target_fingerprint, &attempt_id, context_digest, 2);
+        let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
+        let r1 = reveal(
+            &fixture.tag,
+            target_fingerprint,
+            &attempt_id,
+            context_digest,
+            &all_commitments,
+            &c1,
+            &fixture.signers[0],
         );
-        let signature =
-            sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
-                .expect("sign malformed attestation");
-        crate::pet::v0::messages::PetMessage::CheckResponse {
-            request_id: TEST_REQUEST_ID.to_string(),
-            from_node_id: node_id,
-            partial: partial_bytes,
-            challenge: challenge_bytes,
-            proof: proof_bytes,
-            signed_at,
-            signature,
+        let r2 = reveal(
+            &fixture.tag,
+            target_fingerprint,
+            &attempt_id,
+            context_digest,
+            &all_commitments,
+            &c2,
+            &fixture.signers[1],
+        );
+        PetBlindCertificate {
+            attempt_id,
+            context_digest,
+            all_commitments: all_commitments
+                .iter()
+                .map(|(id, bytes)| (*id, bytes.to_vec()))
+                .collect(),
+            reveals: vec![r1, r2],
         }
     }
 
-    #[test]
-    fn spoofed_response_does_not_block_the_honest_participants_later_valid_response() {
-        let fixture = build_fixture(3, 2);
-        let pub_poly = fixture_pub_poly(&fixture);
-        let tag = fixture_tag(&fixture);
-        let statement_ctx = test_statement_ctx(&fixture);
-        let mut seen_node_ids = HashSet::new();
-
-        let spoofed = spoofed_response(&fixture, 1);
-        let spoofed_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            spoofed,
-            "peer-attacker",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(spoofed_result, PetCheckResponseVerification::Rejected),
-            "a spoofed response must be rejected"
-        );
-        assert!(
-            !seen_node_ids.contains(&1),
-            "a rejected response must not consume the claimed participant's slot"
-        );
-
-        let genuine = attestation_to_check_response(valid_attestation(&fixture, 1));
-        let genuine_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            genuine,
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(genuine_result, PetCheckResponseVerification::Verified(..)),
-            "node 1's real, later response must still be accepted"
-        );
-    }
+    const AUDIT_TARGET: &str = "pet-blind-cert-test-target";
 
     #[test]
-    fn invalid_proof_response_does_not_consume_the_slot_for_a_subsequent_valid_contribution() {
-        let fixture = build_fixture(3, 2);
-        let pub_poly = fixture_pub_poly(&fixture);
-        let tag = fixture_tag(&fixture);
-        let statement_ctx = test_statement_ctx(&fixture);
-        let mut seen_node_ids = HashSet::new();
+    fn certificate_validates_and_recovers_a_nonidentity_aggregate() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let certificate = build_valid_certificate(&fixture, &target_fingerprint);
 
-        let bad = invalid_proof_response(&fixture, 1);
-        let bad_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            bad,
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(bad_result, PetCheckResponseVerification::InvalidProof(_)),
-            "an authenticated but cryptographically invalid response must be reported, not silently dropped"
-        );
-        assert!(
-            !seen_node_ids.contains(&1),
-            "an invalid-proof response must not consume the participant's slot"
-        );
-
-        let genuine = attestation_to_check_response(valid_attestation(&fixture, 1));
-        let genuine_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            genuine,
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(genuine_result, PetCheckResponseVerification::Verified(..)),
-            "node 1's real contribution must still be accepted after its own earlier invalid attempt"
-        );
-    }
-
-    #[test]
-    fn malformed_response_is_reported_and_does_not_consume_the_slot() {
-        let fixture = build_fixture(3, 2);
-        let pub_poly = fixture_pub_poly(&fixture);
-        let tag = fixture_tag(&fixture);
-        let statement_ctx = test_statement_ctx(&fixture);
-        let mut seen_node_ids = HashSet::new();
-
-        let bad = malformed_response(&fixture, 1);
-        let bad_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            bad,
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(bad_result, PetCheckResponseVerification::InvalidProof(_)),
-            "an authenticated but undecodable response must be reported, not just dropped (finding #9)"
-        );
-        assert!(
-            !seen_node_ids.contains(&1),
-            "a malformed response must not consume the participant's slot"
-        );
-
-        let genuine = attestation_to_check_response(valid_attestation(&fixture, 1));
-        let genuine_result = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            genuine,
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(genuine_result, PetCheckResponseVerification::Verified(..)),
-            "node 1's real contribution must still be accepted after its own earlier malformed attempt"
-        );
-    }
-
-    #[test]
-    fn duplicate_valid_contributions_count_only_once() {
-        let fixture = build_fixture(3, 2);
-        let pub_poly = fixture_pub_poly(&fixture);
-        let tag = fixture_tag(&fixture);
-        let statement_ctx = test_statement_ctx(&fixture);
-        let mut seen_node_ids = HashSet::new();
-
-        let first = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            attestation_to_check_response(valid_attestation(&fixture, 1)),
-            "peer-1",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(matches!(first, PetCheckResponseVerification::Verified(..)));
-
-        let second = PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-            attestation_to_check_response(valid_attestation(&fixture, 1)),
-            "peer-1-retry",
-            &fixture.ring_payload,
-            &fixture.document.ring_id,
-            &pub_poly,
-            &tag,
-            &statement_ctx,
-            TEST_REQUEST_ID,
-            &None,
-            &mut seen_node_ids,
-        );
-        assert!(
-            matches!(second, PetCheckResponseVerification::Rejected),
-            "a second valid contribution for an already-accepted id must count only once"
-        );
-    }
-
-    #[test]
-    fn three_of_five_collection_succeeds_despite_earlier_spoofing_and_invalid_proof_attempts() {
-        let fixture = build_fixture(5, 3);
-        let pub_poly = fixture_pub_poly(&fixture);
-        let tag = fixture_tag(&fixture);
-        let statement_ctx = test_statement_ctx(&fixture);
-        let mut seen_node_ids = HashSet::new();
-        let mut shares = Vec::new();
-
-        let responses = vec![
-            spoofed_response(&fixture, 1),
-            invalid_proof_response(&fixture, 2),
-            attestation_to_check_response(valid_attestation(&fixture, 1)),
-            attestation_to_check_response(valid_attestation(&fixture, 2)),
-            attestation_to_check_response(valid_attestation(&fixture, 3)),
-        ];
-        for response in responses {
-            if let PetCheckResponseVerification::Verified(share, _) =
-                PetCoordinator::<DkgImpl, PetImpl>::verify_check_response(
-                    response,
-                    "peer",
-                    &fixture.ring_payload,
-                    &fixture.document.ring_id,
-                    &pub_poly,
-                    &tag,
-                    &statement_ctx,
-                    TEST_REQUEST_ID,
-                    &None,
-                    &mut seen_node_ids,
-                )
-            {
-                shares.push(share);
-            }
-        }
-
-        assert_eq!(
-            seen_node_ids,
-            std::collections::HashSet::from([1, 2, 3]),
-            "the three genuine contributions must all be accepted despite the earlier spoofing \
-             and invalid-proof attempts on nodes 1 and 2"
-        );
-        assert_eq!(shares.len(), 3, "threshold must be reached");
-    }
-
-    // ========================================================================
-    // Finding #3 (PET audit fix checklist): `handle_check_request` is the
-    // one entry point reachable from a raw wire message with no other
-    // upstream authentication. `verify_pet_audit_authorization` closes that
-    // gap; it needs only an `Authz` impl (no coordinator/bulletin/local
-    // storage), so most of these tests call it directly.
-    // ========================================================================
-
-    /// A throwaway document + object_id sufficient for
-    /// `verify_pet_audit_authorization`, which never reads
-    /// `document.document`/`.proof`/`.pet_tag*` — only the policy fields
-    /// `check_pet_permission` needs.
-    fn audit_authz_fixture() -> (TestKeyPair, DocumentPayload, String) {
-        let signer = TestKeyPair::new();
-        let document = DocumentPayload {
-            ring_id: "audit-authz-ring".to_string(),
-            document: String::new(),
-            proof: String::new(),
-            policy_id: "test-policy".to_string(),
-            resource: "test-resource".to_string(),
-            permission: "read".to_string(),
-            tier: None,
-            timestamp: None,
-            pet_tag: None,
-            pet_tag_proof: None,
-        };
-        (signer, document, "audit-authz-object".to_string())
-    }
-
-    #[tokio::test]
-    async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
-        let (_signer, document, object_id) = audit_authz_fixture();
-        let ctx = PetCheckContext {
-            document,
-            salt: None,
-            object_id,
-            document_inline: false,
-            token_string: "not-a-jwt".to_string(),
-            audit_target_object_id: "any-target".to_string(),
-            valid_window: None,
-        };
-        let authz = DummyAuthZ;
-        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
-        assert!(
-            matches!(result, Err(PetError::InvalidInput(_))),
-            "a garbage token must be rejected: {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
-    async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_id() {
-        let (signer, document, object_id) = audit_authz_fixture();
-        let token = signer
-            .create_pre_jwt(b"unused".to_vec(), "a-different-object-id", None, None)
-            .expect("sign token");
-        let ctx = PetCheckContext {
-            document,
-            salt: None,
-            object_id,
-            document_inline: false,
-            token_string: token,
-            audit_target_object_id: "any-target".to_string(),
-            valid_window: None,
-        };
-        let authz = DummyAuthZ;
-        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
-        assert!(
-            matches!(result, Err(PetError::InvalidInput(_))),
-            "a token authorizing a different object_id must be rejected: {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
-    async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
-        let (signer, document, object_id) = audit_authz_fixture();
-        let token = signer
-            .create_pre_jwt(
-                b"unused".to_vec(),
-                &object_id,
-                None,
-                Some("original-salt".to_string()),
+        let (aggregate_r, _aggregate_diff) =
+            build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+                &certificate,
+                &fixture.ring_payload,
+                &fixture.tag,
+                &target_fingerprint,
             )
-            .expect("sign token");
-        let ctx = PetCheckContext {
-            document,
-            salt: Some("different-salt".to_string()),
-            object_id,
-            document_inline: false,
-            token_string: token,
-            audit_target_object_id: "any-target".to_string(),
-            valid_window: None,
-        };
-        let authz = DummyAuthZ;
-        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+            .expect("a genuinely valid certificate must verify");
         assert!(
-            matches!(result, Err(PetError::InvalidInput(_))),
-            "a token authorizing a different salt must be rejected: {:?}",
-            result
+            !DkgImpl::public_key_is_identity(&aggregate_r),
+            "the aggregate ephemeral point must never be the identity"
         );
     }
 
-    /// Confirms the rejections above aren't vacuous: a genuinely matching,
-    /// valid token must still be accepted (and, with `DummyAuthZ` always
-    /// authorizing, reach `Ok(())`).
-    #[tokio::test]
-    async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
-        let (signer, document, object_id) = audit_authz_fixture();
-        let token = signer
-            .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
-            .expect("sign token");
-        let ctx = PetCheckContext {
-            document,
-            salt: None,
-            object_id,
-            document_inline: false,
-            token_string: token,
-            audit_target_object_id: "any-target".to_string(),
-            valid_window: None,
-        };
-        let authz = DummyAuthZ;
-        let result = verify_pet_audit_authorization(&authz, &ctx, None, current_unix_time()).await;
+    #[test]
+    fn certificate_rejects_a_tampered_blinded_r() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let mut certificate = build_valid_certificate(&fixture, &target_fingerprint);
+        let last = certificate.reveals.len() - 1;
+        certificate.reveals[last].statement.blinded_r[0] ^= 0xFF;
+
+        let result = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+            &certificate,
+            &fixture.ring_payload,
+            &fixture.tag,
+            &target_fingerprint,
+        );
         assert!(
-            result.is_ok(),
-            "a genuinely matching, valid token must be accepted: {:?}",
-            result
+            result.is_err(),
+            "a tampered blinded_r must fail its commitment opening or its proof"
         );
     }
 
-    /// End-to-end wiring check (not just the standalone function): a raw
-    /// `CheckRequest` with no valid audit authorization must be rejected by
-    /// the real `handle_message`/`handle_check_request` path, before this
-    /// node's secret share is ever touched.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn handle_check_request_rejects_a_request_with_no_valid_audit_authorization() {
-        let db_name = "pet_handle_check_request_rejects_unauthorized_audit";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    #[test]
+    fn certificate_rejects_a_non_opening_reveal() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let mut certificate = build_valid_certificate(&fixture, &target_fingerprint);
+        let last = certificate.reveals.len() - 1;
+        certificate.reveals[last].statement.commit_salt[0] ^= 0xFF;
 
-        let request = PetCheckRequest {
-            request_id: TEST_REQUEST_ID.to_string(),
-            from_node_id: 1,
-            context: PetCheckContext {
-                document: fixture.document.clone(),
-                salt: None,
-                object_id: object_id_for(&fixture),
-                document_inline: false,
-                token_string: "not-a-jwt".to_string(),
-                audit_target_object_id: AUDIT_TARGET.to_string(),
-                valid_window: None,
-            },
-        };
-
-        let result = coordinator
-            .handle_message(PetMessage::CheckRequest(Box::new(request)))
-            .await;
-
-        assert!(
-            matches!(result, Err(PetError::InvalidInput(_))),
-            "a CheckRequest with no valid audit authorization must be rejected: {:?}",
-            result
+        let result = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+            &certificate,
+            &fixture.ring_payload,
+            &fixture.tag,
+            &target_fingerprint,
         );
-        cleanup_db(&test_db_path(db_name));
+        assert!(
+            result.is_err(),
+            "a reveal with the wrong commit_salt must not open its claimed commitment"
+        );
     }
 
-    /// Confirms the rejection above isn't vacuous against a gate that
-    /// rejects every `CheckRequest`: a valid, correctly-bound audit token
-    /// must still be accepted end-to-end.
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn handle_check_request_accepts_a_request_with_valid_audit_authorization() {
-        let db_name = "pet_handle_check_request_accepts_valid_audit_authorization";
-        let fixture = build_fixture(3, 2);
-        let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    #[test]
+    fn certificate_rejects_a_duplicate_node_id() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let mut certificate = build_valid_certificate(&fixture, &target_fingerprint);
+        let duplicate = certificate.reveals[0].clone();
+        certificate.reveals[1] = duplicate;
 
-        let object_id = object_id_for(&fixture);
-        let token = TestKeyPair::new()
-            .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
-            .expect("sign token");
-        let request = PetCheckRequest {
-            request_id: TEST_REQUEST_ID.to_string(),
-            from_node_id: 1,
-            context: PetCheckContext {
-                document: fixture.document.clone(),
-                salt: None,
-                object_id,
-                document_inline: false,
-                token_string: token,
-                audit_target_object_id: AUDIT_TARGET.to_string(),
-                valid_window: None,
-            },
-        };
-
-        let result = coordinator
-            .handle_message(PetMessage::CheckRequest(Box::new(request)))
-            .await;
-
-        assert!(
-            matches!(result, Ok(Some(PetMessage::CheckResponse { .. }))),
-            "a CheckRequest with a valid, correctly-bound audit token must be accepted: {:?}",
-            result
+        let result = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+            &certificate,
+            &fixture.ring_payload,
+            &fixture.tag,
+            &target_fingerprint,
         );
-        cleanup_db(&test_db_path(db_name));
+        assert!(
+            result.is_err(),
+            "two reveals claiming the same node id must be rejected"
+        );
+    }
+
+    #[test]
+    fn certificate_rejects_a_short_reveal_list() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let mut certificate = build_valid_certificate(&fixture, &target_fingerprint);
+        certificate.reveals.pop();
+
+        let result = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+            &certificate,
+            &fixture.ring_payload,
+            &fixture.tag,
+            &target_fingerprint,
+        );
+        assert!(
+            result.is_err(),
+            "fewer reveals than the ring's threshold must be rejected, never silently accepted"
+        );
+    }
+
+    #[test]
+    fn certificate_rejects_wrong_target_fingerprint() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let target_fingerprint =
+            PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
+        let certificate = build_valid_certificate(&fixture, &target_fingerprint);
+        let other_fingerprint =
+            PetImpl::owner_fingerprint(b"someone-else").expect("compute F(other)");
+
+        let result = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
+            &certificate,
+            &fixture.ring_payload,
+            &fixture.tag,
+            &other_fingerprint,
+        );
+        assert!(
+            result.is_err(),
+            "a certificate built against one target must not verify against a different one"
+        );
     }
 }

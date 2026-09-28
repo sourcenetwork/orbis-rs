@@ -8,14 +8,14 @@ mod codec;
 mod dkg;
 mod envelope;
 mod invalid_crypto;
-mod pet;
+mod pet_blind;
 mod pre_sign;
 mod relay;
 
 pub use dkg::*;
 pub use envelope::*;
 pub use invalid_crypto::*;
-pub use pet::*;
+pub use pet_blind::*;
 pub use pre_sign::*;
 pub use relay::*;
 
@@ -31,7 +31,25 @@ pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
 pub const UNAUTHORIZED_REQUEST_REPORT_TYPE: &str = "unauthorized_request";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
-pub const PET_CHECK_RESPONSE_DOMAIN: &str = "orbis-pet-check-response-v1";
+/// See `docs/plans/pet-blind-equality-test-design.md` — the blind equality
+/// test that replaced PET's old single-round check protocol (audit finding
+/// #2). Distinct from `crates/crypto`'s own `BLIND_PROOF_DOMAIN` (the
+/// blinding-correctness DLEQ's Fiat-Shamir challenge domain) — these bind
+/// the reporting-layer digests and signed statements built around it.
+pub const PET_BLIND_CONTEXT_DOMAIN: &str = "orbis-pet-blind-context-v1";
+pub const PET_BLIND_COMMIT_DOMAIN: &str = "orbis-pet-blind-commit-v1";
+pub const PET_BLIND_SELECTION_DOMAIN: &str = "orbis-pet-blind-selection-v1";
+/// Domain for the externally-supplied digest fed into
+/// `crypto::r#trait::Pet::prove_blinding_correctness`/`verify_blinding_correctness`'s
+/// own `blind_transcript_digest` parameter — distinct from that crypto-level
+/// function's *internal* `BLIND_PROOF_DOMAIN` (which additionally binds the
+/// group elements themselves). This is the reporting layer's contribution:
+/// attempt/context/selection/node/commitment binding, computed once the
+/// selected list is known (round 2), never round 1.
+pub const PET_BLIND_PROOF_TRANSCRIPT_DOMAIN: &str = "orbis-pet-blind-proof-transcript-v1";
+pub const PET_BLIND_REVEAL_RESPONSE_DOMAIN: &str = "orbis-pet-blind-reveal-response-v1";
+pub const PET_BLIND_DECRYPT_RESPONSE_DOMAIN: &str = "orbis-pet-blind-decrypt-response-v1";
+pub const PET_BLIND_CERTIFICATE_DOMAIN: &str = "orbis-pet-blind-certificate-v1";
 pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
 pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
 pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";

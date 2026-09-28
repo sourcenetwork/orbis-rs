@@ -252,6 +252,11 @@ where
                         .to_string(),
                 )
             })?;
+            let pet_evidence = ctx.pet_evidence.clone().ok_or_else(|| {
+                PreError::Unauthorized(
+                    "ring requires PET but the request carried no pet_evidence".to_string(),
+                )
+            })?;
             let pet_coordinator =
                 crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
                     self.app_state.clone(),
@@ -267,7 +272,7 @@ where
                     &actor_id,
                     ctx.valid_window.clone(),
                     &ring_payload,
-                    &ctx.pet_attestations,
+                    &pet_evidence,
                 )
                 .await
                 .map_err(PreError::from)

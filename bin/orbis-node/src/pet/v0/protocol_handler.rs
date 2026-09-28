@@ -53,10 +53,16 @@ where
         }
     }
 
-    /// `CheckResponse` messages are stored for the initiating coordinator;
-    /// all other messages are routed to `handle_message`.
+    /// Commit/Reveal/Decrypt response messages are stored for the
+    /// initiating coordinator; all other messages are routed to
+    /// `handle_message`.
     async fn try_store_response(&self, msg: PetMessage, peer_id: &PeerId) -> Option<PetMessage> {
-        if let PetMessage::CheckResponse { .. } = &msg {
+        if matches!(
+            &msg,
+            PetMessage::CommitResponse { .. }
+                | PetMessage::RevealResponse { .. }
+                | PetMessage::DecryptResponse { .. }
+        ) {
             tracing::debug!(
                 request_id = %msg.request_id(),
                 from_node_id = ?msg.sender_node_id(),
@@ -81,8 +87,10 @@ where
     async fn route_message(
         &self,
         msg: PetMessage,
-        _peer_id: &PeerId,
+        peer_id: &PeerId,
     ) -> anyhow::Result<Option<PetMessage>> {
-        self.handle_message(msg).await.map_err(anyhow::Error::from)
+        self.handle_message(msg, peer_id)
+            .await
+            .map_err(anyhow::Error::from)
     }
 }

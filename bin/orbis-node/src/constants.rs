@@ -297,8 +297,35 @@ pub const MAX_PRE_RESPONSES: usize = 1000;
 ///
 /// Mirrors `MAX_PRE_RESPONSES`: PET-check responses are collected
 /// asynchronously from multiple nodes, and this limit prevents unbounded
-/// growth of response storage.
+/// growth of response storage. Shared by all three PET blind-equality-test
+/// phases (commit/reveal/decrypt) — see `PET_COLLECTION_TIMEOUT`.
 pub const MAX_PET_RESPONSES: usize = 1000;
+
+/// Overall deadline for collecting responses in any one PET blind-equality-test
+/// phase (commit, reveal, or decrypt), mirroring `SIGN_COLLECTION_TIMEOUT`. A
+/// PET check runs at most once per PRE request, so a generous bound is fine.
+pub const PET_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of pending PET blinding-secret states.
+///
+/// Mirrors `MAX_NONCE_STATES`: a responder holds its freshly generated `z_i`
+/// and `commit_salt_i` between the commit and reveal phases. This limit
+/// prevents unbounded memory growth from commit requests that never receive
+/// a matching reveal.
+pub const MAX_PET_BLIND_PENDING: usize = 1000;
+
+/// Time-to-live for PET blinding-secret states before they are eligible for
+/// cleanup.
+///
+/// Mirrors `SIGN_NONCE_TTL`'s reasoning: a genuine reveal should arrive within
+/// one `PET_COLLECTION_TIMEOUT` of its commit. This covers that collection
+/// deadline plus grace for the coordinator to build and send the reveal
+/// request afterward.
+pub const PET_BLIND_PENDING_TTL: Duration = Duration::from_secs(45);
+
+/// Interval between PET blinding-secret-state expiration checks. Mirrors
+/// `SIGN_EXPIRATION_CHECK_INTERVAL`.
+pub const PET_BLIND_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 // ============================================================================
 // Sign (Threshold BLS Signing) Constants

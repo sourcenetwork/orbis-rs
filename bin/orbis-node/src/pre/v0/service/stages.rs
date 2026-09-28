@@ -369,19 +369,19 @@ where
     /// point resolving peers/building the relay statement for a request that
     /// fails the ownership check).
     ///
-    /// The returned attestations are forwarded by `prepare_pre_relay` into
-    /// every `ReencryptRequest` so each PRE peer can independently verify
-    /// this same check before releasing its share, instead of trusting this
-    /// node's pass/fail result alone — see
+    /// The returned evidence is forwarded by `prepare_pre_relay` into every
+    /// `ReencryptRequest` so each PRE peer can independently verify this same
+    /// check before releasing its share, instead of trusting this node's
+    /// pass/fail result alone — see
     /// `pet::v0::coordinator::verification::verify_pet_admission`'s doc
     /// comment for why that closes a real gap: without it, nothing on the
     /// peer side ever consulted `requires_pet` at all.
     pub(super) async fn check_pet_if_required(
         &self,
         authorized: &AuthorizedPreRequest,
-    ) -> Result<Vec<crate::pet::v0::attestation::PetShareAttestation>, PreError> {
+    ) -> Result<Option<crate::pet::v0::attestation::PetBlindEvidence>, PreError> {
         if !authorized.ring_payload.requires_pet {
-            return Ok(Vec::new());
+            return Ok(None);
         }
         let audit_target_object_id =
             authorized.audit_target_object_id.clone().ok_or_else(|| {
@@ -409,6 +409,7 @@ where
                 authorized.token_str.clone(),
             )
             .await
+            .map(Some)
             .map_err(PreError::from)
     }
 
@@ -419,7 +420,7 @@ where
     pub(super) async fn prepare_pre_relay(
         &self,
         authorized: AuthorizedPreRequest,
-        pet_attestations: Vec<crate::pet::v0::attestation::PetShareAttestation>,
+        pet_evidence: Option<crate::pet::v0::attestation::PetBlindEvidence>,
     ) -> Result<PreRelaySetup, PreError> {
         let secret_bytes = authorized.document_payload.document.as_bytes().to_vec();
 
@@ -502,7 +503,7 @@ where
             relay_signature,
             document: ctx_document,
             audit_target_object_id: authorized.audit_target_object_id,
-            pet_attestations,
+            pet_evidence,
         };
 
         Ok(PreRelaySetup {

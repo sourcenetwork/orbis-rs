@@ -12,7 +12,7 @@ use super::dkg::{
     DkgLeaderPublicFaultStatement, DkgPublicOriginFaultStatement, DkgShareStatement,
 };
 use super::pre_sign::{PreReencryptResponseStatement, SignResponseStatement};
-use super::{CommitteeScope, PetCheckResponseStatement};
+use super::{CommitteeScope, PetBlindContext, PetBlindDecryptStatement, PetBlindRevealStatement};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidCryptoResponse {
@@ -24,13 +24,34 @@ pub enum InvalidCryptoResponse {
         statement: SignResponseStatement,
         response_signature: Vec<u8>,
     },
-    /// A PET committee member's threshold check-share contribution whose
-    /// per-share DLEQ proof fails to verify against its own authoritative
-    /// public share — see `Pet::verify_partial_pet_check`. Mirrors `Pre`
-    /// exactly: no committee-scope fields, since PET has no refresh/reshare
-    /// yet.
-    Pet {
-        statement: PetCheckResponseStatement,
+    /// A PET blind-equality-test reveal-phase contribution (audit finding
+    /// #2's replacement for the old single-round `Pet` evidence — a genuine
+    /// `Z·R` decryption proof would not verify against that old shape, and
+    /// must not be coerced into it) whose blinding-correctness proof fails
+    /// verification, or which does not open its own committed commitment.
+    /// Mirrors `Pre` exactly: no committee-scope fields, since PET has no
+    /// refresh/reshare yet.
+    ///
+    /// Unlike the old `Pet` evidence's individually-reconstructable fields,
+    /// `statement` binds only an opaque `context_digest` — `context` carries
+    /// the full canonical context a validator needs to independently
+    /// recompute that digest and resolve the tag/target from primary
+    /// sources (the bulletin), exactly as the old evidence's individual
+    /// fields let it do directly.
+    PetBlindReveal {
+        context: PetBlindContext,
+        statement: PetBlindRevealStatement,
+        response_signature: Vec<u8>,
+    },
+    /// A PET blind-equality-test decrypt-phase contribution whose decryption
+    /// DLEQ proof fails to verify against its own authoritative public share
+    /// and this statement's own claimed aggregate `Z·R` — see
+    /// `Pet::verify_partial_pet_check`, run here against `Z·R` in place of
+    /// the old protocol's bare `R`. See `PetBlindReveal`'s doc comment for
+    /// why `context` travels alongside the statement.
+    PetBlindDecrypt {
+        context: PetBlindContext,
+        statement: PetBlindDecryptStatement,
         response_signature: Vec<u8>,
     },
     DkgShare {
@@ -111,11 +132,23 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
-            Self::Pet {
+            Self::PetBlindReveal {
+                context,
                 statement,
                 response_signature,
             } => {
-                write_string(&mut out, "pet");
+                write_string(&mut out, "pet_blind_reveal");
+                write_bytes(&mut out, &context.canonical_bytes());
+                write_bytes(&mut out, &statement.canonical_bytes());
+                write_bytes(&mut out, response_signature);
+            }
+            Self::PetBlindDecrypt {
+                context,
+                statement,
+                response_signature,
+            } => {
+                write_string(&mut out, "pet_blind_decrypt");
+                write_bytes(&mut out, &context.canonical_bytes());
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
@@ -193,11 +226,23 @@ impl InvalidCryptoResponse {
                     response_signature,
                 }
             }
-            "pet" => {
+            "pet_blind_reveal" => {
+                let context_bytes = decoder.read_bytes("context")?;
                 let statement_bytes = decoder.read_bytes("statement")?;
                 let response_signature = decoder.read_bytes("response_signature")?;
-                Self::Pet {
-                    statement: PetCheckResponseStatement::from_canonical_bytes(&statement_bytes)?,
+                Self::PetBlindReveal {
+                    context: PetBlindContext::from_canonical_bytes(&context_bytes)?,
+                    statement: PetBlindRevealStatement::from_canonical_bytes(&statement_bytes)?,
+                    response_signature,
+                }
+            }
+            "pet_blind_decrypt" => {
+                let context_bytes = decoder.read_bytes("context")?;
+                let statement_bytes = decoder.read_bytes("statement")?;
+                let response_signature = decoder.read_bytes("response_signature")?;
+                Self::PetBlindDecrypt {
+                    context: PetBlindContext::from_canonical_bytes(&context_bytes)?,
+                    statement: PetBlindDecryptStatement::from_canonical_bytes(&statement_bytes)?,
                     response_signature,
                 }
             }
@@ -289,7 +334,12 @@ impl InvalidCryptoResponse {
         match self {
             Self::Pre { statement, .. } => &statement.request_id,
             Self::Sign { statement, .. } => &statement.request_id,
-            Self::Pet { statement, .. } => &statement.request_id,
+            // Neither PET-blind statement has a separate `request_id`
+            // field — `attempt_id` is already fresh per attempt (never
+            // reused across retries), so it plays `request_id`'s role
+            // directly here.
+            Self::PetBlindReveal { statement, .. } => &statement.attempt_id,
+            Self::PetBlindDecrypt { statement, .. } => &statement.attempt_id,
             Self::DkgShare { statement, .. } => &statement.request_id,
             Self::DkgInvalidRefreshCommitment { statement, .. } => &statement.request_id,
             Self::DkgEquivocation { commitment_a, .. } => &commitment_a.statement.request_id,
@@ -301,16 +351,20 @@ impl InvalidCryptoResponse {
         }
     }
 
-    /// The DKG attempt this evidence targets, or `None` for `Pre`/`Sign`/`Pet`
-    /// — none of those are DKG-ceremony-scoped and have no `attempt_id` field
-    /// at all (matches RPT-16's chain-side dedupe key, which folds this in
-    /// for exactly the same set of DKG evidence kinds and leaves PRE/Sign/PET
-    /// scoped by `request_id` alone).
+    /// The DKG attempt this evidence targets, or `None` for
+    /// `Pre`/`Sign`/`PetBlindReveal`/`PetBlindDecrypt` — none of those are
+    /// DKG-ceremony-scoped (matches RPT-16's chain-side dedupe key, which
+    /// folds this in for exactly the same set of DKG evidence kinds and
+    /// leaves PRE/Sign/PET scoped by `request_id` alone). PET-blind's own
+    /// `attempt_id` field is not a *second*, finer-grained identifier the
+    /// way DKG's is — it already *is* what `request_id()` returns above, so
+    /// folding it in again here would be a no-op, not an omission.
     pub fn attempt_id(&self) -> Option<[u8; 32]> {
         match self {
             Self::Pre { .. } => None,
             Self::Sign { .. } => None,
-            Self::Pet { .. } => None,
+            Self::PetBlindReveal { .. } => None,
+            Self::PetBlindDecrypt { .. } => None,
             Self::DkgShare { statement, .. } => Some(statement.commitment_statement.attempt_id),
             Self::DkgInvalidRefreshCommitment { statement, .. } => Some(statement.attempt_id),
             Self::DkgEquivocation { commitment_a, .. } => Some(commitment_a.statement.attempt_id),
@@ -325,7 +379,8 @@ impl InvalidCryptoResponse {
     pub fn signing_committee_scope(&self) -> CommitteeScope {
         match self {
             Self::Pre { .. } => CommitteeScope::Current,
-            Self::Pet { .. } => CommitteeScope::Current,
+            Self::PetBlindReveal { .. } => CommitteeScope::Current,
+            Self::PetBlindDecrypt { .. } => CommitteeScope::Current,
             Self::Sign { statement, .. } => statement.signing_committee_scope,
             Self::DkgShare { statement, .. } => statement.signing_committee_scope,
             Self::DkgInvalidRefreshCommitment { statement, .. } => {

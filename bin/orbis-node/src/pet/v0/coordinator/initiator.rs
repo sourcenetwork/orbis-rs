@@ -1,40 +1,63 @@
-//! Initiator-side threshold PET check.
+//! Initiator-side PET blind equality test (audit finding #2 — see
+//! `docs/plans/pet-blind-equality-test-design.md`).
 //!
 //! There is no separate "leader" concept here, exactly like PRE's own
 //! reencryption round: whichever node received the external `StartPreRequest`
-//! drives the check, fanning out directly to the whole ring committee and
-//! computing its own contribution locally if it happens to be a member.
+//! drives the check, fanning out directly to the whole ring committee.
+//!
+//! Three sequential phases, each reusing the over-ask/timeout collection
+//! pattern from `sign/v0/coordinator/rounds` with phase-specific acceptance
+//! rules from the design doc's availability table:
+//! - **Commit**: over-ask everyone, stop at `threshold`, freely
+//!   substitutable (a late/dropped commit is simply not selected).
+//! - **Reveal**: sent only to the exact `threshold` selected after commit.
+//!   No substitution — any shortfall discards the whole attempt and returns
+//!   an error; a fresh retry gets a brand-new `attempt_id` and entirely
+//!   fresh randomness from every participant, per the design doc's
+//!   cancellation-attack analysis.
+//! - **Decrypt**: independent of reveal's participant set, over-ask again,
+//!   freely substitutable, exactly like ordinary threshold decryption.
+//!
+//! This node's own local contribution, when it is itself a ring member, is
+//! produced by calling the exact same handler methods
+//! (`coordinator::handlers`) used for a live wire request, in-process with
+//! this node's own peer id — so there is exactly one code path for each
+//! phase's validation and crypto, not a second hand-duplicated one.
 
+use super::verification::{
+    build_and_verify_pet_blind_certificate, check_pet_permission, verify_commit_response,
+    verify_decrypt_response, verify_reveal_response, PetCommitResponseVerification,
+    PetDecryptResponseVerification, PetRevealResponseVerification,
+};
 use super::PetCoordinator;
+use crate::constants::PET_COLLECTION_TIMEOUT;
 use crate::helpers::identity::{determine_session_node_id, is_self_peer_id};
-use crate::helpers::node_routes::resolve_node_routes;
+use crate::helpers::node_routes::{
+    canonical_node_id_assignments_from_node_keys, node_id_to_peer_id_from_routes,
+    resolve_node_routes,
+};
 use crate::helpers::protocol_version::read_ring_for_route;
 use crate::helpers::response_manager::ResponseInitOutcome;
-use crate::pet::v0::attestation::{PetCheckStatementContext, PetShareAttestation};
-use crate::pet::v0::coordinator::verification::PetCheckResponseVerification;
+use crate::pet::v0::attestation::{build_pet_blind_context, PetBlindEvidence};
 use crate::pet::v0::error::{PetError, Result};
-use crate::pet::v0::messages::{PetCheckContext, PetCheckRequest, PetMessage};
+use crate::pet::v0::messages::{
+    CommitRequest, DecryptRequest, PetCheckContext, PetMessage, RevealRequest,
+};
 use crate::reporting::v0::observation::ReportObservation;
 use crate::reporting::v0::queue_report;
-use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
+use crate::reporting::v0::types::{
+    pet_blind_selection_digest, PetBlindCertificate, PetBlindSignedDecrypt, PetBlindSignedReveal,
+    ReportedDocumentEvidence,
+};
 use crate::ring_state::RingShareBundle;
 use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
-use common::blockchain::sign_node_message_with_hex_key;
 use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PriShare, PubShare, ThresholdSigner,
+    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PubShare, ThresholdSigner,
 };
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{SigShareInner, SignImpl, SignaturePoint};
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::collections::HashSet;
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::Duration;
-
-/// Overall deadline for collecting threshold PET-check shares, mirroring
-/// `PRE_COLLECTION_TIMEOUT`. A PET check runs at most once per PRE request
-/// (never on a hot loop), so a generous bound is fine.
-const PET_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl<D, P> PetCoordinator<D, P>
 where
@@ -51,19 +74,17 @@ where
         + Sync
         + 'static,
 {
-    /// Run a threshold PET check for `document` against the owner registered
-    /// on `audit_target_object_id`, returning the `threshold` signed
-    /// attestations backing the check only when the tag genuinely matches
-    /// that target. `check_pet_if_required` forwards these attestations to
-    /// every PRE peer (via `PreRequestContext::pet_attestations`) so each one
+    /// Run the three-round blind equality test for `document` against the
+    /// owner registered on `audit_target_object_id`, returning the portable
+    /// [`PetBlindEvidence`] backing the check only when the tag genuinely
+    /// matches that target. `check_pet_if_required` forwards this evidence
+    /// to every PRE peer (via `PreRequestContext::pet_evidence`) so each one
     /// can independently verify the same check passed before releasing its
-    /// reencryption share — see `verification::verify_pet_admission`. This
-    /// function's own pass/fail result only ever gates whether PRE is
-    /// attempted at all; it is not itself the security boundary anymore.
+    /// reencryption share — see `verification::verify_pet_admission`.
     ///
-    /// Called only from PRE's own `start_pre` pipeline (`pre::v0::service::stages`),
-    /// once per PET-gated request — see `pet/README.md`. Never called for a
-    /// ring that doesn't require PET.
+    /// Called only from PRE's own `start_pre` pipeline
+    /// (`pre::v0::service::stages`), once per PET-gated request. Never
+    /// called for a ring that doesn't require PET.
     #[allow(clippy::too_many_arguments)]
     pub async fn initiate_pet_check(
         &self,
@@ -76,7 +97,7 @@ where
         actor_id: String,
         valid_window: Option<ValidWindow>,
         token_string: String,
-    ) -> Result<Vec<PetShareAttestation>> {
+    ) -> Result<PetBlindEvidence> {
         let document_inline = document_evidence.is_some();
         let ring_payload = read_ring_for_route(
             &*self.app_state.bulletin,
@@ -94,7 +115,7 @@ where
 
         // Authorization gate first — an unauthorized caller learns nothing
         // about whether the tag itself would have matched.
-        super::verification::check_pet_permission(
+        check_pet_permission(
             &*self.app_state.authz,
             &document,
             &audit_target_object_id,
@@ -103,8 +124,9 @@ where
         )
         .await?;
 
-        let threshold = ring_payload.threshold as usize;
-        let committee_size = ring_payload.peer_node_keys.len();
+        // Fresh per comparison, distinct from the outer PRE `request_id` —
+        // phase-specific transport ids are derived from it below.
+        let attempt_id = format!("{request_id}-{}", rand::random::<u64>());
 
         let ctx = PetCheckContext {
             document: document.clone(),
@@ -115,40 +137,392 @@ where
             audit_target_object_id: audit_target_object_id.clone(),
             valid_window,
         };
-        // This node's own independent verification — matches
-        // `Pet::verify_tag_knowledge`'s doc: "every PET participant,
-        // including the initiator, must call this." The resolved
-        // `ring_payload` here is discarded in favor of the one already
-        // fetched above — same live read either way, no double-trust.
-        let (tag, _pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
+        // This node's own independent verification of the underlying tag —
+        // matches `Pet::verify_tag_knowledge`'s doc: "every PET participant,
+        // including the initiator, must call this."
+        let (tag, pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
 
-        // The one canonical statement every contribution in this round is
-        // checked against — see `attestation`'s module doc comment for why
-        // this is the same statement used for live verification, PRE-peer
-        // admission, and (on failure) report evidence.
-        let statement_ctx = PetCheckStatementContext {
-            chain_id: self.app_state.bulletin.chain_id(),
-            ring_id: document.ring_id.clone(),
-            ring_pk: ring_payload.ring_pk.clone(),
-            ring_state_sha256: ring_state_sha256(&ring_payload),
-            protocol_version: self.routes.version,
-            object_id: object_id.clone(),
-            salt: salt.clone(),
-            crypto_backend: P::name(),
-            timestamp: document.timestamp,
-            document_inline,
-        };
-
+        let threshold = ring_payload.threshold as usize;
+        let committee_size = ring_payload.peer_node_keys.len();
         let node_id_opt =
             determine_session_node_id(&self.app_state.node_key, &ring_payload.peer_node_keys);
+        let local_peer_id = self.app_state.network.local_peer_id();
 
-        // Per-share verification needs the checking key's own public
-        // polynomial, not the main ring key's — loading it here also
-        // enforces the pipeline's real, pre-existing invariant (see
-        // `pet/README.md`) that whoever drives a `requires_pet` PRE round
-        // must be a PET-committee (== main-ring) member, since PRE's own
-        // later relay-setup stage already hard-requires this; failing here
-        // instead just fails it earlier and more clearly.
+        // This attempt's one canonical context — every response in every
+        // phase is checked against this exact, self-computed digest, never
+        // a value merely echoed back by a responder.
+        let blind_context = build_pet_blind_context(
+            self.app_state.bulletin.chain_id(),
+            &ring_payload,
+            &pet_pk_hex,
+            self.routes.version,
+            P::name(),
+            &ctx,
+            actor_id,
+            self.app_state.node_key.clone(),
+            attempt_id.clone(),
+        );
+        let context_digest = blind_context.context_digest();
+
+        let resolved = resolve_node_routes(&self.app_state.bulletin, &ring_payload.peer_node_keys)
+            .await
+            .map_err(PetError::ProtocolError)?;
+        let remote_peer_ids: Vec<String> = resolved
+            .iter()
+            .map(|route| route.peer_id.clone())
+            .filter(|peer_id| !is_self_peer_id(&self.app_state.network, peer_id))
+            .collect();
+        let node_id_assignments =
+            canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+                .map_err(PetError::ProtocolError)?;
+        let node_id_to_peer_id = node_id_to_peer_id_from_routes(&resolved, &node_id_assignments)
+            .map_err(PetError::ProtocolError)?;
+
+        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
+            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+
+        // ===================== Round 1 — Commit =====================
+        let mut commitments: Vec<(u32, [u8; 32])> = Vec::with_capacity(committee_size);
+        let mut seen_commit_ids = HashSet::new();
+
+        if let Some(node_id) = node_id_opt {
+            let commit_req = CommitRequest {
+                request_id: format!("commit-{attempt_id}"),
+                attempt_id: attempt_id.clone(),
+                from_node_id: node_id,
+                context: ctx.clone(),
+            };
+            if let Ok(Some(response)) = self.handle_commit_request(commit_req, &local_peer_id).await
+            {
+                if let PetCommitResponseVerification::Verified {
+                    node_id,
+                    commitment,
+                } = verify_commit_response(
+                    response,
+                    &ring_payload,
+                    context_digest,
+                    &mut seen_commit_ids,
+                ) {
+                    commitments.push((node_id, commitment));
+                }
+            }
+        }
+
+        if commitments.len() < threshold && !remote_peer_ids.is_empty() {
+            let commit_request_id = format!("commit-{attempt_id}");
+            if self
+                .app_state
+                .pet_response_state
+                .init_response_for_version(
+                    self.routes.version,
+                    commit_request_id.clone(),
+                    &remote_peer_ids,
+                )
+                .await
+                == ResponseInitOutcome::AlreadyExists
+            {
+                return Err(PetError::ProtocolError(format!(
+                    "PET commit request_id {commit_request_id} collided with an in-flight request"
+                )));
+            }
+
+            let mut tasks = tokio::task::JoinSet::new();
+            for peer_id in &remote_peer_ids {
+                let peer_id = peer_id.clone();
+                let request = PetMessage::CommitRequest(Box::new(CommitRequest {
+                    request_id: commit_request_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    from_node_id: node_id_opt.unwrap_or(0),
+                    context: ctx.clone(),
+                }));
+                let req_id = commit_request_id.clone();
+                let app_state = self.app_state.clone();
+                let routes = self.routes;
+                tasks.spawn(async move {
+                    let coordinator = PetCoordinator::<D, P>::with_routes(app_state, routes);
+                    let result = coordinator
+                        .send_pet_request_and_receive_response(&peer_id, request, &req_id)
+                        .await;
+                    (peer_id, result)
+                });
+            }
+
+            let collect = async {
+                while let Some(joined) = tasks.join_next().await {
+                    let (peer_id, result) = match joined {
+                        Ok(pair) => pair,
+                        Err(error) => {
+                            tracing::warn!(%error, "PET Coordinator: commit task join error");
+                            continue;
+                        }
+                    };
+                    match result {
+                        Ok(Some(response @ PetMessage::CommitResponse { .. })) => {
+                            if let PetCommitResponseVerification::Verified {
+                                node_id,
+                                commitment,
+                            } = verify_commit_response(
+                                response,
+                                &ring_payload,
+                                context_digest,
+                                &mut seen_commit_ids,
+                            ) {
+                                commitments.push((node_id, commitment));
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                peer = %peer_id,
+                                %error,
+                                "PET Coordinator: commit request failed"
+                            );
+                        }
+                    }
+                    if commitments.len() >= threshold {
+                        break;
+                    }
+                }
+            };
+            if tokio::time::timeout(PET_COLLECTION_TIMEOUT, collect)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "PET Coordinator: commit collection deadline reached before threshold shares arrived"
+                );
+            }
+            self.app_state
+                .pet_response_state
+                .remove_response_for_version(self.routes.version, &commit_request_id)
+                .await;
+        }
+
+        if commitments.len() < threshold {
+            return Err(PetError::InsufficientShares {
+                got: commitments.len(),
+                need: threshold,
+            });
+        }
+        // Collection above stops as soon as `threshold` is reached, so this
+        // is already exactly `threshold` entries — sort only for the
+        // selected list's canonical order.
+        commitments.sort_by_key(|(id, _)| *id);
+        let selected_node_ids: HashSet<u32> = commitments.iter().map(|(id, _)| *id).collect();
+        let all_commitments_wire: Vec<(u32, Vec<u8>)> = commitments
+            .iter()
+            .map(|(id, bytes)| (*id, bytes.to_vec()))
+            .collect();
+        let selection_digest =
+            pet_blind_selection_digest(&attempt_id, &context_digest, &commitments);
+
+        // ===================== Round 2 — Reveal =====================
+        let mut reveals: Vec<PetBlindSignedReveal> = Vec::with_capacity(threshold);
+        let mut seen_reveal_ids = HashSet::new();
+
+        if let Some(node_id) = node_id_opt {
+            if selected_node_ids.contains(&node_id) {
+                let reveal_req = RevealRequest {
+                    request_id: format!("reveal-{attempt_id}"),
+                    attempt_id: attempt_id.clone(),
+                    from_node_id: node_id,
+                    all_commitments: all_commitments_wire.clone(),
+                    context: ctx.clone(),
+                };
+                if let Ok(Some(response)) =
+                    self.handle_reveal_request(reveal_req, &local_peer_id).await
+                {
+                    match verify_reveal_response::<P>(
+                        response,
+                        &document.ring_id,
+                        &ring_payload,
+                        &tag,
+                        &target_fingerprint,
+                        &commitments,
+                        selection_digest,
+                        &blind_context,
+                        &document_evidence,
+                        &mut seen_reveal_ids,
+                    ) {
+                        PetRevealResponseVerification::Verified(signed_reveal) => {
+                            reveals.push(*signed_reveal);
+                        }
+                        PetRevealResponseVerification::InvalidProof(observation) => {
+                            let _ = queue_report::<D, SignImpl>(
+                                self.app_state.clone(),
+                                self.routes,
+                                ReportObservation::InvalidCryptoResponse(observation),
+                            )
+                            .await;
+                        }
+                        PetRevealResponseVerification::Rejected => {}
+                    }
+                }
+            }
+        }
+
+        let selected_remote_ids: Vec<u32> = selected_node_ids
+            .iter()
+            .copied()
+            .filter(|id| Some(*id) != node_id_opt)
+            .collect();
+        if reveals.len() < threshold && !selected_remote_ids.is_empty() {
+            let reveal_request_id = format!("reveal-{attempt_id}");
+            let mut expected_peers = Vec::with_capacity(selected_remote_ids.len());
+            for id in &selected_remote_ids {
+                let peer_id = node_id_to_peer_id.get(id).ok_or_else(|| {
+                    PetError::ProtocolError(format!(
+                        "could not resolve a peer route for selected reveal participant {id}"
+                    ))
+                })?;
+                expected_peers.push(peer_id.clone());
+            }
+
+            if self
+                .app_state
+                .pet_response_state
+                .init_response_for_version(
+                    self.routes.version,
+                    reveal_request_id.clone(),
+                    &expected_peers,
+                )
+                .await
+                == ResponseInitOutcome::AlreadyExists
+            {
+                return Err(PetError::ProtocolError(format!(
+                    "PET reveal request_id {reveal_request_id} collided with an in-flight request"
+                )));
+            }
+
+            let mut tasks = tokio::task::JoinSet::new();
+            for peer_id in &expected_peers {
+                let peer_id = peer_id.clone();
+                let request = PetMessage::RevealRequest(Box::new(RevealRequest {
+                    request_id: reveal_request_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                    from_node_id: node_id_opt.unwrap_or(0),
+                    all_commitments: all_commitments_wire.clone(),
+                    context: ctx.clone(),
+                }));
+                let req_id = reveal_request_id.clone();
+                let app_state = self.app_state.clone();
+                let routes = self.routes;
+                tasks.spawn(async move {
+                    let coordinator = PetCoordinator::<D, P>::with_routes(app_state, routes);
+                    let result = coordinator
+                        .send_pet_request_and_receive_response(&peer_id, request, &req_id)
+                        .await;
+                    (peer_id, result)
+                });
+            }
+
+            let ring_id = document.ring_id.clone();
+            let collect = async {
+                while let Some(joined) = tasks.join_next().await {
+                    let (peer_id, result) = match joined {
+                        Ok(pair) => pair,
+                        Err(error) => {
+                            tracing::warn!(%error, "PET Coordinator: reveal task join error");
+                            continue;
+                        }
+                    };
+                    match result {
+                        Ok(Some(response @ PetMessage::RevealResponse { .. })) => {
+                            match verify_reveal_response::<P>(
+                                response,
+                                &ring_id,
+                                &ring_payload,
+                                &tag,
+                                &target_fingerprint,
+                                &commitments,
+                                selection_digest,
+                                &blind_context,
+                                &document_evidence,
+                                &mut seen_reveal_ids,
+                            ) {
+                                PetRevealResponseVerification::Verified(signed_reveal) => {
+                                    reveals.push(*signed_reveal);
+                                }
+                                PetRevealResponseVerification::InvalidProof(observation) => {
+                                    let _ = queue_report::<D, SignImpl>(
+                                        self.app_state.clone(),
+                                        self.routes,
+                                        ReportObservation::InvalidCryptoResponse(observation),
+                                    )
+                                    .await;
+                                }
+                                PetRevealResponseVerification::Rejected => {}
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                peer = %peer_id,
+                                %error,
+                                "PET Coordinator: reveal request failed"
+                            );
+                        }
+                    }
+                    if reveals.len() >= threshold {
+                        break;
+                    }
+                }
+            };
+            if tokio::time::timeout(PET_COLLECTION_TIMEOUT, collect)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    request_id = %request_id,
+                    "PET Coordinator: reveal collection deadline reached before every selected \
+                     participant responded"
+                );
+            }
+            self.app_state
+                .pet_response_state
+                .remove_response_for_version(self.routes.version, &reveal_request_id)
+                .await;
+        }
+
+        if reveals.len() < threshold {
+            // No substitution — the whole attempt is discarded, per the
+            // design doc's cancellation-attack analysis. A fresh retry (a
+            // new call to this function) gets a brand-new `attempt_id` and
+            // entirely fresh randomness from every participant.
+            return Err(PetError::InsufficientShares {
+                got: reveals.len(),
+                need: threshold,
+            });
+        }
+
+        let certificate = PetBlindCertificate {
+            attempt_id: attempt_id.clone(),
+            context_digest,
+            all_commitments: all_commitments_wire,
+            reveals,
+        };
+        let (_aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<D, P>(
+            &certificate,
+            &ring_payload,
+            &tag,
+            &target_fingerprint,
+        )
+        .map_err(|e| {
+            PetError::Crypto(format!(
+                "Failed to assemble a valid blinding certificate: {}",
+                e
+            ))
+        })?;
+        let aggregate_r_bytes = CryptoSerialize::to_bytes(&_aggregate_r).map_err(|e| {
+            PetError::Serialization(format!("Failed to serialize aggregate_r: {}", e))
+        })?;
+        let aggregate_diff_bytes = CryptoSerialize::to_bytes(&aggregate_diff).map_err(|e| {
+            PetError::Serialization(format!("Failed to serialize aggregate_diff: {}", e))
+        })?;
+        let certificate_digest = certificate.certificate_digest();
+
+        // ===================== Round 3 — Decrypt =====================
         let bundle =
             RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
                 .map_err(|e| {
@@ -164,175 +538,132 @@ where
             ))
         })?;
 
-        let resolved = resolve_node_routes(&self.app_state.bulletin, &ring_payload.peer_node_keys)
-            .await
-            .map_err(PetError::ProtocolError)?;
-        let expected_peer_ids: Vec<String> = resolved
-            .iter()
-            .map(|route| route.peer_id.clone())
-            .filter(|peer_id| !is_self_peer_id(&self.app_state.network, peer_id))
-            .collect();
+        let mut shares: Vec<PubShare<G1Affine>> = Vec::with_capacity(threshold);
+        let mut decrypt_responses: Vec<PetBlindSignedDecrypt> = Vec::with_capacity(threshold);
+        let mut seen_decrypt_ids = HashSet::new();
 
-        if self
-            .app_state
-            .pet_response_state
-            .init_response_for_version(self.routes.version, request_id.clone(), &expected_peer_ids)
-            .await
-            == ResponseInitOutcome::AlreadyExists
-        {
-            return Err(PetError::ProtocolError(format!(
-                "PET check request_id {} collided with an in-flight request",
-                request_id
-            )));
-        }
-
-        let mut shares: Vec<PubShare<G1Affine>> = Vec::with_capacity(committee_size);
-        let mut attestations: Vec<PetShareAttestation> = Vec::with_capacity(committee_size);
-        let mut seen_node_ids = HashSet::new();
-
-        // This node's own local contribution — still individually
-        // DLEQ-verified before being accepted, same as any peer's (defense
-        // in depth: catches a local storage/computation bug, not just a
-        // remote attacker).
         if let Some(node_id) = node_id_opt {
-            let pri_share: PriShare<Fr> =
-                PriShare::from_bytes(&bundle.share_bytes).map_err(|e| {
-                    PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
-                })?;
-            let reply = P::partial_pet_check(&pri_share.v, node_id, &tag).map_err(|e| {
-                PetError::Crypto(format!("Failed to compute PET check share: {}", e))
-            })?;
-            P::verify_partial_pet_check(&pub_poly, &tag, &reply).map_err(|e| {
-                PetError::Crypto(format!(
-                    "this node's own PET check contribution failed its own proof verification: {}",
-                    e
-                ))
-            })?;
-            let partial_bytes = CryptoSerialize::to_bytes(&reply.partial.v).map_err(|e| {
-                PetError::Serialization(format!("Failed to serialize partial: {}", e))
-            })?;
-            let challenge_bytes = CryptoSerialize::to_bytes(&reply.challenge).map_err(|e| {
-                PetError::Serialization(format!("Failed to serialize challenge: {}", e))
-            })?;
-            let proof_bytes = CryptoSerialize::to_bytes(&reply.proof).map_err(|e| {
-                PetError::Serialization(format!("Failed to serialize proof: {}", e))
-            })?;
-            let signed_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| PetError::InvalidState(format!("Failed to get timestamp: {}", e)))?
-                .as_secs();
-            let statement = statement_ctx.statement_for(
-                self.app_state.node_key.clone(),
-                request_id.clone(),
-                signed_at,
-                node_id,
-                partial_bytes.clone(),
-                challenge_bytes.clone(),
-                proof_bytes.clone(),
-            );
-            let signing_key = self
-                .app_state
-                .local_storage
-                .get_encrypted(LocalStorageKeys::NodeSigningKey)
-                .map_err(|e| PetError::Storage(format!("failed to read node signing key: {e}")))?
-                .ok_or_else(|| {
-                    PetError::Storage("node signing key is not configured".to_string())
-                })?;
-            let signing_key_hex = String::from_utf8(signing_key.to_vec()).map_err(|e| {
-                PetError::Storage(format!("stored node signing key is not utf-8: {e}"))
-            })?;
-            let signature =
-                sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
-                    .map_err(|e| {
-                        PetError::Crypto(format!("failed to sign PET check share: {e}"))
-                    })?;
-            seen_node_ids.insert(node_id);
-            shares.push(PubShare {
-                i: node_id,
-                v: reply.partial.v,
-            });
-            attestations.push(PetShareAttestation {
-                request_id: request_id.clone(),
+            let decrypt_req = DecryptRequest {
+                request_id: format!("decrypt-{attempt_id}"),
+                attempt_id: attempt_id.clone(),
                 from_node_id: node_id,
-                partial: partial_bytes,
-                challenge: challenge_bytes,
-                proof: proof_bytes,
-                signed_at,
-                signature,
-            });
+                certificate: certificate.clone(),
+                context: ctx.clone(),
+            };
+            if let Ok(Some(response)) = self
+                .handle_decrypt_request(decrypt_req, &local_peer_id)
+                .await
+            {
+                match verify_decrypt_response::<P>(
+                    response,
+                    &document.ring_id,
+                    &ring_payload,
+                    &pub_poly,
+                    context_digest,
+                    certificate_digest,
+                    &attempt_id,
+                    &aggregate_r_bytes,
+                    &aggregate_diff_bytes,
+                    &blind_context,
+                    &document_evidence,
+                    &mut seen_decrypt_ids,
+                ) {
+                    PetDecryptResponseVerification::Verified(signed_decrypt, share) => {
+                        decrypt_responses.push(*signed_decrypt);
+                        shares.push(share);
+                    }
+                    PetDecryptResponseVerification::InvalidProof(observation) => {
+                        let _ = queue_report::<D, SignImpl>(
+                            self.app_state.clone(),
+                            self.routes,
+                            ReportObservation::InvalidCryptoResponse(observation),
+                        )
+                        .await;
+                    }
+                    PetDecryptResponseVerification::Rejected => {}
+                }
+            }
         }
 
-        if shares.len() < threshold {
+        if shares.len() < threshold && !remote_peer_ids.is_empty() {
+            let decrypt_request_id = format!("decrypt-{attempt_id}");
+            if self
+                .app_state
+                .pet_response_state
+                .init_response_for_version(
+                    self.routes.version,
+                    decrypt_request_id.clone(),
+                    &remote_peer_ids,
+                )
+                .await
+                == ResponseInitOutcome::AlreadyExists
+            {
+                return Err(PetError::ProtocolError(format!(
+                    "PET decrypt request_id {decrypt_request_id} collided with an in-flight request"
+                )));
+            }
+
             let mut tasks = tokio::task::JoinSet::new();
-            for peer_id in &expected_peer_ids {
+            for peer_id in &remote_peer_ids {
                 let peer_id = peer_id.clone();
-                let request = PetMessage::CheckRequest(Box::new(PetCheckRequest {
-                    request_id: request_id.clone(),
+                let request = PetMessage::DecryptRequest(Box::new(DecryptRequest {
+                    request_id: decrypt_request_id.clone(),
+                    attempt_id: attempt_id.clone(),
                     from_node_id: node_id_opt.unwrap_or(0),
+                    certificate: certificate.clone(),
                     context: ctx.clone(),
                 }));
-                let req_id = request_id.clone();
+                let req_id = decrypt_request_id.clone();
                 let app_state = self.app_state.clone();
                 let routes = self.routes;
-                // A fresh coordinator per task is cheap: just `Arc<AppState>` +
-                // a `'static` routes reference — mirrors PRE's own fan-out.
                 tasks.spawn(async move {
                     let coordinator = PetCoordinator::<D, P>::with_routes(app_state, routes);
                     let result = coordinator
-                        .send_check_request_and_receive_response(&peer_id, request, &req_id)
+                        .send_pet_request_and_receive_response(&peer_id, request, &req_id)
                         .await;
                     (peer_id, result)
                 });
             }
 
+            let ring_id = document.ring_id.clone();
             let collect = async {
                 while let Some(joined) = tasks.join_next().await {
                     let (peer_id, result) = match joined {
                         Ok(pair) => pair,
                         Err(error) => {
-                            tracing::warn!(%error, "PET Coordinator: task join error");
+                            tracing::warn!(%error, "PET Coordinator: decrypt task join error");
                             continue;
                         }
                     };
                     match result {
-                        Ok(Some(response @ PetMessage::CheckResponse { .. })) => {
-                            // Required acceptance order (fixes a slot-preemption
-                            // bug: a rejected response must never consume an
-                            // honest participant's id) — see `pet/README.md`
-                            // and `verify_check_response`'s own doc comment for
-                            // the exact ordering this enforces.
-                            match Self::verify_check_response(
+                        Ok(Some(response @ PetMessage::DecryptResponse { .. })) => {
+                            match verify_decrypt_response::<P>(
                                 response,
-                                &peer_id,
+                                &ring_id,
                                 &ring_payload,
-                                &document.ring_id,
                                 &pub_poly,
-                                &tag,
-                                &statement_ctx,
-                                &request_id,
+                                context_digest,
+                                certificate_digest,
+                                &attempt_id,
+                                &aggregate_r_bytes,
+                                &aggregate_diff_bytes,
+                                &blind_context,
                                 &document_evidence,
-                                &mut seen_node_ids,
+                                &mut seen_decrypt_ids,
                             ) {
-                                PetCheckResponseVerification::Verified(share, attestation) => {
+                                PetDecryptResponseVerification::Verified(signed_decrypt, share) => {
+                                    decrypt_responses.push(*signed_decrypt);
                                     shares.push(share);
-                                    attestations.push(*attestation);
                                 }
-                                PetCheckResponseVerification::InvalidProof(observation) => {
+                                PetDecryptResponseVerification::InvalidProof(observation) => {
                                     let _ = queue_report::<D, SignImpl>(
                                         self.app_state.clone(),
                                         self.routes,
                                         ReportObservation::InvalidCryptoResponse(observation),
                                     )
-                                    .await
-                                    .inspect_err(|error| {
-                                        tracing::warn!(
-                                            peer = %peer_id,
-                                            %error,
-                                            "Failed to queue PET invalid-proof report observation"
-                                        );
-                                    });
+                                    .await;
                                 }
-                                PetCheckResponseVerification::Rejected => {}
+                                PetDecryptResponseVerification::Rejected => {}
                             }
                         }
                         Ok(_) => {}
@@ -340,7 +671,7 @@ where
                             tracing::warn!(
                                 peer = %peer_id,
                                 %error,
-                                "PET Coordinator: check request failed"
+                                "PET Coordinator: decrypt request failed"
                             );
                         }
                     }
@@ -355,15 +686,14 @@ where
             {
                 tracing::warn!(
                     request_id = %request_id,
-                    "PET Coordinator: collection deadline reached before threshold shares arrived"
+                    "PET Coordinator: decrypt collection deadline reached before threshold shares arrived"
                 );
             }
+            self.app_state
+                .pet_response_state
+                .remove_response_for_version(self.routes.version, &decrypt_request_id)
+                .await;
         }
-
-        self.app_state
-            .pet_response_state
-            .remove_response_for_version(self.routes.version, &request_id)
-            .await;
 
         if shares.len() < threshold {
             return Err(PetError::InsufficientShares {
@@ -372,18 +702,21 @@ where
             });
         }
 
-        let combined = P::combine_pet_check_shares(&shares, threshold, committee_size)
-            .map_err(|e| PetError::Crypto(format!("Failed to combine PET check shares: {}", e)))?;
+        let combined =
+            P::combine_pet_check_shares(&shares, threshold, committee_size).map_err(|e| {
+                PetError::Crypto(format!("Failed to combine PET decrypt shares: {}", e))
+            })?;
+        let combined_bytes = CryptoSerialize::to_bytes(&combined)
+            .map_err(|e| PetError::Serialization(format!("Failed to serialize combined: {}", e)))?;
 
-        // `audit_target_object_id` *is* the plaintext owner identity — see
-        // `verification.rs`'s module doc comment for why no ACP identity
-        // resolution step exists or is needed here.
-        let target_fingerprint = P::owner_fingerprint(audit_target_object_id.as_bytes())
-            .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
+        if combined_bytes != aggregate_diff_bytes {
+            return Err(PetError::Mismatch);
+        }
 
-        P::verify_pet_match(&tag, &combined, &target_fingerprint)
-            .map_err(|_| PetError::Mismatch)?;
-
-        Ok(attestations)
+        Ok(PetBlindEvidence {
+            certificate,
+            decrypt_responses,
+            coordinator_node_key: self.app_state.node_key.clone(),
+        })
     }
 }

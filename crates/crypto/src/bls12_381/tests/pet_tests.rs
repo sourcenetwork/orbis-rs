@@ -1,9 +1,11 @@
 use crate::bls12_381::pet::PetNode;
-use crate::r#trait::{CryptoSerialize, Dkg, Pet, PetCheckReply, PetTag, PubShare};
+use crate::r#trait::{
+    CryptoDeserialize, CryptoSerialize, Dkg, Pet, PetCheckReply, PetTag, PubShare,
+};
 use crate::test_helper::DKGCoordinator;
 use ark_bls12_381::{Fr, G1Affine, G1Projective};
 use ark_ec::Group;
-use ark_ff::{Field, One};
+use ark_ff::{Field, One, Zero};
 use ark_std::UniformRand;
 use rand_core::OsRng;
 
@@ -340,5 +342,145 @@ fn per_share_verification_rejects_a_cancellation_attack_that_would_otherwise_fra
         PetNode::verify_partial_pet_check(&pub_poly, &tag, &fabricated_reply).is_err(),
         "verify_partial_pet_check must reject the fabricated contribution even though it fools \
          the final equation and combine_pet_check_shares alone"
+    );
+}
+
+// ============================================================================
+// Blinding-correctness proof (audit finding #2's blind equality test)
+// ============================================================================
+
+/// `R`, `T` (masked_fingerprint), and `Y` (target) are independent random
+/// points here — this suite exercises the blinding-proof math itself, not
+/// the tag's own defining equation (see `make_valid_tag` for that).
+fn sample_blind_inputs() -> (PetTag, G1Affine, Fr) {
+    let r_tag = Fr::rand(&mut OsRng);
+    let r_point: G1Affine = (G1Projective::generator() * r_tag).into();
+    let masked: G1Affine = (G1Projective::generator() * Fr::rand(&mut OsRng)).into();
+    let target: G1Affine = (G1Projective::generator() * Fr::rand(&mut OsRng)).into();
+    let tag = PetTag {
+        ephemeral_point: r_point.to_bytes().unwrap(),
+        masked_fingerprint: masked.to_bytes().unwrap(),
+    };
+    (tag, target, Fr::rand(&mut OsRng))
+}
+
+#[test]
+fn test_all_blinding_proof() {
+    crate::pet_tests::run_all_blinding_proof_tests::<PetNode, _>(|| {
+        let s = Fr::rand(&mut OsRng);
+        let p: G1Affine = (G1Projective::generator() * s).into();
+        (s, p)
+    })
+    .unwrap();
+}
+
+#[test]
+fn blinding_proof_rejects_zero_scalar() {
+    let (tag, target, _) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    assert!(
+        PetNode::prove_blinding_correctness(&Fr::zero(), &tag, &target, &digest).is_err(),
+        "a zero blinding scalar must be rejected outright"
+    );
+}
+
+#[test]
+fn blinding_proof_rejects_tampered_blinded_r() {
+    let (tag, target, z_i) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
+    reply.blinded_r = (G1Projective::from(reply.blinded_r) + G1Projective::generator()).into();
+
+    assert!(
+        PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
+        "a tampered blinded_r must fail verification"
+    );
+}
+
+#[test]
+fn blinding_proof_rejects_tampered_blinded_diff() {
+    let (tag, target, z_i) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
+    reply.blinded_diff =
+        (G1Projective::from(reply.blinded_diff) + G1Projective::generator()).into();
+
+    assert!(
+        PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
+        "a tampered blinded_diff must fail verification"
+    );
+}
+
+#[test]
+fn blinding_proof_rejects_tampered_challenge() {
+    let (tag, target, z_i) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
+    reply.challenge += Fr::one();
+
+    assert!(
+        PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
+        "a tampered challenge must fail verification"
+    );
+}
+
+#[test]
+fn blinding_proof_rejects_tampered_response() {
+    let (tag, target, z_i) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
+    reply.proof += Fr::one();
+
+    assert!(
+        PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
+        "a tampered proof response must fail verification"
+    );
+}
+
+/// A genuinely valid Chaum-Pedersen proof for `z_i = 0`: any nonzero nonce
+/// `w` produces a mathematically sound `(U, V, challenge, response)` tuple —
+/// the DLEQ relation itself doesn't care that `z_i` is zero. Only the
+/// explicit `blinded_r == O` check inside `verify_blinding_correctness`
+/// catches this; this test confirms that check is load-bearing, not
+/// redundant with the proof math itself.
+#[test]
+fn blinding_proof_rejects_a_validly_constructed_proof_for_a_zero_scalar() {
+    let (tag, target, _) = sample_blind_inputs();
+    let digest = [7u8; 32];
+    let r_point = G1Affine::from_bytes(&tag.ephemeral_point).unwrap();
+    let masked = G1Affine::from_bytes(&tag.masked_fingerprint).unwrap();
+    let diff_point: G1Affine = (G1Projective::from(masked) - G1Projective::from(target)).into();
+
+    let z_i = Fr::zero();
+    let blinded_r: G1Affine = (G1Projective::from(r_point) * z_i).into(); // == O
+    let blinded_diff: G1Affine = (G1Projective::from(diff_point) * z_i).into();
+
+    let w = Fr::rand(&mut OsRng);
+    let u_point: G1Affine = (G1Projective::from(r_point) * w).into();
+    let v_point: G1Affine = (G1Projective::from(diff_point) * w).into();
+
+    let challenge = PetNode::blinding_proof_challenge(
+        &r_point,
+        &diff_point,
+        &blinded_r,
+        &blinded_diff,
+        &u_point,
+        &v_point,
+        &digest,
+    )
+    .unwrap();
+    let response = w + challenge * z_i; // == w, since z_i == 0
+
+    let reply = crate::r#trait::BlindingReply {
+        blinded_r,
+        blinded_diff,
+        challenge,
+        proof: response,
+    };
+
+    assert!(
+        PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
+        "a validly-constructed proof for a zero blinding scalar must still be rejected via the \
+         explicit blinded_r == O check"
     );
 }

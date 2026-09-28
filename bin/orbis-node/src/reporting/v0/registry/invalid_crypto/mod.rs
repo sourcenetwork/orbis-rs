@@ -103,12 +103,35 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 self.validate_sign_evidence(envelope, context, &ring, statement, response_signature)
                     .await
             }
-            InvalidCryptoResponse::Pet {
+            InvalidCryptoResponse::PetBlindReveal {
+                context: blind_context,
                 statement,
                 response_signature,
             } => {
-                self.validate_pet_evidence(envelope, context, &ring, statement, response_signature)
-                    .await
+                self.validate_pet_blind_reveal_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    blind_context,
+                    statement,
+                    response_signature,
+                )
+                .await
+            }
+            InvalidCryptoResponse::PetBlindDecrypt {
+                context: blind_context,
+                statement,
+                response_signature,
+            } => {
+                self.validate_pet_blind_decrypt_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    blind_context,
+                    statement,
+                    response_signature,
+                )
+                .await
             }
             InvalidCryptoResponse::DkgShare {
                 statement,
