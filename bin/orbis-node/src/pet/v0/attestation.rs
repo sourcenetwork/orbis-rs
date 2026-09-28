@@ -110,11 +110,11 @@ pub(crate) fn invalid_pet_blind_reveal_observation(
         accused_peer_id,
         observed_at,
         evidence: InvalidCryptoResponse::PetBlindReveal {
-            context,
             statement,
             response_signature,
         },
         inline_document,
+        pet_blind_context: Some(context),
     }
 }
 
@@ -139,10 +139,10 @@ pub(crate) fn invalid_pet_blind_decrypt_observation(
         accused_peer_id,
         observed_at,
         evidence: InvalidCryptoResponse::PetBlindDecrypt {
-            context,
             statement,
             response_signature,
         },
         inline_document,
+        pet_blind_context: Some(context),
     }
 }

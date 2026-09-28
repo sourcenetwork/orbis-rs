@@ -91,6 +91,13 @@ pub struct ReportValidationContext {
     /// (`require_pre_proof_verification_failure`, `require_relayed_request_unauthorized`) re-bind
     /// it to `object_id` before use. `None` for every bulletin-sourced report.
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band `PetBlindContext` for a PET blind-equality-test
+    /// `invalid_crypto_response` report — supplied by the reporter's own
+    /// observation, or by `ReportSigningContext` when validating as an
+    /// independent co-signer. `None` for every non-PET report. Mirrors
+    /// `inline_document` exactly, and for the same reason: the audit target
+    /// (and every other context field) must never be published on chain.
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 pub struct ReportPreparationContext {
@@ -107,6 +114,10 @@ pub struct PreparedReport {
     /// reporter's own local validation). `None` for every report except a PRE one whose request
     /// carried its document inline.
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band `PetBlindContext` to carry into `ReportSigningContext` (and this reporter's
+    /// own local validation). `None` for every report except a PET blind-equality-test
+    /// `invalid_crypto_response`. Mirrors `inline_document` exactly.
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 #[async_trait]

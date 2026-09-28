@@ -3,9 +3,9 @@ use crate::helpers::ring::RingConfig;
 use crate::pet::v0::error::PetError;
 use crate::pre::v0::error::PreError;
 use crate::reporting::v0::types::{
-    CommitteeScope, InvalidCryptoResponse, ReportedDocumentEvidence, UnauthorizedRequestPayload,
-    CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
-    UNAUTHORIZED_REQUEST_REPORT_TYPE,
+    CommitteeScope, InvalidCryptoResponse, PetBlindContext, ReportedDocumentEvidence,
+    UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, INVALID_CRYPTO_RESPONSE_REPORT_TYPE,
+    NODE_OFFLINE_REPORT_TYPE, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
 use crate::sign::v0::error::SignError;
 
@@ -33,6 +33,11 @@ pub struct InvalidCryptoResponseObservation {
     /// statement's `document_inline` is set). In-memory only — it rides to co-signers via
     /// `ReportSigningContext`, never the threshold-signed envelope. `None` otherwise.
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band `PetBlindContext` for a PET blind-equality-test evidence kind
+    /// (`InvalidCryptoResponse::PetBlindReveal`/`PetBlindDecrypt`). In-memory only — it rides to
+    /// co-signers via `ReportSigningContext`, never the threshold-signed envelope, so the audit
+    /// target is never published on chain. `None` for every non-PET evidence kind.
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 /// A relayed Sign/PRE request whose ACP re-check failed on this node, attributing the relayer.

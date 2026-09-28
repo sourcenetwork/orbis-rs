@@ -81,6 +81,7 @@ fn pre_invalid_observation() -> InvalidCryptoResponseObservation {
         accused_peer_id: "aa".repeat(32),
         observed_at: 100,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::Pre {
             statement: PreReencryptResponseStatement {
                 domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
@@ -116,6 +117,7 @@ fn sign_invalid_observation() -> InvalidCryptoResponseObservation {
         accused_peer_id: "aa".repeat(32),
         observed_at: 100,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::Sign {
             statement: SignResponseStatement {
                 domain: SIGN_RESPONSE_DOMAIN.to_string(),
@@ -206,6 +208,7 @@ fn validation_context(
         now,
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
+        pet_blind_context: None,
     }
 }
 
@@ -278,6 +281,7 @@ fn dkg_invalid_observation() -> InvalidCryptoResponseObservation {
         accused_peer_id: "aa".repeat(32),
         observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature: vec![9; 64],
@@ -957,6 +961,7 @@ async fn dkg_share_shape_rejects_wrong_origin() {
             now: envelope.observed_at,
             mode: ReportValidationMode::ReporterObservation,
             inline_document: None,
+            pet_blind_context: None,
         },
     )
     .unwrap_err();
@@ -1021,6 +1026,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         accused_peer_id: "aa".repeat(32),
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgEquivocation {
             commitment_a: Box::new(commitment_a.clone()),
             commitment_b: Box::new(commitment_b),
@@ -1044,6 +1050,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         now: envelope.observed_at,
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
+        pet_blind_context: None,
     };
 
     // A well-bound commitment passes the shape check.
@@ -1127,6 +1134,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         accused_peer_id: "aa".repeat(32),
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
             statement: Box::new(commitment.statement.clone()),
             response_signature: commitment.signature.clone(),
@@ -1150,6 +1158,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         now: envelope.observed_at,
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
+        pet_blind_context: None,
     };
 
     // A well-formed pss_refresh commitment passes the shape check.

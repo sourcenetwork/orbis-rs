@@ -70,6 +70,7 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             envelope,
             ring_config,
             inline_document: observation.inline_document,
+            pet_blind_context: observation.pet_blind_context,
         })
     }
 
@@ -104,10 +105,10 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                     .await
             }
             InvalidCryptoResponse::PetBlindReveal {
-                context: blind_context,
                 statement,
                 response_signature,
             } => {
+                let blind_context = require_pet_blind_context(context)?;
                 self.validate_pet_blind_reveal_evidence(
                     envelope,
                     context,
@@ -119,10 +120,10 @@ impl ReportHandler for InvalidCryptoResponseHandler {
                 .await
             }
             InvalidCryptoResponse::PetBlindDecrypt {
-                context: blind_context,
                 statement,
                 response_signature,
             } => {
+                let blind_context = require_pet_blind_context(context)?;
                 self.validate_pet_blind_decrypt_evidence(
                     envelope,
                     context,

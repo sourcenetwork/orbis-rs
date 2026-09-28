@@ -6,11 +6,14 @@
 //! Unlike every other evidence kind in this module, the accused's own signed
 //! statement binds only an opaque `context_digest`/`certificate_digest`, not
 //! individually-reconstructable fields — see
-//! `reporting::v0::types::pet_blind`'s module doc comment. `context`
-//! (`PetBlindContext`) travels alongside the statement so a validator can
-//! independently recompute that digest and resolve the tag/target from
-//! primary sources (the bulletin), exactly as the old evidence's individual
-//! fields let it do directly.
+//! `reporting::v0::types::pet_blind`'s module doc comment. The matching
+//! `PetBlindContext` a validator needs to independently recompute that
+//! digest and resolve the tag/target from primary sources (the bulletin)
+//! does **not** travel inside the evidence itself (it carries the audit
+//! target's object id, which must never be posted on chain) — it arrives
+//! out-of-band via `ReportValidationContext::pet_blind_context`, fetched
+//! with `require_pet_blind_context`, exactly like `ReportedDocumentEvidence`
+//! travels via `inline_document`.
 
 use super::*;
 

@@ -350,6 +350,21 @@ pub(super) fn reject_unexpected_inline_document_evidence(
     Ok(())
 }
 
+/// Fetch the out-of-band `PetBlindContext` for a PET blind-equality-test `invalid_crypto_response`
+/// report. Unlike `inline_document`, this is unconditional — every PET-blind evidence kind
+/// requires one, since (unlike a PRE statement's self-describing fields) the statement binds only
+/// an opaque `context_digest`; the full context that hashes to it never travels in the
+/// threshold-signed envelope at all, so a validator missing it cannot validate the report.
+pub(super) fn require_pet_blind_context(
+    context: &ReportValidationContext,
+) -> Result<&PetBlindContext> {
+    context.pet_blind_context.as_ref().ok_or_else(|| {
+        ReportingError::InvalidReport(
+            "PET blind-equality-test report is missing its out-of-band PetBlindContext".to_string(),
+        )
+    })
+}
+
 pub(super) async fn read_node_info(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     node_key: &str,

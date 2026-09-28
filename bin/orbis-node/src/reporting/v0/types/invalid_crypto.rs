@@ -12,7 +12,7 @@ use super::dkg::{
     DkgLeaderPublicFaultStatement, DkgPublicOriginFaultStatement, DkgShareStatement,
 };
 use super::pre_sign::{PreReencryptResponseStatement, SignResponseStatement};
-use super::{CommitteeScope, PetBlindContext, PetBlindDecryptStatement, PetBlindRevealStatement};
+use super::{CommitteeScope, PetBlindDecryptStatement, PetBlindRevealStatement};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InvalidCryptoResponse {
@@ -33,13 +33,14 @@ pub enum InvalidCryptoResponse {
     /// refresh/reshare yet.
     ///
     /// Unlike the old `Pet` evidence's individually-reconstructable fields,
-    /// `statement` binds only an opaque `context_digest` — `context` carries
-    /// the full canonical context a validator needs to independently
-    /// recompute that digest and resolve the tag/target from primary
-    /// sources (the bulletin), exactly as the old evidence's individual
-    /// fields let it do directly.
+    /// `statement` binds only an opaque `context_digest`. The full canonical
+    /// `PetBlindContext` a validator needs to independently recompute that
+    /// digest and resolve the tag/target is deliberately **not** part of
+    /// this on-chain-published payload — it carries the audit target's
+    /// object id, which must never be posted on chain. It travels out-of-band
+    /// instead, via `ReportSigningContext`/`ReportValidationContext`, exactly
+    /// like `ReportedDocumentEvidence`/`inline_document`.
     PetBlindReveal {
-        context: PetBlindContext,
         statement: PetBlindRevealStatement,
         response_signature: Vec<u8>,
     },
@@ -48,9 +49,8 @@ pub enum InvalidCryptoResponse {
     /// and this statement's own claimed aggregate `Z·R` — see
     /// `Pet::verify_partial_pet_check`, run here against `Z·R` in place of
     /// the old protocol's bare `R`. See `PetBlindReveal`'s doc comment for
-    /// why `context` travels alongside the statement.
+    /// why its `PetBlindContext` does not travel inside this evidence.
     PetBlindDecrypt {
-        context: PetBlindContext,
         statement: PetBlindDecryptStatement,
         response_signature: Vec<u8>,
     },
@@ -133,22 +133,18 @@ impl InvalidCryptoResponse {
                 write_bytes(&mut out, response_signature);
             }
             Self::PetBlindReveal {
-                context,
                 statement,
                 response_signature,
             } => {
                 write_string(&mut out, "pet_blind_reveal");
-                write_bytes(&mut out, &context.canonical_bytes());
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
             Self::PetBlindDecrypt {
-                context,
                 statement,
                 response_signature,
             } => {
                 write_string(&mut out, "pet_blind_decrypt");
-                write_bytes(&mut out, &context.canonical_bytes());
                 write_bytes(&mut out, &statement.canonical_bytes());
                 write_bytes(&mut out, response_signature);
             }
@@ -227,21 +223,17 @@ impl InvalidCryptoResponse {
                 }
             }
             "pet_blind_reveal" => {
-                let context_bytes = decoder.read_bytes("context")?;
                 let statement_bytes = decoder.read_bytes("statement")?;
                 let response_signature = decoder.read_bytes("response_signature")?;
                 Self::PetBlindReveal {
-                    context: PetBlindContext::from_canonical_bytes(&context_bytes)?,
                     statement: PetBlindRevealStatement::from_canonical_bytes(&statement_bytes)?,
                     response_signature,
                 }
             }
             "pet_blind_decrypt" => {
-                let context_bytes = decoder.read_bytes("context")?;
                 let statement_bytes = decoder.read_bytes("statement")?;
                 let response_signature = decoder.read_bytes("response_signature")?;
                 Self::PetBlindDecrypt {
-                    context: PetBlindContext::from_canonical_bytes(&context_bytes)?,
                     statement: PetBlindDecryptStatement::from_canonical_bytes(&statement_bytes)?,
                     response_signature,
                 }

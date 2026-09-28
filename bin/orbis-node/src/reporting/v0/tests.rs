@@ -2624,6 +2624,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         accused_peer_id: accused_peer_id.clone(),
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::Pre {
             statement,
             response_signature,
@@ -2798,6 +2799,7 @@ async fn threshold_signs_invalid_crypto_sign_report_without_accused_node() {
         accused_peer_id: accused_peer_id.clone(),
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,
@@ -2971,6 +2973,7 @@ async fn co_signers_refuse_invalid_crypto_sign_report_when_share_verifies() {
         accused_peer_id,
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,

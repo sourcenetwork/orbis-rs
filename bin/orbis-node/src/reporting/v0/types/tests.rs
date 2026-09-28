@@ -137,28 +137,6 @@ fn pre_statement() -> PreReencryptResponseStatement {
     }
 }
 
-fn pet_blind_context() -> PetBlindContext {
-    PetBlindContext {
-        chain_id: "vera-test".to_string(),
-        protocol_version: 7,
-        crypto_backend: "pet/test".to_string(),
-        ring_id: "ring-1".to_string(),
-        ring_pk: "aabb".to_string(),
-        ring_state_sha256: "11".repeat(32),
-        pet_pk: "ccdd".to_string(),
-        object_id: "object-1".to_string(),
-        salt: Some("salt-1".to_string()),
-        timestamp: Some(1_700_000_000),
-        document_inline: false,
-        audit_target_object_id: "target-1".to_string(),
-        actor_id: "did:key:z6Mkactor".to_string(),
-        valid_window_start: Some(1_699_999_000),
-        valid_window_end: Some(1_700_001_000),
-        coordinator_node_key: "coordinator".to_string(),
-        attempt_id: "attempt-1".to_string(),
-    }
-}
-
 fn pet_blind_reveal_statement() -> PetBlindRevealStatement {
     PetBlindRevealStatement {
         domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
@@ -313,7 +291,6 @@ fn pet_blind_reveal_statement_with_identity_diff_round_trips() {
 #[test]
 fn invalid_crypto_response_pet_blind_reveal_payload_round_trips() {
     let payload = InvalidCryptoResponse::PetBlindReveal {
-        context: pet_blind_context(),
         statement: pet_blind_reveal_statement(),
         response_signature: vec![42; 64],
     };
@@ -343,7 +320,6 @@ fn pet_blind_decrypt_statement_round_trips_and_is_domain_separated() {
 #[test]
 fn invalid_crypto_response_pet_blind_decrypt_payload_round_trips() {
     let payload = InvalidCryptoResponse::PetBlindDecrypt {
-        context: pet_blind_context(),
         statement: pet_blind_decrypt_statement(),
         response_signature: vec![42; 64],
     };

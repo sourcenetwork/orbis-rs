@@ -87,13 +87,13 @@ impl PetBlindContext {
         Sha256::digest(&out).into()
     }
 
-    /// Field order is the canonical wire contract — the chain-side (Go)
-    /// decoder must read fields in exactly this order. Unlike every other
-    /// type in this file, this struct's *raw* bytes travel as report
-    /// evidence (`InvalidCryptoResponse::PetBlindReveal`/`PetBlindDecrypt`),
-    /// not just its digest: a report validator has no other way to learn
-    /// `object_id`/`salt`/`audit_target_object_id`/etc. and independently
-    /// resolve the tag/target these statements were checked against.
+    /// Field order only needs to be stable for `context_digest`'s own hash to be
+    /// deterministic — unlike every other canonical-bytes method in this file, this one's output
+    /// never itself travels on the wire or on chain. `PetBlindContext` values travel out-of-band
+    /// (via `ReportSigningContext`/`ReportValidationContext`, serde-encoded) exactly like
+    /// `ReportedDocumentEvidence`, precisely so the audit target and every other context field
+    /// are never published on chain — see `reporting::v0::types::invalid_crypto`'s
+    /// `PetBlindReveal`/`PetBlindDecrypt` doc comments.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.chain_id);
@@ -114,47 +114,6 @@ impl PetBlindContext {
         write_string(&mut out, &self.coordinator_node_key);
         write_string(&mut out, &self.attempt_id);
         out
-    }
-
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
-        let mut decoder = Decoder::new(bytes);
-        let chain_id = decoder.read_string("chain_id")?;
-        let protocol_version = decoder.read_u64("protocol_version")?;
-        let crypto_backend = decoder.read_string("crypto_backend")?;
-        let ring_id = decoder.read_string("ring_id")?;
-        let ring_pk = decoder.read_string("ring_pk")?;
-        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
-        let pet_pk = decoder.read_string("pet_pk")?;
-        let object_id = decoder.read_string("object_id")?;
-        let salt = decoder.read_optional_string("salt")?;
-        let timestamp = decoder.read_optional_u64("timestamp")?;
-        let document_inline = decoder.read_bool("document_inline")?;
-        let audit_target_object_id = decoder.read_string("audit_target_object_id")?;
-        let actor_id = decoder.read_string("actor_id")?;
-        let valid_window_start = decoder.read_optional_u64("valid_window_start")?;
-        let valid_window_end = decoder.read_optional_u64("valid_window_end")?;
-        let coordinator_node_key = decoder.read_string("coordinator_node_key")?;
-        let attempt_id = decoder.read_string("attempt_id")?;
-        decoder.finish()?;
-        Ok(Self {
-            chain_id,
-            protocol_version,
-            crypto_backend,
-            ring_id,
-            ring_pk,
-            ring_state_sha256,
-            pet_pk,
-            object_id,
-            salt,
-            timestamp,
-            document_inline,
-            audit_target_object_id,
-            actor_id,
-            valid_window_start,
-            valid_window_end,
-            coordinator_node_key,
-            attempt_id,
-        })
     }
 }
 
@@ -535,15 +494,6 @@ mod tests {
             coordinator_node_key: "coordinator".to_string(),
             attempt_id: "attempt-1".to_string(),
         }
-    }
-
-    #[test]
-    fn context_round_trips() {
-        let ctx = context();
-        assert_eq!(
-            PetBlindContext::from_canonical_bytes(&ctx.canonical_bytes()).unwrap(),
-            ctx
-        );
     }
 
     #[test]

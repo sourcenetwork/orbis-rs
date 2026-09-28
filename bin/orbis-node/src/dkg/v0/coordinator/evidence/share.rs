@@ -276,6 +276,7 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(evidence.statement),
             response_signature: evidence.signature,

@@ -277,6 +277,7 @@ where
             // Out-of-band for the co-signers when the request was inline; the ciphertext never
             // enters the threshold-signed envelope.
             inline_document: report_context.inline_document.clone(),
+            pet_blind_context: None,
         }))
     }
 }
