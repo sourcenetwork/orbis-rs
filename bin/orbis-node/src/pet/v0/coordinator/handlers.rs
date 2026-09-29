@@ -352,6 +352,11 @@ where
         let signed_at = current_unix_time()?;
         let statement = PetBlindRevealStatement {
             domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+            chain_id: blind_context.chain_id.clone(),
+            ring_id: blind_context.ring_id.clone(),
+            ring_pk: blind_context.ring_pk.clone(),
+            ring_state_sha256: blind_context.ring_state_sha256.clone(),
+            protocol_version: blind_context.protocol_version,
             attempt_id: attempt_id.clone(),
             context_digest,
             selection_digest,
@@ -481,6 +486,11 @@ where
         let signed_at = current_unix_time()?;
         let statement = PetBlindDecryptStatement {
             domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: blind_context.chain_id.clone(),
+            ring_id: blind_context.ring_id.clone(),
+            ring_pk: blind_context.ring_pk.clone(),
+            ring_state_sha256: blind_context.ring_state_sha256.clone(),
+            protocol_version: blind_context.protocol_version,
             attempt_id: attempt_id.clone(),
             context_digest,
             certificate_digest,

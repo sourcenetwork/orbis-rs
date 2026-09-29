@@ -924,6 +924,11 @@ where
 
     let statement = PetBlindRevealStatement {
         domain: crate::reporting::v0::types::PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+        chain_id: blind_context.chain_id.clone(),
+        ring_id: blind_context.ring_id.clone(),
+        ring_pk: blind_context.ring_pk.clone(),
+        ring_state_sha256: blind_context.ring_state_sha256.clone(),
+        protocol_version: blind_context.protocol_version,
         attempt_id,
         context_digest,
         selection_digest,
@@ -1024,6 +1029,11 @@ where
     };
     let statement = PetBlindDecryptStatement {
         domain: crate::reporting::v0::types::PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+        chain_id: blind_context.chain_id.clone(),
+        ring_id: blind_context.ring_id.clone(),
+        ring_pk: blind_context.ring_pk.clone(),
+        ring_state_sha256: blind_context.ring_state_sha256.clone(),
+        protocol_version: blind_context.protocol_version,
         attempt_id,
         context_digest,
         certificate_digest,
@@ -1381,6 +1391,11 @@ mod tests {
         .expect("compute blinding-correctness proof");
         let statement = PetBlindRevealStatement {
             domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+            chain_id: "test-chain".to_string(),
+            ring_id: RING_ID.to_string(),
+            ring_pk: "aa".repeat(32),
+            ring_state_sha256: "bb".repeat(32),
+            protocol_version: 0,
             attempt_id: attempt_id.to_string(),
             context_digest,
             selection_digest,
@@ -1507,6 +1522,11 @@ mod tests {
         .expect("recompute genuine blinded points");
         let statement = PetBlindRevealStatement {
             domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+            chain_id: "test-chain".to_string(),
+            ring_id: RING_ID.to_string(),
+            ring_pk: "aa".repeat(32),
+            ring_state_sha256: "bb".repeat(32),
+            protocol_version: 0,
             attempt_id: attempt_id.to_string(),
             context_digest,
             selection_digest,
@@ -1572,6 +1592,11 @@ mod tests {
         let signer = &fixture.signers[(node_id - 1) as usize];
         let statement = PetBlindDecryptStatement {
             domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "test-chain".to_string(),
+            ring_id: RING_ID.to_string(),
+            ring_pk: "aa".repeat(32),
+            ring_state_sha256: "bb".repeat(32),
+            protocol_version: 0,
             attempt_id: certificate.attempt_id.clone(),
             context_digest: certificate.context_digest,
             certificate_digest: certificate.certificate_digest(),
@@ -1610,6 +1635,11 @@ mod tests {
         let signer = &fixture.signers[(node_id - 1) as usize];
         let statement = PetBlindDecryptStatement {
             domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "test-chain".to_string(),
+            ring_id: RING_ID.to_string(),
+            ring_pk: "aa".repeat(32),
+            ring_state_sha256: "bb".repeat(32),
+            protocol_version: 0,
             attempt_id: certificate.attempt_id.clone(),
             context_digest: certificate.context_digest,
             certificate_digest: certificate.certificate_digest(),

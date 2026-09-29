@@ -200,6 +200,18 @@ pub fn pet_blind_proof_transcript_digest(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PetBlindRevealStatement {
     pub domain: String,
+    /// `chain_id`/`ring_id`/`ring_pk`/`ring_state_sha256`/`protocol_version` bind this statement
+    /// to its report envelope the same way `PreReencryptResponseStatement`'s own copies do — the
+    /// chain-side validator (`validateInvalidCryptoResponseStatement` in Vera's `report.go`) has
+    /// no access to `PetBlindContext` (it travels out-of-band, never on chain) and can only bind
+    /// evidence to the envelope using fields the statement itself carries. None of these four
+    /// leak anything: they're already plaintext, top-level `ReportEnvelope` fields on the same
+    /// submission.
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
     pub attempt_id: String,
     pub context_digest: [u8; 32],
     pub selection_digest: [u8; 32],
@@ -231,6 +243,11 @@ impl PetBlindRevealStatement {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
         write_string(&mut out, &self.attempt_id);
         write_fixed_32(&mut out, &self.context_digest);
         write_fixed_32(&mut out, &self.selection_digest);
@@ -249,6 +266,11 @@ impl PetBlindRevealStatement {
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let mut decoder = Decoder::new(bytes);
         let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
         let attempt_id = decoder.read_string("attempt_id")?;
         let context_digest = decoder.read_fixed_32("context_digest")?;
         let selection_digest = decoder.read_fixed_32("selection_digest")?;
@@ -264,6 +286,11 @@ impl PetBlindRevealStatement {
         decoder.finish()?;
         Ok(Self {
             domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
             attempt_id,
             context_digest,
             selection_digest,
@@ -309,6 +336,13 @@ pub struct PetBlindSignedDecrypt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PetBlindDecryptStatement {
     pub domain: String,
+    /// See [`PetBlindRevealStatement`]'s matching fields' doc comment — same rationale, same
+    /// chain-side consumer.
+    pub chain_id: String,
+    pub ring_id: String,
+    pub ring_pk: String,
+    pub ring_state_sha256: String,
+    pub protocol_version: u64,
     pub attempt_id: String,
     pub context_digest: [u8; 32],
     pub certificate_digest: [u8; 32],
@@ -335,6 +369,11 @@ impl PetBlindDecryptStatement {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
+        write_string(&mut out, &self.chain_id);
+        write_string(&mut out, &self.ring_id);
+        write_string(&mut out, &self.ring_pk);
+        write_string(&mut out, &self.ring_state_sha256);
+        write_u64(&mut out, self.protocol_version);
         write_string(&mut out, &self.attempt_id);
         write_fixed_32(&mut out, &self.context_digest);
         write_fixed_32(&mut out, &self.certificate_digest);
@@ -352,6 +391,11 @@ impl PetBlindDecryptStatement {
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let mut decoder = Decoder::new(bytes);
         let domain = decoder.read_string("domain")?;
+        let chain_id = decoder.read_string("chain_id")?;
+        let ring_id = decoder.read_string("ring_id")?;
+        let ring_pk = decoder.read_string("ring_pk")?;
+        let ring_state_sha256 = decoder.read_string("ring_state_sha256")?;
+        let protocol_version = decoder.read_u64("protocol_version")?;
         let attempt_id = decoder.read_string("attempt_id")?;
         let context_digest = decoder.read_fixed_32("context_digest")?;
         let certificate_digest = decoder.read_fixed_32("certificate_digest")?;
@@ -366,6 +410,11 @@ impl PetBlindDecryptStatement {
         decoder.finish()?;
         Ok(Self {
             domain,
+            chain_id,
+            ring_id,
+            ring_pk,
+            ring_state_sha256,
+            protocol_version,
             attempt_id,
             context_digest,
             certificate_digest,
@@ -673,6 +722,11 @@ mod tests {
     fn reveal_statement() -> PetBlindRevealStatement {
         PetBlindRevealStatement {
             domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
             attempt_id: "attempt-1".to_string(),
             context_digest: [1u8; 32],
             selection_digest: [2u8; 32],
@@ -713,6 +767,11 @@ mod tests {
     fn decrypt_statement() -> PetBlindDecryptStatement {
         PetBlindDecryptStatement {
             domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: "ring".to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
             attempt_id: "attempt-1".to_string(),
             context_digest: [1u8; 32],
             certificate_digest: [2u8; 32],
