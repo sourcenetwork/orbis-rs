@@ -45,13 +45,13 @@ use crate::pet::v0::messages::{
 };
 use crate::reporting::v0::observation::{offline_observation_from_pet_error, ReportObservation};
 use crate::reporting::v0::types::{
-    pet_blind_selection_digest, PetBlindCertificate, PetBlindSignedDecrypt, PetBlindSignedReveal,
-    ReportedDocumentEvidence,
+    pet_blind_selection_digest, PetBlindCertificate, PetBlindContext, PetBlindSignedDecrypt,
+    PetBlindSignedReveal, ReportedDocumentEvidence,
 };
 use crate::reporting::v0::{queue_report, spawn_error_drain};
 use crate::ring_state::RingShareBundle;
 use authz::vera::ValidWindow;
-use bulletin::r#trait::DocumentPayload;
+use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PubShare, ThresholdSigner,
 };
@@ -109,6 +109,123 @@ where
                 .map(ReportObservation::NodeOffline)
             },
         );
+    }
+
+    /// Decrypt-phase-specific variant of `spawn_pet_offline_drain`. Decrypt
+    /// over-asks the whole committee and stops as soon as `threshold`
+    /// genuine shares arrive (see this module's doc comment), so a
+    /// still-in-flight task can resolve *successfully* — carrying a
+    /// decryption proof that fails to verify — only after collection has
+    /// already moved on. The plain error-only drain above would silently
+    /// discard that response (`spawn_error_drain` only classifies `Err`
+    /// outcomes; a late `Ok(_)` is dropped unconditionally), letting a
+    /// misbehaving node dodge attribution purely by resolving after enough
+    /// honest shares already arrived. This re-runs `verify_decrypt_response`
+    /// on every late-but-successful response too, exactly as the live
+    /// collection loop would have, queuing an `invalid_crypto_response`
+    /// report when it fails. Reveal has no equivalent gap — it asks for
+    /// exactly the selected `threshold`-sized set, so nothing "extra" can
+    /// race past unexamined — and commit has nothing to misreport (a
+    /// commitment carries no proof yet), so neither needs this.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_pet_decrypt_drain(
+        &self,
+        tasks: tokio::task::JoinSet<(String, Result<Option<PetMessage>>)>,
+        ring_id: String,
+        all_peer_ids: Vec<String>,
+        peer_node_keys: Vec<String>,
+        attempt_id: String,
+        ring_payload: RingPayload,
+        pub_poly: D::PubPoly,
+        context_digest: [u8; 32],
+        certificate_digest: [u8; 32],
+        aggregate_r_bytes: Vec<u8>,
+        aggregate_diff_bytes: Vec<u8>,
+        blind_context: PetBlindContext,
+        document_evidence: Option<ReportedDocumentEvidence>,
+    ) {
+        let protocol_version = self.routes.version;
+        let app_state = self.app_state.clone();
+        let routes = self.routes;
+        let mut tasks = tasks;
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + PET_COLLECTION_TIMEOUT;
+            let mut seen_node_ids = HashSet::new();
+            while let Ok(Some(joined)) = tokio::time::timeout_at(deadline, tasks.join_next()).await
+            {
+                let (peer_id, result) = match joined {
+                    Ok(pair) => pair,
+                    Err(join_err) => {
+                        tracing::error!(
+                            error = ?join_err,
+                            "PET decrypt drain: peer task panicked"
+                        );
+                        continue;
+                    }
+                };
+                match result {
+                    Ok(Some(response @ PetMessage::DecryptResponse { .. })) => {
+                        if let PetDecryptResponseVerification::InvalidProof(observation) =
+                            verify_decrypt_response::<P>(
+                                response,
+                                &ring_id,
+                                &ring_payload,
+                                &peer_id,
+                                &pub_poly,
+                                context_digest,
+                                certificate_digest,
+                                &attempt_id,
+                                &aggregate_r_bytes,
+                                &aggregate_diff_bytes,
+                                &blind_context,
+                                &document_evidence,
+                                &mut seen_node_ids,
+                            )
+                        {
+                            let _ = queue_report::<D, SignImpl>(
+                                app_state.clone(),
+                                routes,
+                                ReportObservation::InvalidCryptoResponse(observation),
+                            )
+                            .await
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    peer_id = %peer_id,
+                                    error = %error,
+                                    "Failed to queue PET invalid-decrypt report observation \
+                                     (post-threshold drain)"
+                                );
+                            });
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if let Some(obs) = offline_observation_from_pet_error(
+                            &ring_id,
+                            &all_peer_ids,
+                            &peer_node_keys,
+                            &peer_id,
+                            &error,
+                            protocol_version,
+                            &attempt_id,
+                        )
+                        .map(ReportObservation::NodeOffline)
+                        {
+                            let _ = queue_report::<D, SignImpl>(app_state.clone(), routes, obs)
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        error = %error,
+                                        "Failed to queue offline report observation \
+                                         (post-threshold drain)"
+                                    );
+                                });
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Run the three-round blind equality test for `document` against the
@@ -387,6 +504,7 @@ where
                         response,
                         &document.ring_id,
                         &ring_payload,
+                        &hex::encode(local_peer_id.as_bytes()),
                         &tag,
                         &target_fingerprint,
                         &commitments,
@@ -483,6 +601,7 @@ where
                                 response,
                                 &ring_id,
                                 &ring_payload,
+                                &peer_id,
                                 &tag,
                                 &target_fingerprint,
                                 &commitments,
@@ -615,6 +734,7 @@ where
                     response,
                     &document.ring_id,
                     &ring_payload,
+                    &hex::encode(local_peer_id.as_bytes()),
                     &pub_poly,
                     context_digest,
                     certificate_digest,
@@ -698,6 +818,7 @@ where
                                 response,
                                 &ring_id,
                                 &ring_payload,
+                                &peer_id,
                                 &pub_poly,
                                 context_digest,
                                 certificate_digest,
@@ -746,12 +867,20 @@ where
                     "PET Coordinator: decrypt collection deadline reached before threshold shares arrived"
                 );
             }
-            self.spawn_pet_offline_drain(
+            self.spawn_pet_decrypt_drain(
                 tasks,
                 document.ring_id.clone(),
                 all_peer_ids.clone(),
                 ring_payload.peer_node_keys.clone(),
                 attempt_id.clone(),
+                ring_payload.clone(),
+                pub_poly.clone(),
+                context_digest,
+                certificate_digest,
+                aggregate_r_bytes.clone(),
+                aggregate_diff_bytes.clone(),
+                blind_context.clone(),
+                document_evidence.clone(),
             );
             self.app_state
                 .pet_response_state

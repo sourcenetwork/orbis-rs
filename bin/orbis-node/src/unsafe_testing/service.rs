@@ -98,6 +98,14 @@ fn parse_key(key: Option<LocalStorageKey>) -> Result<LocalStorageKeys, Status> {
             }
             Ok(LocalStorageKeys::RingKey(key.ring_key))
         }
+        LocalStorageKeyType::PetRingKey => {
+            if key.ring_key.trim().is_empty() {
+                return Err(Status::invalid_argument(
+                    "ring_key (carrying ring_id) is required for PET_RING_KEY",
+                ));
+            }
+            Ok(LocalStorageKeys::PetRingKey(key.ring_key))
+        }
         LocalStorageKeyType::NodeSecretKey => {
             reject_ring_key_value(&key.ring_key)?;
             Ok(LocalStorageKeys::NodeSecretKey)
