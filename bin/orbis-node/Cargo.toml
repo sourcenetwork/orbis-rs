@@ -56,19 +56,19 @@ k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
 acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "a5a005e64b23110c604ec8b86784bbdb825432de" }
-defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["p2p"] }
-defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["iroh-transport"] }
-defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a", default-features = false, features = ["native"] }
-defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
 did-key.workspace = true
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "92cc27c26106af4240039119a000e8aef4d6fa2a" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "1777972eb1fbd955a4b656799880b3ec346db899" }
 alloy-primitives = "1"
 vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
 vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "cf6bbe9ad5c2a4f7ad6ffea5647bf81dd13f84d2" }
