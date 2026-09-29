@@ -556,9 +556,6 @@ impl PendingReshareBundle {
     }
 
     /// Same as [`Self::load`], for a ring's independent PET checking key.
-    /// Unused outside tests until Stage 3 of the PSS-for-PET-key plan adds
-    /// the confirmation-driven promotion/reconciliation path that calls it.
-    #[allow(dead_code)]
     pub fn load_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<Option<Self>, String> {
         let Some(bytes) = storage
             .get_encrypted(LocalStorageKeys::PendingResharePetBundle(
@@ -572,9 +569,6 @@ impl PendingReshareBundle {
     }
 
     /// Same as [`Self::clear`], for a ring's independent PET checking key.
-    /// Unused until Stage 3 of the PSS-for-PET-key plan adds the
-    /// confirmation-driven promotion/discard path that calls it.
-    #[allow(dead_code)]
     pub fn clear_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<(), String> {
         storage
             .delete(LocalStorageKeys::PendingResharePetBundle(

@@ -125,13 +125,9 @@ pub use control_handler::DkgControlHandler;
 pub use private::DkgPrivateHandler;
 
 pub(crate) use ceremony_start::{
-    start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
+    start_refresh, start_refresh_pet, start_reshare, start_reshare_pet, RefreshStartOutcome,
+    ReshareStartOutcome,
 };
-// No production caller until Stage 3 of the PSS-for-PET-key plan wires it in
-// (see `start_reshare_pet`'s own doc comment) — only this module's own test
-// suite (`dkg::v0::tests::reshare`) calls it directly today.
-#[cfg(test)]
-pub(crate) use ceremony_start::start_reshare_pet;
 // Only `unsafe_testing` drives the leader broadcast path directly; gating the
 // re-export keeps it out of non-`unsafe-testing` builds without an unused import.
 #[cfg(feature = "unsafe-testing")]

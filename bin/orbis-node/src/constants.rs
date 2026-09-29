@@ -682,16 +682,33 @@ pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs
 /// node's staged reshare bundle (see `reshare/cleanup.rs`) and releasing the
 /// PSS claim unconditionally.
 ///
-/// This is a comfortable multiple — not just a slim margin — of
-/// RESHARE_SIGNATURE_MAX_ATTEMPTS × SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s,
-/// node 1's worst-case finalize-signing retry budget): unlike before this
-/// timeout gated only cleanup-task bookkeeping, it now decides whether to
-/// promote a continuing node's locally-computed share to disk at all, so a
-/// legitimately slow-but-succeeding reshare must not lose that race. Must
-/// stay comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
+/// A comfortable multiple — not just a slim margin — of node 1's worst-case
+/// time-to-post: RESHARE_PET_COMPLETION_WAIT_TIMEOUT (150 s — for a
+/// `requires_pet` ring, node 1 defers signing until `ResharePet` also
+/// completes; see `bulletin_update.rs`) plus RESHARE_SIGNATURE_MAX_ATTEMPTS ×
+/// SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s, the finalize-signing retry
+/// budget itself) = 330 s worst case. Unlike before this timeout gated only
+/// cleanup-task bookkeeping, it now decides whether to promote a continuing
+/// node's locally-computed share to disk at all, so a legitimately
+/// slow-but-succeeding reshare must not lose that race. Must stay
+/// comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
 /// session (and its `reshare_signature_ready` marker) is otherwise aged out
 /// by independently.
-pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
+pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(480);
+
+/// Maximum time new-committee node 1 waits, after triggering `ResharePet`,
+/// for it to complete locally before giving up on signing the deferred
+/// main-ring bulletin update this tick (see `bulletin_update.rs`'s
+/// `requires_pet` gate). Comfortably above `DKG_PREPARATION_TIMEOUT` (120 s
+/// — the committee-activation barrier `ResharePet` itself is bounded by)
+/// without being wastefully long; giving up here is not a failure in
+/// itself, just a missed window — the next PSS tick retries the whole
+/// reshare (main key and PET both) from scratch.
+pub const RESHARE_PET_COMPLETION_WAIT_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// How often node 1 polls for `ResharePet`'s staged bundle while waiting
+/// under `RESHARE_PET_COMPLETION_WAIT_TIMEOUT`.
+pub const RESHARE_PET_COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// How long a retired ring polynomial stays available for invalid-crypto report
 /// verification (`ring_state::RingPolyHistory`) after a PSS ceremony replaces it.

@@ -6,10 +6,16 @@ use crypto::r#trait::DkgRole;
 use crypto::SignImpl;
 use crypto::THRESHOLD_SIGNATURE_SCHEME;
 
-use crate::constants::{RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY};
+use crate::constants::{
+    RESHARE_PET_COMPLETION_POLL_INTERVAL, RESHARE_PET_COMPLETION_WAIT_TIMEOUT,
+    RESHARE_SIGNATURE_MAX_ATTEMPTS, RESHARE_SIGNATURE_RETRY_DELAY,
+};
 use crate::dkg::v0::error::{DkgError, Result};
-use crate::dkg::v0::helpers::{effective_new_peer_node_keys, peer_node_keys_match};
+use crate::dkg::v0::helpers::{
+    derive_reshare_pet_session_id, effective_new_peer_node_keys, peer_node_keys_match,
+};
 use crate::dkg::v0::messages::SessionKind;
+use crate::dkg::v0::network::start_reshare_pet;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::ring::RingConfig;
@@ -38,6 +44,14 @@ struct PreparedReshareUpdate {
     finalized_ring_sha256: String,
     block_number_nonce: u64,
     chain_id: String,
+    /// From the freshly-read current `RingPayload` — determines whether
+    /// node 1 must gate signing on `ResharePet` also completing (see
+    /// `update_bulletin_if_selector`'s `requires_pet` branch).
+    requires_pet: bool,
+    /// The ring's old/current committee, as read from the same current
+    /// `RingPayload` — needed to derive `ResharePet`'s deterministic
+    /// session id when `requires_pet` is true.
+    old_peer_node_keys: Vec<String>,
 }
 
 /// What a non-Dealer Reshare node needs to promote or discard its own staged
@@ -126,6 +140,91 @@ where
         ));
     };
 
+    if prepared.requires_pet {
+        // Atomicity gate (docs/plans/lazy-gliding-gosling.md, Stage 3): the
+        // ring's independent PET checking key must reshare along with the
+        // main key, either both commit or neither does. `ResharePet` runs
+        // on the exact same old/new committees, so we (already established
+        // as the canonical new-committee leader above) trigger it directly
+        // rather than going through the general PSS scheduler path, and
+        // defer signing the main update until it's done.
+        if let Err(error) = start_reshare_pet(
+            coord.app_state.clone(),
+            coord.routes,
+            prepared.ring_id.clone(),
+        )
+        .await
+        {
+            tracing::warn!(
+                session_id = session_id,
+                ring_id = %prepared.ring_id,
+                %error,
+                "Reshare: failed to trigger the ring's PET checking-key reshare; \
+                 not posting the main bulletin update this tick"
+            );
+            return Ok(readiness_info);
+        }
+        let pet_session_id = derive_reshare_pet_session_id(
+            &prepared.ring_id,
+            &prepared.old_peer_node_keys,
+            &prepared.sorted_new_peer_node_keys,
+            *new_threshold,
+        )?;
+        if !wait_for_reshare_pet_staged(
+            coord,
+            &prepared.ring_id,
+            pet_session_id,
+            &prepared.sorted_new_peer_node_keys,
+            *new_threshold,
+        )
+        .await
+        {
+            tracing::warn!(
+                session_id = session_id,
+                ring_id = %prepared.ring_id,
+                "Reshare: PET checking-key reshare did not complete within the wait window; \
+                 not posting the main bulletin update this tick — the next PSS tick retries \
+                 the whole reshare, main key and PET both"
+            );
+            return Ok(readiness_info);
+        }
+    }
+
+    sign_and_post_reshare_update(
+        coord,
+        attempt,
+        session_id,
+        ring_pk_hex,
+        ring_pk_bytes,
+        pub_poly_bytes,
+        *new_threshold,
+        prepared,
+    )
+    .await?;
+
+    Ok(readiness_info)
+}
+
+/// Collect the threshold signature over the reshare update statement and
+/// post it — the part of the update only new-committee node 1 ever performs.
+/// Split out from `update_bulletin_if_selector` so a `requires_pet` ring can
+/// defer this call until `ResharePet` has also completed, without
+/// duplicating it.
+#[allow(clippy::too_many_arguments)]
+async fn sign_and_post_reshare_update<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    session_id: u128,
+    ring_pk_hex: &str,
+    ring_pk_bytes: &[u8],
+    pub_poly_bytes: &[u8],
+    new_threshold: u32,
+    prepared: PreparedReshareUpdate,
+) -> Result<()>
+where
+    D: CoordinatorDkg + Send + Sync,
+    SignImpl: CoordinatorReportSigner<D>,
+{
     let statement = RingReshareUpdateStatement {
         domain: RING_RESHARE_UPDATE_DOMAIN.to_string(),
         session_id,
@@ -150,7 +249,7 @@ where
         ring_pk_bytes: ring_pk_bytes.to_vec(),
         peer_ids: prepared.new_route_peer_ids,
         peer_node_keys: prepared.sorted_new_peer_node_keys,
-        threshold: *new_threshold as usize,
+        threshold: new_threshold as usize,
         total_participants: prepared.new_committee_size,
         public_polynomial_hex: hex::encode(pub_poly_bytes),
     };
@@ -222,7 +321,52 @@ where
         "Reshare: Successfully updated RingPayload on bulletin"
     );
 
-    Ok(readiness_info)
+    Ok(())
+}
+
+/// Poll for `ResharePet`'s own staged bundle rather than its in-memory
+/// session phase: `complete_transport_attempt` removes a session from
+/// `states` essentially atomically with completion, so polling phase
+/// directly would race a genuine completion into looking identical to
+/// "session never existed" if the poll lands just after removal. The
+/// durable `PendingReshareBundle::save_pet` write (`phase4.rs`'s
+/// `complete_reshare_pet_phase4`) has no such window — Stage 2's own
+/// ceremony tests already rely on polling it the same way.
+async fn wait_for_reshare_pet_staged<D>(
+    coord: &DkgCoordinator<D>,
+    ring_id: &str,
+    pet_session_id: u128,
+    expected_new_committee: &[String],
+    expected_new_threshold: u32,
+) -> bool
+where
+    D: CoordinatorDkg,
+{
+    let deadline = tokio::time::Instant::now() + RESHARE_PET_COMPLETION_WAIT_TIMEOUT;
+    loop {
+        if let Ok(Some(pending)) =
+            PendingReshareBundle::load_pet(&coord.app_state.local_storage, ring_id)
+        {
+            if peer_node_keys_match(&pending.expected_new_committee, expected_new_committee)
+                && pending.expected_new_threshold == expected_new_threshold
+            {
+                return true;
+            }
+        }
+        if coord
+            .app_state
+            .dkg_session_state
+            .failed_session(&pet_session_id)
+            .await
+            .is_some()
+        {
+            return false;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(RESHARE_PET_COMPLETION_POLL_INTERVAL).await;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -345,6 +489,8 @@ where
         finalized_ring_sha256,
         block_number_nonce: current_ring_payload.block_number_nonce,
         chain_id,
+        requires_pet: current_ring_payload.requires_pet,
+        old_peer_node_keys: current_ring_payload.peer_node_keys.clone(),
     })
 }
 
@@ -437,7 +583,121 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::helpers::test_helpers::{cleanup_db, create_test_app_state_default, test_db_path};
     use std::cell::RefCell;
+    use std::sync::Arc;
+    use zeroize::Zeroizing;
+
+    /// A matching staged bundle already present must be observed on the very
+    /// first poll — no need to wait out any part of
+    /// `RESHARE_PET_COMPLETION_WAIT_TIMEOUT`.
+    #[tokio::test]
+    async fn wait_for_reshare_pet_staged_returns_true_when_matching_bundle_already_present() {
+        let db_name = "wait_for_reshare_pet_staged_success";
+        let db_path = test_db_path(db_name);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+
+        let ring_id = "pet-ring";
+        let expected_new_committee = vec!["a".to_string(), "b".to_string()];
+        let expected_new_threshold = 1u32;
+
+        PendingReshareBundle {
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![9, 9, 9]),
+                public_polynomial: "poly".to_string(),
+                last_pss: 0,
+            },
+            bulletin_post_id: ring_id.to_string(),
+            expected_new_committee: expected_new_committee.clone(),
+            expected_new_threshold,
+        }
+        .save_pet(&app_state.local_storage, ring_id)
+        .expect("seed staged PET bundle");
+
+        let staged = wait_for_reshare_pet_staged(
+            &coordinator,
+            ring_id,
+            12345,
+            &expected_new_committee,
+            expected_new_threshold,
+        )
+        .await;
+        assert!(
+            staged,
+            "must observe the already-staged matching bundle on the first poll"
+        );
+
+        cleanup_db(&db_path);
+    }
+
+    /// A staged bundle for a *different* transition (stale, from some
+    /// unrelated or superseded attempt) must not be mistaken for this one —
+    /// mirrors `reshare/cleanup.rs`'s own `should_promote` committee/threshold
+    /// match, since a wrong-shaped match here would wrongly let node 1 sign
+    /// and post the main update while the PET checking key resharing to
+    /// something else entirely.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_reshare_pet_staged_ignores_a_mismatched_bundle() {
+        let db_name = "wait_for_reshare_pet_staged_mismatch";
+        let db_path = test_db_path(db_name);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+
+        let ring_id = "pet-ring";
+        PendingReshareBundle {
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![9, 9, 9]),
+                public_polynomial: "poly".to_string(),
+                last_pss: 0,
+            },
+            bulletin_post_id: ring_id.to_string(),
+            expected_new_committee: vec!["x".to_string(), "y".to_string()],
+            expected_new_threshold: 2,
+        }
+        .save_pet(&app_state.local_storage, ring_id)
+        .expect("seed staged PET bundle for an unrelated transition");
+
+        let staged = wait_for_reshare_pet_staged(
+            &coordinator,
+            ring_id,
+            12345,
+            &["a".to_string(), "b".to_string()],
+            1,
+        )
+        .await;
+        assert!(
+            !staged,
+            "a bundle staged for a different committee/threshold must not count as ready"
+        );
+
+        cleanup_db(&db_path);
+    }
+
+    /// No bundle ever appears: give up once `RESHARE_PET_COMPLETION_WAIT_TIMEOUT`
+    /// elapses rather than waiting forever.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_reshare_pet_staged_times_out_without_a_bundle() {
+        let db_name = "wait_for_reshare_pet_staged_timeout";
+        let db_path = test_db_path(db_name);
+        let app_state = Arc::new(create_test_app_state_default(db_name).await);
+        let coordinator = DkgCoordinator::with_routes(app_state.clone(), &::network::V0);
+
+        let staged = wait_for_reshare_pet_staged(
+            &coordinator,
+            "pet-ring-never-staged",
+            999,
+            &["a".to_string(), "b".to_string()],
+            1,
+        )
+        .await;
+        assert!(
+            !staged,
+            "must give up once the wait window elapses with no matching bundle"
+        );
+
+        cleanup_db(&db_path);
+    }
 
     #[tokio::test]
     async fn reshare_signature_retry_uses_unique_request_ids() {

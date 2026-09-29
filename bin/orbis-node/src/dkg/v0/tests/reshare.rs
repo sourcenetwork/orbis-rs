@@ -3154,3 +3154,163 @@ async fn test_reshare_pet_session_init_rejects_no_bulletin_announcement() {
     );
     cleanup_db(&db_path);
 }
+
+// =============================================================================
+// Reshare PET atomicity gate (Stage 3 of the PSS-for-PET-key plan)
+//
+// Unlike the Stage-2 tests above (which call `start_reshare_pet` directly),
+// these drive the ceremony purely through `start_reshare` — the same
+// entrypoint the PSS scheduler itself calls for the main key alone — and
+// prove that `ResharePet` runs, completes, and promotes automatically as a
+// side effect, with the main ring's own bulletin update landing only once
+// both are done.
+// =============================================================================
+
+/// {A,B,C}→{A,B,C}, t=2→1: triggering only the main key's reshare must also
+/// reshare and promote the PET checking key, atomically, with no direct
+/// `start_reshare_pet` call anywhere in this test.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_pet_atomic_via_main_reshare_alone() {
+    let db_name = "test_reshare_pet_atomic_via_main_reshare_alone";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
+    require_pet_on_fresh_dkg_ring(&dummy_bulletin, old_peer_node_keys.clone());
+
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("JWT");
+    alice_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("DKG should start");
+    let (key_string, ring_pk_hex, original_pk_bytes) =
+        wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
+    println!("Main DKG complete. key_string={}", key_string);
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
+
+    let old_states = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ];
+    let pet_shares_before: Vec<_> = old_states
+        .iter()
+        .map(|state| {
+            RingShareBundle::load_by_pet_ring_key(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .expect("PET bundle exists before reshare")
+                .share_bytes
+                .clone()
+        })
+        .collect();
+
+    let mut sorted_new = old_peer_node_keys.clone();
+    sorted_new.sort();
+    post_reshare_pet_announcement(
+        &old_peer_node_keys,
+        2,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        &sorted_new,
+        1,
+        &dummy_bulletin,
+    );
+
+    let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_states.to_vec();
+    let announcement_post_id = TEST_FRESH_DKG_RING_ID.to_string();
+
+    // Only the main key's own reshare is ever triggered here — no direct
+    // `start_reshare_pet` call anywhere in this test.
+    run_reshare_ceremony(
+        &old_node_states,
+        &old_peer_node_keys,
+        &key_string,
+        &sorted_new,
+        1,
+        &announcement_post_id,
+        &old_node_states,
+    )
+    .await;
+
+    // The main key's own PK must be preserved (already proven by
+    // `run_reshare_ceremony`'s own bulletin-update wait, reconfirmed here).
+    verify_reshare_pk_preserved(
+        &[
+            ("alice", &network.alice.app_state),
+            ("bob", &network.bob.app_state),
+            ("charlie", &network.charlie.app_state),
+        ],
+        &key_string,
+        &original_pk_bytes,
+    );
+
+    // The PET checking key must have been reshared and PROMOTED to the live
+    // namespace too — automatically, as a side effect of the main reshare
+    // alone — with its own checking key preserved and its pending-restart
+    // copy cleared.
+    for ((label, state), share_before) in [
+        ("alice", &network.alice.app_state),
+        ("bob", &network.bob.app_state),
+        ("charlie", &network.charlie.app_state),
+    ]
+    .into_iter()
+    .zip(pet_shares_before.iter())
+    {
+        let live =
+            RingShareBundle::load_by_pet_ring_key(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .unwrap_or_else(|e| panic!("{label}: load live PET bundle after reshare: {e}"));
+        assert_ne!(
+            live.share_bytes.as_slice(),
+            share_before.as_slice(),
+            "{label}: the live PET share must have been redistributed, not left untouched"
+        );
+        let poly_bytes = hex::decode(&live.public_polynomial)
+            .unwrap_or_else(|e| panic!("{label}: decode live PET polynomial: {e}"));
+        let pub_poly = <DkgImpl as Dkg>::PubPoly::from_bytes(&poly_bytes)
+            .unwrap_or_else(|e| panic!("{label}: deserialize live PET PubPoly: {e}"));
+        let recovered = CryptoSerialize::to_bytes(&pub_poly.eval(0))
+            .unwrap_or_else(|e| panic!("{label}: serialize live PET P(0): {e}"));
+        assert_eq!(
+            recovered, original_pet_pk_bytes,
+            "{label}: the live PET checking key must be preserved across the atomic reshare"
+        );
+        assert!(
+            PendingReshareBundle::load_pet(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .expect("PET pending-bundle lookup must not error")
+                .is_none(),
+            "{label}: the staged PET bundle must be cleared once promoted"
+        );
+    }
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
