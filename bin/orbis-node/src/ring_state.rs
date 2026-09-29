@@ -195,15 +195,18 @@ impl RingShareBundle {
     /// — a distinct namespace from [`Self::save_by_ring_key`]'s main-key
     /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
     ///
-    /// No polynomial-history stashing here (unlike `save_by_ring_key`): PET
-    /// has no refresh/reshare yet, so there is never a "previous generation"
-    /// to retire — see `require_pet_blind_decrypt_verification_failure`'s
-    /// identical reasoning on the read side.
+    /// Stashes the previous generation the same way `save_by_ring_key` does
+    /// (into the PET-specific `LocalStorageKeys::PetRingPolyHistory`
+    /// namespace) — PET now has its own refresh/reshare (`RefreshPet`,
+    /// `ResharePet`), so a "previous generation" genuinely exists here too;
+    /// see `require_pet_blind_decrypt_verification_failure`'s identical
+    /// reasoning on the read side.
     pub fn save_by_pet_ring_key(
         &self,
         storage: &impl LocalStorage,
         ring_id: &str,
     ) -> Result<(), String> {
+        self.stash_previous_pet_polynomial(storage, ring_id);
         storage
             .set_encrypted(
                 LocalStorageKeys::PetRingKey(ring_id.to_string()),
@@ -227,7 +230,7 @@ impl RingShareBundle {
         }
         if let Err(error) = RingPolyHistory::record_retired(
             storage,
-            ring_key,
+            LocalStorageKeys::RingPolyHistory(ring_key.to_string()),
             previous.public_polynomial,
             self.last_pss,
         ) {
@@ -235,6 +238,31 @@ impl RingShareBundle {
                 ring_key = %ring_key,
                 %error,
                 "Failed to record retired ring polynomial for report verification"
+            );
+        }
+    }
+
+    /// Same as [`Self::stash_previous_polynomial`], for a ring's independent
+    /// PET checking key — reads the previous generation via
+    /// [`Self::load_by_pet_ring_key`] and stashes it into the distinct
+    /// `LocalStorageKeys::PetRingPolyHistory` namespace.
+    fn stash_previous_pet_polynomial(&self, storage: &impl LocalStorage, ring_id: &str) {
+        let Ok(previous) = Self::load_by_pet_ring_key(storage, ring_id) else {
+            return; // First-ever write for this ring's PET key — nothing to retire.
+        };
+        if previous.public_polynomial == self.public_polynomial {
+            return; // Retried/duplicate commit of the same generation.
+        }
+        if let Err(error) = RingPolyHistory::record_retired(
+            storage,
+            LocalStorageKeys::PetRingPolyHistory(ring_id.to_string()),
+            previous.public_polynomial,
+            self.last_pss,
+        ) {
+            tracing::warn!(
+                ring_id = %ring_id,
+                %error,
+                "Failed to record retired PET ring polynomial for report verification"
             );
         }
     }
@@ -609,6 +637,16 @@ impl RingPolyState {
             .map_err(|e| format!("Failed to deserialize ring_pk: {}", e))?;
         Self::load(storage, &ring_pk)
     }
+
+    /// Same as [`Self::load_from_ring_pk_hex`], for a ring's independent PET
+    /// checking key — keyed directly by `ring_id` (PET has no public-key
+    /// storage handle to decode; see [`LocalStorageKeys::PetRingKey`]).
+    pub fn load_from_pet_ring_id(
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<Self, String> {
+        RingShareBundle::load_by_pet_ring_key(storage, ring_id).map(|b| b.to_poly_state())
+    }
 }
 
 /// Defense in depth on top of the retention-window filter in [`RingPolyHistory::recent`] —
@@ -641,36 +679,36 @@ struct RetiredPolynomial {
 }
 
 impl RingPolyHistory {
-    fn load(storage: &impl LocalStorage, ring_key: &str) -> Self {
+    fn load(storage: &impl LocalStorage, key: LocalStorageKeys) -> Self {
         storage
-            .get(LocalStorageKeys::RingPolyHistory(ring_key.to_string()))
+            .get(key)
             .ok()
             .flatten()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
-    fn save(&self, storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+    fn save(&self, storage: &impl LocalStorage, key: LocalStorageKeys) -> Result<(), String> {
         let bytes = serde_json::to_vec(self)
             .map_err(|e| format!("Failed to serialize RingPolyHistory: {}", e))?;
         storage
-            .set(
-                LocalStorageKeys::RingPolyHistory(ring_key.to_string()),
-                bytes,
-            )
+            .set(key, bytes)
             .map_err(|e| format!("Failed to store RingPolyHistory: {}", e))
     }
 
     /// Record a just-retired polynomial and prune anything past the retention
     /// window or the max entry count. Called right before a new `RingShareBundle`
-    /// overwrites the current one (see `RingShareBundle::stash_previous_polynomial`).
+    /// overwrites the current one (see `RingShareBundle::stash_previous_polynomial`
+    /// and `::stash_previous_pet_polynomial`). `key` selects the main-key
+    /// (`LocalStorageKeys::RingPolyHistory`) or PET
+    /// (`LocalStorageKeys::PetRingPolyHistory`) namespace.
     fn record_retired(
         storage: &impl LocalStorage,
-        ring_key: &str,
+        key: LocalStorageKeys,
         public_polynomial: String,
         retired_at: u64,
     ) -> Result<(), String> {
-        let mut history = Self::load(storage, ring_key);
+        let mut history = Self::load(storage, key.clone());
         history.entries.retain(|entry| {
             retired_at.saturating_sub(entry.retired_at) <= RING_POLY_HISTORY_RETENTION_SECS
         });
@@ -682,13 +720,13 @@ impl RingPolyHistory {
             },
         );
         history.entries.truncate(RING_POLY_HISTORY_MAX_ENTRIES);
-        history.save(storage, ring_key)
+        history.save(storage, key)
     }
 
-    /// Every still-in-window retired polynomial for `ring_key`, most-recent first,
+    /// Every still-in-window retired polynomial under `key`, most-recent first,
     /// hex-encoded and ready for `PubPolyImpl::from_bytes(&hex::decode(..)?)`.
-    pub fn recent(storage: &impl LocalStorage, ring_key: &str, now_secs: u64) -> Vec<String> {
-        Self::load(storage, ring_key)
+    fn recent(storage: &impl LocalStorage, key: LocalStorageKeys, now_secs: u64) -> Vec<String> {
+        Self::load(storage, key)
             .entries
             .into_iter()
             .filter(|entry| {
@@ -712,6 +750,25 @@ impl RingPolyHistory {
         let Ok(ring_pk) = G1Affine::from_bytes(&bytes) else {
             return Vec::new();
         };
-        Self::recent(storage, &ring_pk.to_string(), now_secs)
+        Self::recent(
+            storage,
+            LocalStorageKeys::RingPolyHistory(ring_pk.to_string()),
+            now_secs,
+        )
+    }
+
+    /// Same as [`Self::recent_from_ring_pk_hex`], for a ring's independent PET
+    /// checking key — keyed directly by `ring_id` (PET has no public-key
+    /// storage key to convert from; see `LocalStorageKeys::PetRingKey`).
+    pub fn recent_from_pet_ring_id(
+        storage: &impl LocalStorage,
+        ring_id: &str,
+        now_secs: u64,
+    ) -> Vec<String> {
+        Self::recent(
+            storage,
+            LocalStorageKeys::PetRingPolyHistory(ring_id.to_string()),
+            now_secs,
+        )
     }
 }

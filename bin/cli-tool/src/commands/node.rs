@@ -636,3 +636,20 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
     let inner = response.into_inner();
     Ok((inner.public_polynomial, inner.last_pss))
 }
+
+/// Same as [`query_ring_state`], for a ring's independent PET checking key —
+/// keyed by `ring_id` (PET has no public-key storage handle to query by).
+/// Returns an error if the ring has no PET bundle on that node.
+pub async fn query_pet_ring_state(endpoint: String, ring_id: String) -> Result<(String, u64)> {
+    let mut client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let response = client
+        .get_pet_ring_state(proto::info_service::GetPetRingStateRequest { ring_id })
+        .await
+        .map_err(|e| anyhow!("get_pet_ring_state failed: {}", e))?;
+
+    let inner = response.into_inner();
+    Ok((inner.public_polynomial, inner.last_pss))
+}

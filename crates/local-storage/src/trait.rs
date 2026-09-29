@@ -52,6 +52,14 @@ pub enum LocalStorageKeys {
     /// `ring_id` and a main key's `aggregate_pk.to_string()` share no
     /// structural guarantee against collision.
     PendingResharePetBundle(String),
+    /// Same as [`Self::RingPolyHistory`], for a ring's independent PET
+    /// checking key, keyed by `ring_id` — a distinct namespace for the same
+    /// reason [`Self::PetRingKey`] is distinct from [`Self::RingKey`]. Lets
+    /// PET's own invalid-crypto report verification check a reported blind
+    /// decrypt share against the generation it was actually produced under,
+    /// even after `RefreshPet`/`ResharePet` has moved the PET key on to a
+    /// new one. Not encrypted, for the same reason `RingPolyHistory` isn't.
+    PetRingPolyHistory(String),
 }
 
 pub trait LocalStorage {

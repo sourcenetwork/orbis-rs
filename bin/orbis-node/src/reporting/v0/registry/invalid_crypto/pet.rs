@@ -300,7 +300,7 @@ async fn require_pet_blind_reveal_verification_failure(
     Ok(())
 }
 
-async fn require_pet_blind_decrypt_verification_failure(
+pub(crate) async fn require_pet_blind_decrypt_verification_failure(
     blind_context: &PetBlindContext,
     statement: &PetBlindDecryptStatement,
     context: &ReportValidationContext,
@@ -318,16 +318,12 @@ async fn require_pet_blind_decrypt_verification_failure(
         return Ok(());
     };
 
-    // PET has no refresh/reshare yet, so there is exactly one generation to
-    // check against — no `candidate_public_polynomials`-style history list
-    // needed (unlike PRE/Sign).
-    let bundle =
-        RingShareBundle::load_by_pet_ring_key(&context.local_storage, &blind_context.ring_id)
-            .map_err(ReportingError::InvalidReport)?;
-    let pub_poly_bytes = hex::decode(&bundle.public_polynomial)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let pub_poly = PubPolyImpl::from_bytes(&pub_poly_bytes)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    // PET now has its own refresh/reshare (`RefreshPet`/`ResharePet`), so a
+    // share signed just before one of those completes must still be checked
+    // against the generation it was actually produced under — the same
+    // `candidate_public_polynomials`-style history list PRE/Sign already use,
+    // just keyed by `ring_id` (PET's own namespace) rather than `ring_pk_hex`.
+    let candidates = candidate_pet_public_polynomials(context, &blind_context.ring_id)?;
 
     let reply = PetCheckReply {
         partial: PubShare {
@@ -345,12 +341,53 @@ async fn require_pet_blind_decrypt_verification_failure(
         masked_fingerprint: Vec::new(),
     };
 
-    if PetImpl::verify_partial_pet_check(&pub_poly, &synthetic_tag, &reply).is_ok() {
+    // Any candidate verifying means the response was genuinely valid under some
+    // generation this node plausibly used — reject the report. Only confirm it if
+    // every candidate (current plus recently-retired) fails.
+    let verifies_under_some_generation = candidates.iter().any(|pub_poly| {
+        PetImpl::verify_partial_pet_check(pub_poly, &synthetic_tag, &reply).is_ok()
+    });
+    if verifies_under_some_generation {
         return Err(ReportingError::Unauthorized(
-            "reported PET blind-decrypt share verifies successfully under the current ring \
-             polynomial"
+            "reported PET blind-decrypt share verifies successfully under the current or a \
+             recently retired ring polynomial"
                 .to_string(),
         ));
     }
     Ok(())
+}
+
+/// The current PET public polynomial for `ring_id`, plus every still-in-window
+/// retired one (`RingPolyHistory`) — mirrors `pre_sign.rs`'s
+/// `candidate_public_polynomials`, but keyed by `ring_id` (PET's own
+/// namespace, distinct from the main key's `ring_pk_hex`) via
+/// `RingShareBundle::load_by_pet_ring_key`/`RingPolyHistory::recent_from_pet_ring_id`.
+///
+/// The current polynomial is local infrastructure input, not something either
+/// party to the report controls, so a decode failure there is surfaced as
+/// `InvalidReport` rather than silently dropped. Malformed *history* entries
+/// are best-effort only: skipped rather than surfaced.
+fn candidate_pet_public_polynomials(
+    context: &ReportValidationContext,
+    ring_id: &str,
+) -> Result<Vec<PubPolyImpl>> {
+    let bundle = RingShareBundle::load_by_pet_ring_key(&context.local_storage, ring_id)
+        .map_err(ReportingError::InvalidReport)?;
+    let current_bytes = hex::decode(&bundle.public_polynomial)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let current = PubPolyImpl::from_bytes(&current_bytes).map_err(|error| {
+        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
+    })?;
+
+    let mut candidates = vec![current];
+    candidates.extend(
+        RingPolyHistory::recent_from_pet_ring_id(&context.local_storage, ring_id, context.now)
+            .into_iter()
+            .filter_map(|hex_poly| {
+                let bytes = hex::decode(&hex_poly).ok()?;
+                PubPolyImpl::from_bytes(&bytes).ok()
+            }),
+    );
+
+    Ok(candidates)
 }

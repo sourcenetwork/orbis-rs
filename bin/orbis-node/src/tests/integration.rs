@@ -23,6 +23,9 @@ use tokio::time::{sleep, Duration, Instant};
 const RING_ID: &str = "integration-test-ring";
 // Fixed PET-enabled ring id pre-seeded into genesis, for the same reason.
 const PET_RING_ID: &str = "integration-test-pet-ring";
+// Fixed PET-enabled ring id for the refresh+reshare test, distinct from
+// PET_RING_ID so both tests' genesis fixtures never collide.
+const PET_RESHARE_RING_ID: &str = "integration-test-pet-reshare-ring";
 
 use super::constants::{
     reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID,
@@ -1684,6 +1687,646 @@ resources:
     );
 
     // Cleanup happens automatically when network is dropped
+}
+
+/// Docker-based integration test: the PET checking key's own PSS lifecycle
+/// (PSS-for-PET-key plan, `docs/plans/pet-audit-fix-checklist.md`).
+///
+/// `test_cli_calls_dkg_for_pet_ring` only covers fresh-DKG finalization; this
+/// test covers the two pieces that build on top of it:
+///
+/// 1. **Independent refresh** (`RefreshPet`): once the ring is live, the PET
+///    bundle's own `last_pss` advances via the PSS scheduler exactly like the
+///    main key's does (`wait_for_pss_refresh_on_all_nodes`'s reference-test
+///    precedent), without any second external trigger.
+/// 2. **Atomic reshare** (`ResharePet`, gated by `bulletin_update.rs`'s
+///    atomicity gate): reshoring the ring's committee produces exactly one
+///    bulletin post, and the PET bundle is confirmed to have moved to the new
+///    committee on the same confirmation the main key uses.
+///
+/// Functional correctness of both is confirmed the same way
+/// `test_cli_calls_dkg_for_pet_ring` confirms fresh-DKG's checking key works:
+/// a genuine PET-gated PRE round, run once before and once after the
+/// reshare — proving the reshared committee's shares are actually usable,
+/// not just that the bundle bytes changed.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pet_ring_refresh_and_reshare() {
+    println!("Starting Docker-based PET refresh+reshare integration test...");
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": PET_RESHARE_RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 5,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 3),
+                    "requires_pet": true
+                }]
+            }),
+        )
+        .build();
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+
+    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
+        .await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("Failed to query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("Failed to query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("Failed to query node3 info");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+
+    let endpoint = endpoints[0].to_string();
+    let node_endpoints = [
+        endpoints[0].to_string(),
+        endpoints[1].to_string(),
+        endpoints[2].to_string(),
+    ];
+    let node_keys = [
+        node1_info.node_key.clone(),
+        node2_info.node_key.clone(),
+        node3_info.node_key.clone(),
+    ];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+
+    let controller_client = VeraClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
+        &controller_client,
+        PET_RESHARE_RING_ID,
+        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+    )
+    .await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — acp_core may have changed. \
+         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    let ring_id = PET_RESHARE_RING_ID.to_string();
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update NodeInfo peer ID tx failed: {}",
+            peer_update.log
+        );
+
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
+            .await
+            .expect("add ring to NodeInfo whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "add ring to NodeInfo whitelist tx failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for PET-enabled ring {}...", ring_id);
+    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
+    assert!(
+        dkg_result.is_ok(),
+        "DKG should succeed: {:?}",
+        dkg_result.err()
+    );
+
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
+    let finalized_ring = controller_client
+        .orbis_read_ring(&ring_id)
+        .await
+        .expect("read finalized ring")
+        .expect("finalized ring should exist");
+    let pet_pk_hex = finalized_ring
+        .pet_pk
+        .clone()
+        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
+
+    println!(
+        "PET-enabled ring finalized: ring_pk={}..., pet_pk={}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())],
+        &pet_pk_hex[..40.min(pet_pk_hex.len())],
+    );
+
+    // Baseline PET-gated PRE: confirms the freshly-finalized committee's PET
+    // shares are genuinely usable before either ceremony below touches them.
+    println!("Running a baseline PET-gated PRE round before refresh...");
+    assert_pet_gated_pre_succeeds(
+        &controller_client,
+        &chain_config,
+        &endpoint,
+        &ring_id,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        b"Hello before PET refresh!",
+    )
+    .await;
+
+    // ========================================================================
+    // RefreshPet: independent of the main key's own refresh (both use the
+    // same ring-level pss_interval, but each bundle tracks its own last_pss
+    // and is scheduled separately — see pss/v0/mod.rs's pss_ring). This test
+    // only confirms RefreshPet actually completes in a real multi-node
+    // deployment; independent *scheduling* (one clock overdue, the other
+    // not) is already covered at the unit level.
+    // ========================================================================
+    println!("Waiting for the PET checking key's own PSS refresh (polling all 3 nodes)...");
+    let initial_pet_states = wait_for_pet_ring_state_on_all_nodes(
+        &node_endpoints,
+        &ring_id,
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
+    let refreshed_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
+        &node_endpoints,
+        &ring_id,
+        &initial_pet_states,
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+    )
+    .await;
+    for (idx, (before, after)) in initial_pet_states
+        .iter()
+        .zip(refreshed_pet_states.iter())
+        .enumerate()
+    {
+        println!(
+            "  Node {} PET last_pss: {} -> {}",
+            idx + 1,
+            before.last_pss,
+            after.last_pss
+        );
+    }
+    println!("PET checking-key refresh complete.");
+
+    println!("Confirming PET-gated PRE still succeeds after PET refresh...");
+    assert_pet_gated_pre_succeeds(
+        &controller_client,
+        &chain_config,
+        &endpoint,
+        &ring_id,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        b"Hello after PET refresh!",
+    )
+    .await;
+
+    // ========================================================================
+    // ResharePet: chained atomically to the main key's own reshare
+    // (bulletin_update.rs's atomicity gate) — shrink the committee to
+    // {node1, node2}, dropping node3, and confirm exactly one bulletin post
+    // carries both the main key's new committee and the PET bundle's own
+    // promotion on the same confirmation.
+    // ========================================================================
+    println!("Announcing a reshare that also carries the PET checking key...");
+    let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
+    let reshare_threshold = 2u32;
+
+    let pre_reshare_pet_states = wait_for_pet_ring_state_on_all_nodes(
+        &node_endpoints[..2],
+        &ring_id,
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    )
+    .await;
+
+    cli_tool::start_ring_reshare_by_acp_with_config(
+        ring_id.clone(),
+        reshare_peer_ids.clone(),
+        Some(reshare_threshold),
+        chain_config.clone(),
+    )
+    .await
+    .expect("start ring reshare announcement");
+
+    let reshared_payload = wait_for_reshare_bulletin_completion(
+        &chain_config,
+        &ring_id,
+        &ring_pk_hex,
+        &reshare_peer_ids,
+        reshare_threshold,
+        Duration::from_secs(300),
+        Duration::from_secs(2),
+    )
+    .await;
+    assert_eq!(
+        reshared_payload.ring_pk, ring_pk_hex,
+        "reshare should preserve the main ring public key"
+    );
+    assert!(
+        reshared_payload.requires_pet,
+        "reshare should preserve requires_pet"
+    );
+    assert_eq!(
+        reshared_payload.pet_pk.as_deref(),
+        Some(pet_pk_hex.as_str()),
+        "reshare should preserve the PET public key — only the committee's shares move"
+    );
+    println!(
+        "Reshare committed on stable ring_id={}; confirming the PET bundle also promoted...",
+        &ring_id[..16.min(ring_id.len())]
+    );
+
+    let reshared_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
+        &node_endpoints[..2],
+        &ring_id,
+        &pre_reshare_pet_states,
+        Duration::from_secs(120),
+        Duration::from_secs(2),
+    )
+    .await;
+    for (idx, (before, after)) in pre_reshare_pet_states
+        .iter()
+        .zip(reshared_pet_states.iter())
+        .enumerate()
+    {
+        println!(
+            "  Reshare node {} PET last_pss: {} -> {}",
+            idx + 1,
+            before.last_pss,
+            after.last_pss
+        );
+    }
+    println!(
+        "PET checking-key reshare complete — committee is now {} nodes.",
+        reshare_peer_ids.len()
+    );
+
+    println!("Confirming PET-gated PRE succeeds under the reshared committee...");
+    assert_pet_gated_pre_succeeds(
+        &controller_client,
+        &chain_config,
+        &endpoint,
+        &ring_id,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        b"Hello after PET reshare!",
+    )
+    .await;
+
+    // Cleanup happens automatically when network is dropped
+}
+
+/// Runs a PET-gated PRE round against `ring_id`/`ring_pk_hex`/`pet_pk_hex`
+/// with a genuine tag and asserts it succeeds, decrypting to
+/// `secret_message`. Creates a throwaway ACP policy/audit-target/document
+/// each call, so it's safe to call more than once against the same ring
+/// (e.g. before and after a refresh or reshare) with no state collision —
+/// each call gets its own fresh `pet_audit_policy_id`. Mirrors
+/// `test_cli_calls_dkg_for_pet_ring`'s own positive-path PET-gated PRE check.
+async fn assert_pet_gated_pre_succeeds(
+    controller_client: &VeraClient,
+    chain_config: &ChainConfig,
+    endpoint: &str,
+    ring_id: &str,
+    ring_pk_hex: &str,
+    pet_pk_hex: &str,
+    secret_message: &[u8],
+) {
+    const PET_AUDIT_POLICY_YAML: &str = r#"
+name: pet audit policy
+resources:
+- name: document
+  relations:
+  - name: creator
+    types:
+    - actor
+  - name: reader
+    types:
+    - actor
+  permissions:
+  - name: read
+    expr: creator + reader
+  - name: write
+    expr: creator
+"#;
+    let policy_ids_before: std::collections::HashSet<String> = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+    controller_client
+        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
+        .await
+        .expect("create PET audit policy");
+    let pet_audit_policy_id = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !policy_ids_before.contains(id))
+        .expect("new PET audit policy ID not found");
+
+    let document_resource = "document".to_string();
+    let read_permission = "read".to_string();
+
+    let owner_seed = "pet-audit-owner-seed".to_string();
+    let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET audit-target object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET audit target");
+
+    let (pet_reader_sk, pet_reader_pk) =
+        generate_keypair().expect("generate PET-test reader keypair");
+    let pet_reader_sk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
+    let pet_reader_pk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
+
+    // Required noncircular construction order (PET audit fix checklist,
+    // finding #5): generate the tag before encrypting the payload, then
+    // prove tag knowledge over the now-completed payload.
+    let (generated_tag, tag_r_tag) =
+        cli_tool::generate_pet_tag(pet_pk_hex, &audit_target_object_id)
+            .expect("generate a genuine PET tag");
+    let pet_tag_binding = crypto::context::PetTagBinding {
+        ring_id: ring_id.to_string(),
+        pet_pk: hex::decode(pet_pk_hex).expect("decode pet_pk hex"),
+        ephemeral_point: generated_tag.ephemeral_point.clone(),
+        masked_fingerprint: generated_tag.masked_fingerprint.clone(),
+    };
+    let prepared = cli_tool::prepare_secret(
+        secret_message,
+        ring_pk_hex,
+        None,
+        pet_audit_policy_id.clone(),
+        document_resource.clone(),
+        read_permission.clone(),
+        None,
+        None,
+        None,
+        Some(pet_tag_binding),
+    )
+    .expect("prepare_secret for the PET-gated document");
+
+    let pet_tag =
+        cli_tool::prove_pet_tag_knowledge(&prepared, ring_id, pet_pk_hex, generated_tag, tag_r_tag)
+            .expect("prove genuine PET tag knowledge");
+
+    let document_json = String::from_utf8(prepared.encrypted_document.clone())
+        .expect("encrypted_document is valid UTF-8");
+    let proof_json: String = EncryptionProof {
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+    }
+    .try_into()
+    .expect("serialize encryption proof");
+    let tag_json: String = pet_tag.tag.clone().try_into().expect("serialize tag");
+    let tag_proof_json: String = pet_tag
+        .tag_proof
+        .clone()
+        .try_into()
+        .expect("serialize tag proof");
+
+    let pet_object_id = common::blockchain::orbis::generate_document_id(
+        ring_id,
+        &document_json,
+        &proof_json,
+        &pet_audit_policy_id,
+        &document_resource,
+        &read_permission,
+        None,
+        None,
+        Some(&tag_json),
+        Some(&tag_proof_json),
+    )
+    .expect("generate PET-gated document id");
+
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET-gated document object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET-gated document");
+
+    let inline_document = proto::v0::pre::InlineDocument {
+        ring_id: ring_id.to_string(),
+        encrypted_document: prepared.encrypted_document.clone(),
+        enc_cmt: prepared.enc_cmt.clone(),
+        policy_id: pet_audit_policy_id.clone(),
+        resource: document_resource.clone(),
+        permission: read_permission.clone(),
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+        tier: None,
+        timestamp: None,
+        pet_tag: Some(proto::v0::pre::PetTagAttachment {
+            ephemeral_point: pet_tag.tag.ephemeral_point.clone(),
+            masked_fingerprint: pet_tag.tag.masked_fingerprint.clone(),
+            knowledge_proof_challenge: pet_tag.tag_proof.challenge.clone(),
+            knowledge_proof_response: pet_tag.tag_proof.response.clone(),
+        }),
+    };
+
+    let decrypted = cli_tool::do_pre_with_inline_document(
+        endpoint.to_string(),
+        ring_pk_hex.to_string(),
+        pet_reader_pk_hex.clone(),
+        Some(pet_reader_sk_hex.clone()),
+        pet_object_id.clone(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        inline_document,
+        Some(audit_target_object_id.clone()),
+    )
+    .await
+    .expect("PRE should succeed against a genuinely PET-tagged document");
+    assert_eq!(
+        decrypted, secret_message,
+        "decrypted secret should match the original"
+    );
+}
+
+async fn wait_for_pet_ring_state_on_all_nodes(
+    endpoints: &[String],
+    ring_id: &str,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Vec<RingStateSnapshot> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let mut snapshots = Vec::with_capacity(endpoints.len());
+        let mut statuses = Vec::with_capacity(endpoints.len());
+
+        for (idx, endpoint) in endpoints.iter().enumerate() {
+            match cli_tool::query_pet_ring_state(endpoint.clone(), ring_id.to_string()).await {
+                Ok((public_polynomial, last_pss)) => {
+                    statuses.push(format!("node{}: last_pss={}", idx + 1, last_pss));
+                    snapshots.push(RingStateSnapshot {
+                        public_polynomial,
+                        last_pss,
+                    });
+                }
+                Err(e) => {
+                    statuses.push(format!("node{}: {}", idx + 1, e));
+                    snapshots.clear();
+                    break;
+                }
+            }
+        }
+
+        if snapshots.len() == endpoints.len() {
+            println!(
+                "All nodes have local PET ring state: {}",
+                statuses.join("; ")
+            );
+            return snapshots;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "Timed out waiting for all nodes to expose PET ring state. Last observed: {}",
+            statuses.join("; ")
+        );
+        sleep(poll_interval).await;
+    }
+}
+
+async fn wait_for_pet_pss_refresh_on_all_nodes(
+    endpoints: &[String],
+    ring_id: &str,
+    baselines: &[RingStateSnapshot],
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Vec<RingStateSnapshot> {
+    assert_eq!(
+        endpoints.len(),
+        baselines.len(),
+        "PET ring-state baselines must match endpoint count"
+    );
+
+    let deadline = Instant::now() + timeout;
+    let mut next_status_log = Instant::now() + Duration::from_secs(15);
+
+    loop {
+        let mut snapshots = Vec::with_capacity(endpoints.len());
+        let mut statuses = Vec::with_capacity(endpoints.len());
+        let mut all_refreshed = true;
+
+        for (idx, endpoint) in endpoints.iter().enumerate() {
+            match cli_tool::query_pet_ring_state(endpoint.clone(), ring_id.to_string()).await {
+                Ok((public_polynomial, last_pss)) => {
+                    let baseline = &baselines[idx];
+                    let polynomial_changed = public_polynomial != baseline.public_polynomial;
+                    let timestamp_advanced = last_pss > baseline.last_pss;
+                    if !polynomial_changed && !timestamp_advanced {
+                        all_refreshed = false;
+                    }
+                    statuses.push(format!(
+                        "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
+                        idx + 1,
+                        polynomial_changed,
+                        timestamp_advanced,
+                        last_pss,
+                        baseline.last_pss,
+                    ));
+                    snapshots.push(RingStateSnapshot {
+                        public_polynomial,
+                        last_pss,
+                    });
+                }
+                Err(e) => {
+                    all_refreshed = false;
+                    statuses.push(format!("node{}: {}", idx + 1, e));
+                }
+            }
+        }
+
+        if all_refreshed && snapshots.len() == endpoints.len() {
+            return snapshots;
+        }
+
+        let now = Instant::now();
+        assert!(
+            now < deadline,
+            "PET PSS refresh did not complete on all nodes within {}s. Last observed: {}",
+            timeout.as_secs(),
+            statuses.join("; ")
+        );
+        if now >= next_status_log {
+            println!("Still waiting for PET PSS refresh: {}", statuses.join("; "));
+            next_status_log = now + Duration::from_secs(15);
+        }
+        sleep(poll_interval).await;
+    }
 }
 
 async fn wait_for_ring_state_on_all_nodes(

@@ -1617,3 +1617,155 @@ mod invalid_crypto_generation_history {
         crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 }
+
+/// Same regression as `invalid_crypto_generation_history` above, for PET's own
+/// `RefreshPet`/`ResharePet` and its independent `PetRingPolyHistory` namespace
+/// (`ring_state.rs`): a blind-decrypt share honestly produced against one PET
+/// checking-key generation must not be confirmed as misconduct just because
+/// local storage has since moved on to a new PET generation, as long as the old
+/// one is still within the retention window.
+#[cfg(feature = "bls12-381")]
+mod pet_invalid_crypto_generation_history {
+    use super::*;
+    use crate::ring_state::RingShareBundle;
+    use crypto::r#trait::{CryptoSerialize, PriShare, PubPoly};
+    use crypto::test_helper::DKGCoordinator;
+    use crypto::{DkgImpl, ScalarField};
+    use zeroize::Zeroizing;
+
+    /// Same "generation" stand-in as `invalid_crypto_generation_history::generation`,
+    /// for the PET checking key rather than the main ring key.
+    fn generation() -> (PriShare<ScalarField>, <DkgImpl as Dkg>::PubPoly) {
+        let mut coordinator = DKGCoordinator::new(
+            |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role: DkgRole| {
+                <DkgImpl as Dkg>::new(id, threshold, total_nodes, session_id, role)
+            },
+            3,
+            2,
+        )
+        .unwrap();
+        let (_, shares, pub_poly) = coordinator.run_dkg().unwrap();
+        let share = shares
+            .into_iter()
+            .find(|share| share.i == 2)
+            .expect("node 2 share");
+        (share, pub_poly)
+    }
+
+    fn hex_poly(pub_poly: &<DkgImpl as Dkg>::PubPoly) -> String {
+        hex::encode(CryptoSerialize::to_bytes(pub_poly).unwrap())
+    }
+
+    #[tokio::test]
+    async fn pet_decrypt_report_rejected_for_share_signed_just_before_a_refresh() {
+        let db_name = "registry_pet_report_survives_refresh";
+        let db_path = crate::helpers::test_helpers::test_db_path(db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(db_name).await;
+        let storage = app_state.local_storage.clone();
+        let ring_id = "pet-ring-1";
+
+        // Generation 1: the honest decrypt share is produced against this.
+        let (gen1_share, gen1_poly) = generation();
+        // Generation 2: what the PET checking key looks like after a
+        // RefreshPet/ResharePet replaces generation 1.
+        let (_gen2_share, gen2_poly) = generation();
+
+        // A stand-in ephemeral point `R` for the tag being checked — any valid
+        // curve point works; `partial_pet_check`/`verify_partial_pet_check`
+        // never require it to be related to the DKG polynomials themselves.
+        let r_point = gen1_poly.eval(99);
+        let r_bytes = CryptoSerialize::to_bytes(&r_point).unwrap();
+        let tag = PetTag {
+            ephemeral_point: r_bytes.clone(),
+            masked_fingerprint: Vec::new(),
+        };
+
+        let reply = PetImpl::partial_pet_check(&gen1_share.v, gen1_share.i, &tag)
+            .expect("genuine partial PET check against generation 1");
+
+        // t=1_000: generation 1 becomes current.
+        RingShareBundle {
+            share_bytes: Zeroizing::new(Vec::new()),
+            public_polynomial: hex_poly(&gen1_poly),
+            last_pss: 1_000,
+        }
+        .save_by_pet_ring_key(&storage, ring_id)
+        .expect("save generation 1");
+
+        let statement = PetBlindDecryptStatement {
+            domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: "chain".to_string(),
+            ring_id: ring_id.to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            protocol_version: 0,
+            attempt_id: "attempt-1".to_string(),
+            context_digest: [1u8; 32],
+            certificate_digest: [2u8; 32],
+            responder_node_key: "responder-1".to_string(),
+            from_node_id: reply.partial.i,
+            aggregate_r: r_bytes,
+            aggregate_diff: Vec::new(),
+            partial: CryptoSerialize::to_bytes(&reply.partial.v).unwrap(),
+            challenge: CryptoSerialize::to_bytes(&reply.challenge).unwrap(),
+            proof: CryptoSerialize::to_bytes(&reply.proof).unwrap(),
+            signed_at: 1_050,
+        };
+
+        let blind_context = PetBlindContext {
+            chain_id: "chain".to_string(),
+            protocol_version: 0,
+            crypto_backend: "bls12_381".to_string(),
+            ring_id: ring_id.to_string(),
+            ring_pk: "ring-pk".to_string(),
+            ring_state_sha256: "00".repeat(32),
+            pet_pk: "pet-pk".to_string(),
+            object_id: "derivation-1".to_string(),
+            salt: None,
+            timestamp: None,
+            document_inline: false,
+            audit_target_object_id: "target-1".to_string(),
+            actor_id: "did:key:z6Mkactor".to_string(),
+            valid_window_start: None,
+            valid_window_end: None,
+            coordinator_node_key: "coordinator".to_string(),
+            attempt_id: "attempt-1".to_string(),
+        };
+
+        // t=1_100: a RefreshPet/ResharePet lands — generation 2 becomes current,
+        // and generation 1 is auto-retired into `PetRingPolyHistory` by
+        // `RingShareBundle::save_by_pet_ring_key`.
+        RingShareBundle {
+            share_bytes: Zeroizing::new(Vec::new()),
+            public_polynomial: hex_poly(&gen2_poly),
+            last_pss: 1_100,
+        }
+        .save_by_pet_ring_key(&storage, ring_id)
+        .expect("save generation 2");
+
+        // Still within the retention window: the report must be rejected — the
+        // decrypt share was genuinely valid when it was produced, under
+        // generation 1.
+        let context = validation_context(&app_state, 1_100 + 30);
+        require_pet_blind_decrypt_verification_failure(&blind_context, &statement, &context)
+            .await
+            .expect_err(
+                "a decrypt share valid under a recently-retired PET generation must not confirm a report",
+            );
+
+        // Past the retention window: no history left to check against, so
+        // verification now (correctly) only has the current generation to try.
+        let context = validation_context(
+            &app_state,
+            1_100 + crate::constants::RING_POLY_HISTORY_RETENTION_SECS + 1,
+        );
+        require_pet_blind_decrypt_verification_failure(&blind_context, &statement, &context)
+            .await
+            .expect(
+                "once retention lapses, only the current generation is checked, so the report is confirmed",
+            );
+
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+    }
+}
