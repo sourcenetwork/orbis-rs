@@ -1128,6 +1128,242 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
     cleanup_db(&db_path);
 }
 
+// ──────────────────────────────────────────────────────────────────────────────
+// `check_and_trigger_refresh_pet`: the PET checking key's own independent
+// refresh clock (Stage 1 of the PSS-for-PET-key plan). These call the
+// function directly (rather than through `pss_ring`) so each case is isolated
+// from the main key's own due-check entirely — proving the PET clock reads
+// only its own `RingShareBundle::load_by_pet_ring_key` bundle and the ring's
+// `requires_pet`/`pet_pk` fields, never anything from the main key's state.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A ring that doesn't require PET must never attempt a PET refresh, no
+/// matter how the PET namespace's own bundle (if any) looks.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_when_ring_does_not_require_pet() {
+    let db_name = "pss_pet_refresh_skips_when_not_required";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_not_required_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0, // due, if PET were checked at all
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(())),
+        "a ring that does not require PET must skip the PET refresh check entirely: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// A `requires_pet` ring whose PET checking key hasn't finalized yet
+/// (`pet_pk: None`) must also skip — there is nothing to refresh.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_when_pet_pk_not_finalized() {
+    let db_name = "pss_pet_refresh_skips_when_pet_pk_missing";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_pk_missing_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: None, // FreshPet hasn't finalized on-chain yet
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(())),
+        "a ring whose PET checking key has not finalized must skip the PET refresh check: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// The PET refresh check reads its own bundle's `last_pss` — independent of
+/// whatever the main key's `RingShareBundle` looks like (there isn't even one
+/// seeded here). A recent PET `last_pss` against a far-future interval must
+/// skip.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_before_interval_elapsed() {
+    let db_name = "pss_pet_refresh_skips_not_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_not_due_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: u64::MAX, // far in the future — PET refresh must skip
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aa".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "pet_poly".to_string(),
+        last_pss: u64::MAX - 1,
+    }
+    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("store PET bundle");
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Expected Ok(()): PET refresh not yet due must skip silently. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// `pss_interval = 0` means the PET refresh is immediately due, purely off
+/// its own (absent) `last_pss` — reaching `trigger_refresh_pet` and failing
+/// only because the test seeded no PET share to load proves dispatch
+/// happened, mirroring `test_pss_ring_refresh_zero_interval_is_due`'s same
+/// proof-by-missing-bundle technique for the main key.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_triggers_when_due() {
+    let db_name = "pss_pet_refresh_zero_interval_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_zero_interval_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("bb".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    // No PET bundle seeded: `trigger_refresh_pet` must be reached and fail
+    // trying to load it.
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: due PET refresh should reach trigger_refresh_pet and fail \
+         only because the test has no PET share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// End-to-end through `pss_ring`: the ring's shared `pss_interval` is small
+/// enough that the PET key's independent clock (no PET bundle at all, so its
+/// `last_pss` reads as 0) is due, while the main key's own clock is *not*
+/// due — its bundle's `last_pss` is set so far in the future that its
+/// `elapsed` saturates to zero regardless of the shared interval. `pss_ring`
+/// must still reach the PET trigger and surface its failure, proving the two
+/// checks are both attempted on every tick rather than the PET check being
+/// gated behind (or skipped because of) the main key's own outcome.
+#[tokio::test]
+async fn test_pss_ring_pet_refresh_triggers_independently_when_main_refresh_is_not_due() {
+    let db_name = "pss_ring_pet_independent_of_main_not_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_ring_pet_independent_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        // Small enough that PET's ~now-sized elapsed (no bundle → last_pss=0)
+        // clears it, but see below for why main still skips despite sharing
+        // this same field.
+        pss_interval: 3600,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("cc".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    // Main key: a `last_pss` far in the future makes `elapsed` saturate to
+    // zero, so its own check skips (Ok) regardless of the shared interval —
+    // isolating the PET failure below as the only possible source of an
+    // overall error.
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "main_poly".to_string(),
+        last_pss: u64::MAX - 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &ring_payload.ring_pk)
+    .expect("store main bundle");
+    // PET key: no bundle at all, so its independent clock reads last_pss=0
+    // and elapsed ~= now, clearing the 3600s interval and triggering.
+
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error from the PET refresh trigger even though the main \
+         key's own refresh was not due: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
 /// When the ring index lists a bundle-less ring that has no bulletin entry,
 /// `pss_ring` should reconcile the dangling local entry successfully.
 #[tokio::test]

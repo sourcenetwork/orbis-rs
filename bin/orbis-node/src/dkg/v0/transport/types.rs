@@ -711,9 +711,10 @@ impl PrepareSession {
     pub fn leader_committee(&self) -> Option<&CommitteeConfig> {
         match self.kind {
             SessionKind::Reshare { .. } => self.committees.next.as_ref(),
-            SessionKind::Fresh | SessionKind::FreshPet { .. } | SessionKind::Refresh { .. } => {
-                Some(&self.committees.current)
-            }
+            SessionKind::Fresh
+            | SessionKind::FreshPet { .. }
+            | SessionKind::Refresh { .. }
+            | SessionKind::RefreshPet { .. } => Some(&self.committees.current),
         }
     }
 
@@ -797,6 +798,24 @@ pub enum DkgControlMessage {
     /// (e.g. another attempt already completed). Distinct from an error so
     /// the caller stops retrying the canonical leader cleanly.
     RefreshNotDue,
+    /// Ask the canonical current-committee leader to coordinate a due PET
+    /// checking-key refresh — entirely independent of the main key's own
+    /// `StartRefresh` (separate schedule, separate `last_pss`). No
+    /// `expected_ring_pk`-style check: `ring_id` alone is PET's identity
+    /// anchor (see `SessionKind::RefreshPet`'s doc comment). Mirrors
+    /// `StartRefresh`'s sender-authenticated shape exactly — any current
+    /// member's independent scheduler may trigger this, so the leader must
+    /// authenticate the forwarder the same way.
+    StartRefreshPet {
+        ring_id: String,
+        requester_node_key: String,
+    },
+    RefreshPetStartAccepted {
+        ceremony_id: CeremonyId,
+        attempt_id: AttemptId,
+    },
+    /// Same as `RefreshNotDue`, for the PET checking key's independent clock.
+    RefreshPetNotDue,
     Prepare(Box<PrepareSession>),
     Prepared {
         ceremony_id: CeremonyId,
@@ -1030,6 +1049,9 @@ impl DkgControlMessage {
             Self::StartRefresh { .. } => "start_refresh",
             Self::RefreshStartAccepted { .. } => "refresh_start_accepted",
             Self::RefreshNotDue => "refresh_not_due",
+            Self::StartRefreshPet { .. } => "start_refresh_pet",
+            Self::RefreshPetStartAccepted { .. } => "refresh_pet_start_accepted",
+            Self::RefreshPetNotDue => "refresh_pet_not_due",
             Self::Prepare(_) => "prepare",
             Self::Prepared { .. } => "prepared",
             Self::TopologyProbeAck { .. } => "topology_probe_ack",

@@ -226,6 +226,68 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     Ok(ring_payload)
 }
 
+/// Same as [`validate_refresh_session_init_for_version`], for a ring's independent PET
+/// checking key. Resolves the ring directly via `ring_id` (which *is* the bulletin post
+/// id, per `FreshPet`'s own resolution shape) rather than a `RingIndex` lookup by
+/// `ring_pk_hex` — there is no PET-specific index. Checks the PET bundle's own
+/// `last_pss`, entirely independent of the main key's own refresh clock.
+pub async fn validate_refresh_pet_session_init_for_version<S: LocalStorage>(
+    ring_id: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
+) -> Result<RingPayload> {
+    let ring_payload = read_ring_for_route(&**bulletin, ring_id, protocol_version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+
+    if !ring_payload.requires_pet {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET target ring {} does not require PET",
+            ring_id
+        )));
+    }
+    if ring_payload.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET target ring {} has no finalized PET checking key yet",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Refresh PET target ring {} has {} participants, maximum is {}",
+            ring_id,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+
+    // Verify enough time has elapsed since the last PET refresh/DKG — independent of
+    // the main key's own `last_pss`.
+    let pss_interval_secs = ring_payload.pss_interval;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+        .as_secs();
+    let last_refresh_secs = RingShareBundle::load_by_pet_ring_key(local_storage, ring_id)
+        .map(|b| b.last_pss)
+        .map_err(|_| {
+            DkgError::Unauthorized(
+                "PET ring has no refresh timestamp; cannot accept refresh".to_string(),
+            )
+        })?;
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET too soon: {}s elapsed, minimum is {}s",
+            elapsed,
+            pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
+        )));
+    }
+
+    Ok(ring_payload)
+}
+
 /// Validates the structural state of a `RingPayload` for a fresh DKG:
 /// ring_pk is blank, peer list is non-empty, threshold is in range, policy_id is present.
 /// Call this with the already-fetched ring payload before starting a fresh DKG session.

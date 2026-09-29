@@ -153,7 +153,9 @@ where
         .with_attempt_state(attempt, |state| {
             let receiver_node_keys = match &state.kind {
                 SessionKind::Fresh | SessionKind::FreshPet { .. } => Vec::new(),
-                SessionKind::Refresh { .. } => state.routing.peer_node_keys.clone(),
+                SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                    state.routing.peer_node_keys.clone()
+                }
                 SessionKind::Reshare {
                     new_peer_node_keys, ..
                 } => new_peer_node_keys.clone(),
@@ -170,7 +172,9 @@ where
 
     let (origin_protocol, ring_id) = match kind {
         SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
-        SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+            ("pss_refresh", stored_ring_id)
+        }
         SessionKind::Reshare {
             bulletin_post_id, ..
         } => (
@@ -243,7 +247,7 @@ where
 {
     let (origin_protocol, ring_id, receiver_node_keys) = match &prepare.kind {
         SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
-        SessionKind::Refresh { .. } => (
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => (
             "pss_refresh",
             prepare.ring_id.clone(),
             prepare.committees.current.node_keys.clone(),

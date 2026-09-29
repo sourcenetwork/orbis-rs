@@ -50,7 +50,7 @@ use crate::constants::{PSS_GRACE_PERIOD_SECS, PSS_RING_CONCURRENCY_LIMIT};
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::{peer_node_keys_match, ring_payload_matches_ring_key};
 use crate::dkg::v0::network::{
-    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
+    start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
@@ -339,24 +339,34 @@ where
                     .map(|b| b.last_pss)
                     .unwrap_or(0);
             let elapsed = now_secs.saturating_sub(last_refresh_secs);
-            if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+            let main_result = if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
                 tracing::debug!(
                     post_id = %post_id,
                     elapsed_secs = elapsed,
                     pss_interval_secs = pss_interval_secs,
                     "PSS: refresh not yet due"
                 );
-                return Ok(());
-            }
+                Ok(())
+            } else {
+                trigger_refresh(
+                    app_state,
+                    entry,
+                    &ring_payload,
+                    protocol_routes,
+                    elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
+                )
+                .await
+            };
 
-            trigger_refresh(
-                app_state,
-                entry,
-                &ring_payload,
-                protocol_routes,
-                elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
-            )
-            .await
+            // The PET checking key's own refresh runs on a fully independent
+            // clock (separate `last_pss`, no chaining either direction — see
+            // `SessionKind::RefreshPet`'s doc comment) — attempted regardless
+            // of the main key's own outcome just above.
+            let pet_result =
+                check_and_trigger_refresh_pet(app_state, entry, &ring_payload, protocol_routes)
+                    .await;
+
+            main_result.and(pet_result)
         }
         v => Err(DkgError::ProtocolError(format!(
             "ring {} requires unsupported protocol version {}; installed versions: {}",
@@ -759,6 +769,123 @@ where
         ring_id = %entry.bulletin_post_id,
         threshold = ring_payload.threshold,
         "PSS: refresh session initiated locally"
+    );
+    Ok(())
+}
+
+/// Independent, parallel due-check for the ring's PET checking key — entirely
+/// decoupled from the main key's own refresh clock just above (separate
+/// schedule, separate `last_pss`, no coupling either direction; see
+/// `SessionKind::RefreshPet`'s doc comment for why). A no-op for a ring that
+/// doesn't require PET, or whose PET key hasn't finalized yet.
+async fn check_and_trigger_refresh_pet<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    protocol_routes: &'static network::ProtocolRoutes,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    if !ring_payload.requires_pet || ring_payload.pet_pk.is_none() {
+        return Ok(());
+    }
+    let post_id = &entry.bulletin_post_id;
+    let pss_interval_secs = ring_payload.pss_interval;
+    let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
+    let last_refresh_secs =
+        RingShareBundle::load_by_pet_ring_key(&app_state.local_storage, post_id)
+            .map(|b| b.last_pss)
+            .unwrap_or(0);
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+        tracing::debug!(
+            post_id = %post_id,
+            elapsed_secs = elapsed,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: PET refresh not yet due"
+        );
+        return Ok(());
+    }
+
+    trigger_refresh_pet(
+        app_state,
+        entry,
+        ring_payload,
+        protocol_routes,
+        elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
+    )
+    .await
+}
+
+/// Same as [`trigger_refresh`], for the ring's independent PET checking key.
+async fn trigger_refresh_pet<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    protocol_routes: &'static network::ProtocolRoutes,
+    scheduler_delay_secs: u64,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let outcome = start_refresh_pet(
+        app_state.clone(),
+        protocol_routes,
+        entry.bulletin_post_id.clone(),
+    )
+    .await?;
+    let (ceremony_id, attempt_id) = match outcome {
+        RefreshStartOutcome::Started(ceremony_id, attempt_id) => (ceremony_id, attempt_id),
+        RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+            tracing::debug!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: canonical PET refresh attempt remains active"
+            );
+            return Ok(());
+        }
+        RefreshStartOutcome::NotDue => {
+            tracing::debug!(
+                ring_id = %entry.bulletin_post_id,
+                "PSS: PET refresh became not due while scheduler state was being resolved"
+            );
+            return Ok(());
+        }
+        RefreshStartOutcome::Forwarded(ceremony_id, attempt_id) => {
+            tracing::info!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: PET refresh start accepted by the canonical leader"
+            );
+            return Ok(());
+        }
+    };
+    crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
+    tracing::info!(
+        session_id = ceremony_id.0,
+        attempt_id = %hex::encode(attempt_id.0),
+        ring_id = %entry.bulletin_post_id,
+        threshold = ring_payload.threshold,
+        "PSS: PET refresh session initiated locally"
     );
     Ok(())
 }

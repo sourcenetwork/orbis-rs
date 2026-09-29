@@ -728,6 +728,60 @@ where
     Ok(())
 }
 
+/// Same as [`validate_refresh_start_sender`], for the ring's independent PET
+/// checking-key refresh. No `expected_ring_pk` check — `ring_id` alone is
+/// PET's identity anchor.
+pub(super) async fn validate_refresh_pet_start_sender<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: &str,
+    requester_node_key: &str,
+    sender: &PeerId,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    if !ring.requires_pet || ring.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(
+            "StartRefreshPet target ring has no finalized PET checking key".into(),
+        ));
+    }
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?;
+    if canonical_leader != state.node_key {
+        crate::metrics::record_dkg_transport_event("control", "refresh_pet_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefreshPet must be handled by the canonical leader".into(),
+        ));
+    }
+    if !ring
+        .peer_node_keys
+        .iter()
+        .any(|node_key| node_key == requester_node_key)
+    {
+        crate::metrics::record_dkg_transport_event("control", "refresh_pet_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefreshPet requester is not in the current committee".into(),
+        ));
+    }
+    let requester_routes = resolve_node_routes(&state.bulletin, &[requester_node_key.to_string()])
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if requester_routes
+        .first()
+        .is_none_or(|route| !peer_matches_route(sender, &route.peer_id))
+    {
+        crate::metrics::record_dkg_transport_event("control", "refresh_pet_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartRefreshPet sender does not match the requester Vera route".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Coordinate a due PSS refresh as the canonical current-committee leader.
 /// Callable both by the leader's local scheduler and by its `StartRefresh`
 /// control handler after authenticating a current-committee requester.
@@ -869,6 +923,135 @@ where
         .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
 }
 
+/// Same as [`coordinate_refresh`], for the ring's independent PET checking
+/// key. No `ring_pk` to verify (`ring_id` alone is PET's identity anchor).
+pub(super) async fn coordinate_refresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    if !ring.requires_pet || ring.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(
+            "Refresh PET target ring has no finalized PET checking key".into(),
+        ));
+    }
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?;
+    if canonical_leader != state.node_key {
+        return Err(DkgError::Unauthorized(
+            "only the canonical current-committee leader may coordinate PET PSS refresh".into(),
+        ));
+    }
+    coordinate_refresh_pet_as_claimed_leader(state, routes, ring_id, ring).await
+}
+
+/// Same as [`coordinate_refresh_as_claimed_leader`], for the ring's
+/// independent PET checking key.
+pub(crate) async fn coordinate_refresh_pet_as_claimed_leader<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+    ring: RingPayload,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    if let Some(session_id) = state
+        .dkg_session_state
+        .active_ring_pss_session(&ring_id)
+        .await
+    {
+        if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
+            return Ok(RefreshStartOutcome::AlreadyActive(
+                CeremonyId(session_id),
+                attempt_id,
+            ));
+        }
+    }
+    let bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let session_id = derive_refresh_pet_session_id(
+        &ring_id,
+        &ring.peer_node_keys,
+        ring.threshold,
+        &bundle.public_polynomial,
+    )?;
+    let _start_guard = lock_ceremony_start(&state, CeremonyId(session_id)).await;
+    // Same re-read-under-singleflight reasoning as `coordinate_refresh` — this
+    // clock is independent of the main key's, but the same completion race applies.
+    let current_bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let now = current_unix_time().map_err(DkgError::SystemTime)?;
+    let elapsed = now.saturating_sub(current_bundle.last_pss);
+    if elapsed + PSS_GRACE_PERIOD_SECS < ring.pss_interval {
+        return Ok(RefreshStartOutcome::NotDue);
+    }
+    if let Some(attempt_id) = state.dkg_session_state.transport_attempt(&session_id).await {
+        return Ok(RefreshStartOutcome::AlreadyActive(
+            CeremonyId(session_id),
+            attempt_id,
+        ));
+    }
+    let ceremony_id = CeremonyId(session_id);
+    let attempt_id = AttemptId::random();
+    let committee = transport::ceremony_committee_digest(&ring.peer_node_keys, None);
+    let resolved = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let peer_ids = peer_ids_from_routes(&resolved);
+    let assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let topic = transport::derive_topic_id(
+        &state.bulletin.chain_id(),
+        &ring_id,
+        &committee,
+        ceremony_id,
+        attempt_id,
+    );
+    let mut prepare = PrepareSession {
+        ceremony_id,
+        attempt_id,
+        config_digest: [0; 32],
+        topic_id: *topic.as_bytes(),
+        leader_node_key: state.node_key.clone(),
+        committees: CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: ring.peer_node_keys,
+                peer_routes: peer_ids,
+                node_id_assignments: assignments,
+                threshold: ring.threshold,
+            },
+            next: None,
+        },
+        kind: SessionKind::RefreshPet {
+            ring_id: ring_id.clone(),
+        },
+        pss_interval: ring.pss_interval,
+        policy_id: ring.policy_id,
+        ring_id,
+        report_signature: None,
+    };
+    prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
+    coordinate_prepared(state, routes, prepare)
+        .await
+        .map(|(ceremony_id, attempt_id)| RefreshStartOutcome::Started(ceremony_id, attempt_id))
+}
+
 /// Trigger a due PSS refresh. Any current-committee member may call this, but
 /// only the deterministic canonical leader coordinates the attempt. Repeated
 /// forwarded starts retry that same leader and coalesce through its local
@@ -967,6 +1150,103 @@ where
         DkgControlMessage::RefreshNotDue => Ok(RefreshStartOutcome::NotDue),
         other => Err(DkgError::ProtocolError(format!(
             "canonical refresh leader returned unexpected start response: {other:?}"
+        ))),
+    }
+}
+
+/// Same as [`start_refresh`], for the ring's independent PET checking key.
+pub(crate) async fn start_refresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> Result<RefreshStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    if !ring.peer_node_keys.contains(&state.node_key) {
+        return Err(DkgError::Unauthorized(
+            "only a current-committee member may trigger PET PSS refresh".into(),
+        ));
+    }
+    let canonical_leader = transport::canonical_leader(&ring.peer_node_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if canonical_leader == state.node_key {
+        return coordinate_refresh_pet(state, routes, ring_id).await;
+    }
+
+    let resolved = resolve_node_routes(&state.bulletin, std::slice::from_ref(&canonical_leader))
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_route = resolved
+        .iter()
+        .find_map(|route| (route.node_key == canonical_leader).then_some(route.peer_id.clone()))
+        .ok_or_else(|| {
+            DkgError::InvalidState("canonical refresh PET leader route is missing".into())
+        })?;
+    let bundle = RingShareBundle::load_by_pet_ring_key(&state.local_storage, &ring_id)
+        .map_err(|error| DkgError::Storage(error.to_string()))?;
+    let ceremony = CeremonyId(derive_refresh_pet_session_id(
+        &ring_id,
+        &ring.peer_node_keys,
+        ring.threshold,
+        &bundle.public_polynomial,
+    )?);
+    let assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let leader_participant = assignments
+        .get(&canonical_leader)
+        .copied()
+        .map(ParticipantRef::current)
+        .ok_or_else(|| DkgError::InvalidState("refresh PET leader assignment is missing".into()))?;
+    crate::metrics::record_dkg_transport_event("control", "refresh_pet_start_forwarded");
+    let forwarding_deadline =
+        Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
+    let response = retry_preparation_control_classified(
+        &state,
+        routes,
+        &leader_route,
+        DkgControlMessage::StartRefreshPet {
+            ring_id: ring_id.clone(),
+            requester_node_key: state.node_key.clone(),
+        },
+        forwarding_deadline,
+    )
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        SessionKind::RefreshPet {
+                            ring_id: ring_id.clone(),
+                        },
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, canonical_leader, leader_route)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
+        DkgControlMessage::RefreshPetStartAccepted {
+            ceremony_id,
+            attempt_id,
+        } if ceremony_id == ceremony => Ok(RefreshStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        DkgControlMessage::RefreshPetNotDue => Ok(RefreshStartOutcome::NotDue),
+        other => Err(DkgError::ProtocolError(format!(
+            "canonical refresh PET leader returned unexpected start response: {other:?}"
         ))),
     }
 }

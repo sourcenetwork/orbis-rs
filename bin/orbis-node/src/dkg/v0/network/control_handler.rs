@@ -61,6 +61,7 @@ pub(super) fn is_client_forwarded_start_request(request: &DkgControlMessage) -> 
             | DkgControlMessage::StartFreshPet { .. }
             | DkgControlMessage::StartReshare { .. }
             | DkgControlMessage::StartRefresh { .. }
+            | DkgControlMessage::StartRefreshPet { .. }
             | DkgControlMessage::GetSessionStatus { .. }
     )
 }
@@ -193,6 +194,10 @@ where
             )
             .await
         }
+        DkgControlMessage::StartRefreshPet {
+            ring_id,
+            requester_node_key,
+        } => on_start_refresh_pet(state, routes, sender, ring_id, requester_node_key).await,
         DkgControlMessage::Prepare(prepare) => {
             prepare_participant(state, routes, *prepare, sender).await
         }
@@ -567,6 +572,35 @@ where
         RefreshStartOutcome::NotDue => Ok(DkgControlMessage::RefreshNotDue),
         RefreshStartOutcome::Forwarded(_, _) => Err(DkgError::InvalidState(
             "coordinate_refresh unexpectedly forwarded a refresh start".into(),
+        )),
+    }
+}
+
+async fn on_start_refresh_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    sender: &PeerId,
+    ring_id: String,
+    requester_node_key: String,
+) -> Result<DkgControlMessage>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    validate_refresh_pet_start_sender(&state, routes, &ring_id, &requester_node_key, sender)
+        .await?;
+    let outcome = coordinate_refresh_pet(state, routes, ring_id).await?;
+    match outcome {
+        RefreshStartOutcome::Started(ceremony_id, attempt_id)
+        | RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+            Ok(DkgControlMessage::RefreshPetStartAccepted {
+                ceremony_id,
+                attempt_id,
+            })
+        }
+        RefreshStartOutcome::NotDue => Ok(DkgControlMessage::RefreshPetNotDue),
+        RefreshStartOutcome::Forwarded(_, _) => Err(DkgError::InvalidState(
+            "coordinate_refresh_pet unexpectedly forwarded a refresh start".into(),
         )),
     }
 }

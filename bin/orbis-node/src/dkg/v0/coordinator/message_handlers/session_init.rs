@@ -160,6 +160,110 @@ where
     })
 }
 
+/// Validate a `RefreshPet` SessionInit — the ring's independent PET checking-key
+/// refresh, run entirely independently of the main key's own `Refresh` (separate
+/// schedule, separate `last_pss`, no chaining either direction; see this ceremony's
+/// doc comment on `SessionKind::RefreshPet`).
+///
+/// Mirrors `validate_refresh_init` almost exactly, but resolves the ring directly via
+/// `ring_id` (the bulletin post id, per `FreshPet`'s own shape) rather than a
+/// `RingIndex` lookup by `ring_pk_hex`, and checks the PET bundle's own `last_pss`.
+#[allow(clippy::too_many_arguments)]
+async fn validate_refresh_pet_init<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    threshold: u32,
+    total_participants: u32,
+    peer_ids: &[String],
+    peer_node_keys: &[String],
+    ring_id: &str,
+    sender_hex: &str,
+    prepare: Option<&PrepareSession>,
+) -> Result<ResolvedSessionRoutes>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    tracing::info!(
+        session_id = session_id,
+        ring_id = %ring_id,
+        sender_peer_hex = %sender_hex,
+        "DKG Coordinator: Refresh PET SessionInit received - pre-validation"
+    );
+    let ring_payload = validate_refresh_pet_session_init_for_version(
+        ring_id,
+        &coord.app_state.local_storage,
+        &coord.app_state.bulletin,
+        coord.routes.version,
+    )
+    .await?;
+
+    validate_committee_matches_ring(
+        "Refresh PET",
+        ring_id,
+        &ring_payload,
+        peer_node_keys,
+        threshold,
+        total_participants,
+    )?;
+
+    let routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if let Err(detail) = validate_node_route_bindings(peer_node_keys, peer_ids, &routes) {
+        if let Some(prepare) = prepare {
+            report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
+        }
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET current-committee transport routes do not match Vera NodeInfo: {detail}"
+        )));
+    }
+    let route_peer_ids = peer_ids_from_routes(&routes);
+    let local_node_peer_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+    if node_key_for_peer(&routes, &local_node_peer_hex) != Some(coord.app_state.node_key.as_str()) {
+        return Err(DkgError::Unauthorized(format!(
+            "Local node {} with peer {} is not a member of ring {}",
+            coord.app_state.node_key, local_node_peer_hex, ring_id
+        )));
+    }
+    let route_assignments =
+        canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+            .map_err(DkgError::InvalidInput)?;
+    let route_map = peers::old_committee_node_peer_mappings(
+        &ring_payload.peer_node_keys,
+        &routes,
+        &route_assignments,
+    )?;
+
+    let bundle = RingShareBundle::load_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
+        .map_err(|e| {
+            DkgError::Unauthorized(format!(
+                "Refresh PET session validation requires current PET ring bundle for {}: {}",
+                ring_id, e
+            ))
+        })?;
+    let expected_session_id = derive_refresh_pet_session_id(
+        ring_id,
+        &ring_payload.peer_node_keys,
+        ring_payload.threshold,
+        &bundle.public_polynomial,
+    )?;
+    if session_id != expected_session_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET session_id mismatch for ring {}: expected {}, got {}",
+            ring_id, expected_session_id, session_id
+        )));
+    }
+
+    Ok(ResolvedSessionRoutes {
+        old_peer_ids: route_peer_ids,
+        old_node_id_to_peer_id: route_map,
+        new_peer_ids: None,
+        new_node_id_to_peer_id: None,
+        session_peer_node_keys: peer_node_keys.to_vec(),
+    })
+}
+
 /// Validate a Reshare SessionInit against the authoritative ring and resolve routes
 /// for both the old and new committees.
 #[allow(clippy::too_many_arguments)]
@@ -517,6 +621,32 @@ where
                 peer_ids,
                 peer_node_keys,
                 ring_pk_hex,
+                &sender_hex,
+                prepare,
+            )
+            .await?
+        }
+        SessionKind::RefreshPet {
+            ring_id: kind_ring_id,
+        } => {
+            // Same cross-check as `FreshPet` below — `kind.ring_id` and the outer
+            // `ring_id` are independent wire fields; without this a leader authorized
+            // for real ring A could name unrelated ring B in `kind.ring_id`, and
+            // finalization would persist the result under B's PET storage key.
+            if kind_ring_id != &ring_id {
+                return Err(DkgError::Unauthorized(format!(
+                    "Refresh PET SessionInit ring_id mismatch: authorized for ring {} but kind names ring {}",
+                    ring_id, kind_ring_id
+                )));
+            }
+            validate_refresh_pet_init(
+                coord,
+                session_id,
+                threshold,
+                total_participants,
+                peer_ids,
+                peer_node_keys,
+                &ring_id,
                 &sender_hex,
                 prepare,
             )

@@ -80,6 +80,15 @@ where
                         | PublicPhase::RefreshHealthCheck
                 )
         }
+        // No health check for RefreshPet (see `SessionKind::RefreshPet`'s doc
+        // comment) — one fewer allowed phase than plain `Refresh`.
+        SessionKind::RefreshPet { .. } => {
+            contribution.origin.scope == CommitteeScope::Current
+                && matches!(
+                    phase,
+                    PublicPhase::Commitments | PublicPhase::CommitmentAudit
+                )
+        }
         SessionKind::Reshare { .. } => match phase {
             PublicPhase::Commitments => active_dealers.contains(&contribution.origin),
             PublicPhase::CommitmentAudit => contribution.origin.scope == CommitteeScope::Next,

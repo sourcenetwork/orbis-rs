@@ -1,7 +1,7 @@
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
-    build_refresh_ring_bundle, fresh_commitment_hash, persist_ring_bundle,
-    public_key_matches_storage_key, serialize_commitment_coefficients,
+    build_refresh_pet_ring_bundle, build_refresh_ring_bundle, fresh_commitment_hash,
+    persist_ring_bundle, public_key_matches_storage_key, serialize_commitment_coefficients,
 };
 use crate::dkg::v0::messages::SessionKind;
 use crate::dkg::v0::network::{

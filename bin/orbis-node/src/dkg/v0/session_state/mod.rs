@@ -923,7 +923,9 @@ impl<D: Dkg> DkgSessionState<D> {
     fn ceremony_kind(&self) -> metrics::DkgCeremonyKind {
         match &self.kind {
             SessionKind::Fresh | SessionKind::FreshPet { .. } => metrics::DkgCeremonyKind::Fresh,
-            SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                metrics::DkgCeremonyKind::Refresh
+            }
             SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
         }
     }
@@ -955,7 +957,7 @@ impl<D: Dkg> DkgSessionState<D> {
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
         let mode = match &self.kind {
             SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgMode::Fresh,
-            SessionKind::Refresh { .. } => DkgMode::Refresh,
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgMode::Refresh,
             SessionKind::Reshare { .. } => {
                 let p = self.reshare.params.as_mut().ok_or_else(|| {
                     DkgError::Generic(
@@ -1013,7 +1015,9 @@ impl<D: Dkg> DkgSessionState<D> {
     pub(crate) fn missing_dealer_peer_ids(&self, stalled_phase: DkgPhase) -> Vec<String> {
         let dealer_node_ids: Vec<u32> = match &self.kind {
             SessionKind::Fresh | SessionKind::FreshPet { .. } => return Vec::new(),
-            SessionKind::Refresh { .. } => (1..=self.routing.peer_node_keys.len() as u32).collect(),
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                (1..=self.routing.peer_node_keys.len() as u32).collect()
+            }
             SessionKind::Reshare { .. } => match &self.reshare.params {
                 Some(params) => params.participating_ids.clone(),
                 None => (1..=self.routing.peer_node_keys.len() as u32).collect(),

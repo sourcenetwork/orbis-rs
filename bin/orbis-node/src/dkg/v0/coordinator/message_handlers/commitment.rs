@@ -91,7 +91,10 @@ where
             .with_attempt_state(attempt, |state| {
                 (
                     state.expected_commitment_size(),
-                    matches!(state.kind, SessionKind::Refresh { .. }),
+                    matches!(
+                        state.kind,
+                        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. }
+                    ),
                     matches!(
                         state.kind,
                         SessionKind::Fresh | SessionKind::FreshPet { .. }

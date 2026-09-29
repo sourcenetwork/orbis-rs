@@ -27,7 +27,7 @@ where
                 .initiate_phase0_commitment_hashes(attempt, &peer_ids)
                 .await?;
         }
-        SessionKind::Refresh { .. } => {
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
             coordinator
                 .initiate_phase1_commitments(attempt, &peer_ids)
                 .await?;

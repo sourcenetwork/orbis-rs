@@ -20,11 +20,15 @@ pub(super) fn public_batch_mode(kind: &SessionKind, phase: PublicPhase) -> Optio
             SessionKind::Refresh { .. },
             PublicPhase::Commitments | PublicPhase::RefreshHealthCheck,
         )
+        // No health-check phase for RefreshPet — see its own doc comment.
+        | (SessionKind::RefreshPet { .. }, PublicPhase::Commitments)
         | (SessionKind::Reshare { .. }, PublicPhase::ReshareParticipantSet) => {
             Some(PublicBatchMode::Complete)
         }
         (
-            SessionKind::Refresh { .. } | SessionKind::Reshare { .. },
+            SessionKind::Refresh { .. }
+            | SessionKind::RefreshPet { .. }
+            | SessionKind::Reshare { .. },
             PublicPhase::CommitmentAudit,
         )
         | (SessionKind::Reshare { .. }, PublicPhase::Commitments) => {

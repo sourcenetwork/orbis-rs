@@ -605,7 +605,7 @@ where
         // every respect metrics care about; split it out later if PET-specific
         // observability is ever needed.
         SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgCeremonyKind::Fresh,
-        SessionKind::Refresh { .. } => DkgCeremonyKind::Refresh,
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgCeremonyKind::Refresh,
         SessionKind::Reshare { .. } => DkgCeremonyKind::Reshare,
     };
     let ceremony_id = prepare.ceremony_id;

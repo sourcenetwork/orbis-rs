@@ -33,6 +33,17 @@ pub enum SessionKind {
         /// Local-storage key of the ring being refreshed (`aggregate_pk.to_string()`).
         ring_pk_hex: String,
     },
+    /// PSS refresh for a ring's independent PET checking key. Scheduled and
+    /// triggered entirely independently of the main key's `Refresh` — its own
+    /// `RingShareBundle.last_pss`, its own interval check, no chaining either
+    /// direction. Same committee as the main ring; storage-key override for
+    /// the same reason `FreshPet` has one (`ring_id`, not the PET public
+    /// key). Never health-checked (this key is never used for signing).
+    RefreshPet {
+        /// Local-storage key for the PET `RingShareBundle` being refreshed
+        /// (`ring_id` — see `FreshPet`'s doc comment).
+        ring_id: String,
+    },
     /// Reshare — same secret, new shares, potentially different committee.
     ///
     /// Old committee members act as Dealers; new committee members act as Receivers.
@@ -59,6 +70,7 @@ impl SessionKind {
             SessionKind::Fresh => None,
             SessionKind::FreshPet { ring_id } => Some(ring_id.as_str()),
             SessionKind::Refresh { ring_pk_hex } => Some(ring_pk_hex.as_str()),
+            SessionKind::RefreshPet { ring_id } => Some(ring_id.as_str()),
             SessionKind::Reshare { ring_pk_hex, .. } => Some(ring_pk_hex.as_str()),
         }
     }

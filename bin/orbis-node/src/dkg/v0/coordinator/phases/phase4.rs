@@ -124,9 +124,15 @@ where
 
     // Fresh DKG and reshare produce a usable ring key. The identity is never a
     // valid signing/PRE key: accepting it would make Decaf Schnorr signatures
-    // forgeable. Refresh is excluded because its delta polynomial intentionally
-    // has an identity constant term; the combined staged key is checked below.
-    if !matches!(kind, SessionKind::Refresh { .. }) && D::public_key_is_identity(&aggregate_pk) {
+    // forgeable. Refresh/RefreshPet are excluded because their delta polynomial
+    // intentionally has an identity constant term; the combined key is checked
+    // below (Refresh: against the staged key; RefreshPet: no equivalent check
+    // exists yet since it isn't staged — see the PET refresh doc comment).
+    if !matches!(
+        kind,
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. }
+    ) && D::public_key_is_identity(&aggregate_pk)
+    {
         return Err(DkgError::Crypto(
             "DKG produced the identity aggregate public key; aborting before persistence"
                 .to_string(),
@@ -292,6 +298,85 @@ where
             public_polynomial: hex::encode(&pub_poly_bytes),
             last_pss: now_secs,
         });
+        None
+    } else if let SessionKind::RefreshPet { ring_id } = &kind {
+        // PET refresh: no staging/health-check (see the ceremony's own doc
+        // comment), but still guard against the same class of drift Refresh's
+        // staged-key check catches — a cheating dealer's non-zero-constant-term
+        // delta could otherwise silently move the ring's PET checking key.
+        // `build_refresh_pet_ring_bundle` doesn't carry a `D` type param to do
+        // this itself, so it's done here, symmetrically with Refresh's own
+        // external check, just against the old PET key directly (PET's storage
+        // key is `ring_id`, not a public-key string, so
+        // `public_key_matches_storage_key` doesn't apply).
+        let old_pet_bundle =
+            RingShareBundle::load_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
+                .map_err(|e| {
+                    DkgError::Storage(format!("Refresh PET: failed to load old PET bundle: {}", e))
+                })?;
+        let old_pet_poly_bytes = hex::decode(&old_pet_bundle.public_polynomial).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh PET: failed to decode old PET polynomial hex: {}",
+                e
+            ))
+        })?;
+        let old_pet_pk = <D::PubPoly>::from_bytes(&old_pet_poly_bytes)
+            .map_err(|e| {
+                DkgError::Deserialization(format!(
+                    "Refresh PET: failed to deserialize old PET polynomial: {}",
+                    e
+                ))
+            })?
+            .eval(0);
+
+        let new_bundle = build_refresh_pet_ring_bundle(
+            &coord.app_state.local_storage,
+            ring_id,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
+        let new_pet_poly_bytes = hex::decode(&new_bundle.public_polynomial).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh PET: failed to decode new PET polynomial hex: {}",
+                e
+            ))
+        })?;
+        let new_pet_pk = <D::PubPoly>::from_bytes(&new_pet_poly_bytes)
+            .map_err(|e| {
+                DkgError::Deserialization(format!(
+                    "Refresh PET: failed to deserialize new PET polynomial: {}",
+                    e
+                ))
+            })?
+            .eval(0);
+        if new_pet_pk.to_string() != old_pet_pk.to_string() {
+            return Err(DkgError::Crypto(format!(
+                "Refresh PET: combined PET checking key {} does not match the ring's existing \
+                 PET key {}; aborting before persistence",
+                new_pet_pk, old_pet_pk
+            )));
+        }
+
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |_| ())
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        new_bundle
+            .save_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
+            .map_err(|e| {
+                DkgError::Storage(format!("Refresh PET: failed to store new bundle: {}", e))
+            })?;
+
+        tracing::info!(
+            session_id = session_id,
+            ring_id = %ring_id,
+            "Refresh PET: Phase 4 complete — RingShareBundle updated atomically"
+        );
         None
     } else {
         // Fresh DKG only, now: no old material at risk for a brand-new ring, so

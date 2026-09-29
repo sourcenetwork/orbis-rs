@@ -57,6 +57,28 @@ pub fn derive_fresh_pet_dkg_session_id(ring_id: &str) -> Result<u128> {
     Ok(u128::from_le_bytes(digest[..16].try_into()?))
 }
 
+/// Derive a deterministic session ID for a ring's PET checking-key refresh.
+///
+/// Independent of the main key's own `derive_refresh_session_id` — a distinct
+/// `"refresh-pet"` kind label keyed by `ring_id` (not `ring_pk_hex`), mirroring
+/// how `derive_fresh_pet_dkg_session_id` is kept independent of `derive_fresh_dkg_session_id`.
+pub fn derive_refresh_pet_session_id(
+    ring_id: &str,
+    peer_node_keys: &[String],
+    threshold: u32,
+    public_polynomial_hex: &str,
+) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "refresh-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
+    hash_sorted_strings(&mut hasher, b"peer_node_keys", peer_node_keys);
+    hash_labeled_bytes(&mut hasher, b"threshold", &threshold.to_le_bytes());
+    hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}
+
 /// Derive a deterministic reshare session ID from the ring's current generation state
 /// and the authoritative transition announced on the bulletin.
 pub fn derive_reshare_session_id(
