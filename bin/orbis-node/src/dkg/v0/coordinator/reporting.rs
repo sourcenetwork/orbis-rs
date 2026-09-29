@@ -217,14 +217,16 @@ async fn report_or_relay_pss_offline_observations<D>(
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let is_pure_next = matches!(seed.kind, SessionKind::Reshare { .. })
-        && seed.committees.as_ref().is_some_and(|committees| {
-            !committees.current.node_keys.contains(&app_state.node_key)
-                && committees
-                    .next
-                    .as_ref()
-                    .is_some_and(|next| next.node_keys.contains(&app_state.node_key))
-        });
+    let is_pure_next = matches!(
+        seed.kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    ) && seed.committees.as_ref().is_some_and(|committees| {
+        !committees.current.node_keys.contains(&app_state.node_key)
+            && committees
+                .next
+                .as_ref()
+                .is_some_and(|next| next.node_keys.contains(&app_state.node_key))
+    });
     if let Some(attempt_id) = seed.attempt_id.filter(|_| is_pure_next) {
         crate::metrics::record_pss_offline_observation(
             seed.stage.as_metric_label(),

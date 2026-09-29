@@ -99,7 +99,10 @@ where
                         state.kind,
                         SessionKind::Fresh | SessionKind::FreshPet { .. }
                     ),
-                    matches!(state.kind, SessionKind::Reshare { .. }),
+                    matches!(
+                        state.kind,
+                        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+                    ),
                     expected_hash_override.or_else(|| {
                         state
                             .commit_reveal
