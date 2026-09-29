@@ -40,11 +40,6 @@ confidence-threshold = 0.8
 unmaintained = "none"
 yanked = "allow"
 ignore = [
-    # Vera's imbl 5 pins chunks 0.1. The affected removal paths require an
-    # element destructor to panic. Vera stores Vec<u8>/Bytes and String/Arc<Policy>;
-    # those records have no panicking destructors. Upgrading requires changing
-    # Vera's imbl major and the shared consumer pins, not just this lockfile.
-    { id = "RUSTSEC-2026-0292", reason = "Pinned Vera OrdMap records have no panicking element destructors" },
     # did-key 0.2.1 (the latest release; no 0.3/1.0 exists) pins ed25519-dalek
     # "1.0.1" and curve25519-dalek "3.x". Neither advisory has a fix inside
     # those majors — RUSTSEC-2022-0093 is fixed only in ed25519-dalek 2.x,
