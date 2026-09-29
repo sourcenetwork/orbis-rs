@@ -48,8 +48,9 @@ use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
     derive_fresh_dkg_session_id, derive_fresh_pet_dkg_session_id, derive_refresh_pet_session_id,
-    derive_refresh_session_id, derive_reshare_session_id, ring_payload_matches_ring_key,
-    validate_fresh_dkg_ring_payload, validate_fresh_pet_dkg_ring_payload,
+    derive_refresh_session_id, derive_reshare_pet_session_id, derive_reshare_session_id,
+    ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
+    validate_fresh_pet_dkg_ring_payload,
 };
 use crate::dkg::v0::messages::{
     ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
@@ -126,6 +127,11 @@ pub use private::DkgPrivateHandler;
 pub(crate) use ceremony_start::{
     start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
+// No production caller until Stage 3 of the PSS-for-PET-key plan wires it in
+// (see `start_reshare_pet`'s own doc comment) — only this module's own test
+// suite (`dkg::v0::tests::reshare`) calls it directly today.
+#[cfg(test)]
+pub(crate) use ceremony_start::start_reshare_pet;
 // Only `unsafe_testing` drives the leader broadcast path directly; gating the
 // re-export keeps it out of non-`unsafe-testing` builds without an unused import.
 #[cfg(feature = "unsafe-testing")]

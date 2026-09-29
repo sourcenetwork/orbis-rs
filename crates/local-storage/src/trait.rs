@@ -46,6 +46,12 @@ pub enum LocalStorageKeys {
     /// re-derives the same state hash from the ring's *current* bulletin payload, and
     /// promotes or discards accordingly. Encrypted like `RingKey` — holds a real secret share.
     PendingReshareBundle(String),
+    /// Same as [`Self::PendingReshareBundle`], for a ring's independent PET
+    /// checking key, keyed by `ring_id` — a distinct namespace for the same
+    /// reason [`Self::PetRingKey`] is distinct from [`Self::RingKey`]: a
+    /// `ring_id` and a main key's `aggregate_pk.to_string()` share no
+    /// structural guarantee against collision.
+    PendingResharePetBundle(String),
 }
 
 pub trait LocalStorage {

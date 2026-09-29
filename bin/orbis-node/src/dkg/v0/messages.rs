@@ -60,6 +60,25 @@ pub enum SessionKind {
         /// this ring — can look up and verify the bulletin payload without a local index.
         bulletin_post_id: String,
     },
+    /// Reshare for a ring's independent PET checking key — same old/new
+    /// committees and threshold as the main ring's own `Reshare` (there is
+    /// no separate PET-committee concept), redistributing the PET share
+    /// instead of the main share. No separate `bulletin_post_id` field:
+    /// unlike `Reshare`, `ring_id` alone resolves the ring directly (matching
+    /// `FreshPet`/`RefreshPet`'s own resolution shape), so it already serves
+    /// that purpose. Stage 2 of the PSS-for-PET-key plan: built as a
+    /// standalone ceremony, not yet chained to or gated by the main ring's
+    /// own `Reshare` (see `docs/plans/lazy-gliding-gosling.md`).
+    ResharePet {
+        /// Local-storage key for the PET `RingShareBundle` being reshared
+        /// (`ring_id` — see `FreshPet`'s doc comment).
+        ring_id: String,
+        /// Chain node keys of the new committee (same as the main ring's own
+        /// reshare target — PET has no separate committee).
+        new_peer_node_keys: Vec<String>,
+        /// Threshold for the new committee.
+        new_threshold: u32,
+    },
 }
 
 impl SessionKind {
@@ -72,6 +91,7 @@ impl SessionKind {
             SessionKind::Refresh { ring_pk_hex } => Some(ring_pk_hex.as_str()),
             SessionKind::RefreshPet { ring_id } => Some(ring_id.as_str()),
             SessionKind::Reshare { ring_pk_hex, .. } => Some(ring_pk_hex.as_str()),
+            SessionKind::ResharePet { ring_id, .. } => Some(ring_id.as_str()),
         }
     }
 }

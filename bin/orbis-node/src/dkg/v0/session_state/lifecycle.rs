@@ -213,8 +213,10 @@ impl<D: Dkg + 'static> SessionStateManager<D> {
                     let stalled_phase = match state.phase {
                         DkgPhase::Phase1Commitments | DkgPhase::Phase2Shares => Some(state.phase),
                         DkgPhase::Initializing
-                            if matches!(state.kind, SessionKind::Reshare { .. })
-                                && state.node.role() == DkgRole::Receiver =>
+                            if matches!(
+                                state.kind,
+                                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+                            ) && state.node.role() == DkgRole::Receiver =>
                         {
                             Some(DkgPhase::Phase2Shares)
                         }

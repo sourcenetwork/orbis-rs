@@ -378,7 +378,17 @@ where
         + Sync
         + 'static,
 {
-    let is_reshare = matches!(kind, SessionKind::Reshare { .. });
+    // Grouping `ResharePet` here means a pending-new PET reporter's
+    // anti-framing check below (`RingPolyState::load_from_ring_pk_hex`)
+    // proves participation in the *main* ring's own reshare, not a
+    // PET-specific bundle — both ceremonies target the identical committee,
+    // so this is a reasonable interim proxy for Stage 2 of the PSS-for-PET-
+    // key plan, but Stage 4's own reporting-attribution pass should verify
+    // (and tighten, if warranted) this for the PET ceremony specifically.
+    let is_reshare = matches!(
+        kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    );
     let (origin_protocol, ring_id) = match kind {
         SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
         SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
@@ -394,6 +404,7 @@ where
                 stored_ring_id
             },
         ),
+        SessionKind::ResharePet { .. } => ("pss_reshare", stored_ring_id),
     };
     if ring_id.is_empty() {
         tracing::debug!("Skipping PSS offline report because session has no authoritative ring ID");

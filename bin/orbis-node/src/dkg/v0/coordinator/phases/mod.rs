@@ -13,7 +13,7 @@ use crate::dkg::v0::transport::{
     DkgPublicPayload, ParticipantRef,
 };
 use crate::helpers::protocol_version::read_ring_for_route;
-use crate::ring_state::RingShareBundle;
+use crate::ring_state::{PendingReshareBundle, RingShareBundle};
 use crypto::r#trait::{CryptoDeserialize, DkgRole, PubPoly as PubPolyTrait};
 use crypto::{CryptoSerialize, SignImpl};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};

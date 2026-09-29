@@ -77,13 +77,18 @@ pub(super) async fn validate_reshare_transport_routes<D>(
 where
     D: CoordinatorDkg,
 {
-    let SessionKind::Reshare {
-        new_peer_node_keys,
-        new_threshold,
-        ..
-    } = &prepare.kind
-    else {
-        return Ok(());
+    let (new_peer_node_keys, new_threshold) = match &prepare.kind {
+        SessionKind::Reshare {
+            new_peer_node_keys,
+            new_threshold,
+            ..
+        }
+        | SessionKind::ResharePet {
+            new_peer_node_keys,
+            new_threshold,
+            ..
+        } => (new_peer_node_keys, new_threshold),
+        _ => return Ok(()),
     };
     let next = prepare.committees.next.as_ref().ok_or_else(|| {
         DkgError::Unauthorized("Reshare Prepare omits the next transport committee".into())
@@ -673,6 +678,280 @@ where
     )?);
     let (ceremony, attempt) = coordinate_prepared(state, routes, prepare).await?;
     crate::metrics::record_dkg_transport_event("control", "reshare_start_accepted");
+    Ok(ReshareStartOutcome::Started(ceremony, attempt))
+}
+
+/// Same as [`pending_reshare_parameters`], for a ring's independent PET
+/// checking key. No `expected_ring_pk`-style check — `ring_id` alone is
+/// PET's identity anchor, and the ring has already been fetched by it.
+pub(super) fn pending_reshare_pet_parameters(ring: &RingPayload) -> Result<(Vec<String>, u32)> {
+    if !ring.requires_pet || ring.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(
+            "Reshare PET target ring has no finalized PET checking key".into(),
+        ));
+    }
+    let next_keys = ring
+        .new_peer_node_keys
+        .clone()
+        .unwrap_or_else(|| ring.peer_node_keys.clone());
+    let next_threshold = ring.new_threshold.unwrap_or(ring.threshold);
+    if next_keys == ring.peer_node_keys && next_threshold == ring.threshold {
+        return Err(DkgError::InvalidState(
+            "Vera ring has no pending reshare transition".into(),
+        ));
+    }
+    Ok((next_keys, next_threshold))
+}
+
+/// Same as [`start_reshare`], for a ring's independent PET checking key.
+/// Stage 2 of the PSS-for-PET-key plan: a standalone ceremony, callable
+/// directly (e.g. in tests) — not yet chained to or gated by the main
+/// ring's own `Reshare` (see `docs/plans/lazy-gliding-gosling.md`). No
+/// production caller until Stage 3 wires it in; `validate_reshare_pet_start_sender`/
+/// `coordinate_reshare_pet` stay live in the meantime via the control-handler
+/// path (`on_start_reshare_pet`), which this function itself also uses when
+/// forwarding to a non-local canonical leader.
+#[allow(dead_code)]
+pub(crate) async fn start_reshare_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> Result<ReshareStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, next_threshold) = pending_reshare_pet_parameters(&ring)?;
+    if !ring.peer_node_keys.contains(&state.node_key) {
+        return Err(DkgError::Unauthorized(
+            "only a current-committee member may request reshare PET start".into(),
+        ));
+    }
+    let ceremony = CeremonyId(derive_reshare_pet_session_id(
+        &ring_id,
+        &ring.peer_node_keys,
+        &next_keys,
+        next_threshold,
+    )?);
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_duplicate");
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
+
+    let leader = transport::canonical_leader(&next_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    crate::metrics::record_dkg_transport_event("control", "reshare_pet_next_leader_selected");
+    if leader == state.node_key {
+        return coordinate_reshare_pet(state, routes, ring_id).await;
+    }
+
+    let next_routes = resolve_node_routes(&state.bulletin, &next_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let leader_peer = next_routes
+        .iter()
+        .find_map(|route| (route.node_key == leader).then_some(route.peer_id.clone()))
+        .ok_or_else(|| DkgError::InvalidState("next-committee leader route is missing".into()))?;
+    crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_forwarded");
+    tracing::info!(
+        ring_id = %ring_id,
+        leader = %leader,
+        "forwarding pending reshare PET to canonical next-committee leader"
+    );
+    let next_assignments =
+        canonical_node_id_assignments_from_node_keys(&next_keys).map_err(DkgError::InvalidInput)?;
+    let leader_participant = next_assignments
+        .get(&leader)
+        .copied()
+        .map(ParticipantRef::next)
+        .ok_or_else(|| DkgError::InvalidState("next leader assignment is missing".into()))?;
+    let kind = SessionKind::ResharePet {
+        ring_id: ring_id.clone(),
+        new_peer_node_keys: next_keys,
+        new_threshold: next_threshold,
+    };
+    let forwarding_deadline =
+        Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
+    let response = retry_preparation_control_classified(
+        &state,
+        routes,
+        &leader_peer,
+        DkgControlMessage::StartResharePet {
+            ring_id: ring_id.clone(),
+        },
+        forwarding_deadline,
+    )
+    .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            if error.is_unreachable() {
+                spawn_pss_offline_observations(
+                    state.clone(),
+                    routes,
+                    PssOfflineObservationSeed::direct(
+                        ceremony,
+                        kind,
+                        ring_id,
+                        routes.version,
+                        PssOfflineStage::StartForward,
+                        [(leader_participant, leader, leader_peer)],
+                    ),
+                );
+            }
+            return Err(error.into_error());
+        }
+    };
+    match response {
+        DkgControlMessage::ResharePetStartAccepted {
+            ceremony_id,
+            attempt_id,
+        } if ceremony_id == ceremony => Ok(ReshareStartOutcome::Forwarded(ceremony_id, attempt_id)),
+        response => Err(DkgError::ProtocolError(format!(
+            "next-committee leader returned unexpected reshare PET start response: {response:?}"
+        ))),
+    }
+}
+
+pub(super) async fn validate_reshare_pet_start_sender<D>(
+    state: &Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: &str,
+    sender: &PeerId,
+) -> Result<()>
+where
+    D: CoordinatorDkg,
+{
+    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, _) = pending_reshare_pet_parameters(&ring)?;
+    let expected_leader =
+        transport::canonical_leader(&next_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
+    if expected_leader != state.node_key {
+        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartResharePet reached a nonleader next-committee receiver".into(),
+        ));
+    }
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if current_routes
+        .iter()
+        .all(|route| !peer_matches_route(sender, &route.peer_id))
+    {
+        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_rejected");
+        return Err(DkgError::Unauthorized(
+            "StartResharePet sender is not in the current committee".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Coordinate the pending PET reshare transition as the canonical
+/// next-committee receiver. Only this function creates an attempt ID.
+pub(super) async fn coordinate_reshare_pet<D>(
+    state: Arc<AppState<D>>,
+    routes: &'static network::ProtocolRoutes,
+    ring_id: String,
+) -> Result<ReshareStartOutcome>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let (next_keys, next_threshold) = pending_reshare_pet_parameters(&ring)?;
+    let leader = transport::canonical_leader(&next_keys)
+        .ok_or(DkgError::InvalidParticipantCount(0))?
+        .to_string();
+    if leader != state.node_key {
+        return Err(DkgError::Unauthorized(
+            "only the canonical next-committee leader may coordinate reshare PET".into(),
+        ));
+    }
+    let ceremony = CeremonyId(derive_reshare_pet_session_id(
+        &ring_id,
+        &ring.peer_node_keys,
+        &next_keys,
+        next_threshold,
+    )?);
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_duplicate");
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
+    let _start_guard = lock_ceremony_start(&state, ceremony).await;
+    if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
+        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_duplicate");
+        return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
+    }
+
+    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let next_routes = resolve_node_routes(&state.bulletin, &next_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let current_assignments = canonical_node_id_assignments_from_node_keys(&ring.peer_node_keys)
+        .map_err(DkgError::InvalidInput)?;
+    let next_assignments =
+        canonical_node_id_assignments_from_node_keys(&next_keys).map_err(DkgError::InvalidInput)?;
+    let attempt = AttemptId::random();
+    let transition_digest =
+        transport::ceremony_committee_digest(&ring.peer_node_keys, Some(&next_keys));
+    let topic = transport::derive_topic_id(
+        &state.bulletin.chain_id(),
+        &ring_id,
+        &transition_digest,
+        ceremony,
+        attempt,
+    );
+    let mut prepare = PrepareSession {
+        ceremony_id: ceremony,
+        attempt_id: attempt,
+        config_digest: [0; 32],
+        topic_id: *topic.as_bytes(),
+        leader_node_key: leader,
+        committees: CeremonyConfig {
+            current: CommitteeConfig {
+                node_keys: ring.peer_node_keys.clone(),
+                peer_routes: peer_ids_from_routes(&current_routes),
+                node_id_assignments: current_assignments,
+                threshold: ring.threshold,
+            },
+            next: Some(CommitteeConfig {
+                node_keys: next_keys.clone(),
+                peer_routes: peer_ids_from_routes(&next_routes),
+                node_id_assignments: next_assignments,
+                threshold: next_threshold,
+            }),
+        },
+        kind: SessionKind::ResharePet {
+            ring_id: ring_id.clone(),
+            new_peer_node_keys: next_keys,
+            new_threshold: next_threshold,
+        },
+        pss_interval: ring.pss_interval,
+        policy_id: ring.policy_id,
+        ring_id,
+        report_signature: None,
+    };
+    prepare.config_digest = transport::config_digest(&prepare).map_err(DkgError::Serialization)?;
+    prepare.report_signature = Some(sign_control_message(
+        &state,
+        prepare.ceremony_id,
+        prepare.attempt_id,
+        "prepare",
+        prepare.config_digest,
+    )?);
+    let (ceremony, attempt) = coordinate_prepared(state, routes, prepare).await?;
+    crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_accepted");
     Ok(ReshareStartOutcome::Started(ceremony, attempt))
 }
 

@@ -717,7 +717,10 @@ where
                 configured.map(|c| c.leader_peer_route.clone()),
                 session.transport.is_activated(),
                 session.node.node_id(),
-                matches!(session.kind, SessionKind::Reshare { .. }),
+                matches!(
+                    session.kind,
+                    SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+                ),
                 session
                     .reshare
                     .params

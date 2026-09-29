@@ -99,3 +99,24 @@ pub fn derive_reshare_session_id(
     let digest = hasher.finalize();
     Ok(u128::from_le_bytes(digest[..16].try_into()?))
 }
+
+/// Same as [`derive_reshare_session_id`], for a ring's independent PET
+/// checking key. No separate `bulletin_post_id` — `ring_id` alone is PET's
+/// identity anchor (see `SessionKind::ResharePet`'s doc comment), so it's
+/// hashed once rather than as two separate fields.
+pub fn derive_reshare_pet_session_id(
+    ring_id: &str,
+    old_peer_node_keys: &[String],
+    new_peer_node_keys: &[String],
+    new_threshold: u32,
+) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "reshare-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
+    hash_sorted_strings(&mut hasher, b"old_peer_node_keys", old_peer_node_keys);
+    hash_sorted_strings(&mut hasher, b"new_peer_node_keys", new_peer_node_keys);
+    hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}

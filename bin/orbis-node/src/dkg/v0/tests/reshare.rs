@@ -3,9 +3,9 @@ use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     error::DkgError,
-    helpers::derive_reshare_session_id,
+    helpers::{derive_reshare_pet_session_id, derive_reshare_session_id},
     messages::SessionKind,
-    network::{start_reshare, ReshareStartOutcome},
+    network::{start_reshare, start_reshare_pet, ReshareStartOutcome},
     session_state::{RingPssClaimOutcome, SessionStateManager},
     transport::{canonical_leader, AttemptKey},
 };
@@ -16,7 +16,7 @@ use crate::helpers::test_helpers::{
     get_test_ring_post, setup_three_node_network, test_db_path, write_ring_to_bulletin,
     TestKeyPair, TestNode,
 };
-use crate::ring_state::{RingIndexEntry, RingShareBundle};
+use crate::ring_state::{PendingReshareBundle, RingIndexEntry, RingShareBundle};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{BulletinKind, NodeInfo, RingPayload};
 use crypto::r#trait::{CryptoDeserialize, Dkg, DkgRole, PubPoly as PubPolyTrait};
@@ -2444,4 +2444,713 @@ async fn test_reshare_full_rotation() {
     for path in &db_paths {
         cleanup_db(path);
     }
+}
+
+// =============================================================================
+// Reshare PET tests (Stage 2 of the PSS-for-PET-key plan)
+//
+// `ResharePet` mirrors `Reshare`'s own ceremony mechanics (Dealer/Receiver/
+// DealerReceiver role assignment, share redistribution) for a ring's
+// independent PET checking key. Unlike the main key, Stage 2 builds it as a
+// standalone ceremony — callable directly (as these tests do), not yet
+// chained to or gated by the main ring's own `Reshare` (see
+// docs/plans/lazy-gliding-gosling.md, Stage 3). Completion is observed via
+// each new-committee node's staged `PendingReshareBundle::load_pet`, not a
+// promoted live `PetRingKey` bundle — there is no confirmation-driven
+// promotion yet.
+// =============================================================================
+
+/// Flip `TEST_FRESH_DKG_RING_ID`'s seeded ring payload (posted by
+/// `setup_three_node_network`, always `requires_pet: false`) to
+/// `requires_pet: true` before starting DKG, so the main key's `Fresh`
+/// ceremony auto-chains the PET key's own `FreshPet` ceremony. Mirrors the
+/// exact payload shape `setup_three_node_network`'s internal seeding uses.
+fn require_pet_on_fresh_dkg_ring(bulletin: &DummyBulletin, peer_node_keys: Vec<String>) {
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: String::new(),
+        peer_node_keys,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 2,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: None,
+    };
+    bulletin
+        .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
+        .expect("flip fresh DKG ring to requires_pet");
+}
+
+/// Poll the bulletin until the combined main-key + PET-key finalize lands
+/// (see `phase4.rs`'s `requires_pet` branch — both are submitted together in
+/// one `MsgFinalizeRing`). Returns `(pet_pk_hex, pet_pk_bytes)`.
+async fn wait_for_pet_dkg_complete_on_bulletin(bulletin: &DummyBulletin) -> (String, Vec<u8>) {
+    let start = Instant::now();
+    let max_wait = Duration::from_secs(90);
+    loop {
+        let post = get_test_ring_post(bulletin);
+        if !post.payload.is_empty() {
+            let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
+            if let Some(pet_pk_hex) = ring_payload.pet_pk {
+                let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
+                return (pet_pk_hex, pet_pk_bytes);
+            }
+        }
+        assert!(
+            start.elapsed() < max_wait,
+            "combined ring+PET finalize did not land on the bulletin within 90s"
+        );
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Same as `post_reshare_announcement`, preserving `requires_pet: true` and
+/// the finalized `pet_pk` — the plain announcement helper's hardcoded
+/// literal would otherwise silently clear both, which
+/// `pending_reshare_pet_parameters` requires present. Unlike the main-key
+/// version, this overwrites the ring's own post directly (no separate
+/// announcement post id or `RingIndex` redirection): `ResharePet` always
+/// resolves via `ring_id` (== `TEST_FRESH_DKG_RING_ID`) directly, never
+/// through `RingIndex`.
+#[allow(clippy::too_many_arguments)]
+fn post_reshare_pet_announcement(
+    old_peer_node_keys: &[String],
+    old_threshold: u32,
+    ring_pk_hex: &str,
+    pet_pk_hex: &str,
+    sorted_new_peer_node_keys: &[String],
+    new_threshold: u32,
+    bulletin: &DummyBulletin,
+) {
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: ring_pk_hex.to_string(),
+        peer_node_keys: old_peer_node_keys.to_vec(),
+        threshold: old_threshold,
+        new_peer_node_keys: Some(sorted_new_peer_node_keys.to_vec()),
+        new_threshold: Some(new_threshold),
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some(pet_pk_hex.to_string()),
+    };
+    bulletin
+        .set_ring(TEST_FRESH_DKG_RING_ID.to_string(), payload)
+        .expect("seed PET reshare announcement");
+}
+
+/// Same as `run_reshare_ceremony`, for the PET checking key. Stage 2 is
+/// standalone, so unlike the main-key ceremony there is no final "wait for
+/// bulletin update" phase — completion is observed via each new-committee
+/// node's staged `PendingReshareBundle::load_pet` (Stage 3 adds
+/// confirmation-driven promotion to the live PET key).
+async fn run_reshare_pet_ceremony(
+    old_committee_states: &[&crate::app_state::AppState<DkgImpl>],
+    old_peer_node_keys: &[String],
+    ring_id: &str,
+    sorted_new_peer_node_keys: &[String],
+    new_threshold: u32,
+    new_committee_states: &[&crate::app_state::AppState<DkgImpl>],
+) {
+    let leader_key = canonical_leader(sorted_new_peer_node_keys)
+        .expect("new committee has a canonical transport leader");
+    assert!(
+        new_committee_states
+            .iter()
+            .any(|state| state.node_key == leader_key),
+        "canonical next-committee transport leader is present in the test network"
+    );
+    let initiator_state = old_committee_states
+        .iter()
+        .copied()
+        .find(|old| {
+            new_committee_states
+                .iter()
+                .any(|new| new.node_key == old.node_key)
+        })
+        .or_else(|| old_committee_states.first().copied())
+        .expect("reshare PET test has at least one current member to forward start");
+    let secondary_state = old_committee_states
+        .iter()
+        .copied()
+        .find(|state| state.node_key != initiator_state.node_key)
+        .expect("reshare PET convergence test has two live current members");
+
+    let session_id = derive_reshare_pet_session_id(
+        ring_id,
+        old_peer_node_keys,
+        sorted_new_peer_node_keys,
+        new_threshold,
+    )
+    .unwrap();
+
+    let first_start = start_reshare_pet(
+        Arc::new(initiator_state.clone()),
+        &::network::V0,
+        ring_id.to_string(),
+    );
+    let second_start = start_reshare_pet(
+        Arc::new(secondary_state.clone()),
+        &::network::V0,
+        ring_id.to_string(),
+    );
+    let (first_outcome, second_outcome) = tokio::join!(first_start, second_start);
+    let first_outcome = first_outcome.expect("first current member starts reshare PET");
+    let second_outcome = second_outcome.expect("second current member starts reshare PET");
+    let outcome_ids = |outcome| match outcome {
+        ReshareStartOutcome::Started(ceremony, attempt)
+        | ReshareStartOutcome::Forwarded(ceremony, attempt)
+        | ReshareStartOutcome::AlreadyActive(ceremony, attempt) => (ceremony, attempt),
+    };
+    let (first_ceremony, first_attempt) = outcome_ids(first_outcome);
+    let (second_ceremony, second_attempt) = outcome_ids(second_outcome);
+    assert_eq!(first_ceremony.0, session_id);
+    assert_eq!(second_ceremony, first_ceremony);
+    assert_eq!(
+        second_attempt, first_attempt,
+        "concurrent current-member forwards must converge on the one attempt created by the next leader"
+    );
+
+    let start = Instant::now();
+    let max_wait = Duration::from_secs(60);
+    loop {
+        let all_done = new_committee_states.iter().all(|state| {
+            PendingReshareBundle::load_pet(&state.local_storage, ring_id)
+                .ok()
+                .flatten()
+                .is_some()
+        });
+        if all_done {
+            break;
+        }
+        assert!(
+            start.elapsed() < max_wait,
+            "Reshare PET ceremony did not stage every new-committee node's bundle within 60s"
+        );
+        sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Full rotation ({A,B,C}→{D,E,F}, t=2): every new-committee node is a pure
+/// Receiver, every old-committee node a pure Dealer.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_pet_full_rotation() {
+    let db_name = "test_reshare_pet_full_rotation";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+        test_db_path(&format!("{}_4", db_name)),
+        test_db_path(&format!("{}_5", db_name)),
+        test_db_path(&format!("{}_6", db_name)),
+    ];
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
+    require_pet_on_fresh_dkg_ring(&dummy_bulletin, old_peer_node_keys.clone());
+
+    let mut dave = create_extra_test_node(&format!("{}_4", db_name), dummy_bulletin.clone()).await;
+    let mut eve = create_extra_test_node(&format!("{}_5", db_name), dummy_bulletin.clone()).await;
+    let mut frank = create_extra_test_node(&format!("{}_6", db_name), dummy_bulletin.clone()).await;
+
+    // Phase A: DKG with A, B, C — requires_pet auto-chains FreshPet.
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("JWT");
+    alice_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("DKG should start");
+    let (key_string, ring_pk_hex, _ring_pk_bytes) =
+        wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
+    println!("Main DKG complete. key_string={}", key_string);
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
+    println!("PET DKG complete. pet_pk={}", pet_pk_hex);
+
+    let old_states = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ];
+    let old_pet_bundles_before: Vec<_> = old_states
+        .iter()
+        .map(|state| {
+            RingShareBundle::load_by_pet_ring_key(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .expect("old dealer has a PET bundle before reshare")
+                .share_bytes
+                .clone()
+        })
+        .collect();
+
+    // Phase B: reshare announcement to {D,E,F}, t=2, preserving requires_pet/pet_pk.
+    let mut sorted_new = vec![
+        dave.app_state.node_key.clone(),
+        eve.app_state.node_key.clone(),
+        frank.app_state.node_key.clone(),
+    ];
+    sorted_new.sort();
+    post_reshare_pet_announcement(
+        &old_peer_node_keys,
+        2,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        &sorted_new,
+        2,
+        &dummy_bulletin,
+    );
+
+    let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_states.to_vec();
+    let new_committee_states: Vec<&crate::app_state::AppState<DkgImpl>> =
+        vec![&dave.app_state, &eve.app_state, &frank.app_state];
+    run_reshare_pet_ceremony(
+        &old_node_states,
+        &old_peer_node_keys,
+        TEST_FRESH_DKG_RING_ID,
+        &sorted_new,
+        2,
+        &new_committee_states,
+    )
+    .await;
+
+    // Phase C: the staged PET share must preserve the original checking key.
+    for (label, state) in [
+        ("dave", &dave.app_state),
+        ("eve", &eve.app_state),
+        ("frank", &frank.app_state),
+    ] {
+        let pending = PendingReshareBundle::load_pet(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+            .unwrap_or_else(|e| panic!("{label}: load staged PET bundle: {e}"))
+            .unwrap_or_else(|| panic!("{label}: no staged PET bundle"));
+        assert_eq!(pending.bulletin_post_id, TEST_FRESH_DKG_RING_ID);
+        assert_eq!(pending.expected_new_committee, sorted_new);
+        assert_eq!(pending.expected_new_threshold, 2);
+        let poly_bytes = hex::decode(&pending.bundle.public_polynomial)
+            .unwrap_or_else(|e| panic!("{label}: decode staged PET polynomial: {e}"));
+        let pub_poly = <DkgImpl as Dkg>::PubPoly::from_bytes(&poly_bytes)
+            .unwrap_or_else(|e| panic!("{label}: deserialize staged PET PubPoly: {e}"));
+        let recovered = CryptoSerialize::to_bytes(&pub_poly.eval(0))
+            .unwrap_or_else(|e| panic!("{label}: serialize staged PET P(0): {e}"));
+        assert_eq!(
+            recovered, original_pet_pk_bytes,
+            "{label}: staged PET checking key must equal the original one"
+        );
+    }
+
+    // Phase D: old dealers' PET bundles must be untouched (Stage 2 leaves
+    // departing-dealer cleanup for Stage 3, tied to a confirmed committee
+    // transition that doesn't exist yet).
+    for ((label, state), before) in [
+        ("alice", &network.alice.app_state),
+        ("bob", &network.bob.app_state),
+        ("charlie", &network.charlie.app_state),
+    ]
+    .into_iter()
+    .zip(old_pet_bundles_before.iter())
+    {
+        let after =
+            RingShareBundle::load_by_pet_ring_key(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .unwrap_or_else(|e| panic!("{label}: reload PET bundle after reshare: {e}"));
+        assert_eq!(
+            after.share_bytes.as_slice(),
+            before.as_slice(),
+            "{label}: old dealer's PET share must be untouched by Stage 2's ResharePet"
+        );
+    }
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    if let Some(r) = dave.router.take() {
+        r.shutdown().await.expect("shutdown dave");
+    }
+    if let Some(r) = eve.router.take() {
+        r.shutdown().await.expect("shutdown eve");
+    }
+    if let Some(r) = frank.router.take() {
+        r.shutdown().await.expect("shutdown frank");
+    }
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+/// Same-committee reshare ({A,B,C}→{A,B,C}, t=2→1): every node is a
+/// DealerReceiver. Proves the redistributed share value actually changes
+/// (real Dealer/Receiver crypto ran) while the checking key itself doesn't.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_reshare_pet_same_committee_threshold_lowered() {
+    let db_name = "test_reshare_pet_same_committee_threshold_lowered";
+    let db_paths = [
+        test_db_path(&format!("{}_1", db_name)),
+        test_db_path(&format!("{}_2", db_name)),
+        test_db_path(&format!("{}_3", db_name)),
+    ];
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_test_writer()
+        .try_init();
+
+    let mut network = setup_three_node_network(true, db_name).await;
+    let dummy_bulletin = network.dummy_bulletin.as_ref().unwrap().clone();
+    let old_peer_node_keys = vec![
+        network.alice.app_state.node_key.clone(),
+        network.bob.app_state.node_key.clone(),
+        network.charlie.app_state.node_key.clone(),
+    ];
+    require_pet_on_fresh_dkg_ring(&dummy_bulletin, old_peer_node_keys.clone());
+
+    let alice_service =
+        DkgServiceImpl::<DkgImpl>::with_routes(network.alice.app_state.clone(), &network::V0);
+    let test_keys = TestKeyPair::new();
+    let token = test_keys
+        .create_dkg_jwt(TEST_FRESH_DKG_RING_ID)
+        .expect("JWT");
+    alice_service
+        .start_dkg(
+            create_authenticated_request(
+                StartDkgRequest {
+                    ring_id: TEST_FRESH_DKG_RING_ID.to_string(),
+                },
+                &token,
+            )
+            .unwrap(),
+        )
+        .await
+        .expect("DKG should start");
+    let (key_string, ring_pk_hex, _ring_pk_bytes) =
+        wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
+    println!("Main DKG complete. key_string={}", key_string);
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
+
+    let old_states = [
+        &network.alice.app_state,
+        &network.bob.app_state,
+        &network.charlie.app_state,
+    ];
+    let pet_shares_before: Vec<_> = old_states
+        .iter()
+        .map(|state| {
+            RingShareBundle::load_by_pet_ring_key(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+                .expect("PET bundle exists before reshare")
+                .share_bytes
+                .clone()
+        })
+        .collect();
+
+    let mut sorted_new = old_peer_node_keys.clone();
+    sorted_new.sort();
+    post_reshare_pet_announcement(
+        &old_peer_node_keys,
+        2,
+        &ring_pk_hex,
+        &pet_pk_hex,
+        &sorted_new,
+        1,
+        &dummy_bulletin,
+    );
+
+    let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_states.to_vec();
+    run_reshare_pet_ceremony(
+        &old_node_states,
+        &old_peer_node_keys,
+        TEST_FRESH_DKG_RING_ID,
+        &sorted_new,
+        1,
+        &old_node_states,
+    )
+    .await;
+
+    for ((label, state), share_before) in [
+        ("alice", &network.alice.app_state),
+        ("bob", &network.bob.app_state),
+        ("charlie", &network.charlie.app_state),
+    ]
+    .into_iter()
+    .zip(pet_shares_before.iter())
+    {
+        let pending = PendingReshareBundle::load_pet(&state.local_storage, TEST_FRESH_DKG_RING_ID)
+            .unwrap_or_else(|e| panic!("{label}: load staged PET bundle: {e}"))
+            .unwrap_or_else(|| panic!("{label}: no staged PET bundle"));
+        assert_ne!(
+            pending.bundle.share_bytes.as_slice(),
+            share_before.as_slice(),
+            "{label}: DealerReceiver's redistributed PET share must differ from the old one"
+        );
+        assert_eq!(pending.expected_new_threshold, 1);
+        let poly_bytes = hex::decode(&pending.bundle.public_polynomial)
+            .unwrap_or_else(|e| panic!("{label}: decode staged PET polynomial: {e}"));
+        let pub_poly = <DkgImpl as Dkg>::PubPoly::from_bytes(&poly_bytes)
+            .unwrap_or_else(|e| panic!("{label}: deserialize staged PET PubPoly: {e}"));
+        let recovered = CryptoSerialize::to_bytes(&pub_poly.eval(0))
+            .unwrap_or_else(|e| panic!("{label}: serialize staged PET P(0): {e}"));
+        assert_eq!(
+            recovered, original_pet_pk_bytes,
+            "{label}: the checking key itself must be preserved across a same-committee reshare"
+        );
+    }
+
+    network.shutdown_routers().await.expect("shutdown routers");
+    for path in &db_paths {
+        cleanup_db(path);
+    }
+}
+
+// =============================================================================
+// Reshare PET session_init validation
+// =============================================================================
+
+#[tokio::test]
+async fn test_reshare_pet_session_init_rejects_ring_not_pet_enabled() {
+    let db_name = "test_reshare_pet_session_init_rejects_ring_not_pet_enabled";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-reshare-ring";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let new_key = "new-committee-member".to_string();
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "ring-pk".to_string(),
+        peer_node_keys: vec![local_node_key.clone()],
+        new_peer_node_keys: Some(vec![new_key.clone()]),
+        new_threshold: Some(1),
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: false, // not PET-enabled
+        pet_pk: None,
+    };
+    dummy_bulletin
+        .set_ring(ring_id.to_string(), payload)
+        .expect("seed non-PET ring");
+
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let peer_node_keys = vec![local_node_key.clone()];
+    let peer_ids = vec![local_peer_hex.clone()];
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(local_node_key.clone(), 1u32);
+    let msg = TestSessionInit {
+        session_id: derive_reshare_pet_session_id(
+            ring_id,
+            &peer_node_keys,
+            std::slice::from_ref(&new_key),
+            1,
+        )
+        .unwrap(),
+        threshold: 1,
+        total_participants: 1,
+        peer_ids,
+        peer_node_keys,
+        node_id_assignments,
+        kind: SessionKind::ResharePet {
+            ring_id: ring_id.to_string(),
+            new_peer_node_keys: vec![new_key],
+            new_threshold: 1,
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: ring_id.to_string(),
+    };
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("does not require PET")),
+        "Expected Unauthorized for a non-PET-enabled ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_reshare_pet_session_init_rejects_mismatched_new_committee() {
+    let db_name = "test_reshare_pet_session_init_rejects_mismatched_new_committee";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-reshare-ring-mismatch";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let announced_new_key = "announced-new-member".to_string();
+    let claimed_new_key = "claimed-new-member".to_string();
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "ring-pk".to_string(),
+        peer_node_keys: vec![local_node_key.clone()],
+        new_peer_node_keys: Some(vec![announced_new_key]),
+        new_threshold: Some(1),
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aa".repeat(32)),
+    };
+    dummy_bulletin
+        .set_ring(ring_id.to_string(), payload)
+        .expect("seed PET reshare ring with an announced transition");
+
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let peer_node_keys = vec![local_node_key.clone()];
+    let peer_ids = vec![local_peer_hex.clone()];
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(local_node_key.clone(), 1u32);
+    let msg = TestSessionInit {
+        session_id: derive_reshare_pet_session_id(
+            ring_id,
+            &peer_node_keys,
+            std::slice::from_ref(&claimed_new_key),
+            1,
+        )
+        .unwrap(),
+        threshold: 1,
+        total_participants: 1,
+        peer_ids,
+        peer_node_keys,
+        node_id_assignments,
+        kind: SessionKind::ResharePet {
+            ring_id: ring_id.to_string(),
+            new_peer_node_keys: vec![claimed_new_key],
+            new_threshold: 1,
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: ring_id.to_string(),
+    };
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("new_peer_node_keys")),
+        "Expected Unauthorized for a new_peer_node_keys mismatch, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_reshare_pet_session_init_rejects_no_bulletin_announcement() {
+    let db_name = "test_reshare_pet_session_init_rejects_no_bulletin_announcement";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-reshare-ring-no-announcement";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "ring-pk".to_string(),
+        peer_node_keys: vec![local_node_key.clone()],
+        new_peer_node_keys: None, // no pending transition
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: Some("test-policy".to_string()),
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aa".repeat(32)),
+    };
+    dummy_bulletin
+        .set_ring(ring_id.to_string(), payload)
+        .expect("seed PET ring with no pending reshare");
+
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    // Falls back to the current committee/threshold (no bulletin announcement),
+    // so the claimed transition here is a genuine mismatch, not a fallback match.
+    let peer_node_keys = vec![local_node_key.clone()];
+    let peer_ids = vec![local_peer_hex.clone()];
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(local_node_key.clone(), 1u32);
+    let claimed_new_key = "claimed-new-member".to_string();
+    let msg = TestSessionInit {
+        session_id: derive_reshare_pet_session_id(
+            ring_id,
+            &peer_node_keys,
+            std::slice::from_ref(&claimed_new_key),
+            1,
+        )
+        .unwrap(),
+        threshold: 1,
+        total_participants: 1,
+        peer_ids,
+        peer_node_keys,
+        node_id_assignments,
+        kind: SessionKind::ResharePet {
+            ring_id: ring_id.to_string(),
+            new_peer_node_keys: vec![claimed_new_key],
+            new_threshold: 1,
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: ring_id.to_string(),
+    };
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "Expected Unauthorized when the claimed new committee doesn't match the \
+         (fallback-to-current) authoritative one, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
 }

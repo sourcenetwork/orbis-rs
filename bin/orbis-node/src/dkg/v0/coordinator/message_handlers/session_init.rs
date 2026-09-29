@@ -264,6 +264,131 @@ where
     })
 }
 
+/// If the local node is in the proposed new committee, authorize its
+/// membership against the bulletin's own announced-or-fallback transition.
+/// Shared by main-ring and PET-checking-key reshare: everything here reads
+/// from an already-resolved `RingPayload` and this node's own identity —
+/// nothing about it depends on which key is being reshared. `post_id` is
+/// the bulletin post id to authorize against (the wire-carried
+/// `reshare_bulletin_post_id` for the main key, `ring_id` directly for
+/// PET — see each caller). Returns the authoritative new committee/threshold
+/// so the caller can derive its own session id from them.
+async fn authorize_new_committee_membership<D>(
+    coord: &DkgCoordinator<D>,
+    label: &str,
+    post_id: &str,
+    ring_payload: &RingPayload,
+) -> Result<(Vec<String>, u32)>
+where
+    D: CoordinatorDkg,
+{
+    let authoritative_new_peer_node_keys = ring_payload
+        .new_peer_node_keys
+        .clone()
+        .unwrap_or_else(|| ring_payload.peer_node_keys.clone());
+    let authoritative_new_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+    if authoritative_new_peer_node_keys
+        .iter()
+        .any(|node_key| node_key == &coord.app_state.node_key)
+    {
+        let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
+        validate_dkg_node_authorization_for_committee(
+            &coord.app_state.bulletin,
+            &coord.app_state.node_key,
+            &our_peer_id_hex,
+            post_id,
+            ring_payload,
+            effective_new_peer_node_keys(ring_payload),
+            label,
+        )
+        .await?;
+    }
+    Ok((
+        authoritative_new_peer_node_keys,
+        authoritative_new_threshold,
+    ))
+}
+
+/// Resolve old/new committee transport routes for a Reshare-shaped
+/// `SessionInit` (main-ring or PET-checking-key) and verify the new-committee
+/// leader claim. Shared for the same reason as
+/// [`authorize_new_committee_membership`]: everything here operates on data
+/// the caller already resolved, so nothing about which key is being
+/// reshared changes any of it. `identifier` is the ring's own identity
+/// string for error text (`ring_pk_hex` for the main key, `ring_id` for
+/// PET).
+#[allow(clippy::too_many_arguments)]
+async fn resolve_reshare_transport_routes<D>(
+    coord: &DkgCoordinator<D>,
+    label: &str,
+    identifier: &str,
+    ring_payload: &RingPayload,
+    peer_ids: &[String],
+    peer_node_keys: &[String],
+    reshare_new_peer_node_keys: &[String],
+    sender_hex: &str,
+    prepare: Option<&PrepareSession>,
+) -> Result<ResolvedSessionRoutes>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let old_routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    if let Err(detail) = validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes) {
+        // Reached only after the old committee itself matched the ring, so
+        // this is a genuine content dispute about the signed Prepare's route
+        // claims, not tampering ambiguity — safe to attribute to the leader.
+        // The leader is always drawn from the *new* committee for Reshare
+        // (`report_leader_prepare_fault_best_effort` scopes the accused as
+        // `PendingNew` accordingly), even though the disputed claim here is
+        // about the *old* committee's routes — the registry's re-verification
+        // independently re-checks both, see its own comment.
+        if let Some(prepare) = prepare {
+            report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
+        }
+        return Err(DkgError::Unauthorized(format!(
+            "{label} old current-committee transport routes do not match Vera NodeInfo: {detail}"
+        )));
+    }
+    let old_route_peer_ids = peer_ids_from_routes(&old_routes);
+    let old_route_assignments =
+        canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
+            .map_err(DkgError::InvalidInput)?;
+    let old_route_map = peers::old_committee_node_peer_mappings(
+        &ring_payload.peer_node_keys,
+        &old_routes,
+        &old_route_assignments,
+    )?;
+
+    let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
+        .await
+        .map_err(DkgError::Unauthorized)?;
+    let expected_leader =
+        canonical_leader(reshare_new_peer_node_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
+    if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
+        return Err(DkgError::Unauthorized(format!(
+            "{label} initiator {} is not the canonical next-committee leader for ring {}",
+            sender_hex, identifier
+        )));
+    }
+    let new_route_peer_ids = peer_ids_from_routes(&new_routes);
+    let new_route_assignments =
+        canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)
+            .map_err(DkgError::InvalidInput)?;
+    let new_route_map = node_id_to_peer_id_from_routes(&new_routes, &new_route_assignments)
+        .map_err(DkgError::InvalidInput)?;
+
+    Ok(ResolvedSessionRoutes {
+        old_peer_ids: old_route_peer_ids,
+        old_node_id_to_peer_id: old_route_map,
+        new_peer_ids: Some(new_route_peer_ids),
+        new_node_id_to_peer_id: Some(new_route_map),
+        session_peer_node_keys: reshare_new_peer_node_keys.to_vec(),
+    })
+}
+
 /// Validate a Reshare SessionInit against the authoritative ring and resolve routes
 /// for both the old and new committees.
 #[allow(clippy::too_many_arguments)]
@@ -311,27 +436,14 @@ where
         total_participants,
     )?;
 
-    let authoritative_new_peer_node_keys = ring_payload
-        .new_peer_node_keys
-        .clone()
-        .unwrap_or_else(|| ring_payload.peer_node_keys.clone());
-    let authoritative_new_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
-    if authoritative_new_peer_node_keys
-        .iter()
-        .any(|node_key| node_key == &coord.app_state.node_key)
-    {
-        let our_peer_id_hex = hex::encode(coord.app_state.network.local_peer_id().as_bytes());
-        validate_dkg_node_authorization_for_committee(
-            &coord.app_state.bulletin,
-            &coord.app_state.node_key,
-            &our_peer_id_hex,
+    let (authoritative_new_peer_node_keys, authoritative_new_threshold) =
+        authorize_new_committee_membership(
+            coord,
+            "Reshare",
             reshare_bulletin_post_id,
             &ring_payload,
-            effective_new_peer_node_keys(&ring_payload),
-            "Reshare",
         )
         .await?;
-    }
     let expected_session_id = derive_reshare_session_id(
         ring_pk_hex,
         reshare_bulletin_post_id,
@@ -346,52 +458,18 @@ where
         )));
     }
 
-    let old_routes = resolve_node_routes(&coord.app_state.bulletin, &ring_payload.peer_node_keys)
-        .await
-        .map_err(DkgError::Unauthorized)?;
-    if let Err(detail) = validate_node_route_bindings(peer_node_keys, peer_ids, &old_routes) {
-        // Reached only after the old committee itself matched the ring, so
-        // this is a genuine content dispute about the signed Prepare's route
-        // claims, not tampering ambiguity — safe to attribute to the leader.
-        // The leader is always drawn from the *new* committee for Reshare
-        // (`report_leader_prepare_fault_best_effort` scopes the accused as
-        // `PendingNew` accordingly), even though the disputed claim here is
-        // about the *old* committee's routes — the registry's re-verification
-        // independently re-checks both, see its own comment.
-        if let Some(prepare) = prepare {
-            report_leader_prepare_fault_best_effort(&coord.app_state, coord.routes, prepare).await;
-        }
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare old current-committee transport routes do not match Vera NodeInfo: {detail}"
-        )));
-    }
-    let old_route_peer_ids = peer_ids_from_routes(&old_routes);
-    let old_route_assignments =
-        canonical_node_id_assignments_from_node_keys(&ring_payload.peer_node_keys)
-            .map_err(DkgError::InvalidInput)?;
-    let old_route_map = peers::old_committee_node_peer_mappings(
-        &ring_payload.peer_node_keys,
-        &old_routes,
-        &old_route_assignments,
-    )?;
-
-    let new_routes = resolve_node_routes(&coord.app_state.bulletin, reshare_new_peer_node_keys)
-        .await
-        .map_err(DkgError::Unauthorized)?;
-    let expected_leader =
-        canonical_leader(reshare_new_peer_node_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
-    if node_key_for_peer(&new_routes, sender_hex) != Some(expected_leader) {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare initiator {} is not the canonical next-committee leader for ring {}",
-            sender_hex, ring_pk_hex
-        )));
-    }
-    let new_route_peer_ids = peer_ids_from_routes(&new_routes);
-    let new_route_assignments =
-        canonical_node_id_assignments_from_node_keys(reshare_new_peer_node_keys)
-            .map_err(DkgError::InvalidInput)?;
-    let new_route_map = node_id_to_peer_id_from_routes(&new_routes, &new_route_assignments)
-        .map_err(DkgError::InvalidInput)?;
+    let resolved = resolve_reshare_transport_routes(
+        coord,
+        "Reshare",
+        ring_pk_hex,
+        &ring_payload,
+        peer_ids,
+        peer_node_keys,
+        reshare_new_peer_node_keys,
+        sender_hex,
+        prepare,
+    )
+    .await?;
 
     tracing::info!(
         session_id = session_id,
@@ -400,13 +478,94 @@ where
         "DKG Coordinator: Reshare SessionInit validated"
     );
 
-    Ok(ResolvedSessionRoutes {
-        old_peer_ids: old_route_peer_ids,
-        old_node_id_to_peer_id: old_route_map,
-        new_peer_ids: Some(new_route_peer_ids),
-        new_node_id_to_peer_id: Some(new_route_map),
-        session_peer_node_keys: reshare_new_peer_node_keys.to_vec(),
-    })
+    Ok(resolved)
+}
+
+/// Same as [`validate_reshare_init`], for a ring's independent PET checking
+/// key. Resolves the ring directly via `ring_id` (matching `FreshPet`'s own
+/// resolution shape) rather than `RingIndex`/`ring_pk_hex`; old committee's
+/// PET share loads via `RingShareBundle::load_by_pet_ring_key`, not
+/// `load_by_ring_key` (in `build_reshare_pet_params`, called by the caller
+/// once this returns). Same old/new committee and threshold as the main
+/// ring's own reshare — there is no separate PET-committee concept.
+#[allow(clippy::too_many_arguments)]
+async fn validate_reshare_pet_init<D>(
+    coord: &DkgCoordinator<D>,
+    session_id: u128,
+    threshold: u32,
+    total_participants: u32,
+    peer_ids: &[String],
+    peer_node_keys: &[String],
+    ring_id: &str,
+    reshare_new_peer_node_keys: &[String],
+    reshare_new_threshold: u32,
+    sender_hex: &str,
+    prepare: Option<&PrepareSession>,
+) -> Result<ResolvedSessionRoutes>
+where
+    D: CoordinatorDkg,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    tracing::info!(
+        session_id = session_id,
+        ring_id = %ring_id,
+        sender_peer_hex = %sender_hex,
+        "DKG Coordinator: Reshare PET SessionInit received - pre-validation"
+    );
+    let ring_payload = validate_reshare_pet_session_init_for_version(
+        ring_id,
+        reshare_new_peer_node_keys,
+        reshare_new_threshold,
+        &coord.app_state.bulletin,
+        coord.routes.version,
+    )
+    .await?;
+
+    validate_committee_matches_ring(
+        "Reshare PET old",
+        ring_id,
+        &ring_payload,
+        peer_node_keys,
+        threshold,
+        total_participants,
+    )?;
+
+    let (authoritative_new_peer_node_keys, authoritative_new_threshold) =
+        authorize_new_committee_membership(coord, "Reshare PET", ring_id, &ring_payload).await?;
+    let expected_session_id = derive_reshare_pet_session_id(
+        ring_id,
+        &ring_payload.peer_node_keys,
+        &authoritative_new_peer_node_keys,
+        authoritative_new_threshold,
+    )?;
+    if session_id != expected_session_id {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare PET session_id mismatch for ring {}: expected {}, got {}",
+            ring_id, expected_session_id, session_id
+        )));
+    }
+
+    let resolved = resolve_reshare_transport_routes(
+        coord,
+        "Reshare PET",
+        ring_id,
+        &ring_payload,
+        peer_ids,
+        peer_node_keys,
+        reshare_new_peer_node_keys,
+        sender_hex,
+        prepare,
+    )
+    .await?;
+
+    tracing::info!(
+        session_id = session_id,
+        ring_id = %ring_id,
+        sender_peer_hex = %sender_hex,
+        "DKG Coordinator: Reshare PET SessionInit validated"
+    );
+
+    Ok(resolved)
 }
 
 /// Validate a Fresh DKG SessionInit (ring payload, committee authorization)
@@ -674,6 +833,34 @@ where
             )
             .await?
         }
+        SessionKind::ResharePet {
+            ring_id: kind_ring_id,
+            new_peer_node_keys,
+            new_threshold,
+        } => {
+            // Same cross-check as `RefreshPet`/`FreshPet` — `kind.ring_id` and
+            // the outer `ring_id` are independent wire fields.
+            if kind_ring_id != &ring_id {
+                return Err(DkgError::Unauthorized(format!(
+                    "Reshare PET SessionInit ring_id mismatch: authorized for ring {} but kind names ring {}",
+                    ring_id, kind_ring_id
+                )));
+            }
+            validate_reshare_pet_init(
+                coord,
+                session_id,
+                threshold,
+                total_participants,
+                peer_ids,
+                peer_node_keys,
+                &ring_id,
+                new_peer_node_keys,
+                *new_threshold,
+                &sender_hex,
+                prepare,
+            )
+            .await?
+        }
         SessionKind::Fresh => {
             validate_fresh_init(
                 coord,
@@ -745,6 +932,24 @@ where
         )?;
 
         (node_id, role, Some(params))
+    } else if let SessionKind::ResharePet {
+        ring_id: kind_ring_id,
+        new_peer_node_keys,
+        new_threshold,
+    } = kind
+    {
+        // Same role/committee logic as Reshare, loading the old share from
+        // the PET namespace instead.
+        let (node_id, role, params) = build_reshare_pet_params(
+            kind_ring_id,
+            peer_node_keys,
+            new_peer_node_keys,
+            *new_threshold,
+            &coord.app_state.node_key,
+            &coord.app_state.local_storage,
+        )?;
+
+        (node_id, role, Some(params))
     } else {
         // Fresh / Refresh: look up our node_id from the locally verified node-key assignments.
         let node_id = canonical_node_id_assignments
@@ -810,6 +1015,10 @@ where
     // (bulletin post, union building) always uses a canonical ordered list.
     let mut init_kind = kind.clone();
     if let SessionKind::Reshare {
+        ref mut new_peer_node_keys,
+        ..
+    }
+    | SessionKind::ResharePet {
         ref mut new_peer_node_keys,
         ..
     } = init_kind

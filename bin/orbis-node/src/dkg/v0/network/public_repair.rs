@@ -196,7 +196,7 @@ pub(super) fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPh
         SessionKind::Fresh | SessionKind::FreshPet { .. } => FRESH,
         SessionKind::Refresh { .. } => REFRESH,
         SessionKind::RefreshPet { .. } => REFRESH_PET,
-        SessionKind::Reshare { .. } => RESHARE,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => RESHARE,
     }
 }
 

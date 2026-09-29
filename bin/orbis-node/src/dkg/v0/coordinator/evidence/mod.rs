@@ -158,6 +158,9 @@ where
                 }
                 SessionKind::Reshare {
                     new_peer_node_keys, ..
+                }
+                | SessionKind::ResharePet {
+                    new_peer_node_keys, ..
                 } => new_peer_node_keys.clone(),
             };
             (
@@ -185,6 +188,10 @@ where
                 stored_ring_id
             },
         ),
+        // No separate bulletin_post_id: `ring_id` alone is PET's identity
+        // anchor, and `stored_ring_id` is already populated from it at
+        // session-init time.
+        SessionKind::ResharePet { .. } => ("pss_reshare", stored_ring_id),
     };
     if ring_id.is_empty() {
         return Err(DkgError::InvalidState(
@@ -263,6 +270,13 @@ where
             } else {
                 prepare.ring_id.clone()
             },
+            new_peer_node_keys.clone(),
+        ),
+        SessionKind::ResharePet {
+            new_peer_node_keys, ..
+        } => (
+            "pss_reshare",
+            prepare.ring_id.clone(),
             new_peer_node_keys.clone(),
         ),
     };

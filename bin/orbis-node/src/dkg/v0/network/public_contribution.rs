@@ -89,7 +89,7 @@ where
                     PublicPhase::Commitments | PublicPhase::CommitmentAudit
                 )
         }
-        SessionKind::Reshare { .. } => match phase {
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => match phase {
             PublicPhase::Commitments => active_dealers.contains(&contribution.origin),
             PublicPhase::CommitmentAudit => contribution.origin.scope == CommitteeScope::Next,
             PublicPhase::ReshareParticipantSet => contribution.origin == ParticipantRef::next(1),

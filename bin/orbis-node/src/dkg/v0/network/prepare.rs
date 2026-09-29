@@ -606,7 +606,7 @@ where
         // observability is ever needed.
         SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgCeremonyKind::Fresh,
         SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgCeremonyKind::Refresh,
-        SessionKind::Reshare { .. } => DkgCeremonyKind::Reshare,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => DkgCeremonyKind::Reshare,
     };
     let ceremony_id = prepare.ceremony_id;
     let attempt_id = prepare.attempt_id;

@@ -32,7 +32,7 @@ where
                 .initiate_phase1_commitments(attempt, &peer_ids)
                 .await?;
         }
-        SessionKind::Reshare { .. } => {
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
             coordinator
                 .initiate_phase1_commitments(attempt, &peer_ids)
                 .await?;

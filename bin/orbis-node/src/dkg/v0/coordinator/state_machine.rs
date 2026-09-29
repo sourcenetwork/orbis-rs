@@ -59,7 +59,10 @@ pub struct SessionSnapshot {
 
 impl SessionSnapshot {
     pub fn is_reshare(&self) -> bool {
-        matches!(self.kind, SessionKind::Reshare { .. })
+        matches!(
+            self.kind,
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+        )
     }
 
     pub fn is_fresh(&self) -> bool {

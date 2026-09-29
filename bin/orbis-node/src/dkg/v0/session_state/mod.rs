@@ -926,7 +926,9 @@ impl<D: Dkg> DkgSessionState<D> {
             SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
                 metrics::DkgCeremonyKind::Refresh
             }
-            SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
+                metrics::DkgCeremonyKind::Reshare
+            }
         }
     }
 
@@ -958,7 +960,7 @@ impl<D: Dkg> DkgSessionState<D> {
         let mode = match &self.kind {
             SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgMode::Fresh,
             SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgMode::Refresh,
-            SessionKind::Reshare { .. } => {
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
                 let p = self.reshare.params.as_mut().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare session is missing reshare_params — this is a bug".to_string(),
@@ -1018,14 +1020,19 @@ impl<D: Dkg> DkgSessionState<D> {
             SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
                 (1..=self.routing.peer_node_keys.len() as u32).collect()
             }
-            SessionKind::Reshare { .. } => match &self.reshare.params {
-                Some(params) => params.participating_ids.clone(),
-                None => (1..=self.routing.peer_node_keys.len() as u32).collect(),
-            },
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
+                match &self.reshare.params {
+                    Some(params) => params.participating_ids.clone(),
+                    None => (1..=self.routing.peer_node_keys.len() as u32).collect(),
+                }
+            }
         };
 
         if stalled_phase == DkgPhase::Phase2Shares
-            && matches!(self.kind, SessionKind::Reshare { .. })
+            && matches!(
+                self.kind,
+                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+            )
             && self.node.role() == DkgRole::Dealer
         {
             return Vec::new();

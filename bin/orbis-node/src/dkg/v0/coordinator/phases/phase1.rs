@@ -34,8 +34,10 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state(attempt, |state| {
-            matches!(state.kind, SessionKind::Reshare { .. })
-                && state.node.role() == DkgRole::Receiver
+            matches!(
+                state.kind,
+                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+            ) && state.node.role() == DkgRole::Receiver
         })
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
@@ -81,7 +83,10 @@ where
             Ok::<_, DkgError>((
                 bytes,
                 state.node.node_id(),
-                matches!(state.kind, SessionKind::Reshare { .. }),
+                matches!(
+                    state.kind,
+                    SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+                ),
                 state.node.role(),
             ))
         })
