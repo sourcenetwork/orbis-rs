@@ -645,13 +645,15 @@ pub fn derive_secret_key_bytes(input: &str) -> Result<[u8; 32], String> {
     Ok(hash.into())
 }
 
-/// Report a concrete bound route when available; wildcard sockets are not destinations.
+/// Prefer concrete binds, then discovered direct routes; never advertise wildcard sockets.
 pub(crate) fn network_peer_address(network: &dyn Network) -> String {
     let peer = hex::encode(network.local_peer_id().as_bytes());
     network
         .bound_addresses()
         .into_iter()
-        .find(|addr| !addr.ip().is_unspecified())
+        .chain(network.direct_addresses())
+        .filter(|addr| !addr.ip().is_unspecified())
+        .min_by_key(|addr| !addr.is_ipv4())
         .map_or_else(|| peer.clone(), |addr| format!("{peer}@{addr}"))
 }
 
@@ -1023,16 +1025,15 @@ mod tests {
                 .unwrap();
             let route = network_peer_address(&network);
             let peer = hex::encode(network.local_peer_id().as_bytes());
-            if ip.is_unspecified() {
-                assert_eq!(route, peer);
-            } else {
-                let socket: std::net::SocketAddr = route
-                    .strip_prefix(&format!("{peer}@"))
-                    .unwrap()
-                    .parse()
-                    .unwrap();
+            let socket: std::net::SocketAddr = route
+                .strip_prefix(&format!("{peer}@"))
+                .expect("bound endpoint must advertise a concrete route")
+                .parse()
+                .unwrap();
+            assert!(!socket.ip().is_unspecified());
+            assert_ne!(socket.port(), 0);
+            if !ip.is_unspecified() {
                 assert_eq!(socket.ip(), ip);
-                assert_ne!(socket.port(), 0);
             }
         }
     }

@@ -452,6 +452,10 @@ impl Network for IrohNetwork {
         self.endpoint.bound_sockets()
     }
 
+    fn direct_addresses(&self) -> Vec<std::net::SocketAddr> {
+        self.endpoint.addr().ip_addrs().copied().collect()
+    }
+
     fn pubsub(&self) -> Option<Arc<dyn crate::pubsub::PubSub>> {
         Some(self.pubsub.clone())
     }

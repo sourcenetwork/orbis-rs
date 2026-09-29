@@ -293,6 +293,10 @@ impl Network for ShapedNetwork {
         self.inner.bound_addresses()
     }
 
+    fn direct_addresses(&self) -> Vec<std::net::SocketAddr> {
+        self.inner.direct_addresses()
+    }
+
     fn pubsub(&self) -> Option<Arc<dyn PubSub>> {
         self.inner.pubsub().map(|inner| {
             Arc::new(ShapedPubSub {
