@@ -1653,6 +1653,127 @@ async fn reconcile_pending_reshares_ignores_ring_without_pending_entry() {
     cleanup_db(&db_path);
 }
 
+/// Reshare-atomicity: the PET pending
+/// bundle must be reconciled independently of the main one, not skipped just
+/// because the main lookup already returned `None` (e.g. a prior startup's
+/// reconciliation already promoted+cleared main, but crashed or was killed
+/// before reaching the PET side — or the two were simply never coupled to
+/// begin with). This is the exact scenario the old code could never recover
+/// from: once the main entry was gone, it never even looked at PET's.
+#[tokio::test]
+async fn reconcile_pending_reshares_promotes_pet_only_pending_bundle_when_main_already_absent() {
+    let db_name = "pss_reconcile_pet_only_promote";
+    let ring_pk = "reconcile-pet-only-promote-ring-pk".to_string();
+    let mut pending_payload = reshare_test_ring_payload_pending(
+        &ring_pk,
+        vec!["old-a".to_string()],
+        1,
+        Some(vec!["old-a".to_string(), "new-b".to_string()]),
+        Some(1),
+    );
+    pending_payload.requires_pet = true;
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &pending_payload).await;
+
+    // Main share: already on the new committee's bundle, as if a previous
+    // startup's reconciliation already promoted it — no main pending entry
+    // exists at all. PET share: still the pre-reshare bundle, with its own
+    // pending entry still staged (this node crashed between the two).
+    old_reshare_test_bundle()
+        .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+        .expect("seed old PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed pending PET reshare bundle");
+
+    app_state
+        .bulletin
+        .update(
+            entry.bulletin_post_id.clone(),
+            "test-scheme".to_string(),
+            vec![],
+        )
+        .await
+        .expect("apply real bulletin finalization");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .expect("PET bundle must be present")
+            .public_polynomial,
+        "new-poly",
+        "matching bulletin state must promote the staged PET bundle even with no main pending entry"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "PET pending entry must be cleared after reconciliation"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// Same starting point as above (main pending entry absent), but the
+/// bulletin does not match what was staged for PET — it must be discarded
+/// and cleared, not silently left stranded forever just because there was
+/// no main entry to key off of.
+#[tokio::test]
+async fn reconcile_pending_reshares_discards_pet_only_pending_bundle_when_main_already_absent() {
+    let db_name = "pss_reconcile_pet_only_discard";
+    let ring_pk = "reconcile-pet-only-discard-ring-pk".to_string();
+    let mut ring_payload = reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string()], 1);
+    ring_payload.requires_pet = true;
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+        .expect("seed old PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed pending PET reshare bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .expect("PET bundle must be present")
+            .public_polynomial,
+        "old-poly",
+        "non-matching bulletin state must discard the staged PET bundle and preserve the old one"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "PET pending entry must be cleared after reconciliation"
+    );
+
+    cleanup_db(&db_path);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Multi-ring protocol-version divergence warning
 // ──────────────────────────────────────────────────────────────────────────────

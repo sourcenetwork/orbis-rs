@@ -588,11 +588,19 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
         .map(|index| index.unwrap_or_default())
 }
 
-/// One-shot startup check: for every ring with a `PendingReshareBundle` left over from a
+/// One-shot startup check: for every ring with a `PendingReshareBundle` and/or
+/// (for a `requires_pet` ring) a PET-checking-key pending bundle left over from a
 /// restart that happened before its live confirmation wait
 /// (`wait_for_reshare_bulletin_finalized`) resolved, read the ring's current bulletin state
-/// once and promote or discard. No retry loop — if the bulletin can't be read or parsed right
-/// now, the entry is left as-is and reconsidered on the next startup.
+/// once and promote or discard each bundle independently. No retry loop — if the bulletin
+/// can't be read or parsed right now, both entries are left as-is and reconsidered on the
+/// next startup.
+///
+/// The two bundles are reconciled independently rather than the PET one being gated on the
+/// main one's presence (reshare-atomicity finding #4, PET audit fix checklist): a restart
+/// can land between the main bundle's own promotion/clear and the PET bundle's, leaving only
+/// the PET entry pending — that case must still be reconciled on a later startup, not skipped
+/// because the main lookup already returned `None`.
 pub async fn reconcile_pending_reshares<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -607,23 +615,38 @@ where
 {
     let ring_index = read_ring_index(&app_state.local_storage)?;
     for entry in &ring_index {
-        let pending = match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str)
-        {
-            Ok(Some(pending)) => pending,
-            Ok(None) => continue,
-            Err(error) => {
-                tracing::warn!(
-                    ring_pk_str = %entry.ring_pk_str,
-                    %error,
-                    "PSS: failed to read pending reshare bundle at startup"
-                );
-                continue;
-            }
-        };
+        let main_pending =
+            match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        %error,
+                        "PSS: failed to read pending reshare bundle at startup"
+                    );
+                    None
+                }
+            };
+        let pet_pending =
+            match PendingReshareBundle::load_pet(&app_state.local_storage, &entry.bulletin_post_id)
+            {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(
+                        ring_id = %entry.bulletin_post_id,
+                        %error,
+                        "PSS: failed to read pending PET reshare bundle at startup"
+                    );
+                    None
+                }
+            };
+        if main_pending.is_none() && pet_pending.is_none() {
+            continue;
+        }
 
         let ring_post = match app_state
             .bulletin
-            .read(pending.bulletin_post_id.clone(), BulletinKind::Ring)
+            .read(entry.bulletin_post_id.clone(), BulletinKind::Ring)
             .await
         {
             Ok(post) => post,
@@ -651,7 +674,7 @@ where
         if ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some() {
             // This ring's reshare (this one, or a different one entirely) hasn't
             // finalized on the bulletin yet — we can't yet tell whether it will
-            // resolve to what was staged. Leave the pending entry in place and
+            // resolve to what was staged. Leave both pending entries in place and
             // recheck on a future startup once it has, rather than guessing now.
             tracing::debug!(
                 ring_pk_str = %entry.ring_pk_str,
@@ -660,49 +683,102 @@ where
             continue;
         }
 
-        // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
-        // exactly (committee + threshold), not a full-payload hash — see
-        // `PendingReshareBundle`'s doc comment for why a hash can't work here.
-        let matches_staged_expectation = peer_node_keys_match(
-            &ring_payload.peer_node_keys,
-            &pending.expected_new_committee,
-        ) && ring_payload.threshold
-            == pending.expected_new_threshold;
-        if matches_staged_expectation {
-            match pending
-                .bundle
-                .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
-            {
-                Ok(()) => {
-                    tracing::info!(
-                        ring_pk_str = %entry.ring_pk_str,
-                        "PSS: promoted pending reshare bundle found on startup"
-                    );
+        if let Some(pending) = main_pending {
+            // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
+            // exactly (committee + threshold), not a full-payload hash — see
+            // `PendingReshareBundle`'s doc comment for why a hash can't work here.
+            let matches_staged_expectation = peer_node_keys_match(
+                &ring_payload.peer_node_keys,
+                &pending.expected_new_committee,
+            ) && ring_payload.threshold
+                == pending.expected_new_threshold;
+            let mut resolved = false;
+            if matches_staged_expectation {
+                match pending
+                    .bundle
+                    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            ring_pk_str = %entry.ring_pk_str,
+                            "PSS: promoted pending reshare bundle found on startup"
+                        );
+                        resolved = true;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            ring_pk_str = %entry.ring_pk_str,
+                            %error,
+                            "PSS: failed to promote pending reshare bundle on startup"
+                        );
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(
+            } else {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
+                );
+                resolved = true;
+            }
+            if resolved {
+                if let Err(error) =
+                    PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
+                {
+                    tracing::warn!(
                         ring_pk_str = %entry.ring_pk_str,
                         %error,
-                        "PSS: failed to promote pending reshare bundle on startup"
+                        "PSS: failed to clear pending reshare bundle after startup reconciliation"
                     );
-                    continue;
                 }
             }
-        } else {
-            tracing::warn!(
-                ring_pk_str = %entry.ring_pk_str,
-                "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
-            );
         }
 
-        if let Err(error) =
-            PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
-        {
-            tracing::warn!(
-                ring_pk_str = %entry.ring_pk_str,
-                %error,
-                "PSS: failed to clear pending reshare bundle after startup reconciliation"
-            );
+        if let Some(pending) = pet_pending {
+            let matches_staged_expectation = peer_node_keys_match(
+                &ring_payload.peer_node_keys,
+                &pending.expected_new_committee,
+            ) && ring_payload.threshold
+                == pending.expected_new_threshold;
+            let mut resolved = false;
+            if matches_staged_expectation {
+                match pending
+                    .bundle
+                    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            ring_id = %entry.bulletin_post_id,
+                            "PSS: promoted pending PET reshare bundle found on startup"
+                        );
+                        resolved = true;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            ring_id = %entry.bulletin_post_id,
+                            %error,
+                            "PSS: failed to promote pending PET reshare bundle on startup"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    ring_id = %entry.bulletin_post_id,
+                    "PSS: discarding pending PET reshare bundle on startup; bulletin does not match staged state"
+                );
+                resolved = true;
+            }
+            if resolved {
+                if let Err(error) = PendingReshareBundle::clear_pet(
+                    &app_state.local_storage,
+                    &entry.bulletin_post_id,
+                ) {
+                    tracing::warn!(
+                        ring_id = %entry.bulletin_post_id,
+                        %error,
+                        "PSS: failed to clear pending PET reshare bundle after startup reconciliation"
+                    );
+                }
+            }
         }
     }
     Ok(())
