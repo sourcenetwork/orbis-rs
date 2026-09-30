@@ -361,6 +361,16 @@ pub struct PetBlindDecryptStatement {
     /// Serialized `Pet::ShareValue` — the decryption DLEQ's response.
     pub proof: Vec<u8>,
     pub signed_at: u64,
+    /// Serialized `Pet::PubPoly` — the exact public polynomial this
+    /// responder computed `partial` against. Lets a verifier authenticate
+    /// *any* genuine generation of this ring's PET polynomial — past,
+    /// current, or one the verifier's own node hasn't caught up to yet via
+    /// `RefreshPet`/`ResharePet` — by checking it independently evaluates to
+    /// the ring's known, generation-invariant `pet_pk` at `x=0`, rather than
+    /// needing to already recognize the specific generation in a local
+    /// current/retired candidate list (PET audit fix checklist,
+    /// reshare-atomicity finding #3).
+    pub public_polynomial: Vec<u8>,
 }
 
 impl PetBlindDecryptStatement {
@@ -385,6 +395,7 @@ impl PetBlindDecryptStatement {
         write_bytes(&mut out, &self.challenge);
         write_bytes(&mut out, &self.proof);
         write_u64(&mut out, self.signed_at);
+        write_bytes(&mut out, &self.public_polynomial);
         out
     }
 
@@ -407,6 +418,7 @@ impl PetBlindDecryptStatement {
         let challenge = decoder.read_bytes("challenge")?;
         let proof = decoder.read_bytes("proof")?;
         let signed_at = decoder.read_u64("signed_at")?;
+        let public_polynomial = decoder.read_bytes("public_polynomial")?;
         decoder.finish()?;
         Ok(Self {
             domain,
@@ -426,6 +438,7 @@ impl PetBlindDecryptStatement {
             challenge,
             proof,
             signed_at,
+            public_polynomial,
         })
     }
 }
@@ -783,6 +796,7 @@ mod tests {
             challenge: vec![10, 11],
             proof: vec![12, 13],
             signed_at: 1_700_000_000,
+            public_polynomial: vec![14, 15],
         }
     }
 

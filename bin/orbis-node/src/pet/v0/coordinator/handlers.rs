@@ -458,6 +458,12 @@ where
             PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
         })?;
         let node_id = pri_share.i;
+        let public_polynomial_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
+            PetError::Deserialization(format!(
+                "Failed to decode stored PET public polynomial: {}",
+                e
+            ))
+        })?;
 
         let aggregate_r_bytes = CryptoSerialize::to_bytes(&aggregate_r).map_err(|e| {
             PetError::Serialization(format!("Failed to serialize aggregate_r: {}", e))
@@ -502,6 +508,7 @@ where
             challenge: challenge_bytes.clone(),
             proof: proof_bytes.clone(),
             signed_at,
+            public_polynomial: public_polynomial_bytes.clone(),
         };
         let response_signature =
             sign_node_message_with_hex_key(&self.signing_key_hex()?, &statement.canonical_bytes())
@@ -519,6 +526,7 @@ where
             challenge: challenge_bytes,
             proof: proof_bytes,
             signed_at,
+            public_polynomial: public_polynomial_bytes,
             response_signature,
         }))
     }

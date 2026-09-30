@@ -35,7 +35,7 @@ use crate::reporting::v0::types::{
     PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
     SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
-use crate::ring_state::{RingPolyHistory, RingPolyState, RingShareBundle};
+use crate::ring_state::{RingPolyHistory, RingPolyState};
 use crate::sign::v0::coordinator::SigningOptions;
 use crate::sign::v0::helpers::{
     deserialize_commitments, refresh_health_check_message,

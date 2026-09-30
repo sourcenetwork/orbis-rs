@@ -16,6 +16,7 @@
 //! travels via `inline_document`.
 
 use super::*;
+use crypto::r#trait::PubPoly;
 
 impl InvalidCryptoResponseHandler {
     pub(super) async fn validate_pet_blind_reveal_evidence(
@@ -303,11 +304,12 @@ async fn require_pet_blind_reveal_verification_failure(
 pub(crate) async fn require_pet_blind_decrypt_verification_failure(
     blind_context: &PetBlindContext,
     statement: &PetBlindDecryptStatement,
-    context: &ReportValidationContext,
+    _context: &ReportValidationContext,
 ) -> Result<()> {
-    // The share/challenge/proof are the responder's own signed crypto
-    // output; a decode failure is itself an attributable verification
-    // failure — confirm the report rather than rejecting it.
+    // The share/challenge/proof/polynomial are the responder's own signed
+    // crypto output; a decode failure on any of them is itself an
+    // attributable verification failure — confirm the report rather than
+    // rejecting it.
     let Ok(partial) = GroupAffine::from_bytes(&statement.partial) else {
         return Ok(());
     };
@@ -317,13 +319,25 @@ pub(crate) async fn require_pet_blind_decrypt_verification_failure(
     let Ok(proof) = ScalarField::from_bytes(&statement.proof) else {
         return Ok(());
     };
+    let Ok(claimed_poly) = PubPolyImpl::from_bytes(&statement.public_polynomial) else {
+        return Ok(());
+    };
 
-    // PET now has its own refresh/reshare (`RefreshPet`/`ResharePet`), so a
-    // share signed just before one of those completes must still be checked
-    // against the generation it was actually produced under — the same
-    // `candidate_public_polynomials`-style history list PRE/Sign already use,
-    // just keyed by `ring_id` (PET's own namespace) rather than `ring_pk_hex`.
-    let candidates = candidate_pet_public_polynomials(context, &blind_context.ring_id)?;
+    // Authenticate the responder's own claimed polynomial against the
+    // ring's known, generation-invariant `pet_pk` — every genuine
+    // generation of this ring's PET key, whatever `RefreshPet`/`ResharePet`
+    // it came from, evaluates to the same `pet_pk` at x=0. This lets a
+    // verifier accept a genuine response from a generation it hasn't
+    // personally caught up to yet (reshare-atomicity finding #3: a
+    // candidate-list approach checking only the verifier's own
+    // current/recently-retired polynomials has no way to recognize a
+    // generation *ahead* of it), while still rejecting a fabricated claim:
+    // forging a polynomial that authenticates here requires genuinely
+    // holding a real share of this ring's actual `pet_sk`.
+    let pet_pk_bytes = hex::decode(&blind_context.pet_pk)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
+    let pet_pk = GroupAffine::from_bytes(&pet_pk_bytes)
+        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
 
     let reply = PetCheckReply {
         partial: PubShare {
@@ -341,53 +355,14 @@ pub(crate) async fn require_pet_blind_decrypt_verification_failure(
         masked_fingerprint: Vec::new(),
     };
 
-    // Any candidate verifying means the response was genuinely valid under some
-    // generation this node plausibly used — reject the report. Only confirm it if
-    // every candidate (current plus recently-retired) fails.
-    let verifies_under_some_generation = candidates.iter().any(|pub_poly| {
-        PetImpl::verify_partial_pet_check(pub_poly, &synthetic_tag, &reply).is_ok()
-    });
-    if verifies_under_some_generation {
+    let verifies = claimed_poly.eval(0) == pet_pk
+        && PetImpl::verify_partial_pet_check(&claimed_poly, &synthetic_tag, &reply).is_ok();
+    if verifies {
         return Err(ReportingError::Unauthorized(
-            "reported PET blind-decrypt share verifies successfully under the current or a \
-             recently retired ring polynomial"
+            "reported PET blind-decrypt share verifies successfully against its own claimed, \
+             authenticated public polynomial"
                 .to_string(),
         ));
     }
     Ok(())
-}
-
-/// The current PET public polynomial for `ring_id`, plus every still-in-window
-/// retired one (`RingPolyHistory`) — mirrors `pre_sign.rs`'s
-/// `candidate_public_polynomials`, but keyed by `ring_id` (PET's own
-/// namespace, distinct from the main key's `ring_pk_hex`) via
-/// `RingShareBundle::load_by_pet_ring_key`/`RingPolyHistory::recent_from_pet_ring_id`.
-///
-/// The current polynomial is local infrastructure input, not something either
-/// party to the report controls, so a decode failure there is surfaced as
-/// `InvalidReport` rather than silently dropped. Malformed *history* entries
-/// are best-effort only: skipped rather than surfaced.
-fn candidate_pet_public_polynomials(
-    context: &ReportValidationContext,
-    ring_id: &str,
-) -> Result<Vec<PubPolyImpl>> {
-    let bundle = RingShareBundle::load_by_pet_ring_key(&context.local_storage, ring_id)
-        .map_err(ReportingError::InvalidReport)?;
-    let current_bytes = hex::decode(&bundle.public_polynomial)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let current = PubPolyImpl::from_bytes(&current_bytes).map_err(|error| {
-        ReportingError::InvalidReport(format!("failed to deserialize public polynomial: {error}"))
-    })?;
-
-    let mut candidates = vec![current];
-    candidates.extend(
-        RingPolyHistory::recent_from_pet_ring_id(&context.local_storage, ring_id, context.now)
-            .into_iter()
-            .filter_map(|hex_poly| {
-                let bytes = hex::decode(&hex_poly).ok()?;
-                PubPolyImpl::from_bytes(&bytes).ok()
-            }),
-    );
-
-    Ok(candidates)
 }

@@ -1017,6 +1017,7 @@ where
         challenge,
         proof,
         signed_at,
+        public_polynomial,
         response_signature,
         ..
     } = response
@@ -1047,6 +1048,7 @@ where
         challenge,
         proof,
         signed_at,
+        public_polynomial,
     };
     if verify_node_message(&node_key, &statement.canonical_bytes(), &response_signature).is_err() {
         return PetDecryptResponseVerification::Rejected;
@@ -1565,6 +1567,7 @@ mod tests {
             challenge: statement.challenge,
             proof: statement.proof,
             signed_at: statement.signed_at,
+            public_polynomial: statement.public_polynomial,
             response_signature,
         }
     }
@@ -1610,6 +1613,10 @@ mod tests {
             challenge: CryptoSerialize::to_bytes(&reply.challenge).expect("serialize challenge"),
             proof: CryptoSerialize::to_bytes(&reply.proof).expect("serialize proof"),
             signed_at: 1_700_000_000,
+            // Unused by the live-round verification these fixtures exercise
+            // (`verify_one_decrypt` takes its own authoritative `pub_poly`
+            // parameter) — only report verification reads this field.
+            public_polynomial: vec![0xaa, 0xbb],
         };
         let response_signature =
             sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
@@ -1653,6 +1660,7 @@ mod tests {
             challenge: vec![0xff, 0xff, 0xff],
             proof: vec![0xff, 0xff, 0xff],
             signed_at: 1_700_000_000,
+            public_polynomial: vec![0xaa, 0xbb],
         };
         let response_signature =
             sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())

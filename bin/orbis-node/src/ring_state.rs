@@ -195,18 +195,19 @@ impl RingShareBundle {
     /// — a distinct namespace from [`Self::save_by_ring_key`]'s main-key
     /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
     ///
-    /// Stashes the previous generation the same way `save_by_ring_key` does
-    /// (into the PET-specific `LocalStorageKeys::PetRingPolyHistory`
-    /// namespace) — PET now has its own refresh/reshare (`RefreshPet`,
-    /// `ResharePet`), so a "previous generation" genuinely exists here too;
-    /// see `require_pet_blind_decrypt_verification_failure`'s identical
-    /// reasoning on the read side.
+    /// No polynomial-history stashing here (unlike `save_by_ring_key`):
+    /// `require_pet_blind_decrypt_verification_failure` authenticates a
+    /// reported decrypt statement's own claimed public polynomial directly
+    /// against the ring's known, generation-invariant `pet_pk`, so it never
+    /// needs a local current/retired candidate list to recognize a
+    /// generation it hasn't personally seen yet (reshare-atomicity finding
+    /// #3 — a history-based approach couldn't recognize a generation
+    /// *ahead* of the verifier's own).
     pub fn save_by_pet_ring_key(
         &self,
         storage: &impl LocalStorage,
         ring_id: &str,
     ) -> Result<(), String> {
-        self.stash_previous_pet_polynomial(storage, ring_id);
         storage
             .set_encrypted(
                 LocalStorageKeys::PetRingKey(ring_id.to_string()),
@@ -238,31 +239,6 @@ impl RingShareBundle {
                 ring_key = %ring_key,
                 %error,
                 "Failed to record retired ring polynomial for report verification"
-            );
-        }
-    }
-
-    /// Same as [`Self::stash_previous_polynomial`], for a ring's independent
-    /// PET checking key — reads the previous generation via
-    /// [`Self::load_by_pet_ring_key`] and stashes it into the distinct
-    /// `LocalStorageKeys::PetRingPolyHistory` namespace.
-    fn stash_previous_pet_polynomial(&self, storage: &impl LocalStorage, ring_id: &str) {
-        let Ok(previous) = Self::load_by_pet_ring_key(storage, ring_id) else {
-            return; // First-ever write for this ring's PET key — nothing to retire.
-        };
-        if previous.public_polynomial == self.public_polynomial {
-            return; // Retried/duplicate commit of the same generation.
-        }
-        if let Err(error) = RingPolyHistory::record_retired(
-            storage,
-            LocalStorageKeys::PetRingPolyHistory(ring_id.to_string()),
-            previous.public_polynomial,
-            self.last_pss,
-        ) {
-            tracing::warn!(
-                ring_id = %ring_id,
-                %error,
-                "Failed to record retired PET ring polynomial for report verification"
             );
         }
     }
@@ -753,21 +729,6 @@ impl RingPolyHistory {
         Self::recent(
             storage,
             LocalStorageKeys::RingPolyHistory(ring_pk.to_string()),
-            now_secs,
-        )
-    }
-
-    /// Same as [`Self::recent_from_ring_pk_hex`], for a ring's independent PET
-    /// checking key — keyed directly by `ring_id` (PET has no public-key
-    /// storage key to convert from; see `LocalStorageKeys::PetRingKey`).
-    pub fn recent_from_pet_ring_id(
-        storage: &impl LocalStorage,
-        ring_id: &str,
-        now_secs: u64,
-    ) -> Vec<String> {
-        Self::recent(
-            storage,
-            LocalStorageKeys::PetRingPolyHistory(ring_id.to_string()),
             now_secs,
         )
     }

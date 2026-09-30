@@ -182,6 +182,11 @@ pub enum PetMessage {
         /// Serialized `Pet::ShareValue` — the decryption DLEQ's response.
         proof: Vec<u8>,
         signed_at: u64,
+        /// Serialized `Pet::PubPoly` — the exact polynomial `partial` was
+        /// computed against. Lets any verifier (live round or later report
+        /// validation) authenticate this against the ring's known `pet_pk`
+        /// regardless of which generation it is.
+        public_polynomial: Vec<u8>,
         /// Signature over `PetBlindDecryptStatement::canonical_bytes()`.
         response_signature: Vec<u8>,
     },
