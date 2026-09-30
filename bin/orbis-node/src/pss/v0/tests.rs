@@ -250,6 +250,130 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
     cleanup_db(&db_path);
 }
 
+/// Reshare-atomicity: a `requires_pet`
+/// ring's finalized-removal reconciliation must delete the PET checking
+/// key's live share *and* any pending bundle in either namespace, not just
+/// the main key's live share — otherwise a node that missed the live,
+/// confirmation-driven cleanup because it was offline keeps every one of
+/// these indefinitely (no remaining `RingIndex` entry means nothing will
+/// ever revisit this ring to clean them up again).
+#[tokio::test]
+async fn test_reconcile_finalized_removed_member_deletes_pet_material() {
+    let db_name = "pss_non_member_pet";
+
+    let fake_node_key_1 = "non-member-node-key-1".to_string();
+    let fake_node_key_2 = "non-member-node-key-2".to_string();
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "fake_pk_pet".to_string(),
+        peer_node_keys: vec![fake_node_key_1, fake_node_key_2],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aabb".to_string()),
+    };
+
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    assert!(
+        !ring_payload
+            .peer_node_keys
+            .iter()
+            .any(|node_key| node_key == &app_state.node_key),
+        "Test setup: our node must not be in the committee for this test to be meaningful"
+    );
+
+    // Main key: stale live share only (mirrors the existing non-PET test).
+    RingShareBundle {
+        share_bytes: vec![1, 2, 3].into(),
+        public_polynomial: "stale-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed stale finalized ring bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: RingShareBundle {
+            share_bytes: vec![4, 5, 6].into(),
+            public_polynomial: "stale-pending-main-polynomial".to_string(),
+            last_pss: 1,
+        },
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["some-other-committee".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed stale pending main bundle");
+
+    // PET checking key: both a live share and a pending bundle, exactly the
+    // material this fix must not leave behind.
+    RingShareBundle {
+        share_bytes: vec![7, 8, 9].into(),
+        public_polynomial: "stale-pet-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed stale finalized PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: RingShareBundle {
+            share_bytes: vec![10, 11, 12].into(),
+            public_polynomial: "stale-pending-pet-polynomial".to_string(),
+            last_pss: 1,
+        },
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["some-other-committee".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed stale pending PET bundle");
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "removed-member reconciliation failed: {result:?}"
+    );
+    assert!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &entry.ring_pk_str).is_err(),
+        "finalized removal must delete stale main secret material"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load(&state_arc.local_storage, &entry.ring_pk_str)
+            .expect("pending lookup must not error")
+            .is_none(),
+        "finalized removal must delete the stale pending main bundle"
+    );
+    assert!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .is_err(),
+        "finalized removal must delete stale PET secret material"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "finalized removal must delete the stale pending PET bundle"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == entry.ring_pk_str),
+        "finalized removal must delete the stale ring-index entry"
+    );
+
+    cleanup_db(&db_path);
+}
+
 #[tokio::test]
 async fn test_removed_member_reconciliation_preserves_an_active_ring() {
     let db_name = "pss_non_member_active";

@@ -281,7 +281,8 @@ where
         .any(|node_key| node_key == &app_state.node_key)
     {
         if !is_reshare {
-            return reconcile_finalized_removed_member(app_state, entry).await;
+            return reconcile_finalized_removed_member(app_state, entry, ring_payload.requires_pet)
+                .await;
         }
         return Err(DkgError::Unauthorized(format!(
             "PSS: local node {} is not a current member of ring {}",
@@ -377,9 +378,23 @@ where
     }
 }
 
+/// `requires_pet` gates the PET-material cleanup below — reshare-atomicity
+/// finding #5 (PET audit fix checklist): this path previously only ever
+/// deleted the main key's live bundle, never the PET checking key's live
+/// share or either namespace's pending bundle. A node that missed the live,
+/// confirmation-driven cleanup (`reshare/cleanup.rs`'s `DepartingDealer`
+/// branch — e.g. it was offline when the reshare that excluded it
+/// finalized) would otherwise retain every one of these indefinitely: no
+/// remaining `RingIndex` entry means nothing will ever revisit this ring
+/// again to clean them up. Retaining a departed member's old PET share is
+/// exactly the kind of accumulating exposure PSS erasure exists to prevent
+/// — a later compromise of enough such former members could still
+/// reconstruct the (unchanged-by-reshare) PET secret from shares of a
+/// superseded generation.
 async fn reconcile_finalized_removed_member<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
+    requires_pet: bool,
 ) -> Result<(), DkgError>
 where
     D: Dkg + Clone + 'static,
@@ -400,10 +415,37 @@ where
                 "PSS: failed to securely remove stale finalized ring bundle: {error}"
             ))
         })?;
+    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str) {
+        tracing::warn!(
+            ring_pk = %entry.ring_pk_str,
+            %error,
+            "PSS: failed to clear stale pending reshare bundle after finalized committee removal"
+        );
+    }
+    if requires_pet {
+        app_state
+            .local_storage
+            .delete(LocalStorageKeys::PetRingKey(entry.bulletin_post_id.clone()))
+            .map_err(|error| {
+                DkgError::Storage(format!(
+                    "PSS: failed to securely remove stale finalized PET ring bundle: {error}"
+                ))
+            })?;
+        if let Err(error) =
+            PendingReshareBundle::clear_pet(&app_state.local_storage, &entry.bulletin_post_id)
+        {
+            tracing::warn!(
+                ring_id = %entry.bulletin_post_id,
+                %error,
+                "PSS: failed to clear stale pending PET reshare bundle after finalized committee removal"
+            );
+        }
+    }
     remove_ring_index_entry(&app_state.local_storage, entry)?;
     tracing::info!(
         ring_id = %entry.bulletin_post_id,
         ring_pk = %entry.ring_pk_str,
+        requires_pet,
         "PSS: reconciled stale local material after finalized committee removal"
     );
     Ok(())
