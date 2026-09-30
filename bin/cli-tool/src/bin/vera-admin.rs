@@ -299,10 +299,7 @@ async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
                     return Ok(());
                 }
                 if !submitted {
-                    ensure!(
-                        client.send_native_tx(wire).await? == id,
-                        "submission identifier mismatch"
-                    );
+                    accept_submission(client.send_native_tx(wire).await, id)?;
                     submitted = true;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -314,3 +311,23 @@ async fn run(args: &Args, config: &NativeConfig) -> Result<()> {
         | Command::SignNode { .. } => unreachable!(),
     }
 }
+
+// A duplicate confirms admission only; the caller must still verify its receipt.
+fn accept_submission(
+    result: std::result::Result<alloy_primitives::B256, vera_client::ClientError>,
+    expected: alloy_primitives::B256,
+) -> Result<()> {
+    match result {
+        Ok(id) => ensure!(id == expected, "submission identifier mismatch"),
+        Err(vera_client::ClientError::Rpc {
+            code: -32602,
+            message,
+        }) if message == "invalid transaction: duplicate transaction" => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "vera-admin/tests.rs"]
+mod tests;
