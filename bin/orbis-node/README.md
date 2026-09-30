@@ -227,12 +227,9 @@ Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` fo
 file holding its encryption password. Existing encrypted node keys retain their
 identity; early native raw keys are normalized to the stored hex format. New keys
 are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
-worker journal together when backing up or restoring a node. Upgrading from the early native
-branch migrates encrypted worker keys to their permanent storage slots atomically
-on database open. Ring history and pending reshare records retain their existing
-slots. A corrupt key or conflicting destination stops startup without replacing
-identity material. Back up the database before upgrading; older native binaries
-cannot read the migrated worker slots. The journal retains
+worker journal together when backing up or restoring a node. Native worker keys use
+their own storage slots; ring history and pending reshare records retain their existing
+slots. The journal retains
 uncertain submissions for recovery on the next write.
 
 Native startup registers the node with Vera or verifies the existing controller and
