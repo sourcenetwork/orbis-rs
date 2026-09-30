@@ -6,7 +6,7 @@ use crate::{
 use aes_gcm::Aes256Gcm;
 use argon2::password_hash::SaltString;
 use rand_core::OsRng;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, TableError};
+use redb::{Database, ReadableDatabase, TableDefinition, TableError};
 use std::path::Path;
 use std::sync::Arc;
 use zeroize::Zeroizing;
