@@ -1,4 +1,5 @@
 use crate::constants::{MAX_COMMITMENTS, MAX_COMMITMENT_SIZE, MIN_ITEM_SIZE};
+use crate::dkg::v0::helpers::{effective_new_peer_node_keys, peer_node_keys_match};
 use crate::dkg::v0::session_state::SessionStateManager;
 #[cfg(test)]
 use crate::dkg::v0::session_state::{ReshareSignatureReadyKey, TransportLifecycle};
@@ -8,7 +9,7 @@ use crate::helpers::protocol_version::{
     ensure_ring_protocol_route, resolve_ring_protocol_decision,
 };
 use crate::helpers::response_manager::ResponseStoreOutcome;
-use crate::ring_state::{RingPolyState, RingShareBundle};
+use crate::ring_state::{PendingReshareBundle, RingPolyState, RingShareBundle};
 use crate::sign::v0::{
     error::{Result, SignError},
     messages::{
@@ -231,6 +232,7 @@ pub fn refresh_health_check_context_key(statement: &RefreshHealthCheckStatement)
 pub async fn validate_ring_reshare_update_statement(
     bulletin: &(dyn Bulletin + Send + Sync),
     dkg_session_state: &SessionStateManager<impl Dkg + 'static>,
+    local_storage: &impl LocalStorage,
     statement: &RingReshareUpdateStatement,
     expected_message: Option<&[u8]>,
     enforce_protocol: bool,
@@ -314,6 +316,35 @@ pub async fn validate_ring_reshare_update_statement(
         return Err(SignError::Unauthorized(
             "Ring reshare update statement ring_pk does not match current payload".to_string(),
         ));
+    }
+
+    // Security boundary, not scheduling: `update_bulletin_if_selector`'s own
+    // wait for `ResharePet` to stage before it signs+posts only binds the
+    // *leader's* behavior — a malicious or compromised leader could skip
+    // that wait entirely and request this signature directly. Every signing
+    // peer must therefore independently require its own matching PET
+    // readiness for this exact transition before contributing a share; a
+    // coordinator-side wait alone cannot enforce that PET and the main key
+    // activate atomically (PET audit fix checklist, reshare-atomicity
+    // finding #1). `ReshareInProgress` (not `Unauthorized`): an honest peer
+    // whose own `ResharePet` simply hasn't staged yet is a transient,
+    // retryable state, not misconduct — the caller's existing sign-retry
+    // loop already tolerates this same rejection shape for the main key.
+    if current_payload.requires_pet {
+        let expected_new_committee = effective_new_peer_node_keys(&current_payload);
+        let expected_new_threshold = current_payload
+            .new_threshold
+            .unwrap_or(current_payload.threshold);
+        let pet_ready = PendingReshareBundle::load_pet(local_storage, &statement.ring_id)
+            .ok()
+            .flatten()
+            .is_some_and(|pending| {
+                peer_node_keys_match(&pending.expected_new_committee, expected_new_committee)
+                    && pending.expected_new_threshold == expected_new_threshold
+            });
+        if !pet_ready {
+            return Err(SignError::ReshareInProgress);
+        }
     }
 
     // Deliberately not looking up `transport_attempt(&statement.session_id)`
@@ -787,6 +818,19 @@ mod ring_reshare_update_tests {
     use bulletin::r#trait::Bulletin;
     use crypto::r#trait::{Dkg, DkgRole};
     use crypto::{CryptoSerialize, DkgImpl};
+    use local_storage::redb::RedbStorage;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Every fixture call gets its own on-disk store (self-uniquified, so no
+    /// caller needs to pass a name) — required by
+    /// `validate_ring_reshare_update_statement`'s new `local_storage`
+    /// parameter (the PET-readiness gate reads `PendingReshareBundle::load_pet`
+    /// from it). Every fixture here builds a `requires_pet: false` payload, so
+    /// that gate is always skipped and the store is never actually read —
+    /// left uncleaned (gitignored `test_dbs/`), matching this module's
+    /// existing tolerance for leaked files on an assertion panic before its
+    /// own cleanup line.
+    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     async fn fixture(
         new_peer_node_keys: Option<Vec<String>>,
@@ -794,9 +838,36 @@ mod ring_reshare_update_tests {
     ) -> (
         DummyBulletin,
         SessionStateManager<DkgImpl>,
+        RedbStorage,
         RingReshareUpdateStatement,
         ReshareSignatureReadyKey,
     ) {
+        pet_fixture(new_peer_node_keys, new_threshold, false).await
+    }
+
+    /// Same as `fixture`, with an explicit `requires_pet` — used directly by
+    /// the reshare-atomicity tests below; every other test here goes through
+    /// the `fixture` wrapper (always `requires_pet: false`) to avoid a
+    /// signature change at their 6 existing call sites.
+    async fn pet_fixture(
+        new_peer_node_keys: Option<Vec<String>>,
+        new_threshold: Option<u32>,
+        requires_pet: bool,
+    ) -> (
+        DummyBulletin,
+        SessionStateManager<DkgImpl>,
+        RedbStorage,
+        RingReshareUpdateStatement,
+        ReshareSignatureReadyKey,
+    ) {
+        let storage = RedbStorage::new(
+            "test-password".to_string(),
+            crate::helpers::test_helpers::test_db_path(&format!(
+                "sign_ring_reshare_update_fixture_{}",
+                FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+            )),
+        )
+        .expect("open fixture storage");
         let (_sk, ring_pk) = crypto::helpers::generate_keypair().expect("generate ring key");
         let ring_pk_bytes = CryptoSerialize::to_bytes(&ring_pk).expect("serialize ring key");
         let ring_pk_hex = hex::encode(ring_pk_bytes);
@@ -816,7 +887,7 @@ mod ring_reshare_update_tests {
             policy_id: None,
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
-            requires_pet: false,
+            requires_pet,
             pet_pk: None,
         };
         let bulletin = DummyBulletin::new().await.expect("dummy bulletin");
@@ -859,7 +930,7 @@ mod ring_reshare_update_tests {
             })
             .await;
 
-        (bulletin, state, statement, ready_key)
+        (bulletin, state, storage, statement, ready_key)
     }
 
     #[test]
@@ -989,13 +1060,14 @@ mod ring_reshare_update_tests {
 
     #[tokio::test]
     async fn validate_accepts_current_payload_fallback_with_ready_marker() {
-        let (bulletin, state, statement, ready_key) = fixture(None, None).await;
+        let (bulletin, state, storage, statement, ready_key) = fixture(None, None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let (ring_pk, _bundle) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("ready marker should authorize validation with current payload fallback");
+        let (ring_pk, _bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("ready marker should authorize validation with current payload fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
@@ -1009,7 +1081,7 @@ mod ring_reshare_update_tests {
         use crate::ring_state::RingShareBundle;
         use zeroize::Zeroizing;
 
-        let (bulletin, state, statement, ready_key) = fixture(None, None).await;
+        let (bulletin, state, storage, statement, ready_key) = fixture(None, None).await;
         let attempt = crate::dkg::v0::transport::AttemptKey::new(
             crate::dkg::v0::transport::CeremonyId(ready_key.session_id),
             ready_key.attempt_id,
@@ -1030,20 +1102,22 @@ mod ring_reshare_update_tests {
             "staging against a live attempt must succeed"
         );
 
-        let (_ring_pk, bundle) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("staged marker should authorize validation");
+        let (_ring_pk, bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("staged marker should authorize validation");
         let bundle = bundle.expect("an unpromoted marker must return its staged bundle");
         assert_eq!(bundle.public_polynomial, "staged-poly");
         assert_eq!(*bundle.share_bytes, vec![9, 9, 9]);
 
         state.mark_reshare_promoted(&ready_key).await;
 
-        let (_ring_pk, bundle_after_promotion) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("a promoted marker must still authorize a late/retried request");
+        let (_ring_pk, bundle_after_promotion) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("a promoted marker must still authorize a late/retried request");
         assert!(
             bundle_after_promotion.is_none(),
             "a promoted marker must signal disk fallback, not the (now stale) staged bytes"
@@ -1052,39 +1126,42 @@ mod ring_reshare_update_tests {
 
     #[tokio::test]
     async fn validate_rejects_pending_reshare_without_ready_marker() {
-        let (bulletin, state, statement, _ready_key) = fixture(
+        let (bulletin, state, storage, statement, _ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
             Some(2),
         )
         .await;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-            .await
-            .expect_err("missing local ready marker should be retryable");
+        let err = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect_err("missing local ready marker should be retryable");
 
         assert!(matches!(err, SignError::ReshareInProgress));
     }
 
     #[tokio::test]
     async fn validate_accepts_pending_reshare_with_ready_marker() {
-        let (bulletin, state, statement, ready_key) = fixture(
+        let (bulletin, state, storage, statement, ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
             Some(2),
         )
         .await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let (ring_pk, _bundle) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("ready marker should authorize validation");
+        let (ring_pk, _bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("ready marker should authorize validation");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
 
     #[tokio::test]
     async fn validate_rejects_nonce_mismatch() {
-        let (bulletin, state, mut statement, ready_key) = fixture(
+        let (bulletin, state, storage, mut statement, ready_key) = fixture(
             Some(vec!["new-a".to_string(), "new-b".to_string()]),
             Some(2),
         )
@@ -1092,9 +1169,11 @@ mod ring_reshare_update_tests {
         state.mark_reshare_signature_ready(ready_key).await;
         statement.block_number_nonce += 1;
 
-        let err = validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-            .await
-            .expect_err("mismatched nonce should be rejected");
+        let err = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect_err("mismatched nonce should be rejected");
 
         match err {
             SignError::Unauthorized(message) => {
@@ -1106,27 +1185,130 @@ mod ring_reshare_update_tests {
 
     #[tokio::test]
     async fn validate_accepts_committee_only_reshare() {
-        let (bulletin, state, statement, ready_key) =
+        let (bulletin, state, storage, statement, ready_key) =
             fixture(Some(vec!["new-a".to_string(), "new-b".to_string()]), None).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let (ring_pk, _bundle) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("committee-only reshare should use current threshold fallback");
+        let (ring_pk, _bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("committee-only reshare should use current threshold fallback");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }
 
     #[tokio::test]
     async fn validate_accepts_threshold_only_reshare() {
-        let (bulletin, state, statement, ready_key) = fixture(None, Some(1)).await;
+        let (bulletin, state, storage, statement, ready_key) = fixture(None, Some(1)).await;
         state.mark_reshare_signature_ready(ready_key).await;
 
-        let (ring_pk, _bundle) =
-            validate_ring_reshare_update_statement(&bulletin, &state, &statement, None, true)
-                .await
-                .expect("threshold-only reshare should use current committee fallback");
+        let (ring_pk, _bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("threshold-only reshare should use current committee fallback");
+
+        assert_eq!(ring_pk, statement.ring_pk);
+    }
+
+    /// Reshare-atomicity finding #1 (PET audit fix checklist): the
+    /// coordinator's own wait for `ResharePet` to stage
+    /// (`bulletin_update.rs`'s `wait_for_reshare_pet_staged`) only binds a
+    /// well-behaved *leader* — nothing stopped an honest co-signer from
+    /// contributing its share toward committee activation before its own
+    /// PET reshare had staged anything at all. These three tests prove the
+    /// new peer-side gate closes that: main-key readiness alone is no longer
+    /// sufficient once `requires_pet` is set.
+    #[tokio::test]
+    async fn validate_rejects_pet_reshare_without_matching_pet_pending_bundle() {
+        let (bulletin, state, storage, statement, ready_key) = pet_fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+            true,
+        )
+        .await;
+        state.mark_reshare_signature_ready(ready_key).await;
+
+        // No PendingReshareBundle::save_pet at all — this node's own PET
+        // reshare hasn't staged anything yet.
+        let err = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect_err("main-key readiness alone must not authorize a requires_pet ring's update");
+
+        assert!(matches!(err, SignError::ReshareInProgress));
+    }
+
+    #[tokio::test]
+    async fn validate_rejects_pet_reshare_with_mismatched_pet_pending_bundle() {
+        use crate::ring_state::{PendingReshareBundle, RingShareBundle};
+        use zeroize::Zeroizing;
+
+        let (bulletin, state, storage, statement, ready_key) = pet_fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+            true,
+        )
+        .await;
+        state.mark_reshare_signature_ready(ready_key.clone()).await;
+
+        // A PET pending bundle exists, but for a *different* transition —
+        // e.g. a stale attempt targeting a different committee/threshold.
+        PendingReshareBundle {
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![1, 2, 3]),
+                public_polynomial: "pet-poly".to_string(),
+                last_pss: 1,
+            },
+            bulletin_post_id: ready_key.ring_id.clone(),
+            expected_new_committee: vec!["wrong-a".to_string(), "wrong-b".to_string()],
+            expected_new_threshold: 2,
+        }
+        .save_pet(&storage, &ready_key.ring_id)
+        .expect("save mismatched PET pending bundle");
+
+        let err = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect_err("a PET pending bundle for a different transition must not authorize this one");
+
+        assert!(matches!(err, SignError::ReshareInProgress));
+    }
+
+    #[tokio::test]
+    async fn validate_accepts_pet_reshare_with_matching_pet_pending_bundle() {
+        use crate::ring_state::{PendingReshareBundle, RingShareBundle};
+        use zeroize::Zeroizing;
+
+        let (bulletin, state, storage, statement, ready_key) = pet_fixture(
+            Some(vec!["new-a".to_string(), "new-b".to_string()]),
+            Some(2),
+            true,
+        )
+        .await;
+        state.mark_reshare_signature_ready(ready_key.clone()).await;
+
+        PendingReshareBundle {
+            bundle: RingShareBundle {
+                share_bytes: Zeroizing::new(vec![1, 2, 3]),
+                public_polynomial: "pet-poly".to_string(),
+                last_pss: 1,
+            },
+            bulletin_post_id: ready_key.ring_id.clone(),
+            expected_new_committee: vec!["new-b".to_string(), "new-a".to_string()],
+            expected_new_threshold: 2,
+        }
+        .save_pet(&storage, &ready_key.ring_id)
+        .expect("save matching PET pending bundle");
+
+        let (ring_pk, _bundle) = validate_ring_reshare_update_statement(
+            &bulletin, &state, &storage, &statement, None, true,
+        )
+        .await
+        .expect("a matching PET pending bundle must authorize the requires_pet update");
 
         assert_eq!(ring_pk, statement.ring_pk);
     }

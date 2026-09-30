@@ -361,6 +361,7 @@ where
                 let (ring_pk_hex, bundle) = validate_ring_reshare_update_statement(
                     &*self.app_state.bulletin,
                     &self.app_state.dkg_session_state,
+                    &self.app_state.local_storage,
                     &ctx.statement,
                     None,
                     false,
@@ -667,6 +668,7 @@ where
         let (ring_pk_hex, _staged_bundle) = validate_ring_reshare_update_statement(
             &*self.app_state.bulletin,
             &self.app_state.dkg_session_state,
+            &self.app_state.local_storage,
             &ctx.statement,
             Some(message),
             false,
@@ -862,6 +864,7 @@ where
                 let (_, staged_bundle) = validate_ring_reshare_update_statement(
                     &*self.app_state.bulletin,
                     &self.app_state.dkg_session_state,
+                    &self.app_state.local_storage,
                     &ctx.statement,
                     Some(&message),
                     false,
