@@ -1854,7 +1854,6 @@ async fn test_pet_ring_refresh_and_reshare() {
     // shares are genuinely usable before either ceremony below touches them.
     println!("Running a baseline PET-gated PRE round before refresh...");
     assert_pet_gated_pre_succeeds(
-        &controller_client,
         &chain_config,
         &endpoint,
         &ring_id,
@@ -1904,7 +1903,6 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE still succeeds after PET refresh...");
     assert_pet_gated_pre_succeeds(
-        &controller_client,
         &chain_config,
         &endpoint,
         &ring_id,
@@ -1997,7 +1995,6 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE succeeds under the reshared committee...");
     assert_pet_gated_pre_succeeds(
-        &controller_client,
         &chain_config,
         &endpoint,
         &ring_id,
@@ -2018,7 +2015,6 @@ async fn test_pet_ring_refresh_and_reshare() {
 /// each call gets its own fresh `pet_audit_policy_id`. Mirrors
 /// `test_cli_calls_dkg_for_pet_ring`'s own positive-path PET-gated PRE check.
 async fn assert_pet_gated_pre_succeeds(
-    controller_client: &VeraClient,
     chain_config: &ChainConfig,
     endpoint: &str,
     ring_id: &str,
@@ -2026,6 +2022,24 @@ async fn assert_pet_gated_pre_succeeds(
     pet_pk_hex: &str,
     secret_message: &[u8],
 ) {
+    // A fresh, throwaway client — never the caller's own long-lived
+    // `controller_client`. That client caches its account sequence locally
+    // and only advances it on its own sends; `register_object_to_chain_with_config`/
+    // `set_relationship_on_chain_with_config` below each construct their own
+    // fresh, self-querying signer for the same account, so reusing a shared
+    // cached-sequence client across more than one call to this helper goes
+    // stale the moment those free functions run in between (confirmed by a
+    // real "account sequence mismatch" failure on the second call in this
+    // test's first Docker run). Constructing fresh here every time keeps
+    // this helper self-contained and safe to call any number of times.
+    let controller_client = VeraClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
     const PET_AUDIT_POLICY_YAML: &str = r#"
 name: pet audit policy
 resources:
