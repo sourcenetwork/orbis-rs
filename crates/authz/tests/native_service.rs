@@ -20,7 +20,7 @@ async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
 }
 
 #[tokio::test]
-#[ignore = "requires a built hubd supplied through HUBD_BINARY"]
+#[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     let deployment = 9071;
     let trusted = *KeySet::builder()
@@ -94,35 +94,38 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     assert!(!auth.check(request.clone(), subject).await.unwrap());
     let denied_anchor = auth.current_anchor().await.unwrap();
     assert!(auth.anchor_time(&denied_anchor).await.unwrap() > 0);
+    assert!(!auth
+        .check_at(request.clone(), subject, &denied_anchor)
+        .await
+        .unwrap());
     let grant = writer
         .native_set_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
         .await
         .unwrap();
     receipt(&reader, grant.transaction_hash, &trusted).await;
     assert!(auth.check(request.clone(), subject).await.unwrap());
-    if let Ok(allowed) = auth
-        .check_at(request.clone(), subject, &denied_anchor)
-        .await
-    {
-        assert!(!allowed, "historical denial must not use the current grant");
-    }
+    assert_historical_result(
+        auth.check_at(request.clone(), subject, &denied_anchor)
+            .await,
+        false,
+    );
     let allowed_anchor = auth.current_anchor().await.unwrap();
     let allowed_time = auth.anchor_time(&allowed_anchor).await.unwrap();
+    assert!(auth
+        .check_at(request.clone(), subject, &allowed_anchor)
+        .await
+        .unwrap());
     let revoked = writer
         .native_delete_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
         .await
         .unwrap();
     receipt(&reader, revoked.transaction_hash, &trusted).await;
     assert!(!auth.check(request.clone(), subject).await.unwrap());
-    if let Ok(allowed) = auth
-        .check_at(request.clone(), subject, &allowed_anchor)
-        .await
-    {
-        assert!(
-            allowed,
-            "historical grant must not use the current revocation"
-        );
-    }
+    assert_historical_result(
+        auth.check_at(request.clone(), subject, &allowed_anchor)
+            .await,
+        true,
+    );
     cluster.restart_node(3).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     assert_eq!(
@@ -132,4 +135,16 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     assert!(!auth.check(request.clone(), subject).await.unwrap());
     let foreign = allowed_anchor.replacen(&hex::encode(root), &"99".repeat(32), 1);
     assert!(auth.check_at(request, subject, &foreign).await.is_err());
+}
+
+fn assert_historical_result(result: authz::error::Result<bool>, expected: bool) {
+    match result {
+        Ok(allowed) => assert_eq!(allowed, expected, "historical permissions changed"),
+        // The current store cannot prove a historical root after a policy mutation.
+        Err(authz::error::AuthZError::Native(message)) => assert_eq!(
+            message,
+            "RPC error (-32002): invalid permission evidence: selected module root changed",
+        ),
+        Err(error) => panic!("unexpected historical authorization error: {error}"),
+    }
 }

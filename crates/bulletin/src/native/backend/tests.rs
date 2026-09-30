@@ -138,3 +138,96 @@ fn native_report_session_key_matches_v1_wire_fixture() {
             .is_err()
     );
 }
+
+fn read_fixture(url: &str) -> (tempfile::TempDir, NativeBulletin) {
+    let root = tempfile::tempdir().unwrap();
+    let storage = RedbStorage::new(
+        "test".into(),
+        root.path().join("keys.redb").to_string_lossy().into_owned(),
+    )
+    .unwrap();
+    storage
+        .set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            Zeroizing::new(vec![31; 32]),
+        )
+        .unwrap();
+    let writer = NativeVeraClient::open(
+        VeraClient::new(url),
+        ConsensusPublicKey::generator(),
+        [7; 32],
+        9001,
+        &root.path().join("worker"),
+        &storage,
+    )
+    .unwrap();
+    let backend = NativeBulletin {
+        reader: VeraClient::new(url),
+        trusted: writer.trusted,
+        namespace: writer.deployment_label(),
+        writer: Mutex::new(writer),
+        minimum: AtomicU64::new(5),
+        maximum_age: 30,
+        timeout: Duration::from_millis(200),
+    };
+    (root, backend)
+}
+
+#[test]
+fn overlapping_reads_validate_their_requested_minimum() {
+    let (_root, backend) = read_fixture("http://127.0.0.1:1");
+    let requested = backend.minimum.load(Ordering::Acquire);
+    let timestamp = now().unwrap();
+    backend.observe(requested, 12, timestamp).unwrap();
+    backend.observe(requested, 10, timestamp).unwrap();
+    assert_eq!(backend.minimum.load(Ordering::Acquire), 12);
+    assert!(backend.observe(12, 10, timestamp).is_err());
+    assert!(backend.observe(12, 20, timestamp - 31).is_err());
+    assert!(backend.observe(12, 20, timestamp + 60).is_err());
+    assert_eq!(backend.minimum.load(Ordering::Acquire), 12);
+}
+
+#[tokio::test]
+async fn reads_and_ring_status_honor_configured_deadline() {
+    for kind in [
+        Some(BulletinKind::Ring),
+        Some(BulletinKind::Document),
+        Some(BulletinKind::KeyDerivation),
+        Some(BulletinKind::NodeInfo),
+        None,
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_root, backend) = read_fixture(&format!("http://{}", listener.local_addr().unwrap()));
+        let (sent, mut received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut byte = [0];
+            stream.read_exact(&mut byte).await.unwrap();
+            sent.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            match kind {
+                Some(kind) => {
+                    let id = if kind == BulletinKind::NodeInfo {
+                        backend.writer.lock().await.node_key()
+                    } else {
+                        "ab".repeat(32)
+                    };
+                    backend.read(id, kind).await.map(|_| ())
+                }
+                None => backend
+                    .ring_finalization_status("ab".repeat(32))
+                    .await
+                    .map(|_| ()),
+            }
+        })
+        .await
+        .expect("configured deadline must precede the client timeout");
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains("deadline exceeded"), "{message}");
+        received.try_recv().expect("read must reach the server");
+        server.abort();
+        let _ = server.await;
+    }
+}

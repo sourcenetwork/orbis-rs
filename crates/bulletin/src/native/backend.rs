@@ -120,24 +120,26 @@ impl NativeBulletin {
         })
     }
 
-    fn observe(&self, height: u64, timestamp: u64) -> Result<()> {
+    fn observe(&self, requested_minimum: u64, height: u64, timestamp: u64) -> Result<()> {
         let now = now()?;
         if timestamp > now.saturating_add(15) || now.saturating_sub(timestamp) > self.maximum_age {
             return Err(error("bulletin evidence is stale or from the future"));
         }
-        if height < self.minimum.fetch_max(height, Ordering::AcqRel) {
+        if height < requested_minimum {
             return Err(error("bulletin revision regressed"));
         }
+        self.minimum.fetch_max(height, Ordering::AcqRel);
         Ok(())
     }
 
     async fn ring(&self, id: &str) -> Result<RingRecord> {
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
         let response = self
             .reader
-            .read_threshold_ring(id, self.minimum.load(Ordering::Acquire), &self.trusted)
+            .read_threshold_ring(id, requested_minimum, &self.trusted)
             .await
             .map_err(error)?;
-        self.observe(response.revision, response.timestamp)?;
+        self.observe(requested_minimum, response.revision, response.timestamp)?;
         response
             .record
             .ok_or_else(|| BulletinError::NotFound { id: id.into() })
@@ -148,17 +150,13 @@ impl NativeBulletin {
         kind: ObjectKind,
         id: &str,
     ) -> Result<Option<vera_client::threshold_objects::ObjectRecord>> {
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
         let response = self
             .reader
-            .read_threshold_object(
-                kind,
-                id,
-                self.minimum.load(Ordering::Acquire),
-                &self.trusted,
-            )
+            .read_threshold_object(kind, id, requested_minimum, &self.trusted)
             .await
             .map_err(error)?;
-        self.observe(response.revision, response.timestamp)?;
+        self.observe(requested_minimum, response.revision, response.timestamp)?;
         Ok(response.record)
     }
 
@@ -290,12 +288,13 @@ impl NativeBulletin {
                 info.whitelisted_policy_ids.sort();
                 info.whitelisted_ring_ids.sort();
                 let id = writer.node_key();
+                let requested_minimum = self.minimum.load(Ordering::Acquire);
                 let current = self
                     .reader
-                    .read_threshold_node(&id, self.minimum.load(Ordering::Acquire), &self.trusted)
+                    .read_threshold_node(&id, requested_minimum, &self.trusted)
                     .await
                     .map_err(error)?;
-                self.observe(current.revision, current.timestamp)?;
+                self.observe(requested_minimum, current.revision, current.timestamp)?;
                 if let Some(record) = current.record {
                     if record.info.peer_id == info.peer_id
                         && record.info.controller_key == info.controller_key
@@ -426,18 +425,23 @@ impl Bulletin for NativeBulletin {
             session_id,
         )?;
         tokio::time::timeout(self.timeout, async {
+            let requested_minimum = self.minimum.load(Ordering::Acquire);
             let response = self
                 .reader
                 .read_current_record(
                     vera_client::ModuleId::Vera,
                     &key,
-                    self.minimum.load(Ordering::Acquire),
+                    requested_minimum,
                     &self.trusted,
                     vera_client::RECORD_PROOF_BYTES,
                 )
                 .await
                 .map_err(error)?;
-            self.observe(response.revision.height, response.revision.timestamp)?;
+            self.observe(
+                requested_minimum,
+                response.revision.height,
+                response.revision.timestamp,
+            )?;
             report_session_is_current(
                 response.record.value.as_deref().map(|value| value.as_ref()),
                 now()?.max(response.revision.timestamp),
@@ -448,47 +452,55 @@ impl Bulletin for NativeBulletin {
     }
 
     async fn read(&self, id: String, kind: BulletinKind) -> Result<BulletinPost> {
-        match kind {
-            BulletinKind::Ring => ring_post(self.ring(&id).await?),
-            BulletinKind::Document | BulletinKind::KeyDerivation => {
-                let kind = if kind == BulletinKind::Document {
-                    ObjectKind::Document
-                } else {
-                    ObjectKind::KeyDerivation
-                };
-                object_post(
-                    self.object(kind, &id)
-                        .await?
-                        .ok_or(BulletinError::NotFound { id })?,
-                )
+        tokio::time::timeout(self.timeout, async {
+            match kind {
+                BulletinKind::Ring => ring_post(self.ring(&id).await?),
+                BulletinKind::Document | BulletinKind::KeyDerivation => {
+                    let kind = if kind == BulletinKind::Document {
+                        ObjectKind::Document
+                    } else {
+                        ObjectKind::KeyDerivation
+                    };
+                    object_post(
+                        self.object(kind, &id)
+                            .await?
+                            .ok_or(BulletinError::NotFound { id })?,
+                    )
+                }
+                BulletinKind::NodeInfo => {
+                    let requested_minimum = self.minimum.load(Ordering::Acquire);
+                    let current = self
+                        .reader
+                        .read_threshold_node(&id, requested_minimum, &self.trusted)
+                        .await
+                        .map_err(error)?;
+                    self.observe(requested_minimum, current.revision, current.timestamp)?;
+                    let record = current
+                        .record
+                        .ok_or_else(|| BulletinError::NotFound { id: id.clone() })?;
+                    let info = NodeInfo {
+                        peer_id: record.info.peer_id,
+                        controller_key: record.info.controller_key,
+                        whitelisted_policy_ids: record.info.allowed_policy_ids,
+                        whitelisted_ring_ids: record.info.allowed_ring_ids,
+                    };
+                    Ok(BulletinPost {
+                        id,
+                        payload: info.try_into()?,
+                    })
+                }
             }
-            BulletinKind::NodeInfo => {
-                let current = self
-                    .reader
-                    .read_threshold_node(&id, self.minimum.load(Ordering::Acquire), &self.trusted)
-                    .await
-                    .map_err(error)?;
-                self.observe(current.revision, current.timestamp)?;
-                let record = current
-                    .record
-                    .ok_or_else(|| BulletinError::NotFound { id: id.clone() })?;
-                let info = NodeInfo {
-                    peer_id: record.info.peer_id,
-                    controller_key: record.info.controller_key,
-                    whitelisted_policy_ids: record.info.allowed_policy_ids,
-                    whitelisted_ring_ids: record.info.allowed_ring_ids,
-                };
-                Ok(BulletinPost {
-                    id,
-                    payload: info.try_into()?,
-                })
-            }
-        }
+        })
+        .await
+        .map_err(|_| error("native read deadline exceeded"))?
     }
 
     async fn ring_finalization_status(&self, id: String) -> Result<RingFinalizationStatus> {
-        ring_status(&self.ring(&id).await?)
+        tokio::time::timeout(self.timeout, async { ring_status(&self.ring(&id).await?) })
+            .await
+            .map_err(|_| error("native ring status deadline exceeded"))?
     }
+
     fn chain_id(&self) -> String {
         self.namespace.clone()
     }

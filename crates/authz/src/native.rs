@@ -69,12 +69,12 @@ impl NativeAuth {
         })
     }
 
-    fn observe(&self, revision: &LightBlock) -> Result<()> {
-        check_freshness(revision.timestamp, now()?, self.maximum_age)?;
-        let previous = self.minimum.fetch_max(revision.height, Ordering::AcqRel);
-        if revision.height < previous {
+    fn observe(&self, requested_minimum: u64, height: u64, timestamp: u64) -> Result<()> {
+        check_freshness(timestamp, now()?, self.maximum_age)?;
+        if height < requested_minimum {
             return Err(invalid("authorization revision regressed"));
         }
+        self.minimum.fetch_max(height, Ordering::AcqRel);
         Ok(())
     }
 
@@ -186,18 +186,19 @@ impl Authz for NativeAuth {
         let Some((policy, request)) = request(&permission, subject)? else {
             return Ok(false);
         };
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
         let (revision, allowed) = self
             .client
             .verify_current_access(
                 &policy,
                 &request,
-                self.minimum.load(Ordering::Acquire),
+                requested_minimum,
                 &self.trusted,
                 PERMISSION_LIMITS,
             )
             .await
             .map_err(invalid)?;
-        self.observe(&revision)?;
+        self.observe(requested_minimum, revision.height, revision.timestamp)?;
         Ok(allowed)
     }
     async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
@@ -217,18 +218,23 @@ impl Authz for NativeAuth {
             .map_err(invalid)
     }
     async fn current_anchor(&self) -> Result<String> {
+        let requested_minimum = self.minimum.load(Ordering::Acquire);
         let response = self
             .client
             .read_current_record(
                 ModuleId::Vera,
                 b"orbis/authz/anchor/v1",
-                self.minimum.load(Ordering::Acquire),
+                requested_minimum,
                 &self.trusted,
                 RECORD_PROOF_BYTES,
             )
             .await
             .map_err(invalid)?;
-        self.observe(&response.revision)?;
+        self.observe(
+            requested_minimum,
+            response.revision.height,
+            response.revision.timestamp,
+        )?;
         Ok(self.anchor(&response.revision))
     }
     async fn anchor_time(&self, anchor: &str) -> Result<u64> {
@@ -240,6 +246,30 @@ impl Authz for NativeAuth {
 mod tests {
     use super::*;
     use crate::request::ValidWindow;
+
+    #[test]
+    fn overlapping_authorization_reads_preserve_the_minimum() {
+        let keys = vera_harness::cluster::KeySet::builder()
+            .seed(9071)
+            .build()
+            .unwrap();
+        let auth = NativeAuth {
+            client: VeraClient::new("http://127.0.0.1:1"),
+            trusted: *keys.epoch_info().output.public().public(),
+            root: "11".repeat(32),
+            minimum: AtomicU64::new(5),
+            maximum_age: 30,
+        };
+        let requested = auth.minimum.load(Ordering::Acquire);
+        let timestamp = now().unwrap();
+        auth.observe(requested, 12, timestamp).unwrap();
+        auth.observe(requested, 10, timestamp).unwrap();
+        assert_eq!(auth.minimum.load(Ordering::Acquire), 12);
+        assert!(auth.observe(12, 10, timestamp).is_err());
+        assert!(auth.observe(12, 20, timestamp - 31).is_err());
+        assert!(auth.observe(12, 20, timestamp + 60).is_err());
+        assert_eq!(auth.minimum.load(Ordering::Acquire), 12);
+    }
 
     #[test]
     fn native_authorization_rejects_ambiguous_windows_and_revision_anchors() {
