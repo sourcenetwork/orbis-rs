@@ -8,7 +8,7 @@ use crate::reporting::v0::types::{
     ring_state_sha256, CommitteeScope, RelayRequestStatement, ReportedDocumentEvidence,
     RELAY_REQUEST_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::RingPayload;
 use common::blockchain::{sign_node_message_with_hex_key, verify_node_message};
 use crypto::r#trait::{DistKeyShare, Dkg, PubShare, ThresholdSigner};

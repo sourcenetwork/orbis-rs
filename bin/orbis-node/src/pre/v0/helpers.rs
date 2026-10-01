@@ -7,7 +7,7 @@ use crate::pre::v0::{
 };
 use authn::{BearerToken, PreClaims};
 use authz::r#trait::Authz;
-use authz::vera::{AccessCheckRequest, ValidWindow};
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
 use crypto::context::{

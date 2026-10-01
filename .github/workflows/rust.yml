@@ -126,11 +126,19 @@ jobs:
         key: native-${{ matrix.crypto }}
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
+    - name: Check native dependency boundary
+      run: |
+        cargo tree --locked --color never -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --edges normal,build --prefix none > "$RUNNER_TEMP/native-dependencies.txt"
+        if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' "$RUNNER_TEMP/native-dependencies.txt"; then
+          echo "Native node includes Cosmos transport dependencies"
+          exit 1
+        fi
     - name: Check native node and bulletin
       run: |
         cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
+        cargo test --locked -p common --no-default-features --lib node_signing
         cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
         cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib native_identity_preserves_existing_keys_and_refuses_corruption
         cargo test --locked -p bulletin --no-default-features --features native,${{ matrix.crypto }} --lib native::

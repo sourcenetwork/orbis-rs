@@ -20,7 +20,7 @@ use crate::sign::v0::messages::{PolicyContext, SignContext};
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
 use authn::{DkgClaims, SignClaims};
-use authz::vera::{AccessCheckRequest, ValidWindow};
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{
     Bulletin, BulletinPost, BulletinWriteKind, DocumentPayload, KeyDerivation, RingPayload,

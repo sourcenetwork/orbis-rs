@@ -43,7 +43,7 @@ use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::reporting::v0::{build_signed_relay_statement, RelayStatementInputs};
 use crate::ring_state::RingPolyState;
 use authn::{BearerToken, PreClaims};
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
 use crypto::r#trait::ReaderAuthorizationSignature;

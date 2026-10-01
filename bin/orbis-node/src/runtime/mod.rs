@@ -20,8 +20,7 @@ use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
-use authz::AuthzImpl;
-use bulletin::{r#trait::Bulletin, BulletinImpl};
+use bulletin::r#trait::Bulletin;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
@@ -82,11 +81,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     if args.vera_config.is_some() {
         return Err("native Vera support requires building with --features native".into());
     }
-    let (authz_name, bulletin_name) = if args.vera_config.is_some() {
-        ("native Vera".to_owned(), "native Vera".to_owned())
-    } else {
-        (AuthzImpl::name(), BulletinImpl::name())
-    };
+    #[cfg(not(all(feature = "authz-vera", feature = "bulletin-vera")))]
+    if args.vera_config.is_none() {
+        return Err("this build requires --vera-config for the native backend".into());
+    }
+    let (authz_name, bulletin_name) = backend::names(args.vera_config.is_some());
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -347,11 +346,7 @@ async fn run_server(
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
-    let (authz_name, bulletin_name) = if node.native_identity.is_some() {
-        ("native Vera".to_owned(), "native Vera".to_owned())
-    } else {
-        (AuthzImpl::name(), BulletinImpl::name())
-    };
+    let (authz_name, bulletin_name) = backend::names(node.native_identity.is_some());
     metrics::record_build_info(
         &PreImpl::name(),
         &SignImpl::name(),

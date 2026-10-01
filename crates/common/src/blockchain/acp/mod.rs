@@ -4,8 +4,9 @@
 //! which manages access control policies for applications.
 //!
 //! - [`types`] — message, query, and domain types.
-//! - [`client`] — `VeraClient` extension methods (`acp_*`) that call the chain.
+//! - `client` (feature `cosmos`) — `VeraClient` extension methods (`acp_*`) that call the chain.
 
+#[cfg(feature = "cosmos")]
 mod client;
 mod types;
 

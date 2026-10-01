@@ -9,7 +9,7 @@ license.workspace = true
 orbis-reporting = { path = "../reporting" }
 async-trait = { workspace = true }
 thiserror ={ workspace = true }
-common = { path = "../common" }
+common = { path = "../common", default-features = false }
 crypto = { path = "../crypto", optional = true, default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -30,7 +30,7 @@ zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["vera"]
-vera = []
+vera = ["common/cosmos"]
 native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's

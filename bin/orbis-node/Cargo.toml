@@ -12,8 +12,8 @@ crypto = { path = "../../crates/crypto", default-features = false }
 local-storage = { path = "../../crates/local-storage", default-features = false }
 proto = { path = "../../crates/proto" }
 authn = { path = "../../crates/authn" }
-authz = { path = "../../crates/authz" }
-bulletin = { path = "../../crates/bulletin" }
+authz = { path = "../../crates/authz", default-features = false }
+bulletin = { path = "../../crates/bulletin", default-features = false }
 tonic = { workspace = true }
 tonic-web = "0.14.2"
 tower-http = { version = "0.6", features = ["cors"] }
@@ -40,7 +40,7 @@ tracing-loki = "0.2"
 url = "2.5"
 sha2 = { workspace = true }
 zeroize = { workspace = true }
-common = { path = "../../crates/common" }
+common = { path = "../../crates/common", default-features = false }
 project-root = { workspace = true }
 cli-tool = { path = "../cli-tool", optional = true, default-features = false }
 prometheus = { workspace = true }
@@ -99,15 +99,16 @@ bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bul
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "common/jubjub", "bulletin/jubjub"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
-authz-vera = ["authz/vera"]
-bulletin-vera = ["bulletin/vera"]
+cosmos = ["common/cosmos"]
+authz-vera = ["authz/vera", "cosmos"]
+bulletin-vera = ["bulletin/vera", "cosmos"]
 iroh = ["network/iroh"]
-integration-test = ["cli-tool", "unsafe-testing"]
+integration-test = ["cli-tool", "unsafe-testing", "authz-vera", "bulletin-vera"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead
 # of Vera. Not used by the production binary.
-harness = ["authz/test-helpers", "network/shaping", "bulletin/dummy-type"]
+harness = ["authz/test-helpers", "network/shaping", "bulletin/dummy-type", "cosmos"]
 fault-injection = ["network/fault-injection"]
 # Native in-process scale test (tests::scale_testing): many real orbis-node
 # instances running a full DKG ceremony in one process. Implies `harness`.

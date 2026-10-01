@@ -8,6 +8,7 @@ use bulletin::{
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
+#[cfg(any(feature = "cosmos", test))]
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -888,6 +889,7 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(feature = "cosmos", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
@@ -989,6 +991,7 @@ pub fn create_and_store_node_key(
 ///
 /// # Returns
 /// A TxSigner on success, or an error if the key doesn't exist or is invalid
+#[cfg(any(feature = "cosmos", test))]
 pub fn get_node_signer(
     local_storage: LocalStorageImpl,
     config: ChainConfig,

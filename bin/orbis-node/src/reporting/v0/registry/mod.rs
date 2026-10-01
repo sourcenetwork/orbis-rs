@@ -46,7 +46,7 @@ use ::common::blockchain::orbis::generate_document_id;
 use ::common::blockchain::verify_node_message;
 use async_trait::async_trait;
 use authz::r#trait::Authz;
-use authz::vera::{AccessCheckRequest, ValidWindow};
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
