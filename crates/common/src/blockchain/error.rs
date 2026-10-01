@@ -41,6 +41,7 @@ pub enum BlockchainError {
     #[error("Chain not available: {0}")]
     ChainNotAvailable(String),
 
+    #[cfg(feature = "cosmos")]
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -54,6 +55,7 @@ impl From<serde_json::Error> for BlockchainError {
     }
 }
 
+#[cfg(feature = "cosmos")]
 impl From<tendermint_rpc::Error> for BlockchainError {
     fn from(err: tendermint_rpc::Error) -> Self {
         // `tendermint_rpc::Error`'s `Display` for several variants (notably
@@ -72,6 +74,7 @@ impl From<tendermint_rpc::Error> for BlockchainError {
     }
 }
 
+#[cfg(feature = "cosmos")]
 impl From<cosmrs::ErrorReport> for BlockchainError {
     fn from(err: cosmrs::ErrorReport) -> Self {
         BlockchainError::Signing(err.to_string())

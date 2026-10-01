@@ -36,7 +36,7 @@ use crate::sign::v0::helpers::{
 };
 use crate::sign::v0::messages::{PolicyContext, SignContext};
 use authn::{BearerToken, SignClaims};
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::{KeyDerivation, RingPayload};
 
 /// Output of stage 1.

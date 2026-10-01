@@ -19,7 +19,7 @@ use crate::sign::v0::{
 };
 use authn::{BearerToken, SignClaims};
 use authz::r#trait::Authz;
-use authz::vera::{AccessCheckRequest, ValidWindow};
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{
     Bulletin, BulletinKind, BulletinPost, DocumentPayload, KeyDerivation, RingPayload,
 };

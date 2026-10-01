@@ -35,28 +35,31 @@ impl Node {
     fn start_bound(base: &Path, addr: &str, controller: &str, log: &Path, bind: &str) -> Self {
         let output = fs::File::create(log).unwrap();
         Self(
-            Command::new(env!("CARGO_BIN_EXE_orbis-node"))
-                .arg("--vera-config")
-                .arg(base.join("vera.json"))
-                .args([
-                    "--addr",
-                    addr,
-                    "--node-controller-key",
-                    controller,
-                    "--network-private-routes-only",
-                    "--network-bind-addr",
-                    bind,
-                    "--reshare-interval-secs",
-                    "1",
-                ])
-                .arg("--runtime-base-path")
-                .arg(base)
-                .env("ORBIS_PASSWORD_FILE", base.join("password"))
-                .stdin(Stdio::null())
-                .stdout(output.try_clone().unwrap())
-                .stderr(output)
-                .spawn()
-                .unwrap(),
+            Command::new(
+                std::env::var_os("ORBIS_NODE_BINARY")
+                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_orbis-node").into()),
+            )
+            .arg("--vera-config")
+            .arg(base.join("vera.json"))
+            .args([
+                "--addr",
+                addr,
+                "--node-controller-key",
+                controller,
+                "--network-private-routes-only",
+                "--network-bind-addr",
+                bind,
+                "--reshare-interval-secs",
+                "1",
+            ])
+            .arg("--runtime-base-path")
+            .arg(base)
+            .env("ORBIS_PASSWORD_FILE", base.join("password"))
+            .stdin(Stdio::null())
+            .stdout(output.try_clone().unwrap())
+            .stderr(output)
+            .spawn()
+            .unwrap(),
         )
     }
     async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {

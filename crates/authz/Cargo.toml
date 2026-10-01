@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
-common = { path = "../common" }
+common = { path = "../common", default-features = false }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,7 +18,7 @@ hex = { workspace = true, optional = true }
 
 [features]
 default = ["vera"]
-vera = []
+vera = ["common/cosmos"]
 native = ["dep:vera-client", "dep:vera-domain", "dep:hex"]
 test-helpers = []
 

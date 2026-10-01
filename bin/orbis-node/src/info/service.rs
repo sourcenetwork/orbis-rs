@@ -1,7 +1,10 @@
 use crate::app_state::AppState;
-use crate::helpers::launch::{get_node_signer, network_peer_address};
+#[cfg(any(feature = "cosmos", test))]
+use crate::helpers::launch::get_node_signer;
+use crate::helpers::launch::network_peer_address;
 use crate::info::error::InfoError;
 use crate::ring_state::{RingIndexEntry, RingPolyState};
+#[cfg(any(feature = "cosmos", test))]
 use common::blockchain::ChainConfigBuilder;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -100,12 +103,15 @@ fn get_node_info_response(
 
     let (public_address, node_key) = match native_identity {
         Some(key) => (key.to_owned(), key.to_owned()),
+        #[cfg(any(feature = "cosmos", test))]
         None => {
             let config = ChainConfigBuilder::default().build();
             let signer = get_node_signer(local_storage, config)
                 .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?;
             (signer.address(), signer.public_key_hex())
         }
+        #[cfg(not(any(feature = "cosmos", test)))]
+        None => return Err(Status::internal("native node identity is missing")),
     };
 
     Ok(GetNodeInfoResponse {

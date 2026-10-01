@@ -569,6 +569,7 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 // ============================================================================
 
 /// The minimum amount a node can have in chain balance to start the node
+#[cfg(all(feature = "authz-vera", feature = "bulletin-vera"))]
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
 
 // ============================================================================

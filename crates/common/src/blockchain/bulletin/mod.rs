@@ -6,8 +6,9 @@
 //! - [`types`] — message, query, and domain types.
 //! - [`ids`] — the (currently unused — see its module doc) ring-reshare finalize sign
 //!   doc and hash-bytes builder.
-//! - [`client`] — `VeraClient` extension methods (`bulletin_*`) that call the chain.
+//! - `client` (feature `cosmos`) — `VeraClient` extension methods (`bulletin_*`) that call the chain.
 
+#[cfg(feature = "cosmos")]
 mod client;
 mod ids;
 mod types;

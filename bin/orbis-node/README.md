@@ -199,13 +199,23 @@ signing and replication, permission revocation, PRE, graceful restart, and
 committee replacement. Deployment qualification still requires sustained load,
 multi-host networks, crash/power-loss recovery, and operational security review.
 
-Build with `cargo build -p orbis-node --features native`, then start with
+Build a native-only node with:
+
+```sh
+cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
+```
+
+Select `decaf377` instead of `bls12-381` for the Decaf crypto implementation. Start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
 The configuration selects native authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
 handoff, node initialization, request handlers and shutdown path. Backend setup
-provides the identity and service adapters. The current build still includes the
-default backend dependencies.
+provides the identity and service adapters. This build excludes the Cosmos SDK and
+CometBFT transport dependencies. Default builds retain the existing backend; adding
+`--features native` to a default build includes both. Native-only startup requires
+`--vera-config` and reports a missing configuration before opening node state.
+The separate `harness` and `integration-test` features retain the dependencies used
+by their existing test identities and fixtures.
 
 Supply the controller public key as 33 hex-encoded bytes. Existing connection and
 fee options cannot be combined with `--vera-config`.
@@ -244,7 +254,9 @@ updates. Startup does not wait for funding. `public_key.txt` and the info servic
 
 The focused startup fixture launches the actual Orbis binary against four local
 Vera members and checks certified registration and identity/journal persistence
-across restart:
+across restart. Set `ORBIS_NODE_BINARY` to an independently built node executable
+when validating the native-only package; otherwise the fixture uses Cargo's test
+binary:
 
 ```sh
 VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
