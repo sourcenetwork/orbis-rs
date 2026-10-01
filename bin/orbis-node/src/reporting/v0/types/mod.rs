@@ -31,9 +31,10 @@ pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
 pub const UNAUTHORIZED_REQUEST_REPORT_TYPE: &str = "unauthorized_request";
 pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
 pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
-/// See `docs/plans/pet-blind-equality-test-design.md` — the blind equality
-/// test that replaced PET's old single-round check protocol (audit finding
-/// #2). Distinct from `crates/crypto`'s own `BLIND_PROOF_DOMAIN` (the
+/// Domain for PET's blind equality-test protocol (the multi-round blinded
+/// check that replaced PET's original single-round check, which leaked
+/// information about the plaintext fingerprint across repeated checks).
+/// Distinct from `crates/crypto`'s own `BLIND_PROOF_DOMAIN` (the
 /// blinding-correctness DLEQ's Fiat-Shamir challenge domain) — these bind
 /// the reporting-layer digests and signed statements built around it.
 pub const PET_BLIND_CONTEXT_DOMAIN: &str = "orbis-pet-blind-context-v1";

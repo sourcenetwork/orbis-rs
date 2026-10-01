@@ -705,10 +705,9 @@ pub(super) fn pending_reshare_pet_parameters(ring: &RingPayload) -> Result<(Vec<
 
 /// Same as [`start_reshare`], for a ring's independent PET checking key.
 /// Called directly by `bulletin_update.rs`'s atomicity gate once the main
-/// ring's new-committee leader is ready to post its own reshare update (see
-/// `docs/plans/lazy-gliding-gosling.md`, Stage 3) — the leader triggers this
-/// itself rather than going through the general PSS scheduler path, since it
-/// already knows the ring is due right now.
+/// ring's new-committee leader is ready to post its own reshare update — the
+/// leader triggers this itself rather than going through the general PSS
+/// scheduler path, since it already knows the ring is due right now.
 ///
 /// Returns a boxed future for the same reason `start_fresh_pet` does: that
 /// `bulletin_update.rs` caller sits inside `coordinator::phases::phase4`'s

@@ -143,8 +143,7 @@ pub trait Pet {
         target_fingerprint: &Self::PublicKey,
     ) -> Result<()>;
 
-    /// A blinding participant's contribution to the PET blind equality test
-    /// (audit finding #2 — see `docs/plans/pet-blind-equality-test-design.md`):
+    /// A blinding participant's contribution to the PET blind equality test:
     /// `(z_i * R, z_i * D)`, where `R = tag.ephemeral_point` and
     /// `D = tag.masked_fingerprint - target_fingerprint`, together with a
     /// Chaum–Pedersen proof that the same fresh secret `z_i` was used for

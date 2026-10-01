@@ -1008,8 +1008,9 @@ impl<D: Dkg> DkgSessionState<D> {
     /// its ring *does* already have a finalized main key, it is still a fresh-DKG-shaped
     /// ceremony (abort-only by design, same as `Fresh`: a stall is abandoned and retried, not
     /// reported). Extending node_offline attribution to a stalled FreshPet ceremony is a
-    /// deliberate future design pass (see the parked "durable staging/crash-recovery" item in
-    /// docs/plans/pet-integration.md), not something to add as a side effect of this change.
+    /// deliberate future design pass (durable staging/crash-recovery for abort-only fresh-DKG
+    /// ceremonies generally, not specific to PET), not something to add as a side effect of
+    /// this change.
     ///
     /// Refresh: every current-committee member is a dealer. Reshare: the participating
     /// old-committee members are the dealers. Over-attribution is harmless — the downstream

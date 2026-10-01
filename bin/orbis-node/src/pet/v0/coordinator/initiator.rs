@@ -1,5 +1,6 @@
-//! Initiator-side PET blind equality test (audit finding #2 — see
-//! `docs/plans/pet-blind-equality-test-design.md`).
+//! Initiator-side PET blind equality test — the multi-round blinded check
+//! protocol that replaced PET's original single-round check, which leaked
+//! information about the plaintext fingerprint across repeated checks.
 //!
 //! There is no separate "leader" concept here, exactly like PRE's own
 //! reencryption round: whichever node received the external `StartPreRequest`

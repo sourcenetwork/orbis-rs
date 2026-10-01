@@ -242,9 +242,10 @@ impl<ShareValue: Zeroize, PublicKey> Drop for PetCheckReply<ShareValue, PublicKe
 }
 
 /// One participant's blinding contribution to the PET blind equality test
-/// (audit finding #2's replacement for direct `x*R` decryption — see
-/// `docs/plans/pet-blind-equality-test-design.md`), together with a
-/// Chaum–Pedersen proof that the same secret `z_i` relates `(R, blinded_r)`
+/// — the multi-round blinded check protocol that replaced direct `x*R`
+/// decryption, which leaked information about the plaintext fingerprint
+/// across repeated checks — together with a Chaum–Pedersen proof that the
+/// same secret `z_i` relates `(R, blinded_r)`
 /// and `(D, blinded_diff)`, where `R` is the tag's ephemeral point and
 /// `D = masked_fingerprint - target_fingerprint`. See
 /// [`crate::r#trait::Pet::verify_blinding_correctness`].

@@ -1,11 +1,12 @@
 //! Canonical digests, signed statements, and the blinding certificate for
-//! the PET blind equality test — see
-//! `docs/plans/pet-blind-equality-test-design.md` for the full protocol and
-//! `docs/plans/lazy-gliding-gosling.md`'s Stage 2 scope for what this file
-//! covers. This replaces `pet.rs`'s single-round `PetCheckResponseStatement`
-//! protocol rather than extending it: a genuine `Z·R` decryption proof would
-//! not verify against that statement's shape, and must not be coerced into
-//! it.
+//! the PET blind equality test — a multi-round protocol where a committee
+//! commits to a blinded set of candidate fingerprints, reveals a selected
+//! threshold-sized subset, and each node proves decryption against its own
+//! blinded share, so no single round leaks the plaintext fingerprint the
+//! way the original single-round check could. This replaces `pet.rs`'s
+//! single-round `PetCheckResponseStatement` protocol rather than extending
+//! it: a genuine `Z·R` decryption proof would not verify against that
+//! statement's shape, and must not be coerced into it.
 //!
 //! Three digests bind the protocol together:
 //! - `context_digest` ([`PetBlindContext::context_digest`]) — every

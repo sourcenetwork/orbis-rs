@@ -1690,10 +1690,9 @@ resources:
 }
 
 /// Docker-based integration test: the PET checking key's own PSS lifecycle
-/// (PSS-for-PET-key plan, `docs/plans/pet-audit-fix-checklist.md`).
-///
-/// `test_cli_calls_dkg_for_pet_ring` only covers fresh-DKG finalization; this
-/// test covers the two pieces that build on top of it:
+/// — independent refresh and committee-atomic reshare, on top of the
+/// fresh-DKG finalization `test_cli_calls_dkg_for_pet_ring` already covers.
+/// This test covers the two pieces that build on top of it:
 ///
 /// 1. **Independent refresh** (`RefreshPet`): once the ring is live, the PET
 ///    bundle's own `last_pss` advances via the PSS scheduler exactly like the

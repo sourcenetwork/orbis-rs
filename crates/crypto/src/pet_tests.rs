@@ -127,8 +127,9 @@ where
 }
 
 // ============================================================================
-// Blinding-correctness-proof suite (audit finding #2's blind equality test —
-// see `docs/plans/pet-blind-equality-test-design.md`)
+// Blinding-correctness-proof suite (for the PET blind equality test — the
+// multi-round blinded check protocol that replaced PET's original
+// single-round check)
 // ============================================================================
 //
 // Field-level tampering (mutating a computed proof's scalar/point fields

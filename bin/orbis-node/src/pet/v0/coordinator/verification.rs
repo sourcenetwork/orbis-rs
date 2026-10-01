@@ -1,5 +1,7 @@
-//! Shared verification logic for the PET blind equality test (audit finding
-//! #2 — see `docs/plans/pet-blind-equality-test-design.md`).
+//! Shared verification logic for the PET blind equality test — the
+//! multi-round blinded check protocol that replaced PET's original
+//! single-round check, which leaked information about the plaintext
+//! fingerprint across repeated checks.
 //!
 //! [`verify_pet_check_request`] independently verifies the underlying tag
 //! itself (unchanged from the old single-round protocol — the tag-knowledge

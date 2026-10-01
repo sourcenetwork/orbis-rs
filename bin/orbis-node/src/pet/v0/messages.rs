@@ -1,15 +1,14 @@
 //! PET Protocol Messages
 //!
 //! Wire messages for the peer-to-peer threshold PET blind-equality-test
-//! (commit/reveal/decrypt) between orbis nodes — see
-//! `docs/plans/pet-blind-equality-test-design.md` for the protocol these
-//! implement. Never exposed externally — the only caller is PRE's own
-//! `start_pre` pipeline, gated on a ring's `requires_pet`.
+//! (commit/reveal/decrypt) between orbis nodes. Never exposed externally —
+//! the only caller is PRE's own `start_pre` pipeline, gated on a ring's
+//! `requires_pet`.
 //!
-//! Replaces the old single-round `CheckRequest`/`CheckResponse` entirely
-//! (audit finding #2): that protocol exposed the raw combined `x*R` to
-//! whoever ran the check, letting them recover the owner's deterministic
-//! fingerprint on every check regardless of match/mismatch.
+//! Replaces the old single-round `CheckRequest`/`CheckResponse` entirely:
+//! that protocol exposed the raw combined `x*R` to whoever ran the check,
+//! letting them recover the owner's deterministic fingerprint on every
+//! check regardless of match/mismatch.
 
 use authz::vera::ValidWindow;
 use bulletin::r#trait::DocumentPayload;

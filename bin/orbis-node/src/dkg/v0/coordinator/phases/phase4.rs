@@ -45,8 +45,8 @@ where
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
 
-    // Reshare PET: fully self-contained (Stage 2 of the PSS-for-PET-key
-    // plan — see `docs/plans/lazy-gliding-gosling.md`). Handled before the
+    // Reshare PET: fully self-contained, resolving the ring directly by
+    // `ring_id` rather than through the main-ring index. Handled before the
     // generic Dealer check below, since a departing PET Dealer's cleanup
     // must not touch the main-ring storage/index machinery
     // `ring_storage::cleanup_departing_dealer` assumes.
@@ -466,8 +466,7 @@ where
         // submitting MsgFinalizeRing on its own: both ceremonies' results are
         // submitted together in one combined finalize once the PET checking
         // key's own ceremony also completes (see the FreshPet branch of this
-        // function, and the checking-key lifecycle design in
-        // docs/plans/pet-integration.md). Ordinary rings are unaffected.
+        // function). Ordinary rings are unaffected.
         let ring_payload =
             read_ring_for_route(&*coord.app_state.bulletin, &ring_id, coord.routes.version)
                 .await

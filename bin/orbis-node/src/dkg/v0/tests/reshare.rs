@@ -2447,17 +2447,17 @@ async fn test_reshare_full_rotation() {
 }
 
 // =============================================================================
-// Reshare PET tests (Stage 2 of the PSS-for-PET-key plan)
+// Reshare PET tests
 //
 // `ResharePet` mirrors `Reshare`'s own ceremony mechanics (Dealer/Receiver/
 // DealerReceiver role assignment, share redistribution) for a ring's
-// independent PET checking key. Unlike the main key, Stage 2 builds it as a
-// standalone ceremony — callable directly (as these tests do), not yet
-// chained to or gated by the main ring's own `Reshare` (see
-// docs/plans/lazy-gliding-gosling.md, Stage 3). Completion is observed via
-// each new-committee node's staged `PendingReshareBundle::load_pet`, not a
-// promoted live `PetRingKey` bundle — there is no confirmation-driven
-// promotion yet.
+// independent PET checking key. These tests call the ceremony directly
+// (mirroring `Reshare`'s own test suite) rather than through the full
+// atomicity-gated path a live reshare drives it through (see
+// `bulletin_update.rs`), so completion here is observed via each
+// new-committee node's staged `PendingReshareBundle::load_pet` rather than a
+// promoted live `PetRingKey` bundle — promotion itself is exercised by the
+// atomicity-gate tests, not this module.
 // =============================================================================
 
 /// Flip `TEST_FRESH_DKG_RING_ID`'s seeded ring payload (posted by
@@ -3156,10 +3156,10 @@ async fn test_reshare_pet_session_init_rejects_no_bulletin_announcement() {
 }
 
 // =============================================================================
-// Reshare PET atomicity gate (Stage 3 of the PSS-for-PET-key plan)
+// Reshare PET atomicity gate
 //
-// Unlike the Stage-2 tests above (which call `start_reshare_pet` directly),
-// these drive the ceremony purely through `start_reshare` — the same
+// Unlike the ceremony-mechanics tests above (which call `start_reshare_pet`
+// directly), these drive the ceremony purely through `start_reshare` — the same
 // entrypoint the PSS scheduler itself calls for the main key alone — and
 // prove that `ResharePet` runs, completes, and promotes automatically as a
 // side effect, with the main ring's own bulletin update landing only once

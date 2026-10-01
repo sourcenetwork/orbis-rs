@@ -1,6 +1,9 @@
 //! Shared context construction and reporting glue for the PET blind
-//! equality test (audit finding #2 — see
-//! `docs/plans/pet-blind-equality-test-design.md`).
+//! equality test — the multi-round blinded check protocol (commit a
+//! blinded candidate set, reveal a selected subset, prove decryption
+//! against each node's own blinded share) that replaced PET's original
+//! single-round check, which leaked information about the plaintext
+//! fingerprint across repeated checks.
 //!
 //! [`build_pet_blind_context`] builds the one canonical
 //! [`PetBlindContext`] every participant in a given attempt independently

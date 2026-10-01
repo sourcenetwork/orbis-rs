@@ -1,11 +1,11 @@
 //! Responder-side PET blind-equality-test message handling — commit, reveal,
-//! and decrypt (audit finding #2's replacement for the old single-round
-//! `CheckRequest`/`CheckResponse` handler; see
-//! `docs/plans/pet-blind-equality-test-design.md`).
+//! and decrypt. Replaces the old single-round `CheckRequest`/`CheckResponse`
+//! handler, which leaked information about the plaintext fingerprint across
+//! repeated checks.
 //!
 //! Every handler independently re-authenticates and re-authorizes the exact
 //! comparison from primary sources before releasing any crypto output —
-//! copying an earlier phase's approval is insufficient, per the design doc.
+//! copying an earlier phase's approval is insufficient.
 //! These same three methods are also called directly (in-process, with this
 //! node's own peer id) for the initiator's local contribution when it is
 //! itself a ring member — see `coordinator::initiator` — so there is exactly

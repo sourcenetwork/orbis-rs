@@ -210,11 +210,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 let mut pending_bundle_resolved = false;
                 // Same lifecycle as `pending_bundle_resolved`, for the ring's
                 // independent PET checking key: promoted/discarded on the
-                // exact same confirmation signal (Stage 3 of
-                // docs/plans/lazy-gliding-gosling.md — the two reshares are
-                // gated to land atomically, so the one bulletin confirmation
+                // exact same confirmation signal. The main and PET reshares
+                // are gated to land atomically (see the atomicity gate in
+                // `bulletin_update.rs`), so the one bulletin confirmation
                 // this function already waits for is the right signal for
-                // both), left alone on a timeout for the same reason.
+                // both, left alone on a timeout for the same reason.
                 let mut pet_pending_bundle_resolved = false;
                 if should_promote {
                     match app_state

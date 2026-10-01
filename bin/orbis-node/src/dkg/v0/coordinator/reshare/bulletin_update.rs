@@ -141,9 +141,9 @@ where
     };
 
     if prepared.requires_pet {
-        // Atomicity gate (docs/plans/lazy-gliding-gosling.md, Stage 3): the
-        // ring's independent PET checking key must reshare along with the
-        // main key, either both commit or neither does. `ResharePet` runs
+        // Atomicity gate: the ring's independent PET checking key must
+        // reshare along with the main key, either both commit or neither
+        // does. `ResharePet` runs
         // on the exact same old/new committees, so we (already established
         // as the canonical new-committee leader above) trigger it directly
         // rather than going through the general PSS scheduler path, and
