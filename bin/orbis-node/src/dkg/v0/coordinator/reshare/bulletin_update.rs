@@ -15,7 +15,7 @@ use crate::dkg::v0::helpers::{
     derive_reshare_pet_session_id, effective_new_peer_node_keys, peer_node_keys_match,
 };
 use crate::dkg::v0::messages::SessionKind;
-use crate::dkg::v0::network::start_reshare_pet;
+use crate::dkg::v0::network::coordinate_reshare_pet;
 use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::ring::RingConfig;
@@ -143,12 +143,17 @@ where
     if prepared.requires_pet {
         // Atomicity gate: the ring's independent PET checking key must
         // reshare along with the main key, either both commit or neither
-        // does. `ResharePet` runs
-        // on the exact same old/new committees, so we (already established
-        // as the canonical new-committee leader above) trigger it directly
-        // rather than going through the general PSS scheduler path, and
-        // defer signing the main update until it's done.
-        if let Err(error) = start_reshare_pet(
+        // does. `ResharePet` runs on the exact same old/new committees, so
+        // we (already established as the canonical new-committee leader
+        // above) trigger it directly rather than going through the general
+        // PSS scheduler path, and defer signing the main update until it's
+        // done. Calling `coordinate_reshare_pet` rather than
+        // `start_reshare_pet`: the latter's front door requires the caller
+        // to be a member of the *old* committee (correct for the general
+        // PSS-triggered path, where any current member may need to forward
+        // to the real new leader), but we already know we're the canonical
+        // new-committee leader here, even if we were never in the old one.
+        if let Err(error) = coordinate_reshare_pet(
             coord.app_state.clone(),
             coord.routes,
             prepared.ring_id.clone(),

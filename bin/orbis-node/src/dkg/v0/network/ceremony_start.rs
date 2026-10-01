@@ -703,172 +703,25 @@ pub(super) fn pending_reshare_pet_parameters(ring: &RingPayload) -> Result<(Vec<
     Ok((next_keys, next_threshold))
 }
 
-/// Same as [`start_reshare`], for a ring's independent PET checking key.
-/// Called directly by `bulletin_update.rs`'s atomicity gate once the main
-/// ring's new-committee leader is ready to post its own reshare update — the
-/// leader triggers this itself rather than going through the general PSS
-/// scheduler path, since it already knows the ring is due right now.
-///
-/// Returns a boxed future for the same reason `start_fresh_pet` does: that
-/// `bulletin_update.rs` caller sits inside `coordinator::phases::phase4`'s
-/// own call chain, so awaiting a plain `async fn` here makes rustc's
-/// opaque-future inference for `phase4`'s completion function depend on
-/// itself (E0391) — this ceremony's own phases loop back into
-/// `coordinator::phases` before this future can resolve. Boxing here (and
-/// in `coordinate_reshare_pet` below, which this calls) breaks the cycle
-/// with a concrete type at both edges.
-pub(crate) fn start_reshare_pet<D>(
-    state: Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    ring_id: String,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ReshareStartOutcome>> + Send>>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    Box::pin(async move {
-        let ring = read_ring_for_route(&*state.bulletin, &ring_id, routes.version)
-            .await
-            .map_err(DkgError::ProtocolError)?;
-        let (next_keys, next_threshold) = pending_reshare_pet_parameters(&ring)?;
-        if !ring.peer_node_keys.contains(&state.node_key) {
-            return Err(DkgError::Unauthorized(
-                "only a current-committee member may request reshare PET start".into(),
-            ));
-        }
-        let ceremony = CeremonyId(derive_reshare_pet_session_id(
-            &ring_id,
-            &ring.peer_node_keys,
-            &next_keys,
-            next_threshold,
-        )?);
-        if let Some(attempt) = state.dkg_session_state.transport_attempt(&ceremony.0).await {
-            crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_duplicate");
-            return Ok(ReshareStartOutcome::AlreadyActive(ceremony, attempt));
-        }
-
-        let leader = transport::canonical_leader(&next_keys)
-            .ok_or(DkgError::InvalidParticipantCount(0))?
-            .to_string();
-        crate::metrics::record_dkg_transport_event("control", "reshare_pet_next_leader_selected");
-        if leader == state.node_key {
-            return coordinate_reshare_pet(state, routes, ring_id).await;
-        }
-
-        let next_routes = resolve_node_routes(&state.bulletin, &next_keys)
-            .await
-            .map_err(DkgError::Unauthorized)?;
-        let leader_peer = next_routes
-            .iter()
-            .find_map(|route| (route.node_key == leader).then_some(route.peer_id.clone()))
-            .ok_or_else(|| {
-                DkgError::InvalidState("next-committee leader route is missing".into())
-            })?;
-        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_forwarded");
-        tracing::info!(
-            ring_id = %ring_id,
-            leader = %leader,
-            "forwarding pending reshare PET to canonical next-committee leader"
-        );
-        let next_assignments = canonical_node_id_assignments_from_node_keys(&next_keys)
-            .map_err(DkgError::InvalidInput)?;
-        let leader_participant = next_assignments
-            .get(&leader)
-            .copied()
-            .map(ParticipantRef::next)
-            .ok_or_else(|| DkgError::InvalidState("next leader assignment is missing".into()))?;
-        let kind = SessionKind::ResharePet {
-            ring_id: ring_id.clone(),
-            new_peer_node_keys: next_keys,
-            new_threshold: next_threshold,
-        };
-        let forwarding_deadline =
-            Instant::now() + DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE;
-        let response = retry_preparation_control_classified(
-            &state,
-            routes,
-            &leader_peer,
-            DkgControlMessage::StartResharePet {
-                ring_id: ring_id.clone(),
-            },
-            forwarding_deadline,
-        )
-        .await;
-        let response = match response {
-            Ok(response) => response,
-            Err(error) => {
-                if error.is_unreachable() {
-                    spawn_pss_offline_observations(
-                        state.clone(),
-                        routes,
-                        PssOfflineObservationSeed::direct(
-                            ceremony,
-                            kind,
-                            ring_id,
-                            routes.version,
-                            PssOfflineStage::StartForward,
-                            [(leader_participant, leader, leader_peer)],
-                        ),
-                    );
-                }
-                return Err(error.into_error());
-            }
-        };
-        match response {
-            DkgControlMessage::ResharePetStartAccepted {
-                ceremony_id,
-                attempt_id,
-            } if ceremony_id == ceremony => {
-                Ok(ReshareStartOutcome::Forwarded(ceremony_id, attempt_id))
-            }
-            response => Err(DkgError::ProtocolError(format!(
-                "next-committee leader returned unexpected reshare PET start response: {response:?}"
-            ))),
-        }
-    })
-}
-
-pub(super) async fn validate_reshare_pet_start_sender<D>(
-    state: &Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    ring_id: &str,
-    sender: &PeerId,
-) -> Result<()>
-where
-    D: CoordinatorDkg,
-{
-    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
-        .await
-        .map_err(DkgError::ProtocolError)?;
-    let (next_keys, _) = pending_reshare_pet_parameters(&ring)?;
-    let expected_leader =
-        transport::canonical_leader(&next_keys).ok_or(DkgError::InvalidParticipantCount(0))?;
-    if expected_leader != state.node_key {
-        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_rejected");
-        return Err(DkgError::Unauthorized(
-            "StartResharePet reached a nonleader next-committee receiver".into(),
-        ));
-    }
-    let current_routes = resolve_node_routes(&state.bulletin, &ring.peer_node_keys)
-        .await
-        .map_err(DkgError::Unauthorized)?;
-    if current_routes
-        .iter()
-        .all(|route| !peer_matches_route(sender, &route.peer_id))
-    {
-        crate::metrics::record_dkg_transport_event("control", "reshare_pet_start_rejected");
-        return Err(DkgError::Unauthorized(
-            "StartResharePet sender is not in the current committee".into(),
-        ));
-    }
-    Ok(())
-}
-
 /// Coordinate the pending PET reshare transition as the canonical
 /// next-committee receiver. Only this function creates an attempt ID.
 ///
-/// Boxed for the same reason as `start_reshare_pet` above, which calls this.
-pub(super) fn coordinate_reshare_pet<D>(
+/// `pub(crate)`, not `pub(super)`: called directly by `bulletin_update.rs`'s
+/// atomicity gate, whose caller has already independently established that
+/// it *is* the canonical new-committee leader (it only reaches that branch
+/// when `reshare_new_node_id == 1`) — that leader need not have been a
+/// member of the old committee at all (e.g. a full committee replacement),
+/// so this function's own `leader != state.node_key` check, with no
+/// old-committee-membership requirement, is the right gate for that
+/// already-established trust.
+///
+/// Boxed for the same reason `start_fresh_pet` is: the `bulletin_update.rs`
+/// caller sits inside `coordinator::phases::phase4`'s own call chain, so
+/// awaiting a plain `async fn` here makes rustc's opaque-future inference
+/// for `phase4`'s completion function depend on itself (E0391) — this
+/// ceremony's own phases loop back into `coordinator::phases` before this
+/// future can resolve. Boxing here breaks the cycle with a concrete type.
+pub(crate) fn coordinate_reshare_pet<D>(
     state: Arc<AppState<D>>,
     routes: &'static network::ProtocolRoutes,
     ring_id: String,

@@ -784,18 +784,6 @@ pub enum DkgControlMessage {
         ceremony_id: CeremonyId,
         attempt_id: AttemptId,
     },
-    /// Same as `StartReshare`, for a ring's independent PET checking key. No
-    /// `expected_ring_pk`: `ring_id` alone is PET's identity anchor (see
-    /// `SessionKind::ResharePet`'s doc comment). No "not due" response
-    /// either — like `Reshare`, a PET reshare is always due once the
-    /// bulletin announces a transition, never gated on an interval.
-    StartResharePet {
-        ring_id: String,
-    },
-    ResharePetStartAccepted {
-        ceremony_id: CeremonyId,
-        attempt_id: AttemptId,
-    },
     /// Ask the canonical current-committee leader to coordinate a due refresh.
     /// The requester key lets the receiver authenticate only the sender's
     /// Vera route instead of resolving the entire committee.
@@ -1060,8 +1048,6 @@ impl DkgControlMessage {
             Self::SessionStatusResponse { .. } => "session_status_response",
             Self::StartReshare { .. } => "start_reshare",
             Self::ReshareStartAccepted { .. } => "reshare_start_accepted",
-            Self::StartResharePet { .. } => "start_reshare_pet",
-            Self::ResharePetStartAccepted { .. } => "reshare_pet_start_accepted",
             Self::StartRefresh { .. } => "start_refresh",
             Self::RefreshStartAccepted { .. } => "refresh_start_accepted",
             Self::RefreshNotDue => "refresh_not_due",

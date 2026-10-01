@@ -125,7 +125,7 @@ pub use control_handler::DkgControlHandler;
 pub use private::DkgPrivateHandler;
 
 pub(crate) use ceremony_start::{
-    start_refresh, start_refresh_pet, start_reshare, start_reshare_pet, RefreshStartOutcome,
+    coordinate_reshare_pet, start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome,
     ReshareStartOutcome,
 };
 // Only `unsafe_testing` drives the leader broadcast path directly; gating the

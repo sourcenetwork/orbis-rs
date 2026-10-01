@@ -5,7 +5,7 @@ use crate::dkg::v0::{
     error::DkgError,
     helpers::{derive_reshare_pet_session_id, derive_reshare_session_id},
     messages::SessionKind,
-    network::{start_reshare, start_reshare_pet, ReshareStartOutcome},
+    network::{coordinate_reshare_pet, start_reshare, ReshareStartOutcome},
     session_state::{RingPssClaimOutcome, SessionStateManager},
     transport::{canonical_leader, AttemptKey},
 };
@@ -2552,8 +2552,16 @@ fn post_reshare_pet_announcement(
 /// bulletin update" phase — completion is observed via each new-committee
 /// node's staged `PendingReshareBundle::load_pet` (Stage 3 adds
 /// confirmation-driven promotion to the live PET key).
+///
+/// Drives the ceremony via `coordinate_reshare_pet` directly, as the
+/// canonical new-committee leader — not `start_reshare_pet`'s old front
+/// door with its old-committee-member forwarding (deleted: nothing in
+/// production ever called it other than as this exact leader, which need
+/// not have been an old-committee member at all — see
+/// `bulletin_update.rs`'s atomicity gate, the only real caller). Two
+/// concurrent calls from the leader itself still exercise
+/// `coordinate_reshare_pet`'s own duplicate-start guard.
 async fn run_reshare_pet_ceremony(
-    old_committee_states: &[&crate::app_state::AppState<DkgImpl>],
     old_peer_node_keys: &[String],
     ring_id: &str,
     sorted_new_peer_node_keys: &[String],
@@ -2562,27 +2570,11 @@ async fn run_reshare_pet_ceremony(
 ) {
     let leader_key = canonical_leader(sorted_new_peer_node_keys)
         .expect("new committee has a canonical transport leader");
-    assert!(
-        new_committee_states
-            .iter()
-            .any(|state| state.node_key == leader_key),
-        "canonical next-committee transport leader is present in the test network"
-    );
-    let initiator_state = old_committee_states
+    let leader_state = new_committee_states
         .iter()
         .copied()
-        .find(|old| {
-            new_committee_states
-                .iter()
-                .any(|new| new.node_key == old.node_key)
-        })
-        .or_else(|| old_committee_states.first().copied())
-        .expect("reshare PET test has at least one current member to forward start");
-    let secondary_state = old_committee_states
-        .iter()
-        .copied()
-        .find(|state| state.node_key != initiator_state.node_key)
-        .expect("reshare PET convergence test has two live current members");
+        .find(|state| state.node_key == leader_key)
+        .expect("canonical next-committee transport leader is present in the test network");
 
     let session_id = derive_reshare_pet_session_id(
         ring_id,
@@ -2592,23 +2584,25 @@ async fn run_reshare_pet_ceremony(
     )
     .unwrap();
 
-    let first_start = start_reshare_pet(
-        Arc::new(initiator_state.clone()),
+    let first_start = coordinate_reshare_pet(
+        Arc::new(leader_state.clone()),
         &::network::V0,
         ring_id.to_string(),
     );
-    let second_start = start_reshare_pet(
-        Arc::new(secondary_state.clone()),
+    let second_start = coordinate_reshare_pet(
+        Arc::new(leader_state.clone()),
         &::network::V0,
         ring_id.to_string(),
     );
     let (first_outcome, second_outcome) = tokio::join!(first_start, second_start);
-    let first_outcome = first_outcome.expect("first current member starts reshare PET");
-    let second_outcome = second_outcome.expect("second current member starts reshare PET");
+    let first_outcome = first_outcome.expect("new-committee leader starts reshare PET");
+    let second_outcome = second_outcome.expect("new-committee leader starts reshare PET");
     let outcome_ids = |outcome| match outcome {
         ReshareStartOutcome::Started(ceremony, attempt)
-        | ReshareStartOutcome::Forwarded(ceremony, attempt)
         | ReshareStartOutcome::AlreadyActive(ceremony, attempt) => (ceremony, attempt),
+        ReshareStartOutcome::Forwarded(_, _) => {
+            panic!("coordinate_reshare_pet never forwards — it is the leader-only entrypoint")
+        }
     };
     let (first_ceremony, first_attempt) = outcome_ids(first_outcome);
     let (second_ceremony, second_attempt) = outcome_ids(second_outcome);
@@ -2616,7 +2610,7 @@ async fn run_reshare_pet_ceremony(
     assert_eq!(second_ceremony, first_ceremony);
     assert_eq!(
         second_attempt, first_attempt,
-        "concurrent current-member forwards must converge on the one attempt created by the next leader"
+        "concurrent leader-initiated starts must converge on the one attempt created"
     );
 
     let start = Instant::now();
@@ -2729,11 +2723,9 @@ async fn test_reshare_pet_full_rotation() {
         &dummy_bulletin,
     );
 
-    let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_states.to_vec();
     let new_committee_states: Vec<&crate::app_state::AppState<DkgImpl>> =
         vec![&dave.app_state, &eve.app_state, &frank.app_state];
     run_reshare_pet_ceremony(
-        &old_node_states,
         &old_peer_node_keys,
         TEST_FRESH_DKG_RING_ID,
         &sorted_new,
@@ -2881,7 +2873,6 @@ async fn test_reshare_pet_same_committee_threshold_lowered() {
 
     let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = old_states.to_vec();
     run_reshare_pet_ceremony(
-        &old_node_states,
         &old_peer_node_keys,
         TEST_FRESH_DKG_RING_ID,
         &sorted_new,

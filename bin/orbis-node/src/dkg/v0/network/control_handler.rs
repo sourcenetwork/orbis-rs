@@ -60,7 +60,6 @@ pub(super) fn is_client_forwarded_start_request(request: &DkgControlMessage) -> 
         DkgControlMessage::StartFresh { .. }
             | DkgControlMessage::StartFreshPet { .. }
             | DkgControlMessage::StartReshare { .. }
-            | DkgControlMessage::StartResharePet { .. }
             | DkgControlMessage::StartRefresh { .. }
             | DkgControlMessage::StartRefreshPet { .. }
             | DkgControlMessage::GetSessionStatus { .. }
@@ -180,9 +179,6 @@ where
             ring_id,
             expected_ring_pk,
         } => on_start_reshare(state, routes, sender, ring_id, expected_ring_pk).await,
-        DkgControlMessage::StartResharePet { ring_id } => {
-            on_start_reshare_pet(state, routes, sender, ring_id).await
-        }
         DkgControlMessage::StartRefresh {
             ring_id,
             expected_ring_pk,
@@ -538,33 +534,6 @@ where
         }
     };
     Ok(DkgControlMessage::ReshareStartAccepted {
-        ceremony_id,
-        attempt_id,
-    })
-}
-
-async fn on_start_reshare_pet<D>(
-    state: Arc<AppState<D>>,
-    routes: &'static network::ProtocolRoutes,
-    sender: &PeerId,
-    ring_id: String,
-) -> Result<DkgControlMessage>
-where
-    D: CoordinatorDkg,
-    SignImpl: CoordinatorReportSigner<D>,
-{
-    validate_reshare_pet_start_sender(&state, routes, &ring_id, sender).await?;
-    let outcome = coordinate_reshare_pet(state, routes, ring_id).await?;
-    let (ceremony_id, attempt_id) = match outcome {
-        ReshareStartOutcome::Started(ceremony_id, attempt_id)
-        | ReshareStartOutcome::AlreadyActive(ceremony_id, attempt_id) => (ceremony_id, attempt_id),
-        ReshareStartOutcome::Forwarded(_, _) => {
-            return Err(DkgError::InvalidState(
-                "canonical next-committee leader forwarded a reshare PET start".into(),
-            ));
-        }
-    };
-    Ok(DkgControlMessage::ResharePetStartAccepted {
         ceremony_id,
         attempt_id,
     })
