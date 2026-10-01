@@ -19,7 +19,7 @@ use super::*;
 use crypto::r#trait::PubPoly;
 
 impl InvalidCryptoResponseHandler {
-    pub(super) async fn validate_pet_blind_reveal_evidence(
+    pub async fn validate_pet_blind_reveal_evidence(
         &self,
         envelope: &ReportEnvelope,
         context: &ReportValidationContext,
@@ -42,6 +42,25 @@ impl InvalidCryptoResponseHandler {
             &statement.context_digest,
             statement.signed_at,
         )?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "PET blind-reveal response protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+            "PET blind-reveal",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(envelope, context, &signing_committee, "PET blind-reveal")?;
 
         let expected_node_id =
             determine_session_node_id(&envelope.accused_node_key, &ring.peer_node_keys)
@@ -72,7 +91,7 @@ impl InvalidCryptoResponseHandler {
         require_pet_blind_reveal_verification_failure(blind_context, statement, context).await
     }
 
-    pub(super) async fn validate_pet_blind_decrypt_evidence(
+    pub async fn validate_pet_blind_decrypt_evidence(
         &self,
         envelope: &ReportEnvelope,
         context: &ReportValidationContext,
@@ -95,6 +114,25 @@ impl InvalidCryptoResponseHandler {
             &statement.context_digest,
             statement.signed_at,
         )?;
+
+        let effective_version =
+            validate_report_route_version_at_observed_at(envelope, ring, context.routes.version)?;
+        if statement.protocol_version != effective_version {
+            return Err(ReportingError::Unauthorized(format!(
+                "PET blind-decrypt response protocol version {} does not match effective ring version {}",
+                statement.protocol_version, effective_version
+            )));
+        }
+
+        let signing_committee = validate_ring_and_membership_for_scopes(
+            envelope,
+            ring,
+            CommitteeScope::Current,
+            CommitteeScope::Current,
+            "PET blind-decrypt",
+        )?;
+        validate_node_routes(envelope, context, ring).await?;
+        validate_local_signer(envelope, context, &signing_committee, "PET blind-decrypt")?;
 
         let expected_node_id =
             determine_session_node_id(&envelope.accused_node_key, &ring.peer_node_keys)

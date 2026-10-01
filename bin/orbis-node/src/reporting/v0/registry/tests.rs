@@ -1797,3 +1797,172 @@ mod pet_blind_decrypt_generation_authentication {
             .expect("a genuinely tampered proof must confirm the report");
     }
 }
+
+/// `validate_pet_blind_decrypt_evidence`/`validate_pet_blind_reveal_evidence`
+/// (the full outer validators, not just the inner crypto re-verification
+/// `pet_blind_decrypt_generation_authentication` exercises above) didn't
+/// call the same shared authorization helpers PRE/Sign's own outer
+/// validators do — ring-state authority, reporter/accused committee
+/// membership, reporter/accused transport identity, local-signer
+/// eligibility, protocol version. This module proves at least one of
+/// those (reporter committee membership) is now genuinely wired in and
+/// reachable, not just present in the shared helper's own (already
+/// extensively tested) unit tests.
+mod pet_blind_outer_validator_authorization_checks {
+    use super::*;
+    use crypto::r#trait::{CryptoSerialize, PriShare, PubPoly};
+    use crypto::test_helper::DKGCoordinator;
+    use crypto::{DkgImpl, ScalarField};
+
+    /// Same shape as `pet_blind_decrypt_generation_authentication::generation`
+    /// — a fresh DKG run standing in for a ring's PET checking key.
+    fn generation() -> (PriShare<ScalarField>, <DkgImpl as Dkg>::PubPoly) {
+        let mut coordinator = DKGCoordinator::new(
+            |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role: DkgRole| {
+                <DkgImpl as Dkg>::new(id, threshold, total_nodes, session_id, role)
+            },
+            3,
+            2,
+        )
+        .unwrap();
+        let (_, shares, pub_poly) = coordinator.run_dkg().unwrap();
+        let share = shares
+            .into_iter()
+            .find(|share| share.i == 2)
+            .expect("node 2 share");
+        (share, pub_poly)
+    }
+
+    fn hex_pk(pub_poly: &<DkgImpl as Dkg>::PubPoly) -> String {
+        hex::encode(CryptoSerialize::to_bytes(&pub_poly.eval(0)).unwrap())
+    }
+
+    async fn any_context() -> ReportValidationContext {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let db_name = format!(
+            "registry_pet_outer_validator_checks_{}",
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let db_path = crate::helpers::test_helpers::test_db_path(&db_name);
+        crate::helpers::test_helpers::cleanup_db(&db_path);
+        let app_state = crate::helpers::test_helpers::create_test_app_state_default(&db_name).await;
+        validation_context(&app_state, 1_100)
+    }
+
+    #[tokio::test]
+    async fn validate_pet_blind_decrypt_evidence_rejects_a_reporter_outside_the_signing_committee()
+    {
+        let context = any_context().await;
+        let (share, poly) = generation();
+        let pet_pk_hex = hex_pk(&poly);
+
+        let ring = RingPayload {
+            ring_pk: "ring-pk".to_string(),
+            peer_node_keys: vec![
+                "accused".to_string(),
+                "validator-1".to_string(),
+                "validator-2".to_string(),
+            ],
+            threshold: 2,
+            requires_pet: true,
+            pet_pk: Some(pet_pk_hex.clone()),
+            upgrade_info: UpgradeInfo {
+                current_version: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let ring_state_sha256_hex = ring_state_sha256(&ring);
+
+        let blind_context = PetBlindContext {
+            chain_id: context.bulletin.chain_id(),
+            protocol_version: 0,
+            crypto_backend: PetImpl::name(),
+            ring_id: "pet-ring-1".to_string(),
+            ring_pk: ring.ring_pk.clone(),
+            ring_state_sha256: ring_state_sha256_hex,
+            pet_pk: pet_pk_hex,
+            object_id: "derivation-1".to_string(),
+            salt: None,
+            timestamp: None,
+            document_inline: false,
+            audit_target_object_id: "target-1".to_string(),
+            actor_id: "did:key:z6Mkactor".to_string(),
+            valid_window_start: None,
+            valid_window_end: None,
+            coordinator_node_key: "coordinator".to_string(),
+            attempt_id: "attempt-1".to_string(),
+        };
+
+        let r_point = poly.eval(99);
+        let r_bytes = CryptoSerialize::to_bytes(&r_point).unwrap();
+        let tag = PetTag {
+            ephemeral_point: r_bytes.clone(),
+            masked_fingerprint: Vec::new(),
+        };
+        let reply =
+            PetImpl::partial_pet_check(&share.v, share.i, &tag).expect("genuine partial PET check");
+
+        let observed_at = context.now;
+        let signed_at = observed_at + CHAIN_BLOCK_GRACE_SECS;
+
+        let statement = PetBlindDecryptStatement {
+            domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+            chain_id: blind_context.chain_id.clone(),
+            ring_id: blind_context.ring_id.clone(),
+            ring_pk: blind_context.ring_pk.clone(),
+            ring_state_sha256: blind_context.ring_state_sha256.clone(),
+            protocol_version: 0,
+            attempt_id: blind_context.attempt_id.clone(),
+            context_digest: blind_context.context_digest(),
+            certificate_digest: [2u8; 32],
+            responder_node_key: "accused".to_string(),
+            from_node_id: reply.partial.i,
+            aggregate_r: r_bytes,
+            aggregate_diff: Vec::new(),
+            partial: CryptoSerialize::to_bytes(&reply.partial.v).unwrap(),
+            challenge: CryptoSerialize::to_bytes(&reply.challenge).unwrap(),
+            proof: CryptoSerialize::to_bytes(&reply.proof).unwrap(),
+            signed_at,
+            public_polynomial: CryptoSerialize::to_bytes(&poly).unwrap(),
+        };
+
+        let envelope = ReportEnvelope {
+            domain: REPORT_DOMAIN.to_string(),
+            report_type: INVALID_CRYPTO_RESPONSE_REPORT_TYPE.to_string(),
+            chain_id: blind_context.chain_id.clone(),
+            ring_id: blind_context.ring_id.clone(),
+            ring_pk: blind_context.ring_pk.clone(),
+            ring_state_sha256: blind_context.ring_state_sha256.clone(),
+            // Deliberately not a member of `ring.peer_node_keys` at all —
+            // the one thing this test isolates.
+            reporter_node_key: "reporter-outsider".to_string(),
+            accused_node_key: "accused".to_string(),
+            accused_peer_id: "aa".repeat(32),
+            observed_at,
+            expires_at: observed_at + REPORT_TTL_SECS,
+            payload: Vec::new(),
+            session_id: blind_context.attempt_id.clone(),
+        };
+
+        let handler = InvalidCryptoResponseHandler;
+        let response_signature = vec![0u8; 64];
+        let error = handler
+            .validate_pet_blind_decrypt_evidence(
+                &envelope,
+                &context,
+                &ring,
+                &blind_context,
+                &statement,
+                &response_signature,
+            )
+            .await
+            .expect_err(
+                "a report from a reporter outside the ring's signing committee must be rejected",
+            );
+        assert!(
+            error.to_string().contains("signing committee"),
+            "expected a signing-committee rejection, got: {error}"
+        );
+    }
+}

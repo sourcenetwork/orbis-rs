@@ -457,6 +457,29 @@ where
                                 %error,
                                 "PET Coordinator: commit request failed"
                             );
+                            if let Some(observation) = offline_observation_from_pet_error(
+                                &document.ring_id,
+                                &all_peer_ids,
+                                &ring_payload.peer_node_keys,
+                                &peer_id,
+                                &error,
+                                self.routes.version,
+                                &attempt_id,
+                            ) {
+                                let _ = queue_report::<D, SignImpl>(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    ReportObservation::NodeOffline(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
                         }
                     }
                     if commitments.len() >= threshold {
@@ -651,6 +674,29 @@ where
                                 %error,
                                 "PET Coordinator: reveal request failed"
                             );
+                            if let Some(observation) = offline_observation_from_pet_error(
+                                &ring_id,
+                                &all_peer_ids,
+                                &ring_payload.peer_node_keys,
+                                &peer_id,
+                                &error,
+                                self.routes.version,
+                                &attempt_id,
+                            ) {
+                                let _ = queue_report::<D, SignImpl>(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    ReportObservation::NodeOffline(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
                         }
                     }
                     if reveals.len() >= threshold {
@@ -871,6 +917,29 @@ where
                                 %error,
                                 "PET Coordinator: decrypt request failed"
                             );
+                            if let Some(observation) = offline_observation_from_pet_error(
+                                &ring_id,
+                                &all_peer_ids,
+                                &ring_payload.peer_node_keys,
+                                &peer_id,
+                                &error,
+                                self.routes.version,
+                                &attempt_id,
+                            ) {
+                                let _ = queue_report::<D, SignImpl>(
+                                    self.app_state.clone(),
+                                    self.routes,
+                                    ReportObservation::NodeOffline(observation),
+                                )
+                                .await
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        peer_id = %peer_id,
+                                        %error,
+                                        "Failed to queue offline report observation"
+                                    );
+                                });
+                            }
                         }
                     }
                     if shares.len() >= threshold {
