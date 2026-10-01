@@ -24,7 +24,7 @@ use crate::reporting::v0::types::{
 };
 use crate::ring_state::RingShareBundle;
 use common::blockchain::sign_node_message_with_hex_key;
-use crypto::helpers::generate_keypair;
+use crypto::helpers::sample_scalar;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PetTag, PriShare, ThresholdSigner,
 };
@@ -148,12 +148,14 @@ where
         let target_fingerprint = P::owner_fingerprint(ctx.audit_target_object_id.as_bytes())
             .map_err(|e| PetError::Crypto(format!("Failed to compute owner fingerprint: {}", e)))?;
 
-        // A fresh, independent blinding scalar per attempt — see the design
-        // doc's "why partial retries are unsafe" section for why reusing one
-        // across attempts would reintroduce the cancellation attack. The
-        // matching public point from `generate_keypair` is unused here; only
-        // its scalar half is needed.
-        let (z_i, _unused_point) = generate_keypair()
+        // A fresh, independent blinding scalar per attempt — reusing one
+        // across attempts would reintroduce a cancellation attack (the same
+        // reason refresh/reshare must redistribute shares against a fresh
+        // random polynomial, not reuse one). `sample_scalar` rather than
+        // `generate_keypair`: only the scalar is needed here, and the
+        // latter's matching public point would cost an unnecessary
+        // variable-time scalar multiplication to compute.
+        let z_i = sample_scalar()
             .map_err(|e| PetError::Crypto(format!("Failed to sample blinding scalar: {}", e)))?;
 
         // Throwaway digest: only the resulting points are used here. The

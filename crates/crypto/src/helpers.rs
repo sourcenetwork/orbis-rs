@@ -53,6 +53,42 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     Ok((sk, pk))
 }
 
+/// Sample a fresh, uniformly random, nonzero scalar — e.g. an ephemeral
+/// per-attempt blinding value, where a zero value is a genuine protocol
+/// weakness (callers typically also reject it downstream via an
+/// identity-point check, but sampling nonzero directly is cheap and
+/// doesn't rely on that check alone) but no corresponding public point is
+/// ever needed. Prefer this over [`generate_keypair`] whenever only the
+/// scalar half matters: computing the unused public point there costs an
+/// extra (variable-time) scalar multiplication for no purpose.
+#[cfg(feature = "bls12-381")]
+pub fn sample_scalar() -> Result<crate::ScalarField> {
+    use ark_std::UniformRand;
+    use rand_core::OsRng;
+
+    let mut rng = OsRng;
+    Ok(sample_nonzero(|| crate::ScalarField::rand(&mut rng)))
+}
+
+/// Same as the bls12-381 variant above, for decaf377 — inlined rather than
+/// sharing [`sample_nonzero`], which is bounded by the (incompatible,
+/// major-version-0.4) arkworks `Zero` trait bls12-381 uses; decaf377
+/// depends on arkworks 0.5 instead (see `decaf377/pre.rs`'s own identical
+/// inlined loop, for the same reason).
+#[cfg(feature = "decaf377")]
+pub fn sample_scalar() -> Result<crate::ScalarField> {
+    use ark_ff_05::Zero;
+    use rand_core::OsRng;
+
+    let mut rng = OsRng;
+    Ok(loop {
+        let candidate = ::decaf377::Fr::rand(&mut rng);
+        if !candidate.is_zero() {
+            break candidate;
+        }
+    })
+}
+
 /// Add two group elements: `a + b`.
 ///
 /// No crypto-trait method exists for plain point addition (every existing
