@@ -30,6 +30,9 @@ const (
 	LocalStorageKeyType_LOCAL_STORAGE_KEY_TYPE_RING_KEY         LocalStorageKeyType = 2
 	LocalStorageKeyType_LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY  LocalStorageKeyType = 3
 	LocalStorageKeyType_LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY LocalStorageKeyType = 4
+	// A ring's independent PET checking-key share bundle, keyed by ring_id (not ring_pk) — a
+	// distinct storage namespace from RING_KEY. `ring_key` carries the ring_id for this type.
+	LocalStorageKeyType_LOCAL_STORAGE_KEY_TYPE_PET_RING_KEY LocalStorageKeyType = 5
 )
 
 // Enum value maps for LocalStorageKeyType.
@@ -40,6 +43,7 @@ var (
 		2: "LOCAL_STORAGE_KEY_TYPE_RING_KEY",
 		3: "LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY",
 		4: "LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY",
+		5: "LOCAL_STORAGE_KEY_TYPE_PET_RING_KEY",
 	}
 	LocalStorageKeyType_value = map[string]int32{
 		"LOCAL_STORAGE_KEY_TYPE_UNSPECIFIED":      0,
@@ -47,6 +51,7 @@ var (
 		"LOCAL_STORAGE_KEY_TYPE_RING_KEY":         2,
 		"LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY":  3,
 		"LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY": 4,
+		"LOCAL_STORAGE_KEY_TYPE_PET_RING_KEY":     5,
 	}
 )
 
@@ -1556,13 +1561,14 @@ const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"(SubmitOrganicInvalidRefreshResultRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"+\n" +
-	")SubmitOrganicInvalidRefreshResultResponse*\xe2\x01\n" +
+	")SubmitOrganicInvalidRefreshResultResponse*\x8b\x02\n" +
 	"\x13LocalStorageKeyType\x12&\n" +
 	"\"LOCAL_STORAGE_KEY_TYPE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!LOCAL_STORAGE_KEY_TYPE_RING_INDEX\x10\x01\x12#\n" +
 	"\x1fLOCAL_STORAGE_KEY_TYPE_RING_KEY\x10\x02\x12*\n" +
 	"&LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY\x10\x03\x12+\n" +
-	"'LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY\x10\x04*\x91\x01\n" +
+	"'LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY\x10\x04\x12'\n" +
+	"#LOCAL_STORAGE_KEY_TYPE_PET_RING_KEY\x10\x05*\x91\x01\n" +
 	"\x16LocalStorageAccessMode\x12)\n" +
 	"%LOCAL_STORAGE_ACCESS_MODE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fLOCAL_STORAGE_ACCESS_MODE_PLAIN\x10\x01\x12'\n" +

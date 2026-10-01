@@ -19,9 +19,10 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	InfoService_GetNodeInfo_FullMethodName  = "/orbis.v0.info_service.InfoService/GetNodeInfo"
-	InfoService_GetRingState_FullMethodName = "/orbis.v0.info_service.InfoService/GetRingState"
-	InfoService_GetDashboard_FullMethodName = "/orbis.v0.info_service.InfoService/GetDashboard"
+	InfoService_GetNodeInfo_FullMethodName     = "/orbis.v0.info_service.InfoService/GetNodeInfo"
+	InfoService_GetRingState_FullMethodName    = "/orbis.v0.info_service.InfoService/GetRingState"
+	InfoService_GetPetRingState_FullMethodName = "/orbis.v0.info_service.InfoService/GetPetRingState"
+	InfoService_GetDashboard_FullMethodName    = "/orbis.v0.info_service.InfoService/GetDashboard"
 )
 
 // InfoServiceClient is the client API for InfoService service.
@@ -30,6 +31,7 @@ const (
 type InfoServiceClient interface {
 	GetNodeInfo(ctx context.Context, in *GetNodeInfoRequest, opts ...grpc.CallOption) (*GetNodeInfoResponse, error)
 	GetRingState(ctx context.Context, in *GetRingStateRequest, opts ...grpc.CallOption) (*GetRingStateResponse, error)
+	GetPetRingState(ctx context.Context, in *GetPetRingStateRequest, opts ...grpc.CallOption) (*GetPetRingStateResponse, error)
 	GetDashboard(ctx context.Context, in *GetDashboardRequest, opts ...grpc.CallOption) (*GetDashboardResponse, error)
 }
 
@@ -61,6 +63,16 @@ func (c *infoServiceClient) GetRingState(ctx context.Context, in *GetRingStateRe
 	return out, nil
 }
 
+func (c *infoServiceClient) GetPetRingState(ctx context.Context, in *GetPetRingStateRequest, opts ...grpc.CallOption) (*GetPetRingStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPetRingStateResponse)
+	err := c.cc.Invoke(ctx, InfoService_GetPetRingState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *infoServiceClient) GetDashboard(ctx context.Context, in *GetDashboardRequest, opts ...grpc.CallOption) (*GetDashboardResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetDashboardResponse)
@@ -77,6 +89,7 @@ func (c *infoServiceClient) GetDashboard(ctx context.Context, in *GetDashboardRe
 type InfoServiceServer interface {
 	GetNodeInfo(context.Context, *GetNodeInfoRequest) (*GetNodeInfoResponse, error)
 	GetRingState(context.Context, *GetRingStateRequest) (*GetRingStateResponse, error)
+	GetPetRingState(context.Context, *GetPetRingStateRequest) (*GetPetRingStateResponse, error)
 	GetDashboard(context.Context, *GetDashboardRequest) (*GetDashboardResponse, error)
 	mustEmbedUnimplementedInfoServiceServer()
 }
@@ -93,6 +106,9 @@ func (UnimplementedInfoServiceServer) GetNodeInfo(context.Context, *GetNodeInfoR
 }
 func (UnimplementedInfoServiceServer) GetRingState(context.Context, *GetRingStateRequest) (*GetRingStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetRingState not implemented")
+}
+func (UnimplementedInfoServiceServer) GetPetRingState(context.Context, *GetPetRingStateRequest) (*GetPetRingStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPetRingState not implemented")
 }
 func (UnimplementedInfoServiceServer) GetDashboard(context.Context, *GetDashboardRequest) (*GetDashboardResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDashboard not implemented")
@@ -154,6 +170,24 @@ func _InfoService_GetRingState_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _InfoService_GetPetRingState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPetRingStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(InfoServiceServer).GetPetRingState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: InfoService_GetPetRingState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(InfoServiceServer).GetPetRingState(ctx, req.(*GetPetRingStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _InfoService_GetDashboard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetDashboardRequest)
 	if err := dec(in); err != nil {
@@ -186,6 +220,10 @@ var InfoService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetRingState",
 			Handler:    _InfoService_GetRingState_Handler,
+		},
+		{
+			MethodName: "GetPetRingState",
+			Handler:    _InfoService_GetPetRingState_Handler,
 		},
 		{
 			MethodName: "GetDashboard",
