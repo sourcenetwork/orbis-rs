@@ -1,24 +1,20 @@
+mod backend;
 mod bootstrap;
 #[cfg(feature = "native")]
 mod native;
-// `shutdown_bootstrap_after_init` isn't called directly in this file (only by
-// `bootstrap::complete_initialization_or_shutdown` internally) — re-exported
-// here purely so `lib.rs` can re-export it in turn for `tests/node.rs`.
-#[allow(unused_imports)]
-pub(crate) use bootstrap::{
-    complete_initialization_or_shutdown, shutdown_bootstrap_after_init, start_bootstrap_info_server,
-};
+pub(crate) use bootstrap::complete_initialization_or_shutdown;
+#[cfg(test)]
+pub(crate) use bootstrap::{shutdown_bootstrap_after_init, start_bootstrap_info_server};
 
 use crate::app_state::AppState;
-use crate::constants::{self, MIN_NODE_BALANCE};
+use crate::constants;
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::authorized_peers::{spawn_authorized_peer_refresh, RingAuthorizedPeers};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
-    create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, network_peer_address, resolve_runtime_base_path, Args,
-    CorsPolicy,
+    db_path, derive_secret_key_bytes, ensure_node_info, get_network_key_secret, get_password,
+    network_peer_address, resolve_runtime_base_path, Args, CorsPolicy,
 };
 use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
@@ -26,7 +22,6 @@ use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::{r#trait::Bulletin, BulletinImpl};
-use common::blockchain::ChainConfigBuilder;
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
@@ -38,7 +33,7 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
+use proto::info_service::info_service_server::InfoServiceServer;
 
 use proto::v0::dkg::dkg_service_server::DkgServiceServer;
 use proto::v0::pre::pre_service_server::PreServiceServer;
@@ -193,110 +188,39 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
-        #[cfg(feature = "native")]
-        if let Some(config) = native_config {
-            return native::run(
-                config,
-                args,
-                cors_policy,
-                network,
-                authorized_peers,
-                local_storage,
-                runtime_base_path,
-                shutdown_rx,
-            )
-            .await;
-        }
-        let authz_chain_config = ChainConfigBuilder::default()
-            .chain_id(args.chain_id.clone())
-            .grpc_url(args.authz_grpc.clone())
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier)
-            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
-
-        let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(authz_chain_config)
-                .await
-                .map_err(|e| format!("Failed to initialize authz: {}", e))?,
-        );
-
-        let bulletin_chain_config = ChainConfigBuilder::default()
-            .chain_id(args.chain_id.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier)
-            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
-        let chain_config = bulletin_chain_config.clone().build();
-        let signer =
-            create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
-                .map_err(|e| format!("Failed to create or store node key: {}", e))?;
-        let signer = match args.fee_granter.as_deref() {
-            Some(granter) => {
-                tracing::info!(
-                    granter,
-                    "Transactions will request a fee grant from this address"
-                );
-                signer
-                    .with_fee_granter(granter)
-                    .map_err(|e| format!("Invalid --fee-granter address: {}", e))?
-            }
-            None => signer,
-        };
-        let node_key = signer.public_key_hex();
-
-        let grpc_addr: SocketAddr = args.addr.parse()?;
-        let bootstrap_info_server = start_bootstrap_info_server(
-            grpc_addr,
+        let (node_key, backend) = backend::Backend::prepare(
+            &args,
+            &local_storage,
+            &runtime_base_path,
+            #[cfg(feature = "native")]
+            native_config,
+        )
+        .await?;
+        let native_identity = args.vera_config.as_ref().map(|_| node_key.clone());
+        let bootstrap_info_server = bootstrap::start_bootstrap_info_server_with_identity(
+            args.addr.parse()?,
             network.clone(),
             local_storage.clone(),
             cors_policy.clone(),
+            native_identity,
         )?;
         tracing::info!(
             grpc_addr = %bootstrap_info_server.local_addr(),
-            "Bootstrap info service started while waiting for funding"
+            "Bootstrap info service started while connecting to backend"
         );
 
         let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
-            bootstrap_status.set_status(NodeStatus::ConnectingToChain);
-
-            // For integration tests, this funds the account, this is handled differently live
-            // Only fund if both the feature is enabled AND we're in the integration test network
-            #[cfg(feature = "integration-test")]
-            {
-                bootstrap_status.set_status(NodeStatus::WaitingForFunding);
-                // Build chain config with the provided RPC/REST URLs
-                let fund_config = ChainConfigBuilder::default()
-                    .chain_id(args.chain_id.clone())
-                    .rpc_url(args.chain_rpc.clone())
-                    .rest_url(args.chain_rest.clone())
-                    .grpc_url(args.bulletin_grpc.clone())
-                    .gas_multiplier(args.chain_gas_multiplier)
-                    .allow_insecure_rpc(Some(args.allow_insecure_rpc))
-                    .build();
-                cli_tool::fund(signer.address(), fund_config)
-                    .await
-                    .map_err(|e| format!("Failed to fund node account: {}", e))?;
-                bootstrap_status.set_status(NodeStatus::Funded);
-            }
-
-            // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-            #[cfg(not(feature = "integration-test"))]
-            bootstrap_status.set_status(NodeStatus::WaitingForFunding);
-            let bulletin: Arc<BulletinImpl> = Arc::new(
-                BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
-                    .await
-                    .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
-            );
+            let backend::Services { authz, bulletin } = backend
+                .connect(&args, &local_storage, &runtime_base_path, &bootstrap_status)
+                .await?;
             ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
                 .await
-                .map_err(|e| format!("Failed to ensure node info: {}", e))?;
+                .map_err(|e| format!("Failed to ensure node info: {e}"))?;
             #[cfg(not(feature = "integration-test"))]
-            bootstrap_status.set_status(NodeStatus::Funded);
+            if args.vera_config.is_none() {
+                bootstrap_status.set_status(proto::info_service::NodeStatus::Funded);
+            }
 
             let config = NodeConfig {
                 args,

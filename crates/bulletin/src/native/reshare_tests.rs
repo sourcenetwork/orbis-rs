@@ -13,7 +13,7 @@ fn reshare_preparation_rejects_mismatched_state_without_journaling() {
     storage
         .set_encrypted(
             LocalStorageKeys::NodeSigningKey,
-            Zeroizing::new(vec![31; 32]),
+            Zeroizing::new(hex::encode([31; 32]).into_bytes()),
         )
         .unwrap();
     let directory = root.path().join("worker");

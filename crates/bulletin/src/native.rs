@@ -50,14 +50,10 @@ pub struct NativeVeraClient {
     worker: NativeWorker,
 }
 
-/// Decode the raw key used by early native clients or the encrypted hex used by node startup.
+/// Decode the hex signing key stored by node startup.
 pub fn decode_node_signing_key(bytes: &[u8]) -> Result<SigningKey, ClientError> {
-    if bytes.len() == 32 {
-        return SigningKey::from_slice(bytes).map_err(|e| ClientError::Signing(e.to_string()));
-    }
     let encoded = std::str::from_utf8(bytes)
         .map_err(|_| ClientError::Signing("invalid node signing key encoding".into()))?;
-    let encoded = encoded.strip_prefix("0x").unwrap_or(encoded);
     if encoded.len() != 64 {
         return Err(ClientError::Signing(
             "invalid node signing key length".into(),
@@ -671,7 +667,7 @@ mod tests {
         storage
             .set_encrypted(
                 LocalStorageKeys::NodeSigningKey,
-                Zeroizing::new(vec![31; 32]),
+                Zeroizing::new(hex::encode([31; 32]).into_bytes()),
             )
             .unwrap();
         let mut registry = open(9001).unwrap();
@@ -688,12 +684,6 @@ mod tests {
         assert!(open(9001).is_err());
         let node_key = registry.node_key();
         drop(registry);
-        storage
-            .set_encrypted(
-                LocalStorageKeys::NodeSigningKey,
-                Zeroizing::new(hex::encode([31; 32]).into_bytes()),
-            )
-            .unwrap();
         let mut registry = open(9001).unwrap();
         assert_eq!(registry.node_key(), node_key);
         assert_eq!(registry.pending_id().unwrap(), Some(id));
