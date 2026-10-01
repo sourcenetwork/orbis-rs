@@ -830,10 +830,19 @@ pub(crate) enum PetCommitResponseVerification {
 /// `verify_check_response`'s acceptance ordering: peek, resolve identity,
 /// check the response's own recomputed context digest, only then consume
 /// the participant's slot.
+///
+/// `expected_node_id` is the caller's own transport-level authentication of
+/// who actually sent this response (e.g. the committee member it addressed
+/// this specific request to) — the message body's own `from_node_id` field
+/// is otherwise just an unauthenticated self-report, since Commit responses
+/// carry no signature. Without this check, any committee member could claim
+/// a different, honest member's slot in its own response and cause that
+/// honest member's genuine (later) response to be rejected as a duplicate.
 pub(crate) fn verify_commit_response(
     response: crate::pet::v0::messages::PetMessage,
     ring_payload: &bulletin::r#trait::RingPayload,
     expected_context_digest: [u8; 32],
+    expected_node_id: u32,
     seen_node_ids: &mut HashSet<u32>,
 ) -> PetCommitResponseVerification {
     let crate::pet::v0::messages::PetMessage::CommitResponse {
@@ -845,6 +854,9 @@ pub(crate) fn verify_commit_response(
     else {
         return PetCommitResponseVerification::Rejected;
     };
+    if from_node_id != expected_node_id {
+        return PetCommitResponseVerification::Rejected;
+    }
     if seen_node_ids.contains(&from_node_id) {
         return PetCommitResponseVerification::Rejected;
     }
@@ -2091,6 +2103,85 @@ mod tests {
             result
         );
         cleanup_db(&test_db_path(db_name));
+    }
+
+    // ========================================================================
+    // `verify_commit_response` — Commit responses carry no signature, so
+    // `expected_node_id` (the caller's own transport-level authentication of
+    // who actually sent this response) is the only thing standing between a
+    // malicious committee member and claiming a different, honest member's
+    // slot in its own response.
+    // ========================================================================
+
+    #[test]
+    fn verify_commit_response_rejects_a_response_claiming_a_different_node_id() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let mut seen_node_ids = HashSet::new();
+        let context_digest = [7u8; 32];
+
+        // The authenticated peer this response actually arrived from is
+        // node 1 — but the (otherwise well-formed) response body claims to
+        // be node 2's.
+        let response = PetMessage::CommitResponse {
+            request_id: "commit-attempt-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            context_digest,
+            from_node_id: 2,
+            commitment: vec![1; 32],
+        };
+
+        let result = verify_commit_response(
+            response,
+            &fixture.ring_payload,
+            context_digest,
+            1,
+            &mut seen_node_ids,
+        );
+
+        assert!(
+            matches!(result, PetCommitResponseVerification::Rejected),
+            "a commit response claiming a node_id other than the one the \
+             authenticated peer is assigned must be rejected"
+        );
+        assert!(
+            seen_node_ids.is_empty(),
+            "a rejected response must not consume any node_id's slot — \
+             otherwise the real node 2 would be locked out once its own \
+             genuine response arrives"
+        );
+    }
+
+    #[test]
+    fn verify_commit_response_accepts_a_response_matching_the_authenticated_peer() {
+        let fixture = build_fixture(3, 2, AUDIT_TARGET);
+        let mut seen_node_ids = HashSet::new();
+        let context_digest = [7u8; 32];
+
+        let response = PetMessage::CommitResponse {
+            request_id: "commit-attempt-1".to_string(),
+            attempt_id: "attempt-1".to_string(),
+            context_digest,
+            from_node_id: 1,
+            commitment: vec![1; 32],
+        };
+
+        let result = verify_commit_response(
+            response,
+            &fixture.ring_payload,
+            context_digest,
+            1,
+            &mut seen_node_ids,
+        );
+
+        assert!(
+            matches!(
+                result,
+                PetCommitResponseVerification::Verified { node_id: 1, .. }
+            ),
+            "a genuine response whose claimed node_id matches the \
+             authenticated peer it arrived from must be accepted"
+        );
+        assert!(seen_node_ids.contains(&1));
     }
 
     // ========================================================================

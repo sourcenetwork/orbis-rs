@@ -356,15 +356,16 @@ where
             if let Ok(Some(response)) = self.handle_commit_request(commit_req, &local_peer_id).await
             {
                 if let PetCommitResponseVerification::Verified {
-                    node_id,
+                    node_id: verified_node_id,
                     commitment,
                 } = verify_commit_response(
                     response,
                     &ring_payload,
                     context_digest,
+                    node_id,
                     &mut seen_commit_ids,
                 ) {
-                    commitments.push((node_id, commitment));
+                    commitments.push((verified_node_id, commitment));
                 }
             }
         }
@@ -419,6 +420,23 @@ where
                     };
                     match result {
                         Ok(Some(response @ PetMessage::CommitResponse { .. })) => {
+                            // Transport-level authentication for this
+                            // otherwise-unsigned response: only accept it
+                            // under the node_id this specific peer is
+                            // actually assigned, never whatever the
+                            // response body itself claims.
+                            let expected_node_id = node_id_to_peer_id.iter().find_map(
+                                |(candidate_node_id, candidate_peer_id)| {
+                                    (*candidate_peer_id == peer_id).then_some(*candidate_node_id)
+                                },
+                            );
+                            let Some(expected_node_id) = expected_node_id else {
+                                tracing::warn!(
+                                    peer = %peer_id,
+                                    "PET Coordinator: commit response from a peer with no known node_id assignment"
+                                );
+                                continue;
+                            };
                             if let PetCommitResponseVerification::Verified {
                                 node_id,
                                 commitment,
@@ -426,6 +444,7 @@ where
                                 response,
                                 &ring_payload,
                                 context_digest,
+                                expected_node_id,
                                 &mut seen_commit_ids,
                             ) {
                                 commitments.push((node_id, commitment));
