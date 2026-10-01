@@ -819,7 +819,6 @@ mod ring_reshare_update_tests {
     use crypto::r#trait::{Dkg, DkgRole};
     use crypto::{CryptoSerialize, DkgImpl};
     use local_storage::redb::RedbStorage;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Every fixture call gets its own on-disk store (self-uniquified, so no
     /// caller needs to pass a name) — required by
@@ -830,8 +829,16 @@ mod ring_reshare_update_tests {
     /// left uncleaned (gitignored `test_dbs/`), matching this module's
     /// existing tolerance for leaked files on an assertion panic before its
     /// own cleanup line.
-    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
+    ///
+    /// Uses a random suffix, not a `static AtomicU64` counter: `cargo
+    /// nextest` runs each test in its own fresh process by default, so a
+    /// process-local counter restarts at 0 every time — two tests racing in
+    /// separate processes would both compute the same "first" value and
+    /// collide on the exact same db file (confirmed: this caused real
+    /// `UniqueDBError("Database already open")` failures under nextest,
+    /// never visible under plain `cargo test`'s single-process model).
+    /// Randomness is the only self-uniquification scheme that's robust
+    /// across process boundaries without coordination.
     async fn fixture(
         new_peer_node_keys: Option<Vec<String>>,
         new_threshold: Option<u32>,
@@ -864,7 +871,7 @@ mod ring_reshare_update_tests {
             "test-password".to_string(),
             crate::helpers::test_helpers::test_db_path(&format!(
                 "sign_ring_reshare_update_fixture_{}",
-                FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed)
+                rand::random::<u64>()
             )),
         )
         .expect("open fixture storage");

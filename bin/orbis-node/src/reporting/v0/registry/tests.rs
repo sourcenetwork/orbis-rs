@@ -1727,14 +1727,17 @@ mod pet_blind_decrypt_generation_authentication {
     /// `require_pet_blind_decrypt_verification_failure` no longer reads
     /// `local_storage`/`now` (authentication is entirely a function of
     /// `blind_context.pet_pk` and the statement's own fields) — any context
-    /// works. Self-uniquified (like `sign/v0/helpers.rs`'s fixture) since
-    /// `#[tokio::test]`s run concurrently and would otherwise collide on one
-    /// shared db file.
+    /// works. Self-uniquified via a random suffix, not a `static AtomicU64`
+    /// counter: `cargo nextest` runs each test in its own fresh process by
+    /// default, so a process-local counter restarts at 0 every time, and
+    /// two tests racing in separate processes would both compute the same
+    /// "first" value and collide on the same db file — confirmed, this
+    /// caused real `UniqueDBError("Database already open")` failures under
+    /// nextest that plain `cargo test`'s single-process model never surfaced.
     async fn any_context() -> ReportValidationContext {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let db_name = format!(
             "registry_pet_generation_authentication_{}",
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            rand::random::<u64>()
         );
         let db_path = crate::helpers::test_helpers::test_db_path(&db_name);
         crate::helpers::test_helpers::cleanup_db(&db_path);
@@ -1837,11 +1840,15 @@ mod pet_blind_outer_validator_authorization_checks {
         hex::encode(CryptoSerialize::to_bytes(&pub_poly.eval(0)).unwrap())
     }
 
+    /// Self-uniquified via a random suffix, not a `static AtomicU64`
+    /// counter — see the sibling `any_context` above in
+    /// `pet_blind_decrypt_generation_authentication` for why a
+    /// process-local counter doesn't survive `cargo nextest`'s
+    /// one-process-per-test execution model.
     async fn any_context() -> ReportValidationContext {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let db_name = format!(
             "registry_pet_outer_validator_checks_{}",
-            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            rand::random::<u64>()
         );
         let db_path = crate::helpers::test_helpers::test_db_path(&db_name);
         crate::helpers::test_helpers::cleanup_db(&db_path);
