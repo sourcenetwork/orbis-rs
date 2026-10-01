@@ -19,7 +19,7 @@ async fn completion_retries_failed_submission_without_replacing_pending_request(
     storage
         .set_encrypted(
             LocalStorageKeys::NodeSigningKey,
-            Zeroizing::new(vec![31; 32]),
+            Zeroizing::new(hex::encode([31; 32]).into_bytes()),
         )
         .unwrap();
     let mut writer = NativeVeraClient::open(
@@ -149,7 +149,7 @@ fn read_fixture(url: &str) -> (tempfile::TempDir, NativeBulletin) {
     storage
         .set_encrypted(
             LocalStorageKeys::NodeSigningKey,
-            Zeroizing::new(vec![31; 32]),
+            Zeroizing::new(hex::encode([31; 32]).into_bytes()),
         )
         .unwrap();
     let writer = NativeVeraClient::open(

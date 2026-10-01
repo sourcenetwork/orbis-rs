@@ -201,9 +201,14 @@ multi-host networks, crash/power-loss recovery, and operational security review.
 
 Build with `cargo build -p orbis-node --features native`, then start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
-The configuration selects native authorization and bulletin operations. Supply the
-controller public key as 33 hex-encoded bytes. Existing connection and fee options
-cannot be combined with `--vera-config`.
+The configuration selects native authorization and bulletin operations through the
+existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
+handoff, node initialization, request handlers and shutdown path. Backend setup
+provides the identity and service adapters. The current build still includes the
+default backend dependencies.
+
+Supply the controller public key as 33 hex-encoded bytes. Existing connection and
+fee options cannot be combined with `--vera-config`.
 
 ```json
 {
@@ -224,9 +229,9 @@ reject stale evidence; the two time bounds default to 30 seconds. Configurations
 reject unknown and duplicate fields and are limited to 16 KiB.
 
 Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
-file holding its encryption password. Existing encrypted node keys retain their
-identity; early native raw keys are normalized to the stored hex format. New keys
-are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
+file holding its encryption password. Node signing keys use 64 hex characters in
+the encrypted key slot. Startup preserves existing keys and rejects raw, prefixed
+or invalid key bytes without replacing them. New keys are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
 worker journal together when backing up or restoring a node. Native worker keys use
 their own storage slots; ring history and pending reshare records retain their existing
 slots. The journal retains

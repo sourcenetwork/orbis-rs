@@ -1,15 +1,17 @@
-use super::bootstrap::start_bootstrap_info_server_with_identity;
-use super::*;
+use super::backend::Services;
 use authz::native::NativeAuth;
 use bulletin::native::{decode_node_signing_key, NativeBulletin, NativeVeraClient};
-use local_storage::r#trait::LocalStorageKeys;
-use std::{fs, path::Path};
+use local_storage::{
+    r#trait::{LocalStorage, LocalStorageKeys},
+    LocalStorageImpl,
+};
+use std::{fs, path::Path, sync::Arc};
 use vera_client::VeraClient;
 use zeroize::Zeroizing;
 
 pub(super) use bulletin::native::NativeConfig as Config;
 
-fn initialize_identity(
+pub(super) fn initialize_identity(
     storage: &LocalStorageImpl,
     base: &Path,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -26,10 +28,7 @@ fn initialize_identity(
     };
     let key_bytes = Zeroizing::new(authority.to_bytes());
     let encoded = Zeroizing::new(hex::encode(key_bytes.as_slice()));
-    if stored
-        .as_ref()
-        .is_none_or(|bytes| bytes.as_slice() != encoded.as_bytes())
-    {
+    if stored.is_none() {
         storage.set_encrypted(
             LocalStorageKeys::NodeSigningKey,
             Zeroizing::new(encoded.as_bytes().to_vec()),
@@ -41,72 +40,41 @@ fn initialize_identity(
     Ok(node_key)
 }
 
-pub(super) async fn run(
+pub(super) async fn connect(
     config: Config,
-    args: Args,
-    cors_policy: CorsPolicy,
-    network: Arc<dyn Network>,
-    authorized_peers: Arc<RingAuthorizedPeers>,
-    local_storage: LocalStorageImpl,
-    base: PathBuf,
-    shutdown: watch::Receiver<bool>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let node_key = initialize_identity(&local_storage, &base)?;
-    let bootstrap = start_bootstrap_info_server_with_identity(
-        args.addr.parse()?,
-        network.clone(),
-        local_storage.clone(),
-        cors_policy.clone(),
-        Some(node_key.clone()),
-    )?;
-    tracing::info!(grpc_addr = %bootstrap.local_addr(), "Connecting to native Vera");
-    let initialization = async move {
-        let (authz, bulletin) = tokio::time::timeout(config.timeout, async {
-            let authz = NativeAuth::connect(
-                VeraClient::new(&config.endpoint),
-                config.trusted,
-                config.root,
-                config.maximum_age,
-            )
-            .await?;
-            let writer = NativeVeraClient::open(
-                VeraClient::new(&config.endpoint),
-                config.trusted,
-                config.root,
-                config.deployment_id,
-                &base.join("native-vera").join(hex::encode(config.root)),
-                &local_storage,
-            )?;
-            let bulletin = NativeBulletin::connect(
-                writer,
-                VeraClient::new(&config.endpoint),
-                config.maximum_age,
-                config.timeout,
-            )
-            .await?;
-            Ok::<_, Box<dyn std::error::Error>>((authz, bulletin))
-        })
-        .await
-        .map_err(|_| "native Vera connection timed out")??;
-        ensure_node_info(&bulletin, &node_key, network.as_ref(), &args).await?;
-        init_node(NodeConfig {
-            args,
-            cors_policy,
-            node_key,
-            network,
-            authorized_peers: Some(authorized_peers),
-            local_storage,
+    storage: &LocalStorageImpl,
+    base: &Path,
+) -> Result<Services, Box<dyn std::error::Error>> {
+    tokio::time::timeout(config.timeout, async {
+        let authz = NativeAuth::connect(
+            VeraClient::new(&config.endpoint),
+            config.trusted,
+            config.root,
+            config.maximum_age,
+        )
+        .await?;
+        let writer = NativeVeraClient::open(
+            VeraClient::new(&config.endpoint),
+            config.trusted,
+            config.root,
+            config.deployment_id,
+            &base.join("native-vera").join(hex::encode(config.root)),
+            storage,
+        )?;
+        let bulletin = NativeBulletin::connect(
+            writer,
+            VeraClient::new(&config.endpoint),
+            config.maximum_age,
+            config.timeout,
+        )
+        .await?;
+        Ok(Services {
             authz: Arc::new(authz),
             bulletin: Arc::new(bulletin),
         })
-        .await
-    };
-    let Some(node) =
-        complete_initialization_or_shutdown(bootstrap, initialization, shutdown.clone()).await?
-    else {
-        return Ok(());
-    };
-    run_server(node, shutdown).await
+    })
+    .await
+    .map_err(|_| "native Vera connection timed out")?
 }
 
 #[cfg(test)]
@@ -132,39 +100,42 @@ mod tests {
                 .verifying_key()
                 .to_sec1_bytes(),
         );
-        for encoded in [
-            vec![31; 32],
-            hex::encode([31; 32]).into_bytes(),
-            format!("0x{}", hex::encode([31; 32])).into_bytes(),
-        ] {
-            storage
-                .set_encrypted(LocalStorageKeys::NodeSigningKey, Zeroizing::new(encoded))
-                .unwrap();
-            assert_eq!(initialize_identity(&storage, dir.path()).unwrap(), expected);
-            assert_eq!(
-                storage
-                    .get_encrypted(LocalStorageKeys::NodeSigningKey)
-                    .unwrap()
-                    .unwrap()
-                    .as_slice(),
-                hex::encode([31; 32]).as_bytes()
-            );
-        }
-        let corrupt = vec![0; 32];
+        let encoded = hex::encode([31; 32]).into_bytes();
         storage
             .set_encrypted(
                 LocalStorageKeys::NodeSigningKey,
-                Zeroizing::new(corrupt.clone()),
+                Zeroizing::new(encoded.clone()),
             )
             .unwrap();
-        assert!(initialize_identity(&storage, dir.path()).is_err());
+        assert_eq!(initialize_identity(&storage, dir.path()).unwrap(), expected);
         assert_eq!(
             storage
                 .get_encrypted(LocalStorageKeys::NodeSigningKey)
                 .unwrap()
                 .unwrap()
                 .as_slice(),
-            corrupt
+            encoded
         );
+        for invalid in [
+            vec![31; 32],
+            format!("0x{}", hex::encode([31; 32])).into_bytes(),
+            hex::encode([0; 32]).into_bytes(),
+        ] {
+            storage
+                .set_encrypted(
+                    LocalStorageKeys::NodeSigningKey,
+                    Zeroizing::new(invalid.clone()),
+                )
+                .unwrap();
+            assert!(initialize_identity(&storage, dir.path()).is_err());
+            assert_eq!(
+                storage
+                    .get_encrypted(LocalStorageKeys::NodeSigningKey)
+                    .unwrap()
+                    .unwrap()
+                    .as_slice(),
+                invalid
+            );
+        }
     }
 }

@@ -108,7 +108,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     storage
         .set_encrypted(
             LocalStorageKeys::NodeSigningKey,
-            Zeroizing::new(vec![31; 32]),
+            Zeroizing::new(hex::encode([31; 32]).into_bytes()),
         )
         .unwrap();
     let authority = SigningKey::from_slice(&[31; 32]).unwrap();
@@ -478,7 +478,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         storage
             .set_encrypted(
                 LocalStorageKeys::NodeSigningKey,
-                Zeroizing::new(vec![40 + index; 32]),
+                Zeroizing::new(hex::encode([40 + index; 32]).into_bytes()),
             )
             .unwrap();
         let mut writer = open(

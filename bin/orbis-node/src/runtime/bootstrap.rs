@@ -60,6 +60,7 @@ impl BootstrapInfoServer {
 }
 
 /// Start an info-only gRPC server before the full node is ready.
+#[cfg(test)]
 pub(crate) fn start_bootstrap_info_server(
     grpc_addr: SocketAddr,
     network: Arc<dyn Network>,
