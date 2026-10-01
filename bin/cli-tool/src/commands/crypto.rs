@@ -409,7 +409,7 @@ mod tests {
         );
     }
 
-    /// Finding #5 (PET audit fix checklist): copying a payload's ciphertext
+    /// copying a payload's ciphertext
     /// and encryption proof and reattaching a *different* tag — generated
     /// with fresh, independent randomness, and with a perfectly valid proof
     /// of its own — must make the *original* payload proof fail to verify.

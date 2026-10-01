@@ -1466,7 +1466,7 @@ where
     let mut c = correct.clone();
     c.salt = None;
     tampered.push(c);
-    // Finding #5 (PET audit fix checklist): a reattached tag — same
+    // a reattached tag — same
     // ciphertext/proof, a different tag binding — must fail exactly like
     // any other tampered field, and stripping the tag entirely must fail
     // too, once one was bound at encryption time.

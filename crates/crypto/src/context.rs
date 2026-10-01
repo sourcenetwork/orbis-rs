@@ -233,7 +233,7 @@ mod tests {
         );
     }
 
-    /// Finding #5 (PET audit fix checklist): a context with no PET tag must
+    /// a context with no PET tag must
     /// never encode identically to one with a tag, and two contexts with
     /// *different* tags must never collide either — otherwise a reattached
     /// tag could slip through unnoticed.
