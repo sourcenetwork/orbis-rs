@@ -415,7 +415,9 @@ where
                 "PSS: failed to securely remove stale finalized ring bundle: {error}"
             ))
         })?;
-    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str) {
+    if let Err(error) =
+        PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str).await
+    {
         tracing::warn!(
             ring_pk = %entry.ring_pk_str,
             %error,
@@ -432,7 +434,7 @@ where
                 ))
             })?;
         if let Err(error) =
-            PendingReshareBundle::clear_pet(&app_state.local_storage, &entry.bulletin_post_id)
+            PendingReshareBundle::clear_pet(&app_state.local_storage, &entry.bulletin_post_id).await
         {
             tracing::warn!(
                 ring_id = %entry.bulletin_post_id,
@@ -764,7 +766,7 @@ where
             }
             if resolved {
                 if let Err(error) =
-                    PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
+                    PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str).await
                 {
                     tracing::warn!(
                         ring_pk_str = %entry.ring_pk_str,
@@ -813,7 +815,9 @@ where
                 if let Err(error) = PendingReshareBundle::clear_pet(
                     &app_state.local_storage,
                     &entry.bulletin_post_id,
-                ) {
+                )
+                .await
+                {
                     tracing::warn!(
                         ring_id = %entry.bulletin_post_id,
                         %error,

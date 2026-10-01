@@ -1,9 +1,42 @@
-use crate::constants::RING_POLY_HISTORY_RETENTION_SECS;
+use crate::constants::{
+    DEPARTED_KEY_DELETE_RETRY_ATTEMPTS, DEPARTED_KEY_DELETE_RETRY_DELAY,
+    RING_POLY_HISTORY_RETENTION_SECS,
+};
 use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::fmt;
 use zeroize::Zeroizing;
+
+/// Retries a single `LocalStorage::delete` a few times before giving up —
+/// shared by every departed/removed-member cleanup path that erases secret
+/// key material or a staged pending bundle (main ring share, PET share, and
+/// each one's own pending-reshare copy). `redb`'s write-transaction
+/// begin/commit can fail on ordinary transient contention; a couple of
+/// short-delayed retries catches that cheaply. Not a durable, crash-proof
+/// guarantee against every failure — just enough to avoid giving up on
+/// genuinely sensitive material's only deletion attempt over a passing
+/// hiccup.
+pub(crate) async fn delete_with_retries(
+    storage: &impl LocalStorage,
+    key: LocalStorageKeys,
+) -> Result<(), String> {
+    let mut last_error = None;
+    for attempt in 0..DEPARTED_KEY_DELETE_RETRY_ATTEMPTS {
+        match storage.delete(key.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < DEPARTED_KEY_DELETE_RETRY_ATTEMPTS {
+                    tokio::time::sleep(DEPARTED_KEY_DELETE_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .expect("loop runs DEPARTED_KEY_DELETE_RETRY_ATTEMPTS >= 1 times")
+        .to_string())
+}
 
 /// One entry in the node's ring index.
 ///
@@ -540,11 +573,16 @@ impl PendingReshareBundle {
         Self::from_bytes(&bytes).map(Some)
     }
 
-    /// Best-effort clear — callers must log and continue on `Err`.
-    pub fn clear(storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
-        storage
-            .delete(LocalStorageKeys::PendingReshareBundle(ring_key.to_string()))
-            .map_err(|e| format!("Failed to clear PendingReshareBundle: {}", e))
+    /// Best-effort clear (with a few retries against transient storage
+    /// errors — see [`delete_with_retries`]) — callers must log and
+    /// continue on `Err`.
+    pub async fn clear(storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+        delete_with_retries(
+            storage,
+            LocalStorageKeys::PendingReshareBundle(ring_key.to_string()),
+        )
+        .await
+        .map_err(|e| format!("Failed to clear PendingReshareBundle: {}", e))
     }
 
     /// Same as [`Self::save`], for a ring's independent PET checking key —
@@ -573,12 +611,13 @@ impl PendingReshareBundle {
     }
 
     /// Same as [`Self::clear`], for a ring's independent PET checking key.
-    pub fn clear_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<(), String> {
-        storage
-            .delete(LocalStorageKeys::PendingResharePetBundle(
-                ring_id.to_string(),
-            ))
-            .map_err(|e| format!("Failed to clear PET PendingReshareBundle: {}", e))
+    pub async fn clear_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<(), String> {
+        delete_with_retries(
+            storage,
+            LocalStorageKeys::PendingResharePetBundle(ring_id.to_string()),
+        )
+        .await
+        .map_err(|e| format!("Failed to clear PET PendingReshareBundle: {}", e))
     }
 }
 

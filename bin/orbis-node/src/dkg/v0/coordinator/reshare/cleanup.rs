@@ -9,7 +9,7 @@ use crate::dkg::v0::helpers::peer_node_keys_match;
 use crate::dkg::v0::session_state::TopicTaskDisposition;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::ring_state::PendingReshareBundle;
-use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+use local_storage::r#trait::LocalStorageKeys;
 
 use super::bulletin_update::ReshareReadinessInfo;
 
@@ -159,9 +159,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     }
                     if requires_pet {
                         if let Some(ring_id) = ring_id_for_pet.as_deref() {
-                            match app_state
-                                .local_storage
-                                .delete(LocalStorageKeys::PetRingKey(ring_id.to_string()))
+                            match crate::ring_state::delete_with_retries(
+                                &app_state.local_storage,
+                                LocalStorageKeys::PetRingKey(ring_id.to_string()),
+                            )
+                            .await
                             {
                                 Ok(()) => tracing::info!(
                                     session_id,
@@ -348,7 +350,8 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     );
                 }
                 if pending_bundle_resolved {
-                    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key)
+                    if let Err(error) =
+                        PendingReshareBundle::clear(&app_state.local_storage, &key).await
                     {
                         tracing::warn!(
                             session_id,
@@ -361,7 +364,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 if pet_pending_bundle_resolved {
                     if let Some(ring_id) = ring_id_for_pet.as_deref() {
                         if let Err(error) =
-                            PendingReshareBundle::clear_pet(&app_state.local_storage, ring_id)
+                            PendingReshareBundle::clear_pet(&app_state.local_storage, ring_id).await
                         {
                             tracing::warn!(
                                 session_id,

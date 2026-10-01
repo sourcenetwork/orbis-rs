@@ -81,14 +81,16 @@ where
     // is preferable to an index entry pointing at material that no longer
     // exists.
     remove_ring_index_entry(&app_state.local_storage, ring_key)?;
-    app_state
-        .local_storage
-        .delete(LocalStorageKeys::RingKey(ring_key.to_string()))
-        .map_err(|error| {
-            DkgError::Storage(format!(
-                "Reshare Dealer: failed to delete finalized departed share bundle for ring {ring_key}: {error}"
-            ))
-        })?;
+    crate::ring_state::delete_with_retries(
+        &app_state.local_storage,
+        LocalStorageKeys::RingKey(ring_key.to_string()),
+    )
+    .await
+    .map_err(|error| {
+        DkgError::Storage(format!(
+            "Reshare Dealer: failed to delete finalized departed share bundle for ring {ring_key}: {error}"
+        ))
+    })?;
     tracing::info!(
         session_id,
         ring_key,

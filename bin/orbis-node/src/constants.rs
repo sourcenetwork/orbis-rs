@@ -674,6 +674,18 @@ pub const REFRESH_HEALTH_CHECK_MAX_ATTEMPTS: usize = 6;
 /// Delay between post-refresh diagnostic threshold signature retries.
 pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// Attempts for a single `LocalStorage::delete` of a departed member's
+/// secret key material (main or PET share) before giving up and logging.
+/// Not a durable, crash-proof guarantee — the ring's index entry is already
+/// gone by the time this runs, so there is no later retry across a restart
+/// — just enough to ride out an ordinary transient storage error (e.g.
+/// `redb` write-transaction lock contention) instead of permanently
+/// orphaning sensitive material on the very first failed attempt.
+pub const DEPARTED_KEY_DELETE_RETRY_ATTEMPTS: u32 = 3;
+
+/// Delay between retries of a failed departed-key-material delete.
+pub const DEPARTED_KEY_DELETE_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 /// How often a non-node-1 reshare member polls the bulletin waiting for the
 /// node-1 bulletin update to land before releasing its PSS claim.
 pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);
