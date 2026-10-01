@@ -31,3 +31,28 @@ impl DummyAuthZ {
         Ok(DummyAuthZ)
     }
 }
+
+/// `DummyAuthZ`'s opposite: always denies. For a test that needs to prove a
+/// caller actually rejects on an unauthorized ACP decision — `DummyAuthZ`
+/// alone can only ever exercise the accept path, since it's permissive by
+/// construction.
+pub struct DenyingAuthZ;
+
+#[async_trait]
+impl Authz for DenyingAuthZ {
+    async fn check(&self, _permission: Vec<u8>, _subject: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn check_at(&self, _permission: Vec<u8>, _subject: &str, _anchor: &str) -> Result<bool> {
+        Ok(false)
+    }
+
+    async fn current_anchor(&self) -> Result<String> {
+        Ok("0".to_string())
+    }
+
+    async fn anchor_time(&self, _anchor: &str) -> Result<u64> {
+        Ok(0)
+    }
+}

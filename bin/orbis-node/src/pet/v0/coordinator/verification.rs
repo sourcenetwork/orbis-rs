@@ -1869,6 +1869,42 @@ mod tests {
         (signer, document, "audit-authz-object".to_string())
     }
 
+    // ========================================================================
+    // `check_pet_permission` itself — the ACP gate `verify_pet_audit_authorization`
+    // (and the normal initiator path) both rely on. Flagged twice before as a real
+    // gap: `DummyAuthZ` is permissive by construction, so every test above and below
+    // that uses it can only ever exercise the *accept* path — none of them prove this
+    // gate actually rejects a denied actor. `DenyingAuthZ` (authz::dummy) closes that.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn check_pet_permission_rejects_a_denied_actor() {
+        let (_signer, document, _object_id) = audit_authz_fixture();
+        let authz = authz::dummy::DenyingAuthZ;
+
+        let result = check_pet_permission(&authz, &document, "any-target", "any-actor", None).await;
+
+        assert!(
+            matches!(result, Err(PetError::Mismatch)),
+            "a denied ACP decision must reject the PET permission gate: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn check_pet_permission_accepts_an_authorized_actor() {
+        let (_signer, document, _object_id) = audit_authz_fixture();
+        let authz = DummyAuthZ;
+
+        let result = check_pet_permission(&authz, &document, "any-target", "any-actor", None).await;
+
+        assert!(
+            result.is_ok(),
+            "an authorized ACP decision must pass the PET permission gate: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
         let (_signer, document, object_id) = audit_authz_fixture();
