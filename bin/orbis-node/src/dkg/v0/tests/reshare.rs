@@ -2144,10 +2144,8 @@ async fn test_reshare_expand_committee() {
     sorted_new.sort();
 
     let mut union_peers = peer_ids.clone();
-    for p in [&dave.address] {
-        if !union_peers.contains(p) {
-            union_peers.push((*p).clone());
-        }
+    if !union_peers.contains(&dave.address) {
+        union_peers.push(dave.address.clone());
     }
 
     let old_node_states: Vec<&crate::app_state::AppState<DkgImpl>> = vec![

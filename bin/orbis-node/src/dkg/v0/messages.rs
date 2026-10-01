@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::reporting::v0::types::{DkgCommitmentStatement, DkgShareStatement};
+use crate::reporting::v0::types::DkgShareStatement;
 
 /// Describes what kind of ceremony a DKG session is running.
 ///
@@ -51,11 +51,7 @@ impl SessionKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SignedDkgCommitment {
-    pub statement: DkgCommitmentStatement,
-    pub signature: Vec<u8>,
-}
+pub use orbis_reporting::SignedDkgCommitment;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedDkgShare {

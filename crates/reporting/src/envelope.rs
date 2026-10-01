@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::reporting::v0::error::{ReportingError, Result};
+use crate::error::{ReportingError, Result};
 
 use super::codec::{write_bytes, write_string, write_u64};
 use super::{REPORT_DOMAIN, REPORT_TTL_SECS};

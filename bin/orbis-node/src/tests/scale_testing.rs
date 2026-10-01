@@ -50,7 +50,8 @@ const THRESHOLD: usize = 15;
 /// so this can run alongside either without port collisions.
 const BASE_PORT: u16 = 56_000;
 
-#[tokio::test]
+// Twenty nodes share this runtime; cryptographic work must not serialize every peer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial_test::serial(scale_test)]
 async fn test_scale_dkg_pre_sign() {
     crate::helpers::test_helpers::use_fast_test_kdf();

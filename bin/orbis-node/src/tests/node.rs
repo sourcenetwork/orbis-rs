@@ -97,6 +97,7 @@ async fn make_test_node_config(
     );
     let config = NodeConfig {
         args: Args {
+            vera_config: None,
             addr: addr.to_string(),
             cors_allow_origins: vec![],
             cors_permissive: false,
@@ -115,6 +116,7 @@ async fn make_test_node_config(
             runtime_base_path: None,
             reshare_interval_secs: 0, // disabled in tests
             network_private_routes_only: false,
+            network_bind_addr: None,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
@@ -165,6 +167,7 @@ fn node_info_test_args(
     ring_ids: Vec<&str>,
 ) -> Args {
     Args {
+        vera_config: None,
         addr: "127.0.0.1:0".to_string(),
         cors_allow_origins: vec![],
         cors_permissive: false,
@@ -183,6 +186,7 @@ fn node_info_test_args(
         runtime_base_path: None,
         reshare_interval_secs: 0,
         network_private_routes_only: false,
+        network_bind_addr: None,
         node_controller_key: controller_key.to_string(),
         node_peer_id,
         node_whitelisted_policy_ids: policy_ids.into_iter().map(str::to_string).collect(),
@@ -857,6 +861,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     );
     let config = NodeConfig {
         args: Args {
+            vera_config: None,
             addr: grpc_addr.to_string(),
             cors_allow_origins: vec!["http://localhost:5173".to_string()],
             cors_permissive: false,
@@ -875,6 +880,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             runtime_base_path: None,
             reshare_interval_secs: 0,
             network_private_routes_only: false,
+            network_bind_addr: None,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],

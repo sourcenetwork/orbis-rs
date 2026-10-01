@@ -197,3 +197,55 @@ fn repeated_writes_still_read_latest() {
 
     cleanup_db(&path);
 }
+
+#[test]
+fn persisted_storage_tags_remain_stable() {
+    let keys = [
+        LocalStorageKeys::RingKey("ring".into()),
+        LocalStorageKeys::RingIndex,
+        LocalStorageKeys::NodeSecretKey,
+        LocalStorageKeys::NodeSigningKey,
+        LocalStorageKeys::RingPolyHistory("ring".into()),
+        LocalStorageKeys::PendingReshareBundle("ring".into()),
+        LocalStorageKeys::NativeWorkerKey("vera-worker-test".into()),
+    ];
+    for (tag, key) in keys.iter().enumerate() {
+        assert_eq!(
+            &serialize_key(key).unwrap()[..4],
+            &(tag as u32).to_le_bytes()
+        );
+    }
+}
+
+#[test]
+fn native_worker_identity_survives_restart_and_deletion() {
+    let path = test_db_path("native_worker_identity");
+    cleanup_db(&path);
+    let key = LocalStorageKeys::NativeWorkerKey("vera-worker-test".into());
+    let history = LocalStorageKeys::RingPolyHistory("ring-public-key".into());
+    let pending = LocalStorageKeys::PendingReshareBundle("ring-public-key".into());
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    db.set_encrypted(key.clone(), Zeroizing::new(vec![31; 32]))
+        .unwrap();
+    db.set(history.clone(), b"public polynomial".to_vec())
+        .unwrap();
+    db.set_encrypted(pending.clone(), Zeroizing::new(b"pending share".to_vec()))
+        .unwrap();
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert_eq!(
+        db.get_encrypted(key.clone()).unwrap().unwrap().as_slice(),
+        &[31; 32]
+    );
+    assert_eq!(db.get(history).unwrap().unwrap(), b"public polynomial");
+    assert_eq!(
+        db.get_encrypted(pending).unwrap().unwrap().as_slice(),
+        b"pending share"
+    );
+    db.delete(key.clone()).unwrap();
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert!(db.get_encrypted(key).unwrap().is_none());
+    drop(db);
+    cleanup_db(&path);
+}

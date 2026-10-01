@@ -189,3 +189,136 @@ cargo test -p orbis-node
 ```
 
 Integration tests may require Docker (see **`common`** crate **`IntegrationTestNetwork`**). **`fault-injection`** tests exercise blocked peers.
+
+## Native Vera service
+
+The native integration is under qualification. The pinned Vera and Defra
+verifiers use Orbis's augmented BLS signature suite. Legacy basic-BLS signature
+types and verification paths are removed. Local process fixtures cover Defra
+signing and replication, permission revocation, PRE, graceful restart, and
+committee replacement. Deployment qualification still requires sustained load,
+multi-host networks, crash/power-loss recovery, and operational security review.
+
+Build a native-only node with:
+
+```sh
+cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
+```
+
+Select `decaf377` instead of `bls12-381` for the Decaf crypto implementation. Start with
+`--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
+The configuration selects native authorization and bulletin operations through the
+existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
+handoff, node initialization, request handlers and shutdown path. Backend setup
+provides the identity and service adapters. This build excludes the Cosmos SDK and
+CometBFT transport dependencies. Default builds retain the existing backend; adding
+`--features native` to a default build includes both. Native-only startup requires
+`--vera-config` and reports a missing configuration before opening node state.
+The separate `harness` and `integration-test` features retain the dependencies used
+by their existing test identities and fixtures.
+
+Supply the controller public key as 33 hex-encoded bytes. Existing connection and
+fee options cannot be combined with `--vera-config`.
+
+```json
+{
+  "endpoint": "http://127.0.0.1:8545",
+  "deployment_id": 9001,
+  "deployment_root": "<32-byte genesis digest, hex without prefix>",
+  "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
+  "max_evidence_age_secs": 30,
+  "request_timeout_secs": 30
+}
+```
+
+Provision the deployment ID, genesis digest and consensus key through the operator's
+trusted deployment configuration. The consensus key is separate from Orbis's node
+and threshold service keys. Startup verifies the first certified revision against
+the configured genesis digest before opening the submission journal. Current reads
+reject stale evidence; the two time bounds default to 30 seconds. Configurations
+reject unknown and duplicate fields and are limited to 16 KiB.
+
+Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
+file holding its encryption password. Node signing keys use 64 hex characters in
+the encrypted key slot. Startup preserves existing keys and rejects raw, prefixed
+or invalid key bytes without replacing them. New keys are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
+worker journal together when backing up or restoring a node. Native worker keys use
+their own storage slots; ring history and pending reshare records retain their existing
+slots. The journal retains
+uncertain submissions for recovery on the next write.
+
+Native startup registers the node with Vera or verifies the existing controller and
+peer identity. Controller-owned allow-list changes require explicit authenticated
+updates. Startup does not wait for funding. `public_key.txt` and the info service's
+`public_address` field contain the compressed node public key in native mode.
+
+The focused startup fixture launches the actual Orbis binary against four local
+Vera members and checks certified registration and identity/journal persistence
+across restart. Set `ORBIS_NODE_BINARY` to an independently built node executable
+when validating the native-only package; otherwise the fixture uses Cargo's test
+binary:
+
+```sh
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
+  --test native_startup native_startup_registers_and_preserves_identity_on_restart -- --ignored
+```
+
+This fixture does not qualify distributed DKG, signing, or decryption. Migration of
+existing ring and encrypted-record identifiers requires a separate migration plan.
+
+For a group using direct peer routes, bind each node to a reachable local IPv4
+interface with `--network-bind-addr <ip:port>`. Local development can use
+`--network-bind-addr 127.0.0.1:0`. The info service includes a bound socket in
+`p2p_address` only when its IP is concrete; a wildcard bind returns the peer
+identity alone. An operator must publish the reachable route through the node's
+authenticated controller update. Binding an interface does not configure NAT
+forwarding or make a private address reachable from other networks.
+
+The distributed threshold fixture uses three separate Orbis processes and a 2-of-3
+BLS ring. It completes DKG through native Vera, gracefully restarts every node
+with the same encrypted store and peer binding, and checks the recovered public
+polynomials and identities. It then verifies a threshold signature, stores an
+encrypted document, and decrypts it through PRE. Signing and decryption are denied
+before their respective ACP grants and after revocation. The fixture then admits
+a new participant through authenticated controller and policy updates. Scheduled
+resharing replaces a member while retaining the ring public key. With only two
+members online, the incoming share must participate in signing and decrypting the
+document stored before the transition.
+The remaining members also co-sign an offline report. A certified fault-score
+query verifies its effect on the unavailable member and the absence of penalties
+for healthy members.
+
+```sh
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
+  --test native_startup native_distributed_threshold_workflows -- --ignored
+```
+
+Signing and PRE apply their 10-second peer deadline to connection setup, sending
+and receiving together. This keeps unresponsive peers within the background
+collection window so timeout observations reach reporting.
+
+`HubClient::read_threshold_node_demerits` returns the stored score or certified
+absence with its revision and timestamp. Apply the ring's configured reset
+interval with `NodeDemerits::effective_points` when displaying the current score.
+
+This covers fresh BLS rings, graceful restart, member replacement, offline reports
+and live policy checks. Crash/power-loss recovery, other fault evidence types and
+other curves require their own checks.
+
+The Defra signing scenario uses the actual Defra client against three Orbis
+processes and native Vera. It checks denial before an ACP grant, signed-document
+creation in Regolith after the grant, persisted signature verification after
+reopening the database, and rejection of new documents after revocation. A second
+store rejects a forged signature with recomputed content IDs, merges the genuine
+document, and preserves its queried contents and signature after reopen. Blocks
+are transferred directly to the merge handler for the forgery check. Two embedded
+Defra nodes also replicate an Orbis-signed GraphQL mutation over loopback Iroh/QUIC,
+verify the received history signatures, and reject a new mutation after revocation.
+Relay and discovery are disabled for this local transport scenario.
+It shares the
+DKG setup and stops before the PRE and resharing portions of the broader fixture.
+
+```sh
+VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
+  --test native_startup native_defra_signing -- --ignored
+```

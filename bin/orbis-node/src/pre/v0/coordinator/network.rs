@@ -34,6 +34,20 @@ where
         message: PreMessage,
         request_id: &str,
     ) -> Result<Option<PreMessage>> {
+        tokio::time::timeout(
+            PEER_RESPONSE_TIMEOUT,
+            self.exchange(peer_id_str, message, request_id),
+        )
+        .await
+        .map_err(|_| PreError::Timeout(format!("Peer exchange timed out for {peer_id_str}")))?
+    }
+
+    async fn exchange(
+        &self,
+        peer_id_str: &str,
+        message: PreMessage,
+        request_id: &str,
+    ) -> Result<Option<PreMessage>> {
         if !matches!(&message, PreMessage::ReencryptRequest(_)) {
             return Err(PreError::ProtocolError(
                 "send_request_and_receive_response requires a ReencryptRequest".to_string(),
@@ -72,21 +86,12 @@ where
                 ))
             })?;
 
-        // Wait for response on the same stream with timeout
-        let response_msg = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, stream.recv())
-            .await
-            .map_err(|_| {
-                PreError::Timeout(format!(
-                    "Timed out waiting for response from peer {}",
-                    peer_id_str
-                ))
-            })?
-            .map_err(|e| {
-                PreError::NetworkCommunication(format!(
-                    "Failed to receive response from peer {}: {}",
-                    peer_id_str, e
-                ))
-            })?;
+        let response_msg = stream.recv().await.map_err(|e| {
+            PreError::NetworkCommunication(format!(
+                "Failed to receive response from peer {}: {}",
+                peer_id_str, e
+            ))
+        })?;
 
         // Deserialize response
         let response: PreMessage = wire::decode(&response_msg.data).map_err(|e| {

@@ -34,7 +34,7 @@ allow = [
 confidence-threshold = 0.8
 
 # ---------------------------------------------------------------------------
-# Security advisories — disabled until prod-ready
+# Security advisories
 # ---------------------------------------------------------------------------
 [advisories]
 unmaintained = "none"
@@ -61,11 +61,6 @@ ignore = [
     # keygen) stays the clean long-term fix; tracked as SEC-02.
     "RUSTSEC-2022-0093",
     "RUSTSEC-2024-0344",
-
-    # iroh 0.95.1 is the current API used by network/orbis-node and pins
-    # hickory-proto 0.25.x. Revisit when moving to a newer iroh line.
-    "RUSTSEC-2026-0118",
-    "RUSTSEC-2026-0119",
 
     # tendermint-rpc 0.40.4 is the latest tendermint-rpc release and its
     # http-client feature still pins reqwest 0.11 / rustls-webpki 0.101.x.
@@ -94,7 +89,16 @@ wildcards = "allow"
 # Source origins
 # ---------------------------------------------------------------------------
 [sources]
-# Only allow crates from crates.io and local path dependencies
+# Only allow crates.io and the explicitly pinned integration sources
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+allow-git = [
+    "https://github.com/iverc/commonware.git",
+    "https://github.com/mizufinance/decaf377",
+    "https://github.com/sourcenetwork/backbone.git",
+    "https://github.com/sourcenetwork/defradb.rs",
+    "https://github.com/sourcenetwork/orbis-rs",
+    "https://github.com/sourcenetwork/vera.rs",
+]

@@ -96,6 +96,44 @@ jobs:
     - name: Clippy (${{ matrix.crypto }})
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
+  native:
+    name: Native backend (${{ matrix.crypto }})
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, decaf377]
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Update Rust stable
+      run: rustup update stable
+    - name: Cache cargo + target
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: native-${{ matrix.crypto }}
+    - name: Install protoc + lld
+      run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
+    - name: Check native dependency boundary
+      run: |
+        cargo tree --locked --color never -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --edges normal,build --prefix none > "$RUNNER_TEMP/native-dependencies.txt"
+        if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' "$RUNNER_TEMP/native-dependencies.txt"; then
+          echo "Native node includes Cosmos transport dependencies"
+          exit 1
+        fi
+    - name: Check native node and bulletin
+      run: |
+        cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
+    - name: Check bootstrap handoff, shutdown and identity storage
+      run: |
+        cargo test --locked -p common --no-default-features --lib node_signing
+        cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
+        cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib native_identity_preserves_existing_keys_and_refuses_corruption
+        cargo test --locked -p bulletin --no-default-features --features native,${{ matrix.crypto }} --lib native::
+
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
   # in docker/Dockerfile keeps the dependency compile a cached layer). The
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead

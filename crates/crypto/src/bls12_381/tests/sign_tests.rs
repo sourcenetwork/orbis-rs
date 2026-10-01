@@ -226,3 +226,24 @@ fn test_threshold_signing_different_share_subsets_same_signature() {
     assert!(signer.verify(&aggregate_pk, msg, &sig1).is_ok());
     assert!(signer.verify(&aggregate_pk, msg, &sig2).is_ok());
 }
+
+#[test]
+fn augmented_signature_matches_consumer_fixture() {
+    use ark_serialize::CanonicalSerialize;
+    let vector: serde_json::Value = serde_json::from_str(include_str!("aug_vector.json")).unwrap();
+    let scalar = Fr::from(42u64);
+    let public = (G1Projective::generator() * scalar).into_affine();
+    let message = b"Orbis augmented BLS interoperability v1";
+    let signature =
+        (G2Projective::from(*hash_to_g2(&public, message).unwrap().inner()) * scalar).into_affine();
+    let mut public_bytes = Vec::new();
+    public.serialize_compressed(&mut public_bytes).unwrap();
+    let mut signature_bytes = Vec::new();
+    signature
+        .serialize_compressed(&mut signature_bytes)
+        .unwrap();
+    let encode = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(encode(message), vector["message"]);
+    assert_eq!(encode(&public_bytes), vector["public_key"]);
+    assert_eq!(encode(&signature_bytes), vector["signature"]);
+}

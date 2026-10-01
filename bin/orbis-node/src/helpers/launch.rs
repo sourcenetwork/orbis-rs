@@ -8,6 +8,7 @@ use bulletin::{
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
+#[cfg(any(feature = "cosmos", test))]
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -201,6 +202,9 @@ impl CorsPolicy {
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
 pub struct Args {
+    /// Native Vera endpoint and independently provisioned deployment trust (JSON file).
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["authz_grpc", "bulletin_grpc", "chain_rpc", "chain_rest", "chain_id", "denom", "fee_granter", "chain_gas_multiplier", "allow_insecure_rpc"])]
+    pub vera_config: Option<PathBuf>,
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
@@ -283,6 +287,9 @@ pub struct Args {
     /// supplying an address does not guarantee that address is dialable.
     #[arg(long, default_value_t = false)]
     pub network_private_routes_only: bool,
+    /// Bind the peer UDP socket to a specific local IPv4 address and port.
+    #[arg(long)]
+    pub network_bind_addr: Option<std::net::SocketAddrV4>,
     /// Hex-encoded public key of the external controller allowed to update node info.
     #[arg(long)]
     pub node_controller_key: String,
@@ -639,6 +646,18 @@ pub fn derive_secret_key_bytes(input: &str) -> Result<[u8; 32], String> {
     Ok(hash.into())
 }
 
+/// Prefer concrete binds, then discovered direct routes; never advertise wildcard sockets.
+pub(crate) fn network_peer_address(network: &dyn Network) -> String {
+    let peer = hex::encode(network.local_peer_id().as_bytes());
+    network
+        .bound_addresses()
+        .into_iter()
+        .chain(network.direct_addresses())
+        .filter(|addr| !addr.ip().is_unspecified())
+        .min_by_key(|addr| !addr.is_ipv4())
+        .map_or_else(|| peer.clone(), |addr| format!("{peer}@{addr}"))
+}
+
 pub fn get_network_key_secret(
     custom_file_path: Option<PathBuf>,
     local_storage: LocalStorageImpl,
@@ -870,6 +889,7 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(feature = "cosmos", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
@@ -971,6 +991,7 @@ pub fn create_and_store_node_key(
 ///
 /// # Returns
 /// A TxSigner on success, or an error if the key doesn't exist or is invalid
+#[cfg(any(feature = "cosmos", test))]
 pub fn get_node_signer(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
@@ -992,6 +1013,33 @@ pub fn get_node_signer(
 mod tests {
     use super::*;
     use clap::{error::ErrorKind, Parser};
+
+    #[tokio::test]
+    async fn peer_route_omits_wildcard_and_reports_concrete_bind() {
+        for ip in [
+            std::net::Ipv4Addr::UNSPECIFIED,
+            std::net::Ipv4Addr::LOCALHOST,
+        ] {
+            let network = network::NetworkImpl::builder()
+                .bind_addr_v4(std::net::SocketAddrV4::new(ip, 0))
+                .private_routes_only()
+                .build()
+                .await
+                .unwrap();
+            let route = network_peer_address(&network);
+            let peer = hex::encode(network.local_peer_id().as_bytes());
+            let socket: std::net::SocketAddr = route
+                .strip_prefix(&format!("{peer}@"))
+                .expect("bound endpoint must advertise a concrete route")
+                .parse()
+                .unwrap();
+            assert!(!socket.ip().is_unspecified());
+            assert_ne!(socket.port(), 0);
+            if !ip.is_unspecified() {
+                assert_eq!(socket.ip(), ip);
+            }
+        }
+    }
 
     fn minimal_args() -> Args {
         Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])
