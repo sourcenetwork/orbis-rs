@@ -378,8 +378,8 @@ where
     }
 }
 
-/// `requires_pet` gates the PET-material cleanup below — reshare-atomicity
-/// finding #5 (PET audit fix checklist): this path previously only ever
+/// `requires_pet` gates the PET-material cleanup below: this path previously
+/// only ever
 /// deleted the main key's live bundle, never the PET checking key's live
 /// share or either namespace's pending bundle. A node that missed the live,
 /// confirmation-driven cleanup (`reshare/cleanup.rs`'s `DepartingDealer`
@@ -641,7 +641,7 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
 /// next startup.
 ///
 /// The two bundles are reconciled independently rather than the PET one being gated on the
-/// main one's presence (reshare-atomicity finding #4, PET audit fix checklist): a restart
+/// main one's presence: a restart
 /// can land between the main bundle's own promotion/clear and the PET bundle's, leaving only
 /// the PET entry pending — that case must still be reconciled on a later startup, not skipped
 /// because the main lookup already returned `None`.

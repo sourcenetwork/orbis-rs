@@ -40,12 +40,12 @@ use super::codec::{
     write_u32, write_u64, Decoder,
 };
 
-/// Everything the `context_digest` binds, per the design doc: "at least the
-/// chain, protocol version/crypto suite, ring identity/state, authoritative
-/// PET checking key and share-generation/public-polynomial identifier,
-/// validated document/tag digest (including the existing document
-/// salt/timestamp binding), exact audit target, and authenticated audit
-/// scope... the authenticated coordinator identity and attempt as well."
+/// Everything the `context_digest` binds: the chain, protocol
+/// version/crypto suite, ring identity/state, authoritative PET checking
+/// key and share-generation/public-polynomial identifier, validated
+/// document/tag digest (including the existing document salt/timestamp
+/// binding), exact audit target, authenticated audit scope, and the
+/// authenticated coordinator identity and attempt.
 ///
 /// `pet_pk` alone serves as both the checking key and the
 /// share-generation/public-polynomial identifier: PET keys have no
@@ -332,8 +332,7 @@ pub struct PetBlindSignedDecrypt {
 /// `certificate_digest` plus both reconstructed aggregate points, since the
 /// reusable decryption DLEQ arithmetic alone (unchanged from today's
 /// single-round protocol) does not express which certificate/attempt this
-/// decryption share belongs to — see the design doc's "Round 3 — Decrypt"
-/// section.
+/// decryption share belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PetBlindDecryptStatement {
     pub domain: String,
@@ -369,8 +368,7 @@ pub struct PetBlindDecryptStatement {
     /// `RefreshPet`/`ResharePet` — by checking it independently evaluates to
     /// the ring's known, generation-invariant `pet_pk` at `x=0`, rather than
     /// needing to already recognize the specific generation in a local
-    /// current/retired candidate list (PET audit fix checklist,
-    /// reshare-atomicity finding #3).
+    /// current/retired candidate list.
     pub public_polynomial: Vec<u8>,
 }
 

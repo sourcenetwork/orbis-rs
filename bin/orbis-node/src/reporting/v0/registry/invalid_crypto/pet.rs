@@ -366,10 +366,9 @@ pub(crate) async fn require_pet_blind_decrypt_verification_failure(
     // generation of this ring's PET key, whatever `RefreshPet`/`ResharePet`
     // it came from, evaluates to the same `pet_pk` at x=0. This lets a
     // verifier accept a genuine response from a generation it hasn't
-    // personally caught up to yet (reshare-atomicity finding #3: a
-    // candidate-list approach checking only the verifier's own
-    // current/recently-retired polynomials has no way to recognize a
-    // generation *ahead* of it), while still rejecting a fabricated claim:
+    // personally caught up to yet (a candidate-list approach checking only
+    // the verifier's own current/recently-retired polynomials has no way to
+    // recognize a generation *ahead* of it), while still rejecting a fabricated claim:
     // forging a polynomial that authenticates here requires genuinely
     // holding a real share of this ring's actual `pet_sk`.
     let pet_pk_bytes = hex::decode(&blind_context.pet_pk)

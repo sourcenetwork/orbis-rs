@@ -233,9 +233,8 @@ impl RingShareBundle {
     /// reported decrypt statement's own claimed public polynomial directly
     /// against the ring's known, generation-invariant `pet_pk`, so it never
     /// needs a local current/retired candidate list to recognize a
-    /// generation it hasn't personally seen yet (reshare-atomicity finding
-    /// #3 — a history-based approach couldn't recognize a generation
-    /// *ahead* of the verifier's own).
+    /// generation it hasn't personally seen yet — a history-based approach
+    /// couldn't recognize a generation *ahead* of the verifier's own.
     pub fn save_by_pet_ring_key(
         &self,
         storage: &impl LocalStorage,
@@ -333,7 +332,7 @@ mod tests {
         );
     }
 
-    /// Finding #4 (PET audit fix checklist): `RingKey` (main-key storage) and
+    /// `RingKey` (main-key storage) and
     /// `PetRingKey` (PET checking-key storage) must be genuinely separate
     /// namespaces, not merely separate by convention — a `FreshPet` write
     /// keyed by `ring_id` must never be able to land on a main-key bundle

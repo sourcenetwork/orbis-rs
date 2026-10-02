@@ -155,11 +155,10 @@ pub trait Pet {
     /// match and an unpredictable point otherwise, provided `z_i` stays
     /// secret.
     ///
-    /// `z_i` must be freshly and independently sampled per attempt — see
-    /// finding #2's design doc for why reusing it, or substituting a
-    /// different participant's contribution into an already-revealed
-    /// aggregate, reintroduces the exact fingerprint leak this construction
-    /// exists to close.
+    /// `z_i` must be freshly and independently sampled per attempt: reusing
+    /// it, or substituting a different participant's contribution into an
+    /// already-revealed aggregate, reintroduces the exact fingerprint leak
+    /// this construction exists to close.
     ///
     /// Never reveals `z_i`: recovering it from this output alone requires
     /// solving discrete log. Unlike [`Pet::partial_pet_check`], `D` (and

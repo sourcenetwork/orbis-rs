@@ -154,9 +154,8 @@ fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixt
         pet_tag_proof: None,
     };
 
-    // Required noncircular construction order (PET audit fix checklist,
-    // finding #5): the tag must be on the document *before* the context
-    // it's bound into is built.
+    // Required noncircular construction order: the tag must be on the
+    // document *before* the context it's bound into is built.
     let pet_pk_hex = ring_payload.pet_pk.clone().expect("pet_pk");
     let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
     document.pet_tag = Some(String::try_from(tag.clone()).expect("serialize tag"));
@@ -736,7 +735,7 @@ async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
 }
 
 // ========================================================================
-// Finding #3 (PET audit fix checklist): every phase's handler is the one
+// Every phase's handler is the one
 // entry point reachable from a raw wire message with no other upstream
 // authentication. `verify_pet_audit_authorization` closes that gap; it
 // needs only an `Authz` impl, so most of these tests call it directly.

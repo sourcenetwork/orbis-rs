@@ -7,15 +7,18 @@
 //! drives the check, fanning out directly to the whole ring committee.
 //!
 //! Three sequential phases, each reusing the over-ask/timeout collection
-//! pattern from `sign/v0/coordinator/rounds` with phase-specific acceptance
-//! rules from the design doc's availability table:
+//! pattern from `sign/v0/coordinator/rounds`, with phase-specific acceptance
+//! rules:
 //! - **Commit**: over-ask everyone, stop at `threshold`, freely
 //!   substitutable (a late/dropped commit is simply not selected).
 //! - **Reveal**: sent only to the exact `threshold` selected after commit.
 //!   No substitution — any shortfall discards the whole attempt and returns
 //!   an error; a fresh retry gets a brand-new `attempt_id` and entirely
-//!   fresh randomness from every participant, per the design doc's
-//!   cancellation-attack analysis.
+//!   fresh randomness from every participant. Substituting a different
+//!   participant's contribution into a partially-completed attempt would mix
+//!   state across attempts in exactly the way the blinding scheme's
+//!   cancellation-attack protection depends on not happening (see
+//!   `crypto::r#trait::Pet::prove_blinding_correctness`'s doc comment).
 //! - **Decrypt**: independent of reveal's participant set, over-ask again,
 //!   freely substitutable, exactly like ordinary threshold decryption.
 //!
@@ -80,9 +83,7 @@ where
     /// letting them get silently cancelled when `tasks` is dropped — a late
     /// transport failure from a peer slower than this phase's collection
     /// deadline is still attributable as `node_offline`, exactly mirroring
-    /// `sign/v0/coordinator/rounds`'s own drain — see the design doc's
-    /// "Reuse the sign/v0/coordinator/rounds scheduling and background-drain
-    /// pattern... Drain late responses for attribution" requirement.
+    /// `sign/v0/coordinator/rounds`'s own drain.
     fn spawn_pet_offline_drain(
         &self,
         tasks: tokio::task::JoinSet<(String, Result<Option<PetMessage>>)>,
@@ -728,10 +729,13 @@ where
         }
 
         if reveals.len() < threshold {
-            // No substitution — the whole attempt is discarded, per the
-            // design doc's cancellation-attack analysis. A fresh retry (a
-            // new call to this function) gets a brand-new `attempt_id` and
-            // entirely fresh randomness from every participant.
+            // No substitution — the whole attempt is discarded rather than
+            // swapping in a different participant, which would mix state
+            // across attempts in exactly the way the blinding scheme's
+            // cancellation-attack protection depends on not happening. A
+            // fresh retry (a new call to this function) gets a brand-new
+            // `attempt_id` and entirely fresh randomness from every
+            // participant.
             return Err(PetError::InsufficientShares {
                 got: reveals.len(),
                 need: threshold,

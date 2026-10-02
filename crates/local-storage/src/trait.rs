@@ -19,8 +19,7 @@ pub enum LocalStorageKeys {
     /// key's `aggregate_pk.to_string()` are drawn from unrelated namespaces
     /// with no structural reason they can never collide, and a `FreshPet`
     /// ceremony must never be able to overwrite a main-key bundle (or a
-    /// different ring's PET bundle) by naming the wrong identifier — see the
-    /// PET audit fix checklist, finding #4.
+    /// different ring's PET bundle) by naming the wrong identifier.
     PetRingKey(String),
     /// JSON-encoded `Vec<RingIndexEntry>` of rings this node has joined.
     /// Each entry contains the local storage key (`ring_pk_str`) and the bulletin

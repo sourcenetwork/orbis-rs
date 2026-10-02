@@ -325,8 +325,7 @@ pub async fn validate_ring_reshare_update_statement(
     // peer must therefore independently require its own matching PET
     // readiness for this exact transition before contributing a share; a
     // coordinator-side wait alone cannot enforce that PET and the main key
-    // activate atomically (PET audit fix checklist, reshare-atomicity
-    // finding #1). `ReshareInProgress` (not `Unauthorized`): an honest peer
+    // activate atomically. `ReshareInProgress` (not `Unauthorized`): an honest peer
     // whose own `ResharePet` simply hasn't staged yet is a transient,
     // retryable state, not misconduct — the caller's existing sign-retry
     // loop already tolerates this same rejection shape for the main key.
@@ -1219,8 +1218,7 @@ mod ring_reshare_update_tests {
         assert_eq!(ring_pk, statement.ring_pk);
     }
 
-    /// Reshare-atomicity finding #1 (PET audit fix checklist): the
-    /// coordinator's own wait for `ResharePet` to stage
+    /// The coordinator's own wait for `ResharePet` to stage
     /// (`bulletin_update.rs`'s `wait_for_reshare_pet_staged`) only binds a
     /// well-behaved *leader* — nothing stopped an honest co-signer from
     /// contributing its share toward committee activation before its own

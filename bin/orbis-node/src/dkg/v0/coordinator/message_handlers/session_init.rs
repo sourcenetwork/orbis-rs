@@ -887,7 +887,7 @@ where
             // above would pass (it only ever sees "A"), the full ceremony
             // would run with A's real committee, and finalization would
             // persist the resulting (unrelated) share bundle under B's
-            // storage key — see the PET audit fix checklist, finding #4.
+            // storage key.
             if kind_ring_id != &ring_id {
                 return Err(DkgError::Unauthorized(format!(
                     "Fresh PET SessionInit ring_id mismatch: authorized for ring {} but kind names ring {}",
