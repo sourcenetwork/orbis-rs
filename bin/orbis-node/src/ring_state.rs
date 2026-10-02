@@ -1,9 +1,42 @@
-use crate::constants::RING_POLY_HISTORY_RETENTION_SECS;
+use crate::constants::{
+    DEPARTED_KEY_DELETE_RETRY_ATTEMPTS, DEPARTED_KEY_DELETE_RETRY_DELAY,
+    RING_POLY_HISTORY_RETENTION_SECS,
+};
 use crypto::r#trait::{CryptoDeserialize, PriShare};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::fmt;
 use zeroize::Zeroizing;
+
+/// Retries a single `LocalStorage::delete` a few times before giving up —
+/// shared by every departed/removed-member cleanup path that erases secret
+/// key material or a staged pending bundle (main ring share, PET share, and
+/// each one's own pending-reshare copy). `redb`'s write-transaction
+/// begin/commit can fail on ordinary transient contention; a couple of
+/// short-delayed retries catches that cheaply. Not a durable, crash-proof
+/// guarantee against every failure — just enough to avoid giving up on
+/// genuinely sensitive material's only deletion attempt over a passing
+/// hiccup.
+pub(crate) async fn delete_with_retries(
+    storage: &impl LocalStorage,
+    key: LocalStorageKeys,
+) -> Result<(), String> {
+    let mut last_error = None;
+    for attempt in 0..DEPARTED_KEY_DELETE_RETRY_ATTEMPTS {
+        match storage.delete(key.clone()) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt + 1 < DEPARTED_KEY_DELETE_RETRY_ATTEMPTS {
+                    tokio::time::sleep(DEPARTED_KEY_DELETE_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    Err(last_error
+        .expect("loop runs DEPARTED_KEY_DELETE_RETRY_ATTEMPTS >= 1 times")
+        .to_string())
+}
 
 /// One entry in the node's ring index.
 ///
@@ -177,6 +210,45 @@ impl RingShareBundle {
             .map_err(|e| format!("Failed to store RingShareBundle: {}", e))
     }
 
+    /// Load a ring's independent PET checking-key bundle, keyed by `ring_id`
+    /// — a distinct namespace from [`Self::load_by_ring_key`]'s main-key
+    /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
+    pub fn load_by_pet_ring_key(
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<Self, String> {
+        let bytes = storage
+            .get_encrypted(LocalStorageKeys::PetRingKey(ring_id.to_string()))
+            .map_err(|e| format!("Failed to read PET RingShareBundle: {}", e))?
+            .ok_or_else(|| format!("PET RingShareBundle not found for ring_id {}", ring_id))?;
+        Self::from_bytes(&bytes)
+    }
+
+    /// Save a ring's independent PET checking-key bundle, keyed by `ring_id`
+    /// — a distinct namespace from [`Self::save_by_ring_key`]'s main-key
+    /// storage (see [`LocalStorageKeys::PetRingKey`]'s doc comment).
+    ///
+    /// No polynomial-history stashing here (unlike `save_by_ring_key`):
+    /// `require_pet_blind_decrypt_verification_failure` authenticates a
+    /// reported decrypt statement's own claimed public polynomial directly
+    /// against the ring's known, generation-invariant `pet_pk`, so it never
+    /// needs a local current/retired candidate list to recognize a
+    /// generation it hasn't personally seen yet (reshare-atomicity finding
+    /// #3 — a history-based approach couldn't recognize a generation
+    /// *ahead* of the verifier's own).
+    pub fn save_by_pet_ring_key(
+        &self,
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<(), String> {
+        storage
+            .set_encrypted(
+                LocalStorageKeys::PetRingKey(ring_id.to_string()),
+                self.to_bytes(),
+            )
+            .map_err(|e| format!("Failed to store PET RingShareBundle: {}", e))
+    }
+
     /// Best-effort: read whatever bundle currently occupies this ring's slot and,
     /// if its polynomial differs from the one about to be written, retain it in
     /// `RingPolyHistory` so invalid-crypto report verification can still check a
@@ -192,7 +264,7 @@ impl RingShareBundle {
         }
         if let Err(error) = RingPolyHistory::record_retired(
             storage,
-            ring_key,
+            LocalStorageKeys::RingPolyHistory(ring_key.to_string()),
             previous.public_polynomial,
             self.last_pss,
         ) {
@@ -259,6 +331,54 @@ mod tests {
             result.unwrap_err(),
             "RingShareBundle: buffer too short (u32)"
         );
+    }
+
+    /// Finding #4 (PET audit fix checklist): `RingKey` (main-key storage) and
+    /// `PetRingKey` (PET checking-key storage) must be genuinely separate
+    /// namespaces, not merely separate by convention — a `FreshPet` write
+    /// keyed by `ring_id` must never be able to land on a main-key bundle
+    /// (or vice versa) even if the two strings happen to collide. Uses the
+    /// *same* string as both keys deliberately: if the two methods secretly
+    /// shared one storage slot, this test would see one bundle clobber the
+    /// other.
+    #[test]
+    fn pet_ring_key_and_ring_key_are_separate_namespaces() {
+        use crate::helpers::test_helpers::{cleanup_db, test_db_path};
+        use local_storage::r#trait::LocalStorage;
+        use local_storage::redb::RedbStorage;
+
+        let db_path = test_db_path("ring_state_pet_ring_key_namespace_separation");
+        let storage =
+            RedbStorage::new("test-password".to_string(), db_path.clone()).expect("open storage");
+
+        let same_key = "collision-candidate";
+        let main_bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(vec![1, 1, 1]),
+            public_polynomial: "main-poly".to_string(),
+            last_pss: 100,
+        };
+        let pet_bundle = RingShareBundle {
+            share_bytes: Zeroizing::new(vec![2, 2, 2]),
+            public_polynomial: "pet-poly".to_string(),
+            last_pss: 200,
+        };
+
+        main_bundle
+            .save_by_ring_key(&storage, same_key)
+            .expect("save main bundle");
+        pet_bundle
+            .save_by_pet_ring_key(&storage, same_key)
+            .expect("save PET bundle under the same string key");
+
+        let loaded_main =
+            RingShareBundle::load_by_ring_key(&storage, same_key).expect("load main bundle");
+        let loaded_pet =
+            RingShareBundle::load_by_pet_ring_key(&storage, same_key).expect("load PET bundle");
+
+        assert_eq!(loaded_main.public_polynomial, "main-poly");
+        assert_eq!(loaded_pet.public_polynomial, "pet-poly");
+
+        cleanup_db(&db_path);
     }
 
     #[test]
@@ -453,11 +573,51 @@ impl PendingReshareBundle {
         Self::from_bytes(&bytes).map(Some)
     }
 
-    /// Best-effort clear — callers must log and continue on `Err`.
-    pub fn clear(storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+    /// Best-effort clear (with a few retries against transient storage
+    /// errors — see [`delete_with_retries`]) — callers must log and
+    /// continue on `Err`.
+    pub async fn clear(storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+        delete_with_retries(
+            storage,
+            LocalStorageKeys::PendingReshareBundle(ring_key.to_string()),
+        )
+        .await
+        .map_err(|e| format!("Failed to clear PendingReshareBundle: {}", e))
+    }
+
+    /// Same as [`Self::save`], for a ring's independent PET checking key —
+    /// keyed by `ring_id` under [`LocalStorageKeys::PendingResharePetBundle`],
+    /// a distinct namespace from the main key's (see that key's doc comment).
+    pub fn save_pet(&self, storage: &impl LocalStorage, ring_id: &str) -> Result<(), String> {
         storage
-            .delete(LocalStorageKeys::PendingReshareBundle(ring_key.to_string()))
-            .map_err(|e| format!("Failed to clear PendingReshareBundle: {}", e))
+            .set_encrypted(
+                LocalStorageKeys::PendingResharePetBundle(ring_id.to_string()),
+                self.to_bytes(),
+            )
+            .map_err(|e| format!("Failed to store PET PendingReshareBundle: {}", e))
+    }
+
+    /// Same as [`Self::load`], for a ring's independent PET checking key.
+    pub fn load_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<Option<Self>, String> {
+        let Some(bytes) = storage
+            .get_encrypted(LocalStorageKeys::PendingResharePetBundle(
+                ring_id.to_string(),
+            ))
+            .map_err(|e| format!("Failed to read PET PendingReshareBundle: {}", e))?
+        else {
+            return Ok(None);
+        };
+        Self::from_bytes(&bytes).map(Some)
+    }
+
+    /// Same as [`Self::clear`], for a ring's independent PET checking key.
+    pub async fn clear_pet(storage: &impl LocalStorage, ring_id: &str) -> Result<(), String> {
+        delete_with_retries(
+            storage,
+            LocalStorageKeys::PendingResharePetBundle(ring_id.to_string()),
+        )
+        .await
+        .map_err(|e| format!("Failed to clear PET PendingReshareBundle: {}", e))
     }
 }
 
@@ -492,6 +652,16 @@ impl RingPolyState {
             .map_err(|e| format!("Failed to deserialize ring_pk: {}", e))?;
         Self::load(storage, &ring_pk)
     }
+
+    /// Same as [`Self::load_from_ring_pk_hex`], for a ring's independent PET
+    /// checking key — keyed directly by `ring_id` (PET has no public-key
+    /// storage handle to decode; see [`LocalStorageKeys::PetRingKey`]).
+    pub fn load_from_pet_ring_id(
+        storage: &impl LocalStorage,
+        ring_id: &str,
+    ) -> Result<Self, String> {
+        RingShareBundle::load_by_pet_ring_key(storage, ring_id).map(|b| b.to_poly_state())
+    }
 }
 
 /// Defense in depth on top of the retention-window filter in [`RingPolyHistory::recent`] —
@@ -524,36 +694,36 @@ struct RetiredPolynomial {
 }
 
 impl RingPolyHistory {
-    fn load(storage: &impl LocalStorage, ring_key: &str) -> Self {
+    fn load(storage: &impl LocalStorage, key: LocalStorageKeys) -> Self {
         storage
-            .get(LocalStorageKeys::RingPolyHistory(ring_key.to_string()))
+            .get(key)
             .ok()
             .flatten()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
-    fn save(&self, storage: &impl LocalStorage, ring_key: &str) -> Result<(), String> {
+    fn save(&self, storage: &impl LocalStorage, key: LocalStorageKeys) -> Result<(), String> {
         let bytes = serde_json::to_vec(self)
             .map_err(|e| format!("Failed to serialize RingPolyHistory: {}", e))?;
         storage
-            .set(
-                LocalStorageKeys::RingPolyHistory(ring_key.to_string()),
-                bytes,
-            )
+            .set(key, bytes)
             .map_err(|e| format!("Failed to store RingPolyHistory: {}", e))
     }
 
     /// Record a just-retired polynomial and prune anything past the retention
     /// window or the max entry count. Called right before a new `RingShareBundle`
-    /// overwrites the current one (see `RingShareBundle::stash_previous_polynomial`).
+    /// overwrites the current one (see `RingShareBundle::stash_previous_polynomial`
+    /// and `::stash_previous_pet_polynomial`). `key` selects the main-key
+    /// (`LocalStorageKeys::RingPolyHistory`) or PET
+    /// (`LocalStorageKeys::PetRingPolyHistory`) namespace.
     fn record_retired(
         storage: &impl LocalStorage,
-        ring_key: &str,
+        key: LocalStorageKeys,
         public_polynomial: String,
         retired_at: u64,
     ) -> Result<(), String> {
-        let mut history = Self::load(storage, ring_key);
+        let mut history = Self::load(storage, key.clone());
         history.entries.retain(|entry| {
             retired_at.saturating_sub(entry.retired_at) <= RING_POLY_HISTORY_RETENTION_SECS
         });
@@ -565,13 +735,13 @@ impl RingPolyHistory {
             },
         );
         history.entries.truncate(RING_POLY_HISTORY_MAX_ENTRIES);
-        history.save(storage, ring_key)
+        history.save(storage, key)
     }
 
-    /// Every still-in-window retired polynomial for `ring_key`, most-recent first,
+    /// Every still-in-window retired polynomial under `key`, most-recent first,
     /// hex-encoded and ready for `PubPolyImpl::from_bytes(&hex::decode(..)?)`.
-    pub fn recent(storage: &impl LocalStorage, ring_key: &str, now_secs: u64) -> Vec<String> {
-        Self::load(storage, ring_key)
+    fn recent(storage: &impl LocalStorage, key: LocalStorageKeys, now_secs: u64) -> Vec<String> {
+        Self::load(storage, key)
             .entries
             .into_iter()
             .filter(|entry| {
@@ -595,6 +765,10 @@ impl RingPolyHistory {
         let Ok(ring_pk) = G1Affine::from_bytes(&bytes) else {
             return Vec::new();
         };
-        Self::recent(storage, &ring_pk.to_string(), now_secs)
+        Self::recent(
+            storage,
+            LocalStorageKeys::RingPolyHistory(ring_pk.to_string()),
+            now_secs,
+        )
     }
 }

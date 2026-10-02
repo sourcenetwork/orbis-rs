@@ -37,7 +37,12 @@ where
     let is_fresh = coord
         .app_state
         .dkg_session_state
-        .with_attempt_state(attempt, |state| matches!(state.kind, SessionKind::Fresh))
+        .with_attempt_state(attempt, |state| {
+            matches!(
+                state.kind,
+                SessionKind::Fresh | SessionKind::FreshPet { .. }
+            )
+        })
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
     if is_fresh {

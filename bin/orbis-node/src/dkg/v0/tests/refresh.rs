@@ -9,7 +9,8 @@ use crate::dkg::v0::{
     },
     error::DkgError,
     helpers::{
-        derive_refresh_session_id, fresh_commitment_hash, serialize_commitment_coefficients,
+        derive_refresh_pet_session_id, derive_refresh_session_id, fresh_commitment_hash,
+        serialize_commitment_coefficients,
     },
     messages::SessionKind,
     network::{start_refresh, RefreshStartOutcome},
@@ -1208,6 +1209,349 @@ async fn test_refresh_rejected_already_in_progress() {
         matches!(result, Err(DkgError::Unauthorized(_))),
         "Expected Unauthorized for refresh already in progress, got: {:?}",
         result
+    );
+    cleanup_db(&db_path);
+}
+
+// =============================================================================
+// coordinator rejects invalid PSS RefreshPet SessionInit messages
+//
+// Mirrors the `SessionKind::Refresh` suite directly above, adapted for the
+// PET checking key's independent ceremony: the ring is resolved by `ring_id`
+// directly (matching `FreshPet`'s own resolution shape, not `RingIndex`), and
+// the elapsed-time check reads the PET namespace's own bundle
+// (`RingShareBundle::load_by_pet_ring_key`), never the main key's.
+// =============================================================================
+
+/// Write a minimal PET `RingShareBundle` with the given `last_pss` timestamp.
+fn write_last_refresh_pet(
+    storage: &impl local_storage::r#trait::LocalStorage,
+    ring_id: &str,
+    secs: u64,
+) {
+    let bundle = RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: String::new(),
+        last_pss: secs,
+    };
+    bundle.save_by_pet_ring_key(storage, ring_id).unwrap();
+}
+
+/// Post a `requires_pet` `RingPayload` directly under `ring_id` (which *is*
+/// the bulletin post id for PET resolution — no `RingIndex` involved).
+fn write_pet_ring_to_bulletin(
+    bulletin: &DummyBulletin,
+    ring_id: &str,
+    peer_node_keys: Vec<String>,
+    pss_interval: u64,
+) {
+    let payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: format!("{ring_id}-main-pk"),
+        peer_node_keys,
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aa".repeat(32)),
+    };
+    bulletin
+        .set_ring(ring_id.to_string(), payload)
+        .expect("seed PET ring fixture");
+}
+
+/// Build a minimal RefreshPet `SessionInit` targeted at `ring_id`.
+fn refresh_pet_session_init(ring_id: &str, peer_node_key: &str, peer_id: &str) -> TestSessionInit {
+    let peer_node_keys = vec![peer_node_key.to_string()];
+    let peer_ids = vec![peer_id.to_string()];
+    let mut node_id_assignments = std::collections::HashMap::new();
+    node_id_assignments.insert(peer_node_key.to_string(), 1u32);
+    TestSessionInit {
+        session_id: derive_refresh_pet_session_id(ring_id, &peer_node_keys, 1, "").unwrap(),
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys,
+        node_id_assignments,
+        kind: SessionKind::RefreshPet {
+            ring_id: ring_id.to_string(),
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: ring_id.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn test_refresh_pet_accepts_external_sender_when_local_node_in_ring() {
+    let db_name = "test_refresh_pet_accepts_external_sender_when_local_node_in_ring";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-ring";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    write_pet_ring_to_bulletin(
+        &dummy_bulletin,
+        ring_id,
+        vec![local_node_key.clone()],
+        86400,
+    );
+    write_last_refresh_pet(&app_state.local_storage, ring_id, 0); // epoch → enough time has passed
+
+    let sender_bytes = hex::decode("deadbeef").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let msg = refresh_pet_session_init(ring_id, &local_node_key, &local_peer_hex);
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Ok(())),
+        "Expected external sender to be accepted when local node is in the PET ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_pet_rejected_local_node_not_in_ring() {
+    let db_name = "test_refresh_pet_rejected_local_node_not_in_ring";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-ring";
+    let other_node_key = "other-node-key".to_string();
+    let other_peer_hex = "a".repeat(64);
+    dummy_bulletin
+        .set_node_info(
+            other_node_key.clone(),
+            NodeInfo {
+                peer_id: other_peer_hex.clone(),
+                controller_key: "test-controller-key".to_string(),
+                whitelisted_policy_ids: vec![],
+                whitelisted_ring_ids: vec![],
+            },
+        )
+        .expect("seed other node info");
+    write_pet_ring_to_bulletin(
+        &dummy_bulletin,
+        ring_id,
+        vec![other_node_key.clone()],
+        86400,
+    );
+    write_last_refresh_pet(&app_state.local_storage, ring_id, 0); // epoch → enough time has passed
+
+    let sender_bytes = hex::decode("deadbeef").unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let msg = refresh_pet_session_init(ring_id, &other_node_key, &other_peer_hex);
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(ref msg)) if msg.contains("Local node")),
+        "Expected Unauthorized for local node not in PET ring, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_pet_rejected_too_soon() {
+    let db_name = "test_refresh_pet_rejected_too_soon";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-ring";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    write_pet_ring_to_bulletin(
+        &dummy_bulletin,
+        ring_id,
+        vec![local_node_key.clone()],
+        86400, // 24h interval required
+    );
+
+    // Set last PET refresh to "now" — 0 seconds have elapsed, below any minimum interval.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    write_last_refresh_pet(&app_state.local_storage, ring_id, now_secs);
+
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let msg = refresh_pet_session_init(ring_id, &local_node_key, &local_peer_hex);
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "Expected Unauthorized for PET refresh too soon, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn test_refresh_pet_rejected_already_in_progress() {
+    let db_name = "test_refresh_pet_rejected_already_in_progress";
+    let db_path = test_db_path(db_name);
+    let dummy_bulletin = Arc::new(
+        DummyBulletin::new()
+            .await
+            .expect("Failed to initialize dummy bulletin"),
+    );
+    let app_state =
+        Arc::new(create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await);
+
+    let ring_id = "pet-ring";
+    let local_node_key = app_state.node_key.clone();
+    let local_peer_hex = hex::encode(app_state.network.local_peer_id().as_bytes());
+    write_pet_ring_to_bulletin(
+        &dummy_bulletin,
+        ring_id,
+        vec![local_node_key.clone()],
+        86400,
+    );
+    write_last_refresh_pet(&app_state.local_storage, ring_id, 0); // epoch → enough time has passed
+
+    // Pre-mark the PET ring as already refreshing so the coordinator rejects the second attempt.
+    let expected_session_id =
+        derive_refresh_pet_session_id(ring_id, std::slice::from_ref(&local_node_key), 1, "")
+            .unwrap();
+    assert_eq!(
+        app_state
+            .dkg_session_state
+            .claim_ring_pss_session(ring_id, expected_session_id + 1)
+            .await,
+        RingPssClaimOutcome::Claimed,
+        "initial conflicting claim should succeed"
+    );
+
+    let sender_bytes = hex::decode(&local_peer_hex).unwrap();
+    let sender_peer_id = PeerId::from_bytes(&sender_bytes);
+    let coordinator = DkgCoordinator::with_routes(app_state, &::network::V0);
+    let msg = refresh_pet_session_init(ring_id, &local_node_key, &local_peer_hex);
+
+    let result = invoke_session_init(&coordinator, msg, &sender_peer_id).await;
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "Expected Unauthorized for PET refresh already in progress, got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// Same ring_id-mismatch protection `FreshPet` has (see
+/// `test_dkg_session_init_rejects_fresh_pet_ring_id_mismatch` in `dkg.rs`),
+/// confirmed here for `RefreshPet` too: the outer authorized `ring_id` must
+/// agree with `kind`'s own inner `ring_id`, or a leader legitimately
+/// authorized for one ring could name a different ring internally and
+/// clobber that other ring's stored PET bundle once the ceremony finishes.
+#[tokio::test]
+async fn test_refresh_pet_session_init_rejects_ring_id_mismatch() {
+    let db_name = "test_refresh_pet_session_init_rejects_ring_id_mismatch";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
+
+    let peer_ids = vec!["peer1".to_string()];
+    let session_init = TestSessionInit {
+        session_id: 54321,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_ids,
+        node_id_assignments: std::collections::HashMap::new(),
+        kind: SessionKind::RefreshPet {
+            ring_id: "ring-b".to_string(),
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: "ring-a".to_string(),
+    };
+
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = invoke_session_init(&coordinator, session_init, &dummy_peer_id).await;
+
+    assert!(
+        matches!(result, Err(DkgError::Unauthorized(_))),
+        "a RefreshPet SessionInit whose kind.ring_id disagrees with the outer, \
+         authorized ring_id must be rejected: {:?}",
+        result
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.to_string().contains("ring_id mismatch"),
+        "error should name the ring_id mismatch: {}",
+        error
+    );
+    cleanup_db(&db_path);
+}
+
+/// Confirms the rejection above isn't vacuous against a check that rejects
+/// every `RefreshPet` `SessionInit`: a matching `ring_id` must pass this
+/// specific check (it may still fail further downstream for lack of a
+/// seeded bulletin ring in this minimal fixture, but never on the mismatch
+/// check itself). Mirrors
+/// `test_dkg_session_init_fresh_pet_matching_ring_id_passes_the_mismatch_check`
+/// in `dkg.rs`.
+#[tokio::test]
+async fn test_refresh_pet_session_init_matching_ring_id_passes_the_mismatch_check() {
+    let db_name = "test_refresh_pet_session_init_matching_ring_id_passes_the_mismatch_check";
+    let db_path = test_db_path(db_name);
+
+    let app_state = create_test_app_state_default(db_name).await;
+    let coordinator = DkgCoordinator::with_routes(Arc::new(app_state), &::network::V0);
+
+    let peer_ids = vec!["peer1".to_string()];
+    let session_init = TestSessionInit {
+        session_id: 54322,
+        threshold: 1,
+        total_participants: 1,
+        peer_ids: peer_ids.clone(),
+        peer_node_keys: peer_ids,
+        node_id_assignments: std::collections::HashMap::new(),
+        kind: SessionKind::RefreshPet {
+            ring_id: "ring-a".to_string(),
+        },
+        pss_interval: 86400,
+        policy_id: None,
+        ring_id: "ring-a".to_string(),
+    };
+
+    let dummy_peer_id = network::PeerId::new(b"dummy-peer".to_vec());
+    let result = invoke_session_init(&coordinator, session_init, &dummy_peer_id).await;
+
+    let error = result.expect_err("no ring is seeded, so this must still fail downstream");
+    assert!(
+        !error.to_string().contains("ring_id mismatch"),
+        "a matching ring_id must pass the mismatch check itself: {}",
+        error
     );
     cleanup_db(&db_path);
 }

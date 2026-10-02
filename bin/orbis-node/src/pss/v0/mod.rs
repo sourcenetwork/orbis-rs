@@ -50,7 +50,7 @@ use crate::constants::{PSS_GRACE_PERIOD_SECS, PSS_RING_CONCURRENCY_LIMIT};
 use crate::dkg::v0::error::DkgError;
 use crate::dkg::v0::helpers::{peer_node_keys_match, ring_payload_matches_ring_key};
 use crate::dkg::v0::network::{
-    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
+    start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
 };
 use crate::helpers::auth::current_unix_time;
 use crate::helpers::protocol_version::{installed_versions_label, resolve_ring_protocol_decision};
@@ -281,7 +281,8 @@ where
         .any(|node_key| node_key == &app_state.node_key)
     {
         if !is_reshare {
-            return reconcile_finalized_removed_member(app_state, entry).await;
+            return reconcile_finalized_removed_member(app_state, entry, ring_payload.requires_pet)
+                .await;
         }
         return Err(DkgError::Unauthorized(format!(
             "PSS: local node {} is not a current member of ring {}",
@@ -339,24 +340,34 @@ where
                     .map(|b| b.last_pss)
                     .unwrap_or(0);
             let elapsed = now_secs.saturating_sub(last_refresh_secs);
-            if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+            let main_result = if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
                 tracing::debug!(
                     post_id = %post_id,
                     elapsed_secs = elapsed,
                     pss_interval_secs = pss_interval_secs,
                     "PSS: refresh not yet due"
                 );
-                return Ok(());
-            }
+                Ok(())
+            } else {
+                trigger_refresh(
+                    app_state,
+                    entry,
+                    &ring_payload,
+                    protocol_routes,
+                    elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
+                )
+                .await
+            };
 
-            trigger_refresh(
-                app_state,
-                entry,
-                &ring_payload,
-                protocol_routes,
-                elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
-            )
-            .await
+            // The PET checking key's own refresh runs on a fully independent
+            // clock (separate `last_pss`, no chaining either direction — see
+            // `SessionKind::RefreshPet`'s doc comment) — attempted regardless
+            // of the main key's own outcome just above.
+            let pet_result =
+                check_and_trigger_refresh_pet(app_state, entry, &ring_payload, protocol_routes)
+                    .await;
+
+            main_result.and(pet_result)
         }
         v => Err(DkgError::ProtocolError(format!(
             "ring {} requires unsupported protocol version {}; installed versions: {}",
@@ -367,9 +378,23 @@ where
     }
 }
 
+/// `requires_pet` gates the PET-material cleanup below — reshare-atomicity
+/// finding #5 (PET audit fix checklist): this path previously only ever
+/// deleted the main key's live bundle, never the PET checking key's live
+/// share or either namespace's pending bundle. A node that missed the live,
+/// confirmation-driven cleanup (`reshare/cleanup.rs`'s `DepartingDealer`
+/// branch — e.g. it was offline when the reshare that excluded it
+/// finalized) would otherwise retain every one of these indefinitely: no
+/// remaining `RingIndex` entry means nothing will ever revisit this ring
+/// again to clean them up. Retaining a departed member's old PET share is
+/// exactly the kind of accumulating exposure PSS erasure exists to prevent
+/// — a later compromise of enough such former members could still
+/// reconstruct the (unchanged-by-reshare) PET secret from shares of a
+/// superseded generation.
 async fn reconcile_finalized_removed_member<D>(
     app_state: &Arc<AppState<D>>,
     entry: &RingIndexEntry,
+    requires_pet: bool,
 ) -> Result<(), DkgError>
 where
     D: Dkg + Clone + 'static,
@@ -390,10 +415,39 @@ where
                 "PSS: failed to securely remove stale finalized ring bundle: {error}"
             ))
         })?;
+    if let Err(error) =
+        PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str).await
+    {
+        tracing::warn!(
+            ring_pk = %entry.ring_pk_str,
+            %error,
+            "PSS: failed to clear stale pending reshare bundle after finalized committee removal"
+        );
+    }
+    if requires_pet {
+        app_state
+            .local_storage
+            .delete(LocalStorageKeys::PetRingKey(entry.bulletin_post_id.clone()))
+            .map_err(|error| {
+                DkgError::Storage(format!(
+                    "PSS: failed to securely remove stale finalized PET ring bundle: {error}"
+                ))
+            })?;
+        if let Err(error) =
+            PendingReshareBundle::clear_pet(&app_state.local_storage, &entry.bulletin_post_id).await
+        {
+            tracing::warn!(
+                ring_id = %entry.bulletin_post_id,
+                %error,
+                "PSS: failed to clear stale pending PET reshare bundle after finalized committee removal"
+            );
+        }
+    }
     remove_ring_index_entry(&app_state.local_storage, entry)?;
     tracing::info!(
         ring_id = %entry.bulletin_post_id,
         ring_pk = %entry.ring_pk_str,
+        requires_pet,
         "PSS: reconciled stale local material after finalized committee removal"
     );
     Ok(())
@@ -578,11 +632,19 @@ fn read_ring_index(storage: &impl LocalStorage) -> Result<Vec<RingIndexEntry>, D
         .map(|index| index.unwrap_or_default())
 }
 
-/// One-shot startup check: for every ring with a `PendingReshareBundle` left over from a
+/// One-shot startup check: for every ring with a `PendingReshareBundle` and/or
+/// (for a `requires_pet` ring) a PET-checking-key pending bundle left over from a
 /// restart that happened before its live confirmation wait
 /// (`wait_for_reshare_bulletin_finalized`) resolved, read the ring's current bulletin state
-/// once and promote or discard. No retry loop — if the bulletin can't be read or parsed right
-/// now, the entry is left as-is and reconsidered on the next startup.
+/// once and promote or discard each bundle independently. No retry loop — if the bulletin
+/// can't be read or parsed right now, both entries are left as-is and reconsidered on the
+/// next startup.
+///
+/// The two bundles are reconciled independently rather than the PET one being gated on the
+/// main one's presence (reshare-atomicity finding #4, PET audit fix checklist): a restart
+/// can land between the main bundle's own promotion/clear and the PET bundle's, leaving only
+/// the PET entry pending — that case must still be reconciled on a later startup, not skipped
+/// because the main lookup already returned `None`.
 pub async fn reconcile_pending_reshares<D>(app_state: &Arc<AppState<D>>) -> Result<(), DkgError>
 where
     D: Dkg<
@@ -597,23 +659,38 @@ where
 {
     let ring_index = read_ring_index(&app_state.local_storage)?;
     for entry in &ring_index {
-        let pending = match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str)
-        {
-            Ok(Some(pending)) => pending,
-            Ok(None) => continue,
-            Err(error) => {
-                tracing::warn!(
-                    ring_pk_str = %entry.ring_pk_str,
-                    %error,
-                    "PSS: failed to read pending reshare bundle at startup"
-                );
-                continue;
-            }
-        };
+        let main_pending =
+            match PendingReshareBundle::load(&app_state.local_storage, &entry.ring_pk_str) {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(
+                        ring_pk_str = %entry.ring_pk_str,
+                        %error,
+                        "PSS: failed to read pending reshare bundle at startup"
+                    );
+                    None
+                }
+            };
+        let pet_pending =
+            match PendingReshareBundle::load_pet(&app_state.local_storage, &entry.bulletin_post_id)
+            {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::warn!(
+                        ring_id = %entry.bulletin_post_id,
+                        %error,
+                        "PSS: failed to read pending PET reshare bundle at startup"
+                    );
+                    None
+                }
+            };
+        if main_pending.is_none() && pet_pending.is_none() {
+            continue;
+        }
 
         let ring_post = match app_state
             .bulletin
-            .read(pending.bulletin_post_id.clone(), BulletinKind::Ring)
+            .read(entry.bulletin_post_id.clone(), BulletinKind::Ring)
             .await
         {
             Ok(post) => post,
@@ -641,7 +718,7 @@ where
         if ring_payload.new_peer_node_keys.is_some() || ring_payload.new_threshold.is_some() {
             // This ring's reshare (this one, or a different one entirely) hasn't
             // finalized on the bulletin yet — we can't yet tell whether it will
-            // resolve to what was staged. Leave the pending entry in place and
+            // resolve to what was staged. Leave both pending entries in place and
             // recheck on a future startup once it has, rather than guessing now.
             tracing::debug!(
                 ring_pk_str = %entry.ring_pk_str,
@@ -650,49 +727,104 @@ where
             continue;
         }
 
-        // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
-        // exactly (committee + threshold), not a full-payload hash — see
-        // `PendingReshareBundle`'s doc comment for why a hash can't work here.
-        let matches_staged_expectation = peer_node_keys_match(
-            &ring_payload.peer_node_keys,
-            &pending.expected_new_committee,
-        ) && ring_payload.threshold
-            == pending.expected_new_threshold;
-        if matches_staged_expectation {
-            match pending
-                .bundle
-                .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
-            {
-                Ok(()) => {
-                    tracing::info!(
-                        ring_pk_str = %entry.ring_pk_str,
-                        "PSS: promoted pending reshare bundle found on startup"
-                    );
+        if let Some(pending) = main_pending {
+            // Mirrors `wait_for_reshare_bulletin_finalized`'s own `should_promote` check
+            // exactly (committee + threshold), not a full-payload hash — see
+            // `PendingReshareBundle`'s doc comment for why a hash can't work here.
+            let matches_staged_expectation = peer_node_keys_match(
+                &ring_payload.peer_node_keys,
+                &pending.expected_new_committee,
+            ) && ring_payload.threshold
+                == pending.expected_new_threshold;
+            let mut resolved = false;
+            if matches_staged_expectation {
+                match pending
+                    .bundle
+                    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            ring_pk_str = %entry.ring_pk_str,
+                            "PSS: promoted pending reshare bundle found on startup"
+                        );
+                        resolved = true;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            ring_pk_str = %entry.ring_pk_str,
+                            %error,
+                            "PSS: failed to promote pending reshare bundle on startup"
+                        );
+                    }
                 }
-                Err(error) => {
-                    tracing::error!(
+            } else {
+                tracing::warn!(
+                    ring_pk_str = %entry.ring_pk_str,
+                    "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
+                );
+                resolved = true;
+            }
+            if resolved {
+                if let Err(error) =
+                    PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str).await
+                {
+                    tracing::warn!(
                         ring_pk_str = %entry.ring_pk_str,
                         %error,
-                        "PSS: failed to promote pending reshare bundle on startup"
+                        "PSS: failed to clear pending reshare bundle after startup reconciliation"
                     );
-                    continue;
                 }
             }
-        } else {
-            tracing::warn!(
-                ring_pk_str = %entry.ring_pk_str,
-                "PSS: discarding pending reshare bundle on startup; bulletin does not match staged state"
-            );
         }
 
-        if let Err(error) =
-            PendingReshareBundle::clear(&app_state.local_storage, &entry.ring_pk_str)
-        {
-            tracing::warn!(
-                ring_pk_str = %entry.ring_pk_str,
-                %error,
-                "PSS: failed to clear pending reshare bundle after startup reconciliation"
-            );
+        if let Some(pending) = pet_pending {
+            let matches_staged_expectation = peer_node_keys_match(
+                &ring_payload.peer_node_keys,
+                &pending.expected_new_committee,
+            ) && ring_payload.threshold
+                == pending.expected_new_threshold;
+            let mut resolved = false;
+            if matches_staged_expectation {
+                match pending
+                    .bundle
+                    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+                {
+                    Ok(()) => {
+                        tracing::info!(
+                            ring_id = %entry.bulletin_post_id,
+                            "PSS: promoted pending PET reshare bundle found on startup"
+                        );
+                        resolved = true;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            ring_id = %entry.bulletin_post_id,
+                            %error,
+                            "PSS: failed to promote pending PET reshare bundle on startup"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!(
+                    ring_id = %entry.bulletin_post_id,
+                    "PSS: discarding pending PET reshare bundle on startup; bulletin does not match staged state"
+                );
+                resolved = true;
+            }
+            if resolved {
+                if let Err(error) = PendingReshareBundle::clear_pet(
+                    &app_state.local_storage,
+                    &entry.bulletin_post_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        ring_id = %entry.bulletin_post_id,
+                        %error,
+                        "PSS: failed to clear pending PET reshare bundle after startup reconciliation"
+                    );
+                }
+            }
         }
     }
     Ok(())
@@ -759,6 +891,123 @@ where
         ring_id = %entry.bulletin_post_id,
         threshold = ring_payload.threshold,
         "PSS: refresh session initiated locally"
+    );
+    Ok(())
+}
+
+/// Independent, parallel due-check for the ring's PET checking key — entirely
+/// decoupled from the main key's own refresh clock just above (separate
+/// schedule, separate `last_pss`, no coupling either direction; see
+/// `SessionKind::RefreshPet`'s doc comment for why). A no-op for a ring that
+/// doesn't require PET, or whose PET key hasn't finalized yet.
+async fn check_and_trigger_refresh_pet<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    protocol_routes: &'static network::ProtocolRoutes,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    if !ring_payload.requires_pet || ring_payload.pet_pk.is_none() {
+        return Ok(());
+    }
+    let post_id = &entry.bulletin_post_id;
+    let pss_interval_secs = ring_payload.pss_interval;
+    let now_secs = current_unix_time().map_err(DkgError::SystemTime)?;
+    let last_refresh_secs =
+        RingShareBundle::load_by_pet_ring_key(&app_state.local_storage, post_id)
+            .map(|b| b.last_pss)
+            .unwrap_or(0);
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+        tracing::debug!(
+            post_id = %post_id,
+            elapsed_secs = elapsed,
+            pss_interval_secs = pss_interval_secs,
+            "PSS: PET refresh not yet due"
+        );
+        return Ok(());
+    }
+
+    trigger_refresh_pet(
+        app_state,
+        entry,
+        ring_payload,
+        protocol_routes,
+        elapsed.saturating_sub(pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)),
+    )
+    .await
+}
+
+/// Same as [`trigger_refresh`], for the ring's independent PET checking key.
+async fn trigger_refresh_pet<D>(
+    app_state: &Arc<AppState<D>>,
+    entry: &RingIndexEntry,
+    ring_payload: &RingPayload,
+    protocol_routes: &'static network::ProtocolRoutes,
+    scheduler_delay_secs: u64,
+) -> Result<(), DkgError>
+where
+    D: Dkg<
+            ShareValue = Fr,
+            PublicKey = GroupAffine,
+            PolynomialCommitment = PolynomialCommitmentImpl,
+            PubPoly = PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+{
+    let outcome = start_refresh_pet(
+        app_state.clone(),
+        protocol_routes,
+        entry.bulletin_post_id.clone(),
+    )
+    .await?;
+    let (ceremony_id, attempt_id) = match outcome {
+        RefreshStartOutcome::Started(ceremony_id, attempt_id) => (ceremony_id, attempt_id),
+        RefreshStartOutcome::AlreadyActive(ceremony_id, attempt_id) => {
+            tracing::debug!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: canonical PET refresh attempt remains active"
+            );
+            return Ok(());
+        }
+        RefreshStartOutcome::NotDue => {
+            tracing::debug!(
+                ring_id = %entry.bulletin_post_id,
+                "PSS: PET refresh became not due while scheduler state was being resolved"
+            );
+            return Ok(());
+        }
+        RefreshStartOutcome::Forwarded(ceremony_id, attempt_id) => {
+            tracing::info!(
+                session_id = ceremony_id.0,
+                attempt_id = %hex::encode(attempt_id.0),
+                ring_id = %entry.bulletin_post_id,
+                "PSS: PET refresh start accepted by the canonical leader"
+            );
+            return Ok(());
+        }
+    };
+    crate::metrics::record_pss_scheduler_delay(scheduler_delay_secs as f64);
+    tracing::info!(
+        session_id = ceremony_id.0,
+        attempt_id = %hex::encode(attempt_id.0),
+        ring_id = %entry.bulletin_post_id,
+        threshold = ring_payload.threshold,
+        "PSS: PET refresh session initiated locally"
     );
     Ok(())
 }

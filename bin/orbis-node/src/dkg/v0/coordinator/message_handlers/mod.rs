@@ -1,11 +1,13 @@
 use crate::constants::MAX_COMMITMENT_COEFFICIENTS;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
-    build_reshare_params, derive_refresh_session_id, derive_reshare_session_id,
+    build_reshare_params, build_reshare_pet_params, derive_refresh_pet_session_id,
+    derive_refresh_session_id, derive_reshare_pet_session_id, derive_reshare_session_id,
     effective_new_peer_node_keys, fresh_commitment_hash,
     validate_dkg_node_authorization_for_committee, validate_fresh_dkg_ring_payload,
-    validate_fresh_session_init_params, validate_refresh_session_init_for_version,
-    validate_reshare_session_init_for_version,
+    validate_fresh_pet_dkg_ring_payload, validate_fresh_session_init_params,
+    validate_refresh_pet_session_init_for_version, validate_refresh_session_init_for_version,
+    validate_reshare_pet_session_init_for_version, validate_reshare_session_init_for_version,
 };
 use crate::dkg::v0::messages::{SessionKind, SignedDkgCommitment, SignedDkgShare};
 use crate::dkg::v0::session_state::RingPssClaimOutcome;

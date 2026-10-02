@@ -9,6 +9,7 @@ use crate::dkg::v0::helpers::peer_node_keys_match;
 use crate::dkg::v0::session_state::TopicTaskDisposition;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::ring_state::PendingReshareBundle;
+use local_storage::r#trait::LocalStorageKeys;
 
 use super::bulletin_update::ReshareReadinessInfo;
 
@@ -59,6 +60,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
     D: Dkg + Clone + Send + Sync + 'static,
 {
     let session_id = attempt.session_id();
+    // Stashed before the moving `if let` below consumes `bulletin_post_id` —
+    // for a `requires_pet` ring this doubles as the PET checking key's own
+    // storage key (`ring_id`, same value as the main key's bulletin post id
+    // for a reshare — see `SessionKind::ResharePet`'s doc comment).
+    let ring_id_for_pet = bulletin_post_id.clone();
     let mut finalized_payload = None;
     if let Some(post_id) = bulletin_post_id {
         let deadline = tokio::time::Instant::now() + RESHARE_BULLETIN_CONFIRM_TIMEOUT;
@@ -115,6 +121,12 @@ async fn wait_for_reshare_bulletin_finalized<D>(
         }
     }
 
+    // Known only once `finalized_payload` is populated — on a timeout it
+    // stays `false`, but the timeout branches below never touch PET state
+    // anyway (same "leave it for a future restart's own chance" reasoning
+    // as the main bundle), so this is never actually needed there.
+    let requires_pet = finalized_payload.as_ref().is_some_and(|p| p.requires_pet);
+
     if let Some(key) = ring_key {
         if app_state
             .dkg_session_state
@@ -144,6 +156,28 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             %error,
                             "Reshare Dealer: failed finalized stale-material cleanup"
                         );
+                    }
+                    if requires_pet {
+                        if let Some(ring_id) = ring_id_for_pet.as_deref() {
+                            match crate::ring_state::delete_with_retries(
+                                &app_state.local_storage,
+                                LocalStorageKeys::PetRingKey(ring_id.to_string()),
+                            )
+                            .await
+                            {
+                                Ok(()) => tracing::info!(
+                                    session_id,
+                                    ring_id,
+                                    "Reshare Dealer: deleted departed PET checking-key material"
+                                ),
+                                Err(error) => tracing::error!(
+                                    session_id,
+                                    ring_id,
+                                    %error,
+                                    "Reshare Dealer: failed to delete departed PET checking-key material"
+                                ),
+                            }
+                        }
                     }
                 } else {
                     tracing::warn!(
@@ -176,6 +210,14 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 // reconciliation gets its own independent attempt at the exact same write —
                 // which may succeed once whatever caused this one to fail has cleared.
                 let mut pending_bundle_resolved = false;
+                // Same lifecycle as `pending_bundle_resolved`, for the ring's
+                // independent PET checking key: promoted/discarded on the
+                // exact same confirmation signal. The main and PET reshares
+                // are gated to land atomically (see the atomicity gate in
+                // `bulletin_update.rs`), so the one bulletin confirmation
+                // this function already waits for is the right signal for
+                // both, left alone on a timeout for the same reason.
+                let mut pet_pending_bundle_resolved = false;
                 if should_promote {
                     match app_state
                         .dkg_session_state
@@ -230,6 +272,54 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             );
                         }
                     }
+                    if requires_pet {
+                        if let Some(ring_id) = ring_id_for_pet.as_deref() {
+                            match PendingReshareBundle::load_pet(&app_state.local_storage, ring_id)
+                            {
+                                Ok(Some(pending)) => match pending
+                                    .bundle
+                                    .save_by_pet_ring_key(&app_state.local_storage, ring_id)
+                                {
+                                    Ok(()) => {
+                                        tracing::info!(
+                                            session_id,
+                                            ring_id,
+                                            "Reshare: promoted staged PET bundle after chain confirmation"
+                                        );
+                                        pet_pending_bundle_resolved = true;
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            session_id,
+                                            ring_id,
+                                            %error,
+                                            "Reshare: chain confirmed but writing the promoted PET \
+                                             bundle to local storage failed; this node's local PET \
+                                             share is now stale relative to the chain-recognized \
+                                             committee. Operator investigation required."
+                                        );
+                                    }
+                                },
+                                Ok(None) => {
+                                    tracing::error!(
+                                        session_id,
+                                        ring_id,
+                                        "Reshare: chain confirmed but no staged PET bundle was found \
+                                         to promote (already promoted, or an internal invariant was \
+                                         violated)"
+                                    );
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        session_id,
+                                        ring_id,
+                                        %error,
+                                        "Reshare: failed to read staged PET bundle for promotion"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 } else if let Some(payload) = finalized_payload.as_ref() {
                     // A genuine, confirmed mismatch: we know for certain the bulletin
                     // resolved to something other than what this node staged (a real
@@ -244,6 +334,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                          preserved"
                     );
                     pending_bundle_resolved = true;
+                    pet_pending_bundle_resolved = requires_pet;
                 } else {
                     // Timed out: we simply stopped watching, not that the bulletin
                     // resolved to something else — it may still finalize to exactly
@@ -259,7 +350,8 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     );
                 }
                 if pending_bundle_resolved {
-                    if let Err(error) = PendingReshareBundle::clear(&app_state.local_storage, &key)
+                    if let Err(error) =
+                        PendingReshareBundle::clear(&app_state.local_storage, &key).await
                     {
                         tracing::warn!(
                             session_id,
@@ -267,6 +359,20 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             %error,
                             "Reshare: failed to clear pending-restart bundle"
                         );
+                    }
+                }
+                if pet_pending_bundle_resolved {
+                    if let Some(ring_id) = ring_id_for_pet.as_deref() {
+                        if let Err(error) =
+                            PendingReshareBundle::clear_pet(&app_state.local_storage, ring_id).await
+                        {
+                            tracing::warn!(
+                                session_id,
+                                ring_id,
+                                %error,
+                                "Reshare: failed to clear pending-restart PET bundle"
+                            );
+                        }
                     }
                 }
                 app_state
@@ -358,6 +464,8 @@ mod tests {
             policy_id: None,
             trusted_auth_relay_dids: None,
             reporting: Default::default(),
+            requires_pet: false,
+            pet_pk: None,
         }
     }
 

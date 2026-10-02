@@ -98,6 +98,14 @@ fn parse_key(key: Option<LocalStorageKey>) -> Result<LocalStorageKeys, Status> {
             }
             Ok(LocalStorageKeys::RingKey(key.ring_key))
         }
+        LocalStorageKeyType::PetRingKey => {
+            if key.ring_key.trim().is_empty() {
+                return Err(Status::invalid_argument(
+                    "ring_key (carrying ring_id) is required for PET_RING_KEY",
+                ));
+            }
+            Ok(LocalStorageKeys::PetRingKey(key.ring_key))
+        }
         LocalStorageKeyType::NodeSecretKey => {
             reject_ring_key_value(&key.ring_key)?;
             Ok(LocalStorageKeys::NodeSecretKey)
@@ -813,6 +821,8 @@ async fn forward_unauthorized_pre(
             relay_statement: Some(statement),
             relay_signature,
             document: inline_document,
+            audit_target_object_id: None,
+            pet_evidence: None,
         },
     }));
     let coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(app_state, &network::V0);

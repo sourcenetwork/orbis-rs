@@ -179,7 +179,9 @@ pub(crate) fn spawn_pss_offline_observations<D>(
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    if matches!(seed.kind, SessionKind::Fresh) || seed.accused.is_empty() {
+    if matches!(seed.kind, SessionKind::Fresh | SessionKind::FreshPet { .. })
+        || seed.accused.is_empty()
+    {
         return;
     }
     if seed.protocol_version != routes.version {
@@ -215,14 +217,16 @@ async fn report_or_relay_pss_offline_observations<D>(
         + 'static,
     SignImpl: CoordinatorReportSigner<D>,
 {
-    let is_pure_next = matches!(seed.kind, SessionKind::Reshare { .. })
-        && seed.committees.as_ref().is_some_and(|committees| {
-            !committees.current.node_keys.contains(&app_state.node_key)
-                && committees
-                    .next
-                    .as_ref()
-                    .is_some_and(|next| next.node_keys.contains(&app_state.node_key))
-        });
+    let is_pure_next = matches!(
+        seed.kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    ) && seed.committees.as_ref().is_some_and(|committees| {
+        !committees.current.node_keys.contains(&app_state.node_key)
+            && committees
+                .next
+                .as_ref()
+                .is_some_and(|next| next.node_keys.contains(&app_state.node_key))
+    });
     if let Some(attempt_id) = seed.attempt_id.filter(|_| is_pure_next) {
         crate::metrics::record_pss_offline_observation(
             seed.stage.as_metric_label(),
@@ -376,10 +380,22 @@ where
         + Sync
         + 'static,
 {
-    let is_reshare = matches!(kind, SessionKind::Reshare { .. });
+    // Grouping `ResharePet` here means a pending-new PET reporter's
+    // anti-framing check below (`RingPolyState::load_from_ring_pk_hex`)
+    // proves participation in the *main* ring's own reshare, not a
+    // PET-specific bundle — both ceremonies target the identical committee,
+    // so this is a reasonable interim proxy for Stage 2 of the PSS-for-PET-
+    // key plan, but Stage 4's own reporting-attribution pass should verify
+    // (and tighten, if warranted) this for the PET ceremony specifically.
+    let is_reshare = matches!(
+        kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    );
     let (origin_protocol, ring_id) = match kind {
-        SessionKind::Fresh => return Ok(None),
-        SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+            ("pss_refresh", stored_ring_id)
+        }
         SessionKind::Reshare {
             bulletin_post_id, ..
         } => (
@@ -390,6 +406,7 @@ where
                 stored_ring_id
             },
         ),
+        SessionKind::ResharePet { .. } => ("pss_reshare", stored_ring_id),
     };
     if ring_id.is_empty() {
         tracing::debug!("Skipping PSS offline report because session has no authoritative ring ID");

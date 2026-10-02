@@ -43,6 +43,42 @@ pub fn derive_fresh_dkg_session_id(ring_id: &str) -> Result<u128> {
     Ok(u128::from_le_bytes(digest[..16].try_into()?))
 }
 
+/// Derive a deterministic session ID for a ring's PET checking-key fresh DKG.
+///
+/// A distinct `"fresh-pet"` kind label (not a suffix or variant of `"fresh"`)
+/// guarantees this never collides with the ring's own main-key session ID,
+/// which uses the same `ring_id` input under the `"fresh"` label.
+pub fn derive_fresh_pet_dkg_session_id(ring_id: &str) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "fresh-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}
+
+/// Derive a deterministic session ID for a ring's PET checking-key refresh.
+///
+/// Independent of the main key's own `derive_refresh_session_id` — a distinct
+/// `"refresh-pet"` kind label keyed by `ring_id` (not `ring_pk_hex`), mirroring
+/// how `derive_fresh_pet_dkg_session_id` is kept independent of `derive_fresh_dkg_session_id`.
+pub fn derive_refresh_pet_session_id(
+    ring_id: &str,
+    peer_node_keys: &[String],
+    threshold: u32,
+    public_polynomial_hex: &str,
+) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "refresh-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
+    hash_sorted_strings(&mut hasher, b"peer_node_keys", peer_node_keys);
+    hash_labeled_bytes(&mut hasher, b"threshold", &threshold.to_le_bytes());
+    hash_labeled_str(&mut hasher, b"public_polynomial", public_polynomial_hex);
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}
+
 /// Derive a deterministic reshare session ID from the ring's current generation state
 /// and the authoritative transition announced on the bulletin.
 pub fn derive_reshare_session_id(
@@ -57,6 +93,27 @@ pub fn derive_reshare_session_id(
     hash_labeled_str(&mut hasher, b"kind", "reshare");
     hash_labeled_str(&mut hasher, b"ring_pk", ring_pk_hex);
     hash_labeled_str(&mut hasher, b"bulletin_post_id", bulletin_post_id);
+    hash_sorted_strings(&mut hasher, b"old_peer_node_keys", old_peer_node_keys);
+    hash_sorted_strings(&mut hasher, b"new_peer_node_keys", new_peer_node_keys);
+    hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());
+    let digest = hasher.finalize();
+    Ok(u128::from_le_bytes(digest[..16].try_into()?))
+}
+
+/// Same as [`derive_reshare_session_id`], for a ring's independent PET
+/// checking key. No separate `bulletin_post_id` — `ring_id` alone is PET's
+/// identity anchor (see `SessionKind::ResharePet`'s doc comment), so it's
+/// hashed once rather than as two separate fields.
+pub fn derive_reshare_pet_session_id(
+    ring_id: &str,
+    old_peer_node_keys: &[String],
+    new_peer_node_keys: &[String],
+    new_threshold: u32,
+) -> Result<u128> {
+    let mut hasher = Sha256::new();
+    hasher.update(PSS_SESSION_ID_DOMAIN);
+    hash_labeled_str(&mut hasher, b"kind", "reshare-pet");
+    hash_labeled_str(&mut hasher, b"ring_id", ring_id);
     hash_sorted_strings(&mut hasher, b"old_peer_node_keys", old_peer_node_keys);
     hash_sorted_strings(&mut hasher, b"new_peer_node_keys", new_peer_node_keys);
     hash_labeled_bytes(&mut hasher, b"new_threshold", &new_threshold.to_le_bytes());

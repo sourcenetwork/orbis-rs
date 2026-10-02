@@ -48,6 +48,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             envelope,
             ring_config,
             inline_document: observation.inline_document,
+            pet_blind_context: None,
         })
     }
 

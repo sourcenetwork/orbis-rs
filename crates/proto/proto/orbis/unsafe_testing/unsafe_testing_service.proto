@@ -26,6 +26,9 @@ enum LocalStorageKeyType {
   LOCAL_STORAGE_KEY_TYPE_RING_KEY = 2;
   LOCAL_STORAGE_KEY_TYPE_NODE_SECRET_KEY = 3;
   LOCAL_STORAGE_KEY_TYPE_NODE_SIGNING_KEY = 4;
+  // A ring's independent PET checking-key share bundle, keyed by ring_id (not ring_pk) — a
+  // distinct storage namespace from RING_KEY. `ring_key` carries the ring_id for this type.
+  LOCAL_STORAGE_KEY_TYPE_PET_RING_KEY = 5;
 }
 
 enum LocalStorageAccessMode {

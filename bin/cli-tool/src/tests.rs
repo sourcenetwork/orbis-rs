@@ -197,6 +197,7 @@ fn prepare_secret_roundtrips_through_json() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret should succeed with a valid ring pk");
 
@@ -227,6 +228,7 @@ fn prepare_secret_rejects_invalid_hex_ring_pk() {
         None,
         None,
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("Invalid ring_pk hex"));
@@ -242,6 +244,7 @@ fn prepare_secret_rejects_hex_that_is_not_a_valid_curve_point() {
         "policy".to_string(),
         "document".to_string(),
         "read".to_string(),
+        None,
         None,
         None,
         None,

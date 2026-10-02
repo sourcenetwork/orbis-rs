@@ -231,6 +231,7 @@ pub async fn create_rings_on_chain<'a>(
                 protocol_version,
                 Some(reporting),
                 None,
+                false,
             )
             .await
             .with_context(|| {

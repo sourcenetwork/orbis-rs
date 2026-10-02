@@ -5,6 +5,7 @@ package orbis.v0.info_service;
 service InfoService {
   rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
   rpc GetRingState(GetRingStateRequest) returns (GetRingStateResponse);
+  rpc GetPetRingState(GetPetRingStateRequest) returns (GetPetRingStateResponse);
   rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
 }
 
@@ -41,6 +42,22 @@ message GetRingStateResponse {
   // Hex-encoded current public polynomial (updated after each PSS refresh).
   string public_polynomial = 1;
   // Unix timestamp (seconds) of the most recent PSS ceremony, or 0 before first completion.
+  uint64 last_pss = 2;
+}
+
+// Same as GetRingState, for a ring's independent PET checking key — keyed by
+// ring_id (the PET key has no aggregate-public-key storage handle to key by;
+// see LocalStorageKeys::PetRingKey), refreshed/reshared independently of the
+// main key via RefreshPet/ResharePet.
+message GetPetRingStateRequest {
+  string ring_id = 1;
+}
+
+message GetPetRingStateResponse {
+  // Hex-encoded current PET public polynomial (updated after each RefreshPet/ResharePet).
+  string public_polynomial = 1;
+  // Unix timestamp (seconds) of the most recent RefreshPet/ResharePet ceremony,
+  // or 0 before first completion.
   uint64 last_pss = 2;
 }
 

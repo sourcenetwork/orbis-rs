@@ -33,6 +33,99 @@ async fn load_ring_payload_by_post_id(
     Ok(ring_payload)
 }
 
+/// Fast structural checks shared by main-ring and PET-checking-key reshare,
+/// before either ever reads the bulletin: `new_peer_node_keys` non-empty and
+/// within `MAX_DKG_COMMITTEE_SIZE`, `new_threshold` in `[1, n]`. `label`
+/// ("Reshare" or "Reshare PET") only varies error text — the check itself is
+/// identical either way, since neither depends on how the ring is resolved.
+fn validate_reshare_committee_shape(
+    label: &str,
+    proposed_new_peer_node_keys: &[String],
+    proposed_new_threshold: u32,
+) -> Result<()> {
+    if proposed_new_peer_node_keys.is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "{label} new_peer_node_keys cannot be empty"
+        )));
+    }
+    if proposed_new_peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "{label} new committee has {} nodes, maximum is {}",
+            proposed_new_peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+    if proposed_new_threshold < 1
+        || proposed_new_threshold as usize > proposed_new_peer_node_keys.len()
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "{label} new_threshold {} is invalid for a committee of {} nodes (must be 1..=n)",
+            proposed_new_threshold,
+            proposed_new_peer_node_keys.len()
+        )));
+    }
+    Ok(())
+}
+
+/// Once a `RingPayload` has been resolved (by whichever means — `RingIndex`
+/// lookup for the main key, direct `ring_id` read for PET), validate it
+/// against the proposed transition. Shared for the same reason as
+/// [`validate_reshare_committee_shape`]: nothing here depends on ring
+/// identity or resolution strategy, only on the resolved payload itself.
+/// `identifier` is the ring's own identity string for error text
+/// (`ring_pk_hex` for the main key, `ring_id` for PET).
+fn validate_reshare_ring_payload_matches_proposal(
+    label: &str,
+    identifier: &str,
+    ring_payload: &RingPayload,
+    proposed_new_peer_node_keys: &[String],
+    proposed_new_threshold: u32,
+) -> Result<()> {
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "{label} current committee has {} nodes, maximum is {}",
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+
+    // Proposed new_peer_node_keys must match the authoritative committee.
+    // Bulletin present → must match it; absent → must match current peer_node_keys (fallback).
+    let authoritative_new = effective_new_peer_node_keys(ring_payload);
+    if !peer_node_keys_match(authoritative_new, proposed_new_peer_node_keys) {
+        return Err(DkgError::Unauthorized(format!(
+            "{label} new_peer_node_keys do not match authoritative committee for ring {} \
+             (bulletin field: {})",
+            identifier,
+            if ring_payload.new_peer_node_keys.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current peer_node_keys"
+            }
+        )));
+    }
+
+    // Proposed new_threshold must equal the authoritative threshold.
+    // Bulletin present → must equal it; absent → must equal current threshold (fallback).
+    let authoritative_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
+    if proposed_new_threshold != authoritative_threshold {
+        return Err(DkgError::Unauthorized(format!(
+            "{label} new_threshold {} does not match authoritative threshold {} for ring {} \
+             (bulletin field: {})",
+            proposed_new_threshold,
+            authoritative_threshold,
+            identifier,
+            if ring_payload.new_threshold.is_some() {
+                "explicitly announced"
+            } else {
+                "absent, fallback to current threshold"
+            }
+        )));
+    }
+
+    Ok(())
+}
+
 /// Validates an incoming reshare `SessionInit` message.
 ///
 /// Checks (in order):
@@ -69,28 +162,11 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
     bulletin: &Arc<dyn Bulletin + Send + Sync>,
     protocol_version: u64,
 ) -> Result<RingPayload> {
-    // 0. Fast-fail on structurally invalid parameters before hitting the bulletin.
-    if proposed_new_peer_node_keys.is_empty() {
-        return Err(DkgError::InvalidInput(
-            "Reshare new_peer_node_keys cannot be empty".to_string(),
-        ));
-    }
-    if proposed_new_peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
-        return Err(DkgError::InvalidInput(format!(
-            "Reshare new committee has {} nodes, maximum is {}",
-            proposed_new_peer_node_keys.len(),
-            MAX_DKG_COMMITTEE_SIZE
-        )));
-    }
-    if proposed_new_threshold < 1
-        || proposed_new_threshold as usize > proposed_new_peer_node_keys.len()
-    {
-        return Err(DkgError::InvalidInput(format!(
-            "Reshare new_threshold {} is invalid for a committee of {} nodes (must be 1..=n)",
-            proposed_new_threshold,
-            proposed_new_peer_node_keys.len()
-        )));
-    }
+    validate_reshare_committee_shape(
+        "Reshare",
+        proposed_new_peer_node_keys,
+        proposed_new_threshold,
+    )?;
 
     // Look up the bulletin post ID from the local index. Pure Receiver nodes
     // have no local entry for this ring (they were never members), so fall back to the
@@ -107,51 +183,68 @@ pub async fn validate_reshare_session_init_for_version<S: LocalStorage>(
     let ring_payload =
         load_ring_payload_by_post_id(ring_pk_hex, resolved_post_id, bulletin, protocol_version)
             .await?;
-    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
-        return Err(DkgError::InvalidInput(format!(
-            "Reshare current committee has {} nodes, maximum is {}",
-            ring_payload.peer_node_keys.len(),
-            MAX_DKG_COMMITTEE_SIZE
-        )));
-    }
 
-    // 3. Sender membership in the old committee is verified by the caller (session_init
+    // Sender membership in the old committee is verified by the caller (session_init
     // handler) after resolving NodeInfo routes: it needs the resolved peer→node-key map
     // that this function cannot produce. No check is done here.
 
-    // 4. Proposed new_peer_node_keys must match the authoritative committee.
-    //    Bulletin present → must match it; absent → must match current peer_node_keys (fallback).
-    let authoritative_new = effective_new_peer_node_keys(&ring_payload);
-    if !peer_node_keys_match(authoritative_new, proposed_new_peer_node_keys) {
+    validate_reshare_ring_payload_matches_proposal(
+        "Reshare",
+        ring_pk_hex,
+        &ring_payload,
+        proposed_new_peer_node_keys,
+        proposed_new_threshold,
+    )?;
+
+    Ok(ring_payload)
+}
+
+/// Same as [`validate_reshare_session_init_for_version`], for a ring's
+/// independent PET checking key. Resolves the ring directly via `ring_id`
+/// (matching `FreshPet`/`RefreshPet`'s own resolution shape) rather than a
+/// `RingIndex` lookup by `ring_pk_hex` — there is no PET-specific index, and
+/// no separate `bulletin_post_id` fallback is needed since `ring_id` alone
+/// already resolves the bulletin post. Reshare has no elapsed-time check
+/// (always due once the bulletin announces a transition), so unlike
+/// [`validate_refresh_pet_session_init_for_version`] this never touches the
+/// PET `RingShareBundle`'s `last_pss` at all.
+pub async fn validate_reshare_pet_session_init_for_version(
+    ring_id: &str,
+    proposed_new_peer_node_keys: &[String],
+    proposed_new_threshold: u32,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
+) -> Result<RingPayload> {
+    validate_reshare_committee_shape(
+        "Reshare PET",
+        proposed_new_peer_node_keys,
+        proposed_new_threshold,
+    )?;
+
+    let ring_payload = read_ring_for_route(&**bulletin, ring_id, protocol_version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+
+    if !ring_payload.requires_pet {
         return Err(DkgError::Unauthorized(format!(
-            "Reshare new_peer_node_keys do not match authoritative committee for ring {} \
-             (bulletin field: {})",
-            ring_pk_hex,
-            if ring_payload.new_peer_node_keys.is_some() {
-                "explicitly announced"
-            } else {
-                "absent, fallback to current peer_node_keys"
-            }
+            "Reshare PET target ring {} does not require PET",
+            ring_id
+        )));
+    }
+    if ring_payload.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(format!(
+            "Reshare PET target ring {} has no finalized PET checking key yet",
+            ring_id
         )));
     }
 
-    // 5. Proposed new_threshold must equal the authoritative threshold.
-    //    Bulletin present → must equal it; absent → must equal current threshold (fallback).
-    let authoritative_threshold = ring_payload.new_threshold.unwrap_or(ring_payload.threshold);
-    if proposed_new_threshold != authoritative_threshold {
-        return Err(DkgError::Unauthorized(format!(
-            "Reshare new_threshold {} does not match authoritative threshold {} for ring {} \
-             (bulletin field: {})",
-            proposed_new_threshold,
-            authoritative_threshold,
-            ring_pk_hex,
-            if ring_payload.new_threshold.is_some() {
-                "explicitly announced"
-            } else {
-                "absent, fallback to current threshold"
-            }
-        )));
-    }
+    validate_reshare_ring_payload_matches_proposal(
+        "Reshare PET",
+        ring_id,
+        &ring_payload,
+        proposed_new_peer_node_keys,
+        proposed_new_threshold,
+    )?;
 
     Ok(ring_payload)
 }
@@ -226,6 +319,68 @@ pub async fn validate_refresh_session_init_for_version<S: LocalStorage>(
     Ok(ring_payload)
 }
 
+/// Same as [`validate_refresh_session_init_for_version`], for a ring's independent PET
+/// checking key. Resolves the ring directly via `ring_id` (which *is* the bulletin post
+/// id, per `FreshPet`'s own resolution shape) rather than a `RingIndex` lookup by
+/// `ring_pk_hex` — there is no PET-specific index. Checks the PET bundle's own
+/// `last_pss`, entirely independent of the main key's own refresh clock.
+pub async fn validate_refresh_pet_session_init_for_version<S: LocalStorage>(
+    ring_id: &str,
+    local_storage: &S,
+    bulletin: &Arc<dyn Bulletin + Send + Sync>,
+    protocol_version: u64,
+) -> Result<RingPayload> {
+    let ring_payload = read_ring_for_route(&**bulletin, ring_id, protocol_version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+
+    if !ring_payload.requires_pet {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET target ring {} does not require PET",
+            ring_id
+        )));
+    }
+    if ring_payload.pet_pk.is_none() {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET target ring {} has no finalized PET checking key yet",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Refresh PET target ring {} has {} participants, maximum is {}",
+            ring_id,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+
+    // Verify enough time has elapsed since the last PET refresh/DKG — independent of
+    // the main key's own `last_pss`.
+    let pss_interval_secs = ring_payload.pss_interval;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| DkgError::Generic(format!("Failed to get timestamp: {}", e)))?
+        .as_secs();
+    let last_refresh_secs = RingShareBundle::load_by_pet_ring_key(local_storage, ring_id)
+        .map(|b| b.last_pss)
+        .map_err(|_| {
+            DkgError::Unauthorized(
+                "PET ring has no refresh timestamp; cannot accept refresh".to_string(),
+            )
+        })?;
+    let elapsed = now_secs.saturating_sub(last_refresh_secs);
+    if elapsed + PSS_GRACE_PERIOD_SECS < pss_interval_secs {
+        return Err(DkgError::Unauthorized(format!(
+            "Refresh PET too soon: {}s elapsed, minimum is {}s",
+            elapsed,
+            pss_interval_secs.saturating_sub(PSS_GRACE_PERIOD_SECS)
+        )));
+    }
+
+    Ok(ring_payload)
+}
+
 /// Validates the structural state of a `RingPayload` for a fresh DKG:
 /// ring_pk is blank, peer list is non-empty, threshold is in range, policy_id is present.
 /// Call this with the already-fetched ring payload before starting a fresh DKG session.
@@ -267,6 +422,72 @@ pub fn validate_fresh_dkg_ring_payload(ring_id: &str, ring_payload: &RingPayload
     {
         return Err(DkgError::InvalidInput(format!(
             "Fresh DKG target ring {} has no policy_id",
+            ring_id
+        )));
+    }
+    Ok(())
+}
+
+/// Validates the structural state of a `RingPayload` for the PET checking key's
+/// fresh-DKG ceremony (`SessionKind::FreshPet`).
+///
+/// Corrected 2026-09-24: an earlier version of this function required
+/// `ring_pk` to already be non-empty, on the assumption that the main key
+/// would finalize on its own *before* the PET ceremony started. That's wrong
+/// for the agreed flow: both ceremonies run and complete *locally* before
+/// either is submitted to chain, so neither `ring_pk` nor `pet_pk` exists
+/// on-chain yet when the PET ceremony's `SessionInit` is validated — the ring
+/// is still pending, exactly like plain `Fresh`'s own precondition. The only
+/// extra check versus `validate_fresh_dkg_ring_payload` is `requires_pet`.
+/// Peer list, threshold, and policy_id are validated the same way, duplicated
+/// rather than shared per this ceremony's own established convention.
+pub fn validate_fresh_pet_dkg_ring_payload(
+    ring_id: &str,
+    ring_payload: &RingPayload,
+) -> Result<()> {
+    if !ring_payload.requires_pet {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh PET DKG target ring {} does not require PET",
+            ring_id
+        )));
+    }
+    if !ring_payload.ring_pk.is_empty() {
+        return Err(DkgError::Unauthorized(format!(
+            "Fresh PET DKG target ring {} is not pending",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.is_empty() {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has no peer_node_keys",
+            ring_id
+        )));
+    }
+    if ring_payload.peer_node_keys.len() > MAX_DKG_COMMITTEE_SIZE {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has {} participants, maximum is {}",
+            ring_id,
+            ring_payload.peer_node_keys.len(),
+            MAX_DKG_COMMITTEE_SIZE
+        )));
+    }
+    if ring_payload.threshold == 0
+        || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has invalid threshold {} for {} participants",
+            ring_id,
+            ring_payload.threshold,
+            ring_payload.peer_node_keys.len()
+        )));
+    }
+    if ring_payload
+        .policy_id
+        .as_deref()
+        .is_none_or(|id| id.is_empty())
+    {
+        return Err(DkgError::InvalidInput(format!(
+            "Fresh PET DKG target ring {} has no policy_id",
             ring_id
         )));
     }

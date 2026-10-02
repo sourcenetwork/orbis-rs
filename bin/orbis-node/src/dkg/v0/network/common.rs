@@ -12,21 +12,31 @@ pub(super) enum PublicBatchMode {
 
 pub(super) fn public_batch_mode(kind: &SessionKind, phase: PublicPhase) -> Option<PublicBatchMode> {
     match (kind, phase) {
-        (SessionKind::Fresh, PublicPhase::CommitmentHashes | PublicPhase::Commitments)
+        (
+            SessionKind::Fresh | SessionKind::FreshPet { .. },
+            PublicPhase::CommitmentHashes | PublicPhase::Commitments,
+        )
         | (
             SessionKind::Refresh { .. },
             PublicPhase::Commitments | PublicPhase::RefreshHealthCheck,
         )
-        | (SessionKind::Reshare { .. }, PublicPhase::ReshareParticipantSet) => {
-            Some(PublicBatchMode::Complete)
-        }
+        // No health-check phase for RefreshPet — see its own doc comment.
+        | (SessionKind::RefreshPet { .. }, PublicPhase::Commitments)
+        | (
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. },
+            PublicPhase::ReshareParticipantSet,
+        ) => Some(PublicBatchMode::Complete),
         (
-            SessionKind::Refresh { .. } | SessionKind::Reshare { .. },
+            SessionKind::Refresh { .. }
+            | SessionKind::RefreshPet { .. }
+            | SessionKind::Reshare { .. }
+            | SessionKind::ResharePet { .. },
             PublicPhase::CommitmentAudit,
         )
-        | (SessionKind::Reshare { .. }, PublicPhase::Commitments) => {
-            Some(PublicBatchMode::Incremental)
-        }
+        | (
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. },
+            PublicPhase::Commitments,
+        ) => Some(PublicBatchMode::Incremental),
         _ => None,
     }
 }
@@ -56,7 +66,10 @@ where
     if phase == PublicPhase::ReshareParticipantSet {
         return BTreeSet::from([ParticipantRef::next(1)]);
     }
-    if matches!(prepare.kind, SessionKind::Reshare { .. }) && phase == PublicPhase::CommitmentAudit
+    if matches!(
+        prepare.kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    ) && phase == PublicPhase::CommitmentAudit
     {
         return prepare
             .committees
@@ -67,7 +80,11 @@ where
             .map(ParticipantRef::next)
             .collect();
     }
-    if matches!(prepare.kind, SessionKind::Reshare { .. }) && phase == PublicPhase::Commitments {
+    if matches!(
+        prepare.kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    ) && phase == PublicPhase::Commitments
+    {
         return state
             .dkg_session_state
             .transport_active_dealers(&prepare.ceremony_id.0)

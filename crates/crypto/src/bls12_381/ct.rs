@@ -75,6 +75,25 @@ pub fn ct_mul_g2(base: &G2Affine, scalar: &Fr) -> Result<G2Affine> {
     Ok(G2Affine::deserialize_compressed(&result_bytes[..])?)
 }
 
+/// Constant-time `k + c*r` in the scalar field. Use for a Schnorr-style proof
+/// response where `r` (and, transitively, the product `c*r`) is secret — a
+/// long-lived share or, as in a proof's own nonce, `k` itself.
+///
+/// arkworks' default `Fr` multiplication (Montgomery CIOS reduction) is not
+/// documented as constant-time; unlike `ct_mul_g1`/`ct_mul_g2` this isn't
+/// fixing a *known* bit-serial branch, but the same blst backend already
+/// trusted for point multiplication also provides constant-time field
+/// arithmetic, so proof responses that combine a secret scalar route through
+/// it too rather than arkworks' `Fr` operators.
+pub fn ct_scalar_mul_add(k: &Fr, c: &Fr, r: &Fr) -> Result<Fr> {
+    let blst_k = to_blst_scalar(k)?;
+    let blst_c = to_blst_scalar(c)?;
+    let blst_r = to_blst_scalar(r)?;
+
+    let blst_result = blst_k + (blst_c * blst_r);
+    Ok(Fr::deserialize_compressed(&blst_result.to_bytes_le()[..])?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +127,29 @@ mod tests {
             let actual = ct_mul_g2(&base, &scalar).unwrap();
             assert_eq!(expected, actual);
         }
+    }
+
+    #[test]
+    fn ct_scalar_mul_add_matches_naive_arithmetic() {
+        let mut rng = OsRng;
+        for _ in 0..200 {
+            let k = Fr::rand(&mut rng);
+            let c = Fr::rand(&mut rng);
+            let r = Fr::rand(&mut rng);
+            let expected = k + (c * r);
+            let actual = ct_scalar_mul_add(&k, &c, &r).unwrap();
+            assert_eq!(expected, actual);
+        }
+    }
+
+    #[test]
+    fn ct_scalar_mul_add_edge_cases() {
+        let zero = Fr::from(0u64);
+        let one = Fr::from(1u64);
+        let five = Fr::from(5u64);
+        assert_eq!(ct_scalar_mul_add(&zero, &zero, &zero).unwrap(), zero);
+        assert_eq!(ct_scalar_mul_add(&one, &zero, &five).unwrap(), one);
+        assert_eq!(ct_scalar_mul_add(&zero, &one, &five).unwrap(), five);
     }
 
     #[test]

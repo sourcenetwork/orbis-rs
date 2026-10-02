@@ -124,6 +124,24 @@ struct IdDocumentProof {
     response: Vec<u8>,
 }
 
+/// The PET tag ciphertext, as far as the object-id derivation is concerned. See
+/// [`IdDocumentSecret`] for why the field set is exact.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdPetTag {
+    ephemeral_point: Vec<u8>,
+    masked_fingerprint: Vec<u8>,
+}
+
+/// The PET tag-knowledge proof, as far as the object-id derivation is
+/// concerned. See [`IdDocumentSecret`] for why the field set is exact.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdPetTagProof {
+    challenge: Vec<u8>,
+    response: Vec<u8>,
+}
+
 /// Compute the deterministic document ID matching Vera's on-chain
 /// `GenerateDocumentID`.
 ///
@@ -133,6 +151,16 @@ struct IdDocumentProof {
 /// *same* id (the authorization identity must be a function of the ciphertext's
 /// meaning, not its serialization). Returns an error if either string is not the
 /// expected shape.
+///
+/// `pet_tag`/`pet_tag_proof` are the JSON strings from `DocumentPayload`'s
+/// optional PET attachment (`None` on an ordinary, non-PET document). They must
+/// be present or absent *together*; one without the other is rejected. When
+/// both are absent, nothing is hashed for them at all — not even a presence
+/// marker — so an ordinary document's id is unchanged from before this
+/// attachment existed. When both are present, their decoded fields are hashed
+/// the same way as `document`/`proof`, so this id covers the tag attachment
+/// and its knowledge proof as well as the payload.
+#[allow(clippy::too_many_arguments)]
 pub fn generate_document_id(
     ring_id: &str,
     document: &str,
@@ -142,6 +170,8 @@ pub fn generate_document_id(
     permission: &str,
     tier: Option<&str>,
     timestamp: Option<u64>,
+    pet_tag: Option<&str>,
+    pet_tag_proof: Option<&str>,
 ) -> Result<String> {
     let secret: IdDocumentSecret = serde_json::from_str(document)?;
     let proof: IdDocumentProof = serde_json::from_str(proof)?;
@@ -160,8 +190,35 @@ pub fn generate_document_id(
     write_string(&mut h, permission);
     write_optional_string(&mut h, tier);
     write_optional_u64(&mut h, timestamp);
+    write_optional_pet_tag(&mut h, pet_tag, pet_tag_proof)?;
 
     Ok(hex::encode(h.finalize()))
+}
+
+/// Fold the optional PET tag attachment and its knowledge proof into the
+/// document-id hash. See [`generate_document_id`]'s docs for why an absent
+/// attachment hashes nothing at all, unlike every other optional field in this
+/// function.
+fn write_optional_pet_tag(
+    h: &mut Sha256,
+    pet_tag: Option<&str>,
+    pet_tag_proof: Option<&str>,
+) -> Result<()> {
+    match (pet_tag, pet_tag_proof) {
+        (None, None) => Ok(()),
+        (Some(tag), Some(proof)) => {
+            let tag: IdPetTag = serde_json::from_str(tag)?;
+            let proof: IdPetTagProof = serde_json::from_str(proof)?;
+            write_bytes(h, &tag.ephemeral_point);
+            write_bytes(h, &tag.masked_fingerprint);
+            write_bytes(h, &proof.challenge);
+            write_bytes(h, &proof.response);
+            Ok(())
+        }
+        _ => Err(BlockchainError::Serialization(
+            "pet_tag and pet_tag_proof must be present or absent together".to_string(),
+        )),
+    }
 }
 
 /// Compute the deterministic key derivation ID matching Vera's on-chain `GenerateKeyDerivationID`.

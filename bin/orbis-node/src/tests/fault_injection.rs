@@ -573,6 +573,7 @@ async fn test_pre_one_node_down_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -679,6 +680,7 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,
@@ -798,6 +800,7 @@ async fn test_sign_one_node_down_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -865,6 +868,7 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,

@@ -147,6 +147,66 @@ impl TryFrom<EncryptionProof> for String {
     }
 }
 
+/// A PET tag ciphertext: `R = r_tag*G` and `T = F(owner_id) + r_tag*pet_pk`.
+///
+/// Produced by the tag producer (Bankd) under the ring's authoritative PET
+/// public key, using encryption randomness (`r_tag`) independent from the
+/// payload's own. Both components are bound into the [`TagKnowledgeProof`]
+/// transcript; see [`crate::pet_context::tag_proof_digest`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PetTag {
+    pub ephemeral_point: Vec<u8>,
+    pub masked_fingerprint: Vec<u8>,
+}
+
+impl TryFrom<String> for PetTag {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<PetTag> for String {
+    type Error = CryptoError;
+
+    fn try_from(tag: PetTag) -> Result<Self> {
+        serde_json::to_string(&tag).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+/// Schnorr proof of knowledge of `r_tag` for `PetTag::ephemeral_point = r_tag*G`.
+///
+/// Its Fiat-Shamir transcript binds both tag components, the authoritative PET
+/// public key and ring identity, and the complete payload envelope (ciphertext,
+/// its policy/ring context, and its own [`EncryptionProof`]) — see
+/// [`crate::pet_context::tag_proof_digest`]. Generated once by the encryptor;
+/// every PET participant reconstructs the digest and verifies this proof
+/// before joining PET.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TagKnowledgeProof {
+    /// Fiat-Shamir challenge scalar, serialized.
+    pub challenge: Vec<u8>,
+    /// Proof response `z = k + c*r_tag`, serialized.
+    pub response: Vec<u8>,
+}
+
+impl TryFrom<String> for TagKnowledgeProof {
+    type Error = CryptoError;
+
+    fn try_from(string: String) -> Result<Self> {
+        serde_json::from_str(&string).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
+impl TryFrom<TagKnowledgeProof> for String {
+    type Error = CryptoError;
+
+    fn try_from(proof: TagKnowledgeProof) -> Result<Self> {
+        serde_json::to_string(&proof).map_err(|e| CryptoError::ParseError(e.to_string()))
+    }
+}
+
 /// Re-encryption reply
 #[derive(Clone, Debug)]
 pub struct ReencryptReply<ShareValue: Zeroize, PublicKey> {
@@ -156,6 +216,54 @@ pub struct ReencryptReply<ShareValue: Zeroize, PublicKey> {
 }
 
 impl<ShareValue: Zeroize, PublicKey> Drop for ReencryptReply<ShareValue, PublicKey> {
+    fn drop(&mut self) {
+        self.challenge.zeroize();
+        self.proof.zeroize();
+    }
+}
+
+/// A committee member's threshold PET-check contribution, together with a
+/// Chaum–Pedersen DLEQ proof that `partial.v` was computed as `share_i * R`
+/// using the same `share_i` as the node's known public share
+/// (`pub_poly.eval(partial.i)`) — the PET analog of [`ReencryptReply`]. See
+/// [`crate::r#trait::Pet::verify_partial_pet_check`].
+#[derive(Clone, Debug)]
+pub struct PetCheckReply<ShareValue: Zeroize, PublicKey> {
+    pub partial: PubShare<PublicKey>,
+    pub challenge: ShareValue,
+    pub proof: ShareValue,
+}
+
+impl<ShareValue: Zeroize, PublicKey> Drop for PetCheckReply<ShareValue, PublicKey> {
+    fn drop(&mut self) {
+        self.challenge.zeroize();
+        self.proof.zeroize();
+    }
+}
+
+/// One participant's blinding contribution to the PET blind equality test
+/// — the multi-round blinded check protocol that replaced direct `x*R`
+/// decryption, which leaked information about the plaintext fingerprint
+/// across repeated checks — together with a Chaum–Pedersen proof that the
+/// same secret `z_i` relates `(R, blinded_r)`
+/// and `(D, blinded_diff)`, where `R` is the tag's ephemeral point and
+/// `D = masked_fingerprint - target_fingerprint`. See
+/// [`crate::r#trait::Pet::verify_blinding_correctness`].
+///
+/// Unlike [`PetCheckReply`]/[`ReencryptReply`], `blinded_diff` may
+/// legitimately be the identity element (when `D` itself is, i.e. an exact
+/// pre-blinding match) — callers must not apply a blanket
+/// reject-the-identity rule to this field the way they do to `partial`/
+/// `share`.
+#[derive(Clone, Debug)]
+pub struct BlindingReply<ShareValue: Zeroize, PublicKey> {
+    pub blinded_r: PublicKey,
+    pub blinded_diff: PublicKey,
+    pub challenge: ShareValue,
+    pub proof: ShareValue,
+}
+
+impl<ShareValue: Zeroize, PublicKey> Drop for BlindingReply<ShareValue, PublicKey> {
     fn drop(&mut self) {
         self.challenge.zeroize();
         self.proof.zeroize();

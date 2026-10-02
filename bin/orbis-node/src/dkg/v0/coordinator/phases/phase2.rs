@@ -65,7 +65,10 @@ where
                 shares,
                 state.node.node_id(),
                 state.node.threshold(),
-                matches!(state.kind, SessionKind::Reshare { .. }),
+                matches!(
+                    state.kind,
+                    SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+                ),
                 reshare_new_node_id,
                 reshare_peer_ids,
                 state.routing.node_id_to_peer_id.clone(),

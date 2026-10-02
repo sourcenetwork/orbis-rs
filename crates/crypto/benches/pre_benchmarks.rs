@@ -13,6 +13,7 @@ pub fn bench_ctx() -> CiphertextContext {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     }
 }
 

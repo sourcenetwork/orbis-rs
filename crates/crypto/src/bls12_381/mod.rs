@@ -1,6 +1,7 @@
 pub mod common;
 pub mod ct;
 pub mod dkg;
+pub mod pet;
 pub mod pre;
 pub mod sign;
 

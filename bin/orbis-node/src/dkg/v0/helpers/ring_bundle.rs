@@ -76,6 +76,72 @@ pub fn build_refresh_ring_bundle<S: LocalStorage>(
     })
 }
 
+/// Same as [`build_refresh_ring_bundle`], for a ring's independent PET checking key —
+/// loads/combines against the PET namespace (`load_by_pet_ring_key`, keyed by `ring_id`)
+/// rather than the main key's. No staging: unlike main-key `Refresh`, `RefreshPet` has
+/// no health check, so the caller writes this candidate directly.
+pub fn build_refresh_pet_ring_bundle<S: LocalStorage>(
+    storage: &S,
+    ring_id: &str,
+    final_share_bytes: &[u8],
+    pub_poly_bytes: &[u8],
+    now_secs: u64,
+    session_id: u128,
+    combine_pub_poly: impl Fn(&[u8], &[u8]) -> std::result::Result<Vec<u8>, String>,
+) -> Result<RingShareBundle> {
+    let old_bundle = RingShareBundle::load_by_pet_ring_key(storage, ring_id).map_err(|e| {
+        DkgError::Storage(format!(
+            "Refresh PET: failed to load old share bundle: {}",
+            e
+        ))
+    })?;
+
+    let old_pri = old_bundle.pri_share().map_err(|e| {
+        DkgError::Deserialization(format!(
+            "Refresh PET: failed to deserialize old share: {}",
+            e
+        ))
+    })?;
+    let delta_pri = PriShare::<Fr>::from_bytes(final_share_bytes).map_err(|e| {
+        DkgError::Deserialization(format!(
+            "Refresh PET: failed to deserialize delta share: {}",
+            e
+        ))
+    })?;
+    let new_pri = PriShare {
+        i: old_pri.i,
+        v: old_pri.v + delta_pri.v,
+    };
+    let new_share_bytes = CryptoSerialize::to_bytes(&new_pri).map_err(|e| {
+        DkgError::Serialization(format!(
+            "Refresh PET: failed to serialize combined share: {}",
+            e
+        ))
+    })?;
+
+    let old_poly_bytes = hex::decode(&old_bundle.public_polynomial).map_err(|e| {
+        DkgError::Deserialization(format!(
+            "Refresh PET: failed to decode old polynomial hex: {}",
+            e
+        ))
+    })?;
+    let new_poly_bytes = combine_pub_poly(&old_poly_bytes, pub_poly_bytes).map_err(|e| {
+        DkgError::Crypto(format!("Refresh PET: failed to combine polynomials: {}", e))
+    })?;
+
+    tracing::debug!(
+        session_id = session_id,
+        ring_id = %ring_id,
+        "Refresh PET: built new RingShareBundle"
+    );
+
+    Ok(RingShareBundle {
+        share_bytes: Zeroizing::new(new_share_bytes),
+        public_polynomial: hex::encode(&new_poly_bytes),
+        last_pss: now_secs,
+    })
+}
+
 pub fn persist_ring_bundle<S: LocalStorage>(
     storage: &S,
     kind: &SessionKind,
@@ -100,6 +166,24 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 .save(storage, aggregate_pk)
                 .map_err(|e| DkgError::Storage(format!("Failed to store share bundle: {}", e)))?;
         }
+        SessionKind::FreshPet { ring_id } => {
+            // PET checking key: single atomic write of share + polynomial, keyed
+            // by ring_id rather than the just-computed pet_pk — the pet_pk has
+            // no stable identity to key by until this very write completes.
+            // A dedicated namespace (`save_by_pet_ring_key`, not
+            // `save_by_ring_key`) — a ring_id and
+            // a main key's `aggregate_pk.to_string()` share no structural
+            // guarantee against collision, so this write must never be able
+            // to land on a main-key (or a different ring's PET) storage slot.
+            let bundle = RingShareBundle {
+                share_bytes: Zeroizing::new(final_share_bytes.to_vec()),
+                public_polynomial: hex::encode(pub_poly_bytes),
+                last_pss: now_secs,
+            };
+            bundle.save_by_pet_ring_key(storage, ring_id).map_err(|e| {
+                DkgError::Storage(format!("Fresh PET: failed to store share bundle: {}", e))
+            })?;
+        }
         SessionKind::Refresh { ring_pk_hex } => {
             let new_bundle = build_refresh_ring_bundle(
                 storage,
@@ -122,6 +206,30 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 "Refresh: Phase 4 complete — RingShareBundle updated atomically"
             );
         }
+        SessionKind::RefreshPet { ring_id } => {
+            // No staging/health-check for PET refresh — direct write, same
+            // shape as Fresh/FreshPet above.
+            let new_bundle = build_refresh_pet_ring_bundle(
+                storage,
+                ring_id,
+                final_share_bytes,
+                pub_poly_bytes,
+                now_secs,
+                session_id,
+                combine_pub_poly,
+            )?;
+            new_bundle
+                .save_by_pet_ring_key(storage, ring_id)
+                .map_err(|e| {
+                    DkgError::Storage(format!("Refresh PET: failed to store new bundle: {}", e))
+                })?;
+
+            tracing::info!(
+                session_id = session_id,
+                ring_id = %ring_id,
+                "Refresh PET: Phase 4 complete — RingShareBundle updated atomically"
+            );
+        }
         SessionKind::Reshare { ring_pk_hex, .. } => {
             // Reshare: the computed share is the full new share (not a delta).
             // Write it under the old ring key — the ring public key is unchanged.
@@ -139,6 +247,21 @@ pub fn persist_ring_bundle<S: LocalStorage>(
                 ring_key = %ring_pk_hex,
                 "Reshare: Phase 4 complete — RingShareBundle written under old ring key"
             );
+        }
+        SessionKind::ResharePet { ring_id, .. } => {
+            // Unlike `Reshare`'s arm above (also dead in practice, for the
+            // same reason), this one is intentionally an error rather than a
+            // live direct write: `ResharePet` stages its result via
+            // `PendingReshareBundle::save_pet` and must never write the live
+            // PET key directly before a confirmed committee transition
+            // (Stage 3 of the PSS-for-PET-key plan) — a future refactor that
+            // accidentally routed here would silently reintroduce the exact
+            // stranding risk `Reshare`'s own staging design exists to avoid.
+            return Err(DkgError::InvalidState(format!(
+                "Reshare PET: persist_ring_bundle must never be called directly for ring {} \
+                 — Phase 4 stages the new PET bundle via PendingReshareBundle::save_pet instead",
+                ring_id
+            )));
         }
     }
     Ok(())
@@ -215,6 +338,82 @@ pub fn build_reshare_params<S: LocalStorage>(
         new_peer_node_keys: sorted_new,
         new_node_id,
         bulletin_post_id: bulletin_post_id.to_string(),
+    };
+
+    Ok((node_id, role, params))
+}
+
+/// Same as [`build_reshare_params`], for a ring's independent PET checking
+/// key — loads the old share from the PET namespace
+/// (`RingShareBundle::load_by_pet_ring_key`, keyed by `ring_id`) rather than
+/// the main key's. Same old/new committee and role-assignment logic (there
+/// is no separate PET-committee concept); `params.bulletin_post_id` is set
+/// to `ring_id` itself, matching `ResharePet`'s single-identity-anchor shape.
+pub fn build_reshare_pet_params<S: LocalStorage>(
+    ring_id: &str,
+    old_peer_node_keys: &[String],
+    new_peer_node_keys: &[String],
+    new_threshold: u32,
+    our_node_key: &str,
+    local_storage: &S,
+) -> Result<(u32, DkgRole, ReshareParams<Fr>)> {
+    let mut sorted_old = old_peer_node_keys.to_vec();
+    sorted_old.sort();
+    let mut sorted_new = new_peer_node_keys.to_vec();
+    sorted_new.sort();
+
+    let in_old = in_committee(&sorted_old, our_node_key);
+    let in_new = in_committee(&sorted_new, our_node_key);
+
+    let role = match (in_old, in_new) {
+        (true, true) => DkgRole::DealerReceiver,
+        (true, false) => DkgRole::Dealer,
+        (false, true) => DkgRole::Receiver,
+        (false, false) => {
+            return Err(DkgError::InvalidInput(
+                "Reshare PET: this node is not in either committee".to_string(),
+            ))
+        }
+    };
+
+    let new_node_id: Option<u32> = if in_new {
+        Some(node_index_in(&sorted_new, our_node_key)?)
+    } else {
+        None
+    };
+    let node_id: u32 = if in_old {
+        node_index_in(&sorted_old, our_node_key)?
+    } else {
+        // Role match above guarantees in_new is true when in_old is false.
+        new_node_id.expect("unreachable: in_new is true when in_old is false")
+    };
+
+    let old_share = if in_old {
+        let bundle =
+            RingShareBundle::load_by_pet_ring_key(local_storage, ring_id).map_err(|e| {
+                DkgError::Storage(format!("Reshare PET: failed to load old share: {}", e))
+            })?;
+        let pri = bundle.pri_share().map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Reshare PET: failed to deserialize old share: {}",
+                e
+            ))
+        })?;
+        Some(pri.v)
+    } else {
+        None
+    };
+
+    let participating_ids: Vec<u32> = (1..=old_peer_node_keys.len() as u32).collect();
+
+    let params = ReshareParams {
+        old_share,
+        participating_ids,
+        new_threshold: new_threshold as usize,
+        new_total_nodes: new_peer_node_keys.len(),
+        new_peer_node_keys: sorted_new,
+        new_node_id,
+        bulletin_post_id: ring_id.to_string(),
     };
 
     Ok((node_id, role, params))

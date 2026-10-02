@@ -643,6 +643,7 @@ fn signed_bad_refresh_dkg_share_observation(
         accused_peer_id,
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature,
@@ -676,6 +677,7 @@ async fn test_delegated_dkg_with_vera_end_to_end() {
         &net.policy_id,
         None,
         vec![relay.did_uri.clone()],
+        false,
     )
     .await;
     let token = relay
@@ -894,6 +896,7 @@ async fn test_concurrent_pre_requests() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -1026,6 +1029,7 @@ async fn test_concurrent_sign_requests() {
                 policy_id.clone(),
                 resource.clone(),
                 permission.clone(),
+                None,
                 None,
                 None,
                 None,

@@ -97,6 +97,7 @@ fn test_reencrypt_rejects_reader_key_outside_prime_order_subgroup() {
     // order of `rdr_pk`.
     let (_sk, ring_pk) = ThresholdDealerNode::generate_keypair();
     let ctx = CiphertextContext {
+        pet_tag: None,
         ring_pk: vec![9, 9, 9],
         policy_id: "p".to_string(),
         resource: "r".to_string(),
@@ -178,6 +179,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     let (ring_pk, secret_shares, pub_poly) = coordinator.run_dkg().expect("dkg ceremony");
 
     let ctx_a = CiphertextContext {
+        pet_tag: None,
         ring_pk: b"ring".to_vec(),
         policy_id: "policy-a".to_string(),
         resource: "secret-a".to_string(),
@@ -187,6 +189,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
         salt: None,
     };
     let ctx_b = CiphertextContext {
+        pet_tag: None,
         ring_pk: b"ring".to_vec(),
         policy_id: "policy-b".to_string(),
         resource: "secret-b".to_string(),

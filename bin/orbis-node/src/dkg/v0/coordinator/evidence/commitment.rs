@@ -308,6 +308,7 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
             statement: Box::new(commitment.statement),
             response_signature: commitment.signature,
@@ -354,6 +355,7 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgEquivocation {
             commitment_a: Box::new(commitment_a),
             commitment_b: Box::new(commitment_b),

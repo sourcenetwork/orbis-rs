@@ -101,6 +101,7 @@ where
         accused_peer_id: accused_info.peer_id,
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgLeaderBatchMismatch {
             statement: Box::new(statement),
         },

@@ -13,12 +13,13 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state_mut(attempt, |state| {
-            if !matches!(state.kind, SessionKind::Reshare { .. })
-                || !matches!(
-                    state.node.role(),
-                    DkgRole::Receiver | DkgRole::DealerReceiver
-                )
-            {
+            if !matches!(
+                state.kind,
+                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+            ) || !matches!(
+                state.node.role(),
+                DkgRole::Receiver | DkgRole::DealerReceiver
+            ) {
                 return Ok::<_, DkgError>(None);
             }
 
@@ -189,8 +190,10 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state(attempt, |state| {
-            matches!(state.kind, SessionKind::Reshare { .. })
-                && state.reshare.selected_dealers.is_none()
+            matches!(
+                state.kind,
+                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+            ) && state.reshare.selected_dealers.is_none()
         })
         .await
         .unwrap_or(false)
@@ -466,7 +469,10 @@ where
             from_node_id
         )));
     }
-    if !matches!(state.kind, SessionKind::Reshare { .. }) {
+    if !matches!(
+        state.kind,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+    ) {
         return Err(DkgError::InvalidInput(
             "ReshareParticipantSet received for non-reshare session".to_string(),
         ));

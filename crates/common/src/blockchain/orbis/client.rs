@@ -8,6 +8,7 @@ use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 
 impl VeraClient {
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_create_ring(
         &self,
         peer_node_keys: Vec<String>,
@@ -18,6 +19,7 @@ impl VeraClient {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
         let msg = MsgCreateRing::new(
@@ -30,6 +32,7 @@ impl VeraClient {
             current_version,
             reporting,
             trusted_auth_relay_dids,
+            requires_pet,
         );
         self.broadcast_proto_msg_with_gas(
             MsgCreateRing::TYPE_URL,
@@ -42,6 +45,7 @@ impl VeraClient {
     /// Create a ring and return the chain-assigned ring_id alongside the broadcast result.
     ///
     /// The ring_id is decoded from `MsgCreateRingResponse` in the ABCI response data.
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_create_ring_get_id(
         &self,
         peer_node_keys: Vec<String>,
@@ -52,6 +56,7 @@ impl VeraClient {
         current_version: u64,
         reporting: Option<ReportingConfig>,
         trusted_auth_relay_dids: Option<Vec<String>>,
+        requires_pet: bool,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_create_ring(
@@ -63,6 +68,7 @@ impl VeraClient {
                 current_version,
                 reporting,
                 trusted_auth_relay_dids,
+                requires_pet,
             )
             .await?;
 
@@ -83,6 +89,7 @@ impl VeraClient {
         Ok((result, ring_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_store_document(
         &self,
         ring_id: &str,
@@ -93,6 +100,8 @@ impl VeraClient {
         permission: &str,
         tier: Option<String>,
         timestamp: Option<u64>,
+        pet_tag: Option<String>,
+        pet_tag_proof: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
         let msg = MsgStoreDocument {
@@ -105,6 +114,8 @@ impl VeraClient {
             permission: permission.to_string(),
             tier,
             timestamp,
+            pet_tag,
+            pet_tag_proof,
         };
         self.broadcast_proto_msg_with_gas(
             MsgStoreDocument::TYPE_URL,
@@ -115,6 +126,7 @@ impl VeraClient {
     }
 
     /// Store a document and return the chain-assigned document_id alongside the broadcast result.
+    #[allow(clippy::too_many_arguments)]
     pub async fn orbis_store_document_get_id(
         &self,
         ring_id: &str,
@@ -125,10 +137,21 @@ impl VeraClient {
         permission: &str,
         tier: Option<String>,
         timestamp: Option<u64>,
+        pet_tag: Option<String>,
+        pet_tag_proof: Option<String>,
     ) -> Result<(BroadcastResult, String)> {
         let result = self
             .orbis_store_document(
-                ring_id, document, proof, policy_id, resource, permission, tier, timestamp,
+                ring_id,
+                document,
+                proof,
+                policy_id,
+                resource,
+                permission,
+                tier,
+                timestamp,
+                pet_tag,
+                pet_tag_proof,
             )
             .await?;
 
@@ -427,9 +450,10 @@ impl VeraClient {
         &self,
         ring_id: &str,
         ring_pk: &str,
+        pet_pk: Option<String>,
     ) -> Result<BroadcastResult> {
         let signer = self.require_signer()?;
-        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk);
+        let msg = MsgFinalizeRing::new(&signer.address(), ring_id, ring_pk, pet_pk);
         self.broadcast_proto_msg_with_gas(
             MsgFinalizeRing::TYPE_URL,
             &msg,

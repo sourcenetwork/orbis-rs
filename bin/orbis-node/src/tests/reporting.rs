@@ -616,6 +616,7 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret");
 
@@ -944,6 +945,8 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
             &permission,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("store PRE document");
@@ -1265,6 +1268,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
             &permission,
             None,
             None,
+            None,
+            None,
         )
         .await
         .expect("store PRE document");
@@ -1373,6 +1378,8 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         &permission,
         None,
         None,
+        None,
+        None,
     )
     .expect("generate inline object_id");
 
@@ -1426,6 +1433,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         response: inline_proof.response,
         tier: None,
         timestamp: None,
+        pet_tag: None,
     };
 
     println!(
@@ -1609,6 +1617,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,
@@ -1799,6 +1808,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare_secret for sign");
 
@@ -1856,6 +1866,464 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         "node3 should have exactly 2 demerits after the PRE and Sign invalid-crypto reports"
     );
     println!("node3 demerit points after Sign invalid-crypto report: {demerits}");
+}
+
+/// PET blind-equality-test decrypt-phase misbehavior: corrupts node3's stored
+/// PET checking-key share (a distinct storage namespace from the main ring
+/// key — see `RingShareBundle::load_by_pet_ring_key`), which only affects the
+/// decrypt phase (reveal only touches a fresh per-attempt ephemeral blinding
+/// scalar that is never stored, so it cannot be corrupted this way — reveal
+/// misbehavior is covered at the unit level instead, in
+/// `pet::v0::coordinator::verification`'s test suite). Mirrors
+/// `test_invalid_crypto_response_triggers_on_chain_report`'s PRE-share
+/// corruption pattern and setup from
+/// `tests::integration::test_cli_calls_dkg_for_pet_ring`'s PET-gated ring/tag
+/// setup. Decrypt-phase over-asking (unlike FROST Sign's threshold-sized
+/// selection) does not depend on the Sign crypto backend, so — unlike the
+/// PRE/Sign invalid-crypto tests above — this runs under both backends with
+/// no `decaf377` exclusion.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_pet_invalid_decrypt_share_triggers_on_chain_report() {
+    println!("Starting PET invalid-decrypt-share reporting integration test...");
+
+    const PET_RING_ID: &str = "pet-reporting-test-ring";
+
+    let network = IntegrationTestNetwork::builder()
+        .with_module_genesis(
+            "orbis",
+            serde_json::json!({
+                "rings": [{
+                    "id": PET_RING_ID,
+                    "ring_pk": "",
+                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
+                    "threshold": 2,
+                    "pss_interval": 86400,
+                    "policy_id": RING_GOVERNANCE_POLICY_ID,
+                    "reporting": reporting_genesis_json(1, &[], 3),
+                    "requires_pet": true
+                }]
+            }),
+        )
+        .build();
+
+    let chain_config = network.chain_config();
+    let endpoints = network.all_endpoints();
+    let endpoint = endpoints[0].to_string();
+    let node3_endpoint = endpoints[2].to_string();
+
+    wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1)).await;
+
+    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
+        .await
+        .expect("query node1 info");
+    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
+        .await
+        .expect("query node2 info");
+    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
+        .await
+        .expect("query node3 info");
+    assert_eq!(node1_info.node_key, NODE_KEY_1, "node1 key mismatch");
+    assert_eq!(node2_info.node_key, NODE_KEY_2, "node2 key mismatch");
+    assert_eq!(node3_info.node_key, NODE_KEY_3, "node3 key mismatch");
+
+    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node1_info.p2p_address,
+        IntegrationTestNetwork::NODE1_SERVICE,
+    );
+    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node2_info.p2p_address,
+        IntegrationTestNetwork::NODE2_SERVICE,
+    );
+    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
+        &node3_info.p2p_address,
+        IntegrationTestNetwork::NODE3_SERVICE,
+    );
+    let node_keys = [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3];
+    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
+    let node_endpoints = [
+        endpoints[0].to_string(),
+        endpoints[1].to_string(),
+        endpoints[2].to_string(),
+    ];
+
+    let controller_client = VeraClient::with_signer(
+        chain_config.clone(),
+        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
+            .expect("test account signer"),
+    )
+    .await
+    .expect("controller chain client");
+
+    let governance_policy_id =
+        create_ring_governance_with_ring(&controller_client, PET_RING_ID, &node_keys).await;
+    assert_eq!(
+        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+        "ACP policy ID mismatch — update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
+    );
+
+    let ring_id = PET_RING_ID.to_string();
+
+    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
+        wait_for_node_info_on_chain(
+            &controller_client,
+            node_key,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+        let peer_update = controller_client
+            .orbis_update_node_peer_id(node_key, peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update peer ID failed: {}",
+            peer_update.log
+        );
+        let whitelist_update = controller_client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
+            .await
+            .expect("add node to whitelist");
+        assert_eq!(
+            whitelist_update.code, 0,
+            "whitelist update failed: {}",
+            whitelist_update.log
+        );
+    }
+
+    println!("Starting DKG for PET-enabled ring {ring_id}...");
+    cli_tool::do_dkg(endpoint.clone(), ring_id.clone())
+        .await
+        .expect("DKG should succeed");
+
+    // Two sequential fresh-DKG ceremonies (main key, then auto-chained PET
+    // key) — a longer budget than the plain PRE/Sign tests' single-ceremony
+    // wait, mirroring `test_cli_calls_dkg_for_pet_ring`.
+    let ring_pk_hex =
+        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
+
+    let finalized_ring = controller_client
+        .orbis_read_ring(&ring_id)
+        .await
+        .expect("read finalized ring")
+        .expect("finalized ring should exist");
+    let pet_pk_hex = finalized_ring
+        .pet_pk
+        .clone()
+        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
+
+    wait_for_ring_state_on_nodes(&node_endpoints, &ring_pk_hex, Duration::from_secs(60)).await;
+    println!(
+        "PET-enabled ring finalized: ring_pk={}..., pet_pk={}...",
+        &ring_pk_hex[..40.min(ring_pk_hex.len())],
+        &pet_pk_hex[..40.min(pet_pk_hex.len())],
+    );
+
+    // ── ACP + a genuinely PET-tagged document (mirrors test_cli_calls_dkg_for_pet_ring) ──
+    println!("Setting up ACP for PET-gated PRE (document creator/reader, shared with the audit target)...");
+    const PET_AUDIT_POLICY_YAML: &str = r#"
+name: pet audit policy
+resources:
+- name: document
+  relations:
+  - name: creator
+    types:
+    - actor
+  - name: reader
+    types:
+    - actor
+  permissions:
+  - name: read
+    expr: creator + reader
+  - name: write
+    expr: creator
+"#;
+    let policy_ids_before: std::collections::HashSet<String> = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids")
+        .ids
+        .into_iter()
+        .collect();
+    controller_client
+        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
+        .await
+        .expect("create PET audit policy");
+    let pet_audit_policy_id = controller_client
+        .acp_list_policy_ids()
+        .await
+        .expect("list policy ids after create")
+        .ids
+        .into_iter()
+        .find(|id| !policy_ids_before.contains(id))
+        .expect("new PET audit policy ID not found");
+
+    let document_resource = "document".to_string();
+    let read_permission = "read".to_string();
+
+    let owner_seed = "pet-report-test-owner-seed".to_string();
+    let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET audit-target object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        audit_target_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET audit target");
+
+    let (pet_reader_sk, pet_reader_pk) =
+        generate_keypair().expect("generate PET-test reader keypair");
+    let pet_reader_sk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
+    let pet_reader_pk_hex =
+        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
+
+    println!("Preparing a genuinely PET-tagged document...");
+    let secret_message = b"PET decrypt-share report test secret";
+    let (generated_tag, tag_r_tag) =
+        cli_tool::generate_pet_tag(&pet_pk_hex, &audit_target_object_id)
+            .expect("generate a genuine PET tag");
+    let pet_tag_binding = crypto::context::PetTagBinding {
+        ring_id: ring_id.clone(),
+        pet_pk: hex::decode(&pet_pk_hex).expect("decode pet_pk hex"),
+        ephemeral_point: generated_tag.ephemeral_point.clone(),
+        masked_fingerprint: generated_tag.masked_fingerprint.clone(),
+    };
+    let prepared = cli_tool::prepare_secret(
+        secret_message,
+        &ring_pk_hex,
+        None,
+        pet_audit_policy_id.clone(),
+        document_resource.clone(),
+        read_permission.clone(),
+        None,
+        None,
+        None,
+        Some(pet_tag_binding),
+    )
+    .expect("prepare_secret for the PET-gated document");
+    let pet_tag = cli_tool::prove_pet_tag_knowledge(
+        &prepared,
+        &ring_id,
+        &pet_pk_hex,
+        generated_tag,
+        tag_r_tag,
+    )
+    .expect("prove genuine PET tag knowledge");
+
+    let document_json = String::from_utf8(prepared.encrypted_document.clone())
+        .expect("encrypted_document is valid UTF-8");
+    let proof_json: String = EncryptionProof {
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+    }
+    .try_into()
+    .expect("serialize encryption proof");
+    let tag_json: String = pet_tag.tag.clone().try_into().expect("serialize tag");
+    let tag_proof_json: String = pet_tag
+        .tag_proof
+        .clone()
+        .try_into()
+        .expect("serialize tag proof");
+
+    let pet_object_id = generate_document_id(
+        &ring_id,
+        &document_json,
+        &proof_json,
+        &pet_audit_policy_id,
+        &document_resource,
+        &read_permission,
+        None,
+        None,
+        Some(&tag_json),
+        Some(&tag_proof_json),
+    )
+    .expect("generate PET-gated document id");
+
+    cli_tool::register_object_to_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        chain_config.clone(),
+    )
+    .await
+    .expect("register PET-gated document object");
+    cli_tool::set_relationship_on_chain_with_config(
+        pet_audit_policy_id.clone(),
+        pet_object_id.clone(),
+        document_resource.clone(),
+        "reader".to_string(),
+        None,
+        chain_config.clone(),
+    )
+    .await
+    .expect("grant reader relationship for the PET-gated document");
+
+    let inline_document = InlineDocument {
+        ring_id: ring_id.clone(),
+        encrypted_document: prepared.encrypted_document.clone(),
+        enc_cmt: prepared.enc_cmt.clone(),
+        policy_id: pet_audit_policy_id.clone(),
+        resource: document_resource.clone(),
+        permission: read_permission.clone(),
+        challenge: prepared.challenge.clone(),
+        response: prepared.response.clone(),
+        tier: None,
+        timestamp: None,
+        pet_tag: Some(proto::v0::pre::PetTagAttachment {
+            ephemeral_point: pet_tag.tag.ephemeral_point.clone(),
+            masked_fingerprint: pet_tag.tag.masked_fingerprint.clone(),
+            knowledge_proof_challenge: pet_tag.tag_proof.challenge.clone(),
+            knowledge_proof_response: pet_tag.tag_proof.response.clone(),
+        }),
+    };
+
+    // Corrupt node3's PET checking-key share bundle — a distinct storage
+    // namespace (keyed by ring_id) from the main ring key. Reveal never
+    // touches this share (only a fresh per-attempt ephemeral blinding
+    // scalar, held only in memory), so this specifically targets a
+    // decrypt-phase failure: node3's identity signature on its
+    // `DecryptResponse` stays genuine, but the per-share DLEQ proof no
+    // longer verifies against the ring's real PET public polynomial.
+    let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint)
+        .await
+        .expect("connect unsafe-testing client to node3");
+    let storage_key = LocalStorageKey {
+        key_type: LocalStorageKeyType::PetRingKey as i32,
+        ring_key: ring_id.clone(),
+    };
+    let stored = unsafe_client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(storage_key.clone()),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+        })
+        .await
+        .expect("read node3 PET ring share bundle")
+        .into_inner();
+    assert!(stored.found, "node3 PET ring share bundle should exist");
+    let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse PET ring share bundle");
+    let pri_share = bundle.pri_share().expect("deserialize node3 PET share");
+    let corrupted_share = PriShare {
+        i: pri_share.i,
+        v: pri_share.v + ScalarField::from(1u64),
+    };
+    let corrupted_bundle = RingShareBundle {
+        share_bytes: Zeroizing::new(
+            CryptoSerialize::to_bytes(&corrupted_share).expect("serialize corrupted share"),
+        ),
+        public_polynomial: bundle.public_polynomial.clone(),
+        last_pss: bundle.last_pss,
+    };
+    unsafe_client
+        .set_local_storage(SetLocalStorageRequest {
+            key: Some(storage_key),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+            value: corrupted_bundle.to_bytes().to_vec(),
+        })
+        .await
+        .expect("store corrupted PET ring share bundle");
+    println!("node3 PET checking-key share corrupted.");
+
+    // Decrypt-phase over-asks the whole committee and only needs `threshold`
+    // genuine shares, so PRE still succeeds with node1 + node2 regardless of
+    // which two nodes' commits got selected for reveal — mirrors the PRE
+    // share-corruption test's "still succeeds overall" property exactly. As
+    // there, retry once if the report races the post-threshold drain window.
+    println!(
+        "Triggering PET-gated PRE until node3's invalid decrypt share is reported (PRE succeeds each attempt)..."
+    );
+    let mut invalid_decrypt_event = None;
+    for attempt in 1..=2 {
+        let sub = ReportEventSubscription::connect(network.vera_rpc_url())
+            .await
+            .expect("connect PET invalid-decrypt report event subscription");
+        let decrypted = cli_tool::do_pre_with_inline_document(
+            endpoint.clone(),
+            ring_pk_hex.clone(),
+            pet_reader_pk_hex.clone(),
+            Some(pet_reader_sk_hex.clone()),
+            pet_object_id.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            inline_document.clone(),
+            Some(audit_target_object_id.clone()),
+        )
+        .await
+        .expect("PRE should still succeed with only node3's decrypt share bad");
+        assert_eq!(
+            decrypted, secret_message,
+            "decrypted secret should match the original"
+        );
+        println!(
+            "PET-gated PRE attempt {attempt} succeeded; waiting for invalid-decrypt EventReportAccepted (up to 150s)..."
+        );
+        match sub
+            .wait_for_report_accepted_matching(&ring_id, Duration::from_secs(150), |event| {
+                event.accused_node_key.as_str() == NODE_KEY_3
+            })
+            .await
+        {
+            Ok(event) => {
+                invalid_decrypt_event = Some(event);
+                break;
+            }
+            Err(error) => {
+                println!("Invalid-decrypt report not seen on attempt {attempt}/2: {error}");
+            }
+        }
+    }
+    let invalid_decrypt_event = invalid_decrypt_event
+        .expect("invalid-decrypt EventReportAccepted should be emitted within 2 attempts");
+
+    println!(
+        "Invalid-decrypt report accepted: report_id={} accused={}",
+        invalid_decrypt_event.report_id, invalid_decrypt_event.accused_node_key
+    );
+    assert_eq!(
+        invalid_decrypt_event.report_type, "invalid_crypto_response",
+        "unexpected report_type"
+    );
+    assert_eq!(
+        invalid_decrypt_event.accused_node_key, NODE_KEY_3,
+        "node3 should be the accused node"
+    );
+    assert_eq!(invalid_decrypt_event.ring_id, ring_id, "ring_id mismatch");
+    assert!(
+        !invalid_decrypt_event.report_id.is_empty(),
+        "invalid-decrypt report_id should be set"
+    );
+    assert!(
+        [NODE_KEY_1, NODE_KEY_2].contains(&invalid_decrypt_event.reporter_node_key.as_str()),
+        "reporter should be one of the non-accused current-committee members, got {}",
+        invalid_decrypt_event.reporter_node_key
+    );
+
+    println!("Checking node3 demerit points after PET invalid-decrypt report...");
+    let demerits = controller_client
+        .orbis_read_node_demerits(&ring_id, NODE_KEY_3)
+        .await
+        .expect("query node3 demerits");
+    assert_eq!(
+        demerits, 1,
+        "node3 should have exactly 1 demerit after the PET invalid-decrypt report"
+    );
+    println!("node3 demerit points after PET invalid-decrypt report: {demerits}");
 }
 
 /// FROST-only variant of the Sign invalid-crypto test. Under decaf377 the
@@ -2003,6 +2471,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,
@@ -4359,6 +4828,7 @@ async fn test_report_kick_promotes_backup_node() {
         policy_id.clone(),
         resource.clone(),
         permission.clone(),
+        None,
         None,
         None,
         None,

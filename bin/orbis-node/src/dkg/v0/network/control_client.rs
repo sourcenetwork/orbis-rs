@@ -5,8 +5,10 @@ pub(super) fn control_request_scope(
 ) -> (&'static str, Option<CeremonyId>, Option<AttemptId>) {
     match request {
         DkgControlMessage::StartFresh { .. } => ("start-fresh", None, None),
+        DkgControlMessage::StartFreshPet { .. } => ("start-fresh-pet", None, None),
         DkgControlMessage::StartReshare { .. } => ("start-reshare", None, None),
         DkgControlMessage::StartRefresh { .. } => ("start-refresh", None, None),
+        DkgControlMessage::StartRefreshPet { .. } => ("start-refresh-pet", None, None),
         DkgControlMessage::GetSessionStatus { .. } => ("get-session-status", None, None),
         DkgControlMessage::Prepare(prepare) => (
             "prepare",

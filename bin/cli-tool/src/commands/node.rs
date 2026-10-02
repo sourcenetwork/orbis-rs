@@ -154,6 +154,7 @@ pub async fn store_prepared_secret(
         with_proof,
         tier: ctx.tier.clone(),
         timestamp: ctx.timestamp,
+        pet_tag: None,
     };
 
     // Create JWT for authentication with all request fields
@@ -242,6 +243,7 @@ pub async fn do_store_secret(
         tier,
         timestamp,
         salt,
+        None,
     )?;
     store_prepared_secret(endpoint, &prepared, ring_id, reader_did_pk, with_proof).await
 }
@@ -259,6 +261,85 @@ pub async fn do_pre(
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
     xnc_only: bool,
+) -> Result<Vec<u8>> {
+    do_pre_impl(
+        endpoint,
+        ring_pk,
+        reader_pk,
+        reader_sk,
+        object_id,
+        reader_did_pk,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+        xnc_only,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Same as [`do_pre`], but supplies the document inline in the request
+/// instead of reading it from the bulletin, and optionally names the ACP
+/// object PET should audit ownership against. `object_id` must still be the
+/// caller's own `generate_document_id(...)` over `document`'s exact fields
+/// (including its `pet_tag`/`pet_tag_proof` when present) — the node
+/// recomputes and checks this before doing anything else with the request.
+///
+/// Exists so a `requires_pet` ring's PET+PRE gate can be exercised end to end
+/// without needing `StoreSecret` at all.
+// Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub async fn do_pre_with_inline_document(
+    endpoint: String,
+    ring_pk: String,
+    reader_pk: String,
+    reader_sk: Option<String>,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    xnc_only: bool,
+    document: proto::v0::pre::InlineDocument,
+    audit_target_object_id: Option<String>,
+) -> Result<Vec<u8>> {
+    do_pre_impl(
+        endpoint,
+        ring_pk,
+        reader_pk,
+        reader_sk,
+        object_id,
+        reader_did_pk,
+        derivation,
+        salt,
+        valid_window_start,
+        valid_window_end,
+        xnc_only,
+        Some(document),
+        audit_target_object_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn do_pre_impl(
+    endpoint: String,
+    ring_pk: String,
+    reader_pk: String,
+    reader_sk: Option<String>,
+    object_id: String,
+    reader_did_pk: Option<String>,
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window_start: Option<u64>,
+    valid_window_end: Option<u64>,
+    xnc_only: bool,
+    document: Option<proto::v0::pre::InlineDocument>,
+    audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
@@ -306,11 +387,12 @@ pub async fn do_pre(
         derivation: derivation.clone(),
         salt: salt.clone(),
         valid_window,
-        document: None,
+        document,
         rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
             challenge: rdr_pk_proof.challenge,
             response: rdr_pk_proof.response,
         }),
+        audit_target_object_id,
     };
 
     // JWT work use determinitic key_pair for now
@@ -550,6 +632,23 @@ pub async fn query_ring_state(endpoint: String, ring_pk_hex: String) -> Result<(
         .get_ring_state(proto::info_service::GetRingStateRequest { ring_pk_hex })
         .await
         .map_err(|e| anyhow!("get_ring_state failed: {}", e))?;
+
+    let inner = response.into_inner();
+    Ok((inner.public_polynomial, inner.last_pss))
+}
+
+/// Same as [`query_ring_state`], for a ring's independent PET checking key —
+/// keyed by `ring_id` (PET has no public-key storage handle to query by).
+/// Returns an error if the ring has no PET bundle on that node.
+pub async fn query_pet_ring_state(endpoint: String, ring_id: String) -> Result<(String, u64)> {
+    let mut client = InfoServiceClient::connect(endpoint.clone())
+        .await
+        .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
+
+    let response = client
+        .get_pet_ring_state(proto::info_service::GetPetRingStateRequest { ring_id })
+        .await
+        .map_err(|e| anyhow!("get_pet_ring_state failed: {}", e))?;
 
     let inner = response.into_inner();
     Ok((inner.public_polynomial, inner.last_pss))

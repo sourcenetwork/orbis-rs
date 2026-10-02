@@ -9,6 +9,7 @@ pub struct ProtocolRoutes {
     pub reencrypt_alpn: &'static [u8],
     pub sign_alpn: &'static [u8],
     pub reporting_health_alpn: &'static [u8],
+    pub pet_check_alpn: &'static [u8],
 }
 
 /// Version 0 routes.
@@ -22,6 +23,7 @@ pub const V0: ProtocolRoutes = ProtocolRoutes {
     reencrypt_alpn: b"orbis/reencrypt/0",
     sign_alpn: b"orbis/sign/0",
     reporting_health_alpn: b"orbis/reporting/health/0",
+    pet_check_alpn: b"orbis/pet-check/0",
 };
 
 /// Protocol versions served by this binary.
@@ -51,18 +53,21 @@ mod tests {
             reencrypt_alpn,
             sign_alpn,
             reporting_health_alpn,
+            pet_check_alpn,
         } = V0;
         assert_eq!(dkg_control_alpn, b"orbis/dkg-control/0");
         assert_eq!(dkg_private_alpn, b"orbis/dkg-private/0");
         assert_eq!(reencrypt_alpn, b"orbis/reencrypt/0");
         assert_eq!(sign_alpn, b"orbis/sign/0");
         assert_eq!(reporting_health_alpn, b"orbis/reporting/health/0");
+        assert_eq!(pet_check_alpn, b"orbis/pet-check/0");
         let installed = [
             dkg_control_alpn,
             dkg_private_alpn,
             reencrypt_alpn,
             sign_alpn,
             reporting_health_alpn,
+            pet_check_alpn,
         ];
         assert!(!installed.contains(&b"orbis/dkg/0".as_slice()));
     }

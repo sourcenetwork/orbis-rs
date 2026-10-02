@@ -922,9 +922,13 @@ impl<D: Dkg> DkgSessionState<D> {
 
     fn ceremony_kind(&self) -> metrics::DkgCeremonyKind {
         match &self.kind {
-            SessionKind::Fresh => metrics::DkgCeremonyKind::Fresh,
-            SessionKind::Refresh { .. } => metrics::DkgCeremonyKind::Refresh,
-            SessionKind::Reshare { .. } => metrics::DkgCeremonyKind::Reshare,
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => metrics::DkgCeremonyKind::Fresh,
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                metrics::DkgCeremonyKind::Refresh
+            }
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
+                metrics::DkgCeremonyKind::Reshare
+            }
         }
     }
 
@@ -954,9 +958,9 @@ impl<D: Dkg> DkgSessionState<D> {
     ///   `None`, which only happens for pure `Receiver` nodes — they must not call this)
     pub fn generate_polynomial(&mut self) -> Result<(), DkgError> {
         let mode = match &self.kind {
-            SessionKind::Fresh => DkgMode::Fresh,
-            SessionKind::Refresh { .. } => DkgMode::Refresh,
-            SessionKind::Reshare { .. } => {
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgMode::Fresh,
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgMode::Refresh,
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
                 let p = self.reshare.params.as_mut().ok_or_else(|| {
                     DkgError::Generic(
                         "Reshare session is missing reshare_params — this is a bug".to_string(),
@@ -1000,23 +1004,36 @@ impl<D: Dkg> DkgSessionState<D> {
     /// for a stalled refresh/reshare session (see [`AbandonedPssSession`]). A dealer that dies
     /// after `SessionInit` never broadcasts its commitment; a dealer that dies after committing
     /// never sends this node its Phase 2 share. Returns empty for `Fresh` (fresh DKG has no
-    /// finalized ring to anchor an offline report against).
+    /// finalized ring to anchor an offline report against) and for `FreshPet` too — even though
+    /// its ring *does* already have a finalized main key, it is still a fresh-DKG-shaped
+    /// ceremony (abort-only by design, same as `Fresh`: a stall is abandoned and retried, not
+    /// reported). Extending node_offline attribution to a stalled FreshPet ceremony is a
+    /// deliberate future design pass (durable staging/crash-recovery for abort-only fresh-DKG
+    /// ceremonies generally, not specific to PET), not something to add as a side effect of
+    /// this change.
     ///
     /// Refresh: every current-committee member is a dealer. Reshare: the participating
     /// old-committee members are the dealers. Over-attribution is harmless — the downstream
     /// `node_offline` report is gated by the co-signer reachability probe.
     pub(crate) fn missing_dealer_peer_ids(&self, stalled_phase: DkgPhase) -> Vec<String> {
         let dealer_node_ids: Vec<u32> = match &self.kind {
-            SessionKind::Fresh => return Vec::new(),
-            SessionKind::Refresh { .. } => (1..=self.routing.peer_node_keys.len() as u32).collect(),
-            SessionKind::Reshare { .. } => match &self.reshare.params {
-                Some(params) => params.participating_ids.clone(),
-                None => (1..=self.routing.peer_node_keys.len() as u32).collect(),
-            },
+            SessionKind::Fresh | SessionKind::FreshPet { .. } => return Vec::new(),
+            SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                (1..=self.routing.peer_node_keys.len() as u32).collect()
+            }
+            SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => {
+                match &self.reshare.params {
+                    Some(params) => params.participating_ids.clone(),
+                    None => (1..=self.routing.peer_node_keys.len() as u32).collect(),
+                }
+            }
         };
 
         if stalled_phase == DkgPhase::Phase2Shares
-            && matches!(self.kind, SessionKind::Reshare { .. })
+            && matches!(
+                self.kind,
+                SessionKind::Reshare { .. } | SessionKind::ResharePet { .. }
+            )
             && self.node.role() == DkgRole::Dealer
         {
             return Vec::new();
@@ -1056,7 +1073,7 @@ impl<D: Dkg> DkgSessionState<D> {
     /// "Refresh/reshare-only" doc comment on the parent field) is populated
     /// unconditionally for Fresh too.
     pub(crate) fn missing_fresh_participants(&self) -> Vec<MissingDkgParticipant> {
-        if !matches!(self.kind, SessionKind::Fresh) {
+        if !matches!(self.kind, SessionKind::Fresh | SessionKind::FreshPet { .. }) {
             return Vec::new();
         }
         let own_node_id = self.node.node_id();

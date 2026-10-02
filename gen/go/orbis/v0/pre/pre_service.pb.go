@@ -73,10 +73,87 @@ func (x *TimestampRange) GetEnd() uint64 {
 	return 0
 }
 
+// PET ownership-tag ciphertext and its knowledge proof, carried alongside a
+// document only on a ring that requires PET. Not yet enforced: no PET ring
+// can exist yet, and this attachment is not included in authorization.
+// Presence is all-or-nothing — a caller cannot supply only some of these
+// fields; nodes reject a document whose attachment is only partially decoded.
+type PetTagAttachment struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// R = r_tag * G (compressed group point).
+	EphemeralPoint []byte `protobuf:"bytes,1,opt,name=ephemeral_point,json=ephemeralPoint,proto3" json:"ephemeral_point,omitempty"`
+	// T = F(owner_id) + r_tag * pet_pk (compressed group point).
+	MaskedFingerprint []byte `protobuf:"bytes,2,opt,name=masked_fingerprint,json=maskedFingerprint,proto3" json:"masked_fingerprint,omitempty"`
+	// Tag-knowledge-proof challenge (Schnorr PoK of r_tag).
+	KnowledgeProofChallenge []byte `protobuf:"bytes,3,opt,name=knowledge_proof_challenge,json=knowledgeProofChallenge,proto3" json:"knowledge_proof_challenge,omitempty"`
+	// Tag-knowledge-proof response.
+	KnowledgeProofResponse []byte `protobuf:"bytes,4,opt,name=knowledge_proof_response,json=knowledgeProofResponse,proto3" json:"knowledge_proof_response,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *PetTagAttachment) Reset() {
+	*x = PetTagAttachment{}
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PetTagAttachment) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PetTagAttachment) ProtoMessage() {}
+
+func (x *PetTagAttachment) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PetTagAttachment.ProtoReflect.Descriptor instead.
+func (*PetTagAttachment) Descriptor() ([]byte, []int) {
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PetTagAttachment) GetEphemeralPoint() []byte {
+	if x != nil {
+		return x.EphemeralPoint
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetMaskedFingerprint() []byte {
+	if x != nil {
+		return x.MaskedFingerprint
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetKnowledgeProofChallenge() []byte {
+	if x != nil {
+		return x.KnowledgeProofChallenge
+	}
+	return nil
+}
+
+func (x *PetTagAttachment) GetKnowledgeProofResponse() []byte {
+	if x != nil {
+		return x.KnowledgeProofResponse
+	}
+	return nil
+}
+
 // The document, in full, supplied directly by the caller instead of already being on the
 // bulletin. object_id must equal generate_document_id(ring_id, encrypted_document, proof,
-// policy_id, resource, permission, tier, timestamp) — nodes recompute and check this locally
-// before doing anything else with the request.
+// policy_id, resource, permission, tier, timestamp, pet_tag) — nodes recompute and check this
+// locally before doing anything else with the request.
 type InlineDocument struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	RingId string                 `protobuf:"bytes,1,opt,name=ring_id,json=ringId,proto3" json:"ring_id,omitempty"`
@@ -91,16 +168,18 @@ type InlineDocument struct {
 	// Challenge for the encryption proof (Schnorr PoK of the encryption randomness).
 	Challenge []byte `protobuf:"bytes,7,opt,name=challenge,proto3" json:"challenge,omitempty"`
 	// Response for the encryption proof.
-	Response      []byte  `protobuf:"bytes,8,opt,name=response,proto3" json:"response,omitempty"`
-	Tier          *string `protobuf:"bytes,9,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
-	Timestamp     *uint64 `protobuf:"varint,10,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	Response  []byte  `protobuf:"bytes,8,opt,name=response,proto3" json:"response,omitempty"`
+	Tier      *string `protobuf:"bytes,9,opt,name=tier,proto3,oneof" json:"tier,omitempty"`
+	Timestamp *uint64 `protobuf:"varint,10,opt,name=timestamp,proto3,oneof" json:"timestamp,omitempty"`
+	// PET tag, present only when the ring requires PET.
+	PetTag        *PetTagAttachment `protobuf:"bytes,11,opt,name=pet_tag,json=petTag,proto3,oneof" json:"pet_tag,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *InlineDocument) Reset() {
 	*x = InlineDocument{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -112,7 +191,7 @@ func (x *InlineDocument) String() string {
 func (*InlineDocument) ProtoMessage() {}
 
 func (x *InlineDocument) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[1]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -125,7 +204,7 @@ func (x *InlineDocument) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InlineDocument.ProtoReflect.Descriptor instead.
 func (*InlineDocument) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{1}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *InlineDocument) GetRingId() string {
@@ -198,6 +277,13 @@ func (x *InlineDocument) GetTimestamp() uint64 {
 	return 0
 }
 
+func (x *InlineDocument) GetPetTag() *PetTagAttachment {
+	if x != nil {
+		return x.PetTag
+	}
+	return nil
+}
+
 // Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
 // (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G). Required so
 // that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in rdr_pk, cannot be
@@ -214,7 +300,7 @@ type ReaderKeyProof struct {
 
 func (x *ReaderKeyProof) Reset() {
 	*x = ReaderKeyProof{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -226,7 +312,7 @@ func (x *ReaderKeyProof) String() string {
 func (*ReaderKeyProof) ProtoMessage() {}
 
 func (x *ReaderKeyProof) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[2]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -239,7 +325,7 @@ func (x *ReaderKeyProof) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReaderKeyProof.ProtoReflect.Descriptor instead.
 func (*ReaderKeyProof) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{2}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ReaderKeyProof) GetChallenge() []byte {
@@ -272,14 +358,19 @@ type StartPreRequest struct {
 	// When set, the document is taken from here instead of read from the bulletin by object_id.
 	Document *InlineDocument `protobuf:"bytes,6,opt,name=document,proto3,oneof" json:"document,omitempty"`
 	// Proof of knowledge of rdr_pk's discrete log.
-	RdrPkProof    *ReaderKeyProof `protobuf:"bytes,7,opt,name=rdr_pk_proof,json=rdrPkProof,proto3" json:"rdr_pk_proof,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	RdrPkProof *ReaderKeyProof `protobuf:"bytes,7,opt,name=rdr_pk_proof,json=rdrPkProof,proto3" json:"rdr_pk_proof,omitempty"`
+	// The ACP object being audited, required on a ring that requires PET. Not yet
+	// enforced: no PET ring can exist yet, and this field is not checked against
+	// ACP or bound in authorization. Distinct from object_id, which keeps its
+	// current document-identity meaning.
+	AuditTargetObjectId *string `protobuf:"bytes,8,opt,name=audit_target_object_id,json=auditTargetObjectId,proto3,oneof" json:"audit_target_object_id,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *StartPreRequest) Reset() {
 	*x = StartPreRequest{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -291,7 +382,7 @@ func (x *StartPreRequest) String() string {
 func (*StartPreRequest) ProtoMessage() {}
 
 func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -304,7 +395,7 @@ func (x *StartPreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreRequest.ProtoReflect.Descriptor instead.
 func (*StartPreRequest) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StartPreRequest) GetRdrPk() []byte {
@@ -356,6 +447,13 @@ func (x *StartPreRequest) GetRdrPkProof() *ReaderKeyProof {
 	return nil
 }
 
+func (x *StartPreRequest) GetAuditTargetObjectId() string {
+	if x != nil && x.AuditTargetObjectId != nil {
+		return *x.AuditTargetObjectId
+	}
+	return ""
+}
+
 type StartPreResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Status          string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
@@ -368,7 +466,7 @@ type StartPreResponse struct {
 
 func (x *StartPreResponse) Reset() {
 	*x = StartPreResponse{}
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -380,7 +478,7 @@ func (x *StartPreResponse) String() string {
 func (*StartPreResponse) ProtoMessage() {}
 
 func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[4]
+	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -393,7 +491,7 @@ func (x *StartPreResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartPreResponse.ProtoReflect.Descriptor instead.
 func (*StartPreResponse) Descriptor() ([]byte, []int) {
-	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{4}
+	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *StartPreResponse) GetStatus() string {
@@ -431,7 +529,12 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\x1eorbis/v0/pre/pre_service.proto\x12\forbis.v0.pre\"8\n" +
 	"\x0eTimestampRange\x12\x14\n" +
 	"\x05start\x18\x01 \x01(\x04R\x05start\x12\x10\n" +
-	"\x03end\x18\x02 \x01(\x04R\x03end\"\xd7\x02\n" +
+	"\x03end\x18\x02 \x01(\x04R\x03end\"\xe0\x01\n" +
+	"\x10PetTagAttachment\x12'\n" +
+	"\x0fephemeral_point\x18\x01 \x01(\fR\x0eephemeralPoint\x12-\n" +
+	"\x12masked_fingerprint\x18\x02 \x01(\fR\x11maskedFingerprint\x12:\n" +
+	"\x19knowledge_proof_challenge\x18\x03 \x01(\fR\x17knowledgeProofChallenge\x128\n" +
+	"\x18knowledge_proof_response\x18\x04 \x01(\fR\x16knowledgeProofResponse\"\xa1\x03\n" +
 	"\x0eInlineDocument\x12\x17\n" +
 	"\aring_id\x18\x01 \x01(\tR\x06ringId\x12-\n" +
 	"\x12encrypted_document\x18\x02 \x01(\fR\x11encryptedDocument\x12\x17\n" +
@@ -445,13 +548,16 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\bresponse\x18\b \x01(\fR\bresponse\x12\x17\n" +
 	"\x04tier\x18\t \x01(\tH\x00R\x04tier\x88\x01\x01\x12!\n" +
 	"\ttimestamp\x18\n" +
-	" \x01(\x04H\x01R\ttimestamp\x88\x01\x01B\a\n" +
+	" \x01(\x04H\x01R\ttimestamp\x88\x01\x01\x12<\n" +
+	"\apet_tag\x18\v \x01(\v2\x1e.orbis.v0.pre.PetTagAttachmentH\x02R\x06petTag\x88\x01\x01B\a\n" +
 	"\x05_tierB\f\n" +
 	"\n" +
-	"_timestamp\"J\n" +
+	"_timestampB\n" +
+	"\n" +
+	"\b_pet_tag\"J\n" +
 	"\x0eReaderKeyProof\x12\x1c\n" +
 	"\tchallenge\x18\x01 \x01(\fR\tchallenge\x12\x1a\n" +
-	"\bresponse\x18\x02 \x01(\fR\bresponse\"\xfe\x02\n" +
+	"\bresponse\x18\x02 \x01(\fR\bresponse\"\xd3\x03\n" +
 	"\x0fStartPreRequest\x12\x15\n" +
 	"\x06rdr_pk\x18\x01 \x01(\fR\x05rdrPk\x12\x1b\n" +
 	"\tobject_id\x18\x02 \x01(\tR\bobjectId\x12#\n" +
@@ -462,11 +568,13 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\fvalid_window\x18\x05 \x01(\v2\x1c.orbis.v0.pre.TimestampRangeH\x02R\vvalidWindow\x88\x01\x01\x12=\n" +
 	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01\x12>\n" +
 	"\frdr_pk_proof\x18\a \x01(\v2\x1c.orbis.v0.pre.ReaderKeyProofR\n" +
-	"rdrPkProofB\r\n" +
+	"rdrPkProof\x128\n" +
+	"\x16audit_target_object_id\x18\b \x01(\tH\x04R\x13auditTargetObjectId\x88\x01\x01B\r\n" +
 	"\v_derivationB\a\n" +
 	"\x05_saltB\x0f\n" +
 	"\r_valid_windowB\v\n" +
-	"\t_document\"\x8e\x01\n" +
+	"\t_documentB\x19\n" +
+	"\x17_audit_target_object_id\"\x8e\x01\n" +
 	"\x10StartPreResponse\x12\x16\n" +
 	"\x06status\x18\x01 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x1d\n" +
@@ -490,25 +598,27 @@ func file_orbis_v0_pre_pre_service_proto_rawDescGZIP() []byte {
 	return file_orbis_v0_pre_pre_service_proto_rawDescData
 }
 
-var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_orbis_v0_pre_pre_service_proto_goTypes = []any{
 	(*TimestampRange)(nil),   // 0: orbis.v0.pre.TimestampRange
-	(*InlineDocument)(nil),   // 1: orbis.v0.pre.InlineDocument
-	(*ReaderKeyProof)(nil),   // 2: orbis.v0.pre.ReaderKeyProof
-	(*StartPreRequest)(nil),  // 3: orbis.v0.pre.StartPreRequest
-	(*StartPreResponse)(nil), // 4: orbis.v0.pre.StartPreResponse
+	(*PetTagAttachment)(nil), // 1: orbis.v0.pre.PetTagAttachment
+	(*InlineDocument)(nil),   // 2: orbis.v0.pre.InlineDocument
+	(*ReaderKeyProof)(nil),   // 3: orbis.v0.pre.ReaderKeyProof
+	(*StartPreRequest)(nil),  // 4: orbis.v0.pre.StartPreRequest
+	(*StartPreResponse)(nil), // 5: orbis.v0.pre.StartPreResponse
 }
 var file_orbis_v0_pre_pre_service_proto_depIdxs = []int32{
-	0, // 0: orbis.v0.pre.StartPreRequest.valid_window:type_name -> orbis.v0.pre.TimestampRange
-	1, // 1: orbis.v0.pre.StartPreRequest.document:type_name -> orbis.v0.pre.InlineDocument
-	2, // 2: orbis.v0.pre.StartPreRequest.rdr_pk_proof:type_name -> orbis.v0.pre.ReaderKeyProof
-	3, // 3: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
-	4, // 4: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	1, // 0: orbis.v0.pre.InlineDocument.pet_tag:type_name -> orbis.v0.pre.PetTagAttachment
+	0, // 1: orbis.v0.pre.StartPreRequest.valid_window:type_name -> orbis.v0.pre.TimestampRange
+	2, // 2: orbis.v0.pre.StartPreRequest.document:type_name -> orbis.v0.pre.InlineDocument
+	3, // 3: orbis.v0.pre.StartPreRequest.rdr_pk_proof:type_name -> orbis.v0.pre.ReaderKeyProof
+	4, // 4: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
+	5, // 5: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_orbis_v0_pre_pre_service_proto_init() }
@@ -516,15 +626,15 @@ func file_orbis_v0_pre_pre_service_proto_init() {
 	if File_orbis_v0_pre_pre_service_proto != nil {
 		return
 	}
-	file_orbis_v0_pre_pre_service_proto_msgTypes[1].OneofWrappers = []any{}
-	file_orbis_v0_pre_pre_service_proto_msgTypes[3].OneofWrappers = []any{}
+	file_orbis_v0_pre_pre_service_proto_msgTypes[2].OneofWrappers = []any{}
+	file_orbis_v0_pre_pre_service_proto_msgTypes[4].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_v0_pre_pre_service_proto_rawDesc), len(file_orbis_v0_pre_pre_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

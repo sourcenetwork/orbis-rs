@@ -249,6 +249,7 @@ async fn test_scale_dkg_pre_sign() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare PRE secret");
     let stored = cli_tool::store_prepared_secret(

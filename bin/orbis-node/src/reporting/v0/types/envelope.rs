@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use crate::reporting::v0::error::{ReportingError, Result};
 
 use super::codec::{write_bytes, write_string, write_u64};
-use super::{REPORT_DOMAIN, REPORT_TTL_SECS};
+use super::{PetBlindContext, REPORT_DOMAIN, REPORT_TTL_SECS};
 
 /// The document fields needed to independently re-derive `object_id` via
 /// `generate_document_id`, so a co-signer can verify a report's evidence is genuinely bound to
@@ -28,6 +28,15 @@ pub struct ReportedDocumentEvidence {
     pub resource: String,
     pub permission: String,
     pub tier: Option<String>,
+    /// The document's PET ownership tag and its knowledge proof — `None` for
+    /// a non-`requires_pet` document. Needed both to recompute `object_id`
+    /// via `generate_document_id` (which hashes these in whenever present,
+    /// so omitting them here would recompute the wrong id for any inline,
+    /// PET-gated document) and, for an `invalid_crypto_response`/`Pet`
+    /// report, to independently re-derive `tag.ephemeral_point` for
+    /// `Pet::verify_partial_pet_check`.
+    pub pet_tag: Option<String>,
+    pub pet_tag_proof: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +139,14 @@ pub struct ReportSigningContext {
     /// bulletin-sourced report.
     #[serde(default)]
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band evidence for a PET blind-equality-test `invalid_crypto_response` report —
+    /// the `PetBlindContext` a co-signer needs to independently resolve the tag/target and
+    /// recompute `context_digest`. Carried here rather than in the threshold-signed, on-chain
+    /// envelope so the audit target (and every other context field) is never published on
+    /// chain — see `reporting::v0::types::pet_blind`'s module doc comment. `None` for every
+    /// non-PET report. Mirrors `inline_document` exactly.
+    #[serde(default)]
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

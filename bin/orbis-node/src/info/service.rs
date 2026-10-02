@@ -10,7 +10,8 @@ use local_storage::{
 use network::Network;
 use proto::info_service::{
     info_service_server::InfoService, GetDashboardRequest, GetDashboardResponse,
-    GetNodeInfoRequest, GetNodeInfoResponse, GetRingStateRequest, GetRingStateResponse, NodeStatus,
+    GetNodeInfoRequest, GetNodeInfoResponse, GetPetRingStateRequest, GetPetRingStateResponse,
+    GetRingStateRequest, GetRingStateResponse, NodeStatus,
 };
 use std::sync::{
     atomic::{AtomicI32, Ordering},
@@ -69,6 +70,17 @@ where
         Ok(Response::new(get_ring_state_response(
             &self.state.local_storage,
             &ring_pk_hex,
+        )?))
+    }
+
+    async fn get_pet_ring_state(
+        &self,
+        request: Request<GetPetRingStateRequest>,
+    ) -> Result<Response<GetPetRingStateResponse>, Status> {
+        let ring_id = request.into_inner().ring_id;
+        Ok(Response::new(get_pet_ring_state_response(
+            &self.state.local_storage,
+            &ring_id,
         )?))
     }
 
@@ -145,6 +157,18 @@ fn get_ring_state_response(
     })
 }
 
+fn get_pet_ring_state_response(
+    local_storage: &LocalStorageImpl,
+    ring_id: &str,
+) -> Result<GetPetRingStateResponse, Status> {
+    let state = RingPolyState::load_from_pet_ring_id(local_storage, ring_id)
+        .map_err(InfoError::RingNotFound)?;
+    Ok(GetPetRingStateResponse {
+        public_polynomial: state.public_polynomial,
+        last_pss: state.last_pss,
+    })
+}
+
 /// InfoService used during node bootstrap, before chain funding and bulletin initialization.
 pub struct BootstrapInfoServiceImpl {
     pub network: Arc<dyn Network>,
@@ -184,6 +208,15 @@ impl InfoService for BootstrapInfoServiceImpl {
         &self,
         _request: Request<GetRingStateRequest>,
     ) -> Result<Response<GetRingStateResponse>, Status> {
+        Err(Status::failed_precondition(
+            "node is waiting for funding; only GetNodeInfo is available",
+        ))
+    }
+
+    async fn get_pet_ring_state(
+        &self,
+        _request: Request<GetPetRingStateRequest>,
+    ) -> Result<Response<GetPetRingStateResponse>, Status> {
         Err(Status::failed_precondition(
             "node is waiting for funding; only GetNodeInfo is available",
         ))

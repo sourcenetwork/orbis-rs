@@ -105,6 +105,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let ctx_b = CiphertextContext {
         ring_pk: b"ring".to_vec(),
@@ -114,6 +115,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
 
     let (enc_cmt_a, secret_a, _proof_a) =

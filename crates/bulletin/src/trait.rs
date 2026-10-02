@@ -149,6 +149,16 @@ pub struct DocumentPayload {
     pub tier: Option<String>,
     /// Optional timestamp for acp check
     pub timestamp: Option<u64>,
+    /// PET tag ciphertext, present only on a ring that requires PET. JSON of
+    /// the crypto crate's `PetTag` (`ephemeral_point`, `masked_fingerprint`).
+    /// Present and absent together with `pet_tag_proof` — a tag without its
+    /// knowledge proof (or vice versa) is malformed. Not yet enforced: no PET
+    /// ring can exist yet, and this field is not included in authorization.
+    pub pet_tag: Option<String>,
+    /// Public knowledge proof for `pet_tag`'s `r_tag`, present only alongside
+    /// `pet_tag`. JSON of the crypto crate's `TagKnowledgeProof` (`challenge`,
+    /// `response`).
+    pub pet_tag_proof: Option<String>,
 }
 /// Payload for ring information ring_id => payload
 #[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
@@ -192,6 +202,19 @@ pub struct RingPayload {
     /// Fault-report policy and automatic replacement settings for this ring.
     #[serde(default)]
     pub reporting: ReportingConfig,
+    /// Set at creation; true means this ring requires a PET check before PRE
+    /// release, applying to every document in the ring. Immutable for the
+    /// ring's lifetime. Not yet reachable: ring creation currently rejects true.
+    #[serde(default)]
+    pub requires_pet: bool,
+    /// The ring's independently-generated PET public key. Absent until its own
+    /// fresh-DKG ceremony finalizes (mirrors `ring_pk`, but is a distinct key —
+    /// never used for signing). Not yet reachable: `requires_pet` is always
+    /// false. PET-key finalization-confirmation tracking is chain-side only
+    /// (mirrors how `confirmations` for the main key isn't on this payload
+    /// either — see `Bulletin::ring_finalization_status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_pk: Option<String>,
 }
 
 /// Payload for confirming a completed fresh DKG ring.
@@ -201,6 +224,11 @@ pub struct RingFinalizationPayload {
     pub ring_id: String,
     /// Aggregate public key computed by DKG participants.
     pub ring_pk: String,
+    /// Required, and only accepted, when the ring's `requires_pet` is true:
+    /// the local fresh-DKG PET key ceremony completed alongside the main one,
+    /// and both are submitted together in this one finalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet_pk: Option<String>,
 }
 
 /// Chain-observed state for a fresh-DKG finalization.
