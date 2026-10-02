@@ -611,9 +611,11 @@ impl Experiment {
             .sum();
         let load_seconds = if self.operations.contains(&Operation::Pre)
             || self.operations.contains(&Operation::Sign)
+            || self.operations.contains(&Operation::Pet)
         {
             let online_operations = usize::from(self.operations.contains(&Operation::Pre))
-                + usize::from(self.operations.contains(&Operation::Sign));
+                + usize::from(self.operations.contains(&Operation::Sign))
+                + usize::from(self.operations.contains(&Operation::Pet));
             stacks
                 .iter()
                 .map(|stack| {

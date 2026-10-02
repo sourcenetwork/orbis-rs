@@ -204,7 +204,7 @@ fn render_report(
     );
     html.push_str("</section>");
 
-    html.push_str("<section><h2>Ceremony duration by scale</h2><p>Time on the X axis, scale on the Y axis, one line per network profile connecting the median at each size. Range bars show min/max, the filled dot is the median, faint dots are individual measured trials. DKG needs every ring member, so it scales with ring size; PRE and Sign only need a threshold of shares, so they scale with threshold.</p>");
+    html.push_str("<section><h2>Ceremony duration by scale</h2><p>Time on the X axis, scale on the Y axis, one line per network profile connecting the median at each size. Range bars show min/max, the filled dot is the median, faint dots are individual measured trials. DKG needs every ring member, so it scales with ring size; PRE, PET, and Sign only need a threshold of shares, so they scale with threshold.</p>");
     html.push_str("<h3>DKG</h3>");
     html.push_str(&scale_chart(
         trials,
@@ -232,6 +232,15 @@ fn render_report(
         false,
         |row| row.threshold,
     ));
+    html.push_str("<h3>PET</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pet,
+        "Threshold",
+        false,
+        |row| row.threshold,
+    ));
     html.push_str("</section>");
 
     html.push_str("<section><h2>Closed-loop latency by concurrency</h2><p>Same layout, but the range bar spans p50\u{2192}p95 latency (tooltip has p50/p95/p99/throughput) instead of min/max duration, since a load trial measures a fixed window of many requests rather than one ceremony.</p>");
@@ -249,6 +258,15 @@ fn render_report(
         trials,
         rows,
         Operation::Sign,
+        "Concurrency",
+        true,
+        |row| row.concurrency.unwrap_or(0),
+    ));
+    html.push_str("<h3>PET</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pet,
         "Concurrency",
         true,
         |row| row.concurrency.unwrap_or(0),
