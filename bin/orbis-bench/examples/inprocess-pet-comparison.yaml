@@ -14,17 +14,17 @@ crypto: bls12-381
 backend: in-process
 
 networks:
-  - network_size: 20
+  - network_size: 4
     cases:
-      - { ring_size: 20, threshold: 15 }
+      - { ring_size: 4, threshold: 2 }
 
 operations: [dkg, pre, pet]
 profiles:
   - name: lan
     kind: lan
 
-warmups: 0
-repetitions: 1
+warmups: 1
+repetitions: 5
 seed: 185974508
 output_dir: bench-results
 
