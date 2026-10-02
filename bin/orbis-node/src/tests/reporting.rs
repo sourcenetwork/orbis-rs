@@ -7,8 +7,8 @@
 //!   cargo test -p orbis-node --features integration-test test_pre_and_sign_offline_triggers_on_chain_report -- --nocapture
 //!   cargo test -p orbis-node --features integration-test test_invalid_crypto_response_triggers_on_chain_report -- --nocapture
 //!
-//! FROST variant (builds the node containers with decaf377 automatically):
-//!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,decaf377" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
+//! FROST variant (builds the node containers with jubjub automatically):
+//!   cargo test -p orbis-node --no-default-features --features "redb,integration-test,jubjub" test_frost_invalid_sign_share_triggers_on_chain_report -- --nocapture
 
 use crate::constants::DKG_FINALIZE_WAIT_TIMEOUT;
 use crate::dkg::v0::helpers::serialize_commitment_coefficients;
@@ -1484,7 +1484,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
 
 #[tokio::test]
 #[serial_test::serial]
-#[cfg(not(feature = "decaf377"))]
+#[cfg(not(feature = "jubjub"))]
 async fn test_invalid_crypto_response_triggers_on_chain_report() {
     println!("Starting invalid-crypto reporting integration test...");
 
@@ -1881,7 +1881,7 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
 /// setup. Decrypt-phase over-asking (unlike FROST Sign's threshold-sized
 /// selection) does not depend on the Sign crypto backend, so — unlike the
 /// PRE/Sign invalid-crypto tests above — this runs under both backends with
-/// no `decaf377` exclusion.
+/// no `jubjub` exclusion.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pet_invalid_decrypt_share_triggers_on_chain_report() {
@@ -2326,7 +2326,7 @@ resources:
     println!("node3 demerit points after PET invalid-decrypt report: {demerits}");
 }
 
-/// FROST-only variant of the Sign invalid-crypto test. Under decaf377 the
+/// FROST-only variant of the Sign invalid-crypto test. Under jubjub the
 /// signing set is exactly threshold-sized and chosen from whichever nonces
 /// arrive first, so a corrupted node is only exercised when the nonce race
 /// selects it — and when it IS selected, FROST cannot recover the signature
@@ -2341,7 +2341,7 @@ resources:
 /// deterministic but could never report: the ring must be able to
 /// threshold-sign the report envelope without the accused (the chain enforces
 /// threshold <= peers - 1 when the accused sits in the signing committee).
-#[cfg(feature = "decaf377")]
+#[cfg(feature = "jubjub")]
 #[tokio::test]
 #[serial_test::serial]
 async fn test_frost_invalid_sign_share_triggers_on_chain_report() {

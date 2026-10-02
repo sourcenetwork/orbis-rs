@@ -32,7 +32,7 @@ tokio-tungstenite = { workspace = true }
 [features]
 default = []
 bls12-381 = []
-decaf377 = []
+jubjub = []
 
 [lints]
 workspace = true

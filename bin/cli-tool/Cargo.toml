@@ -29,7 +29,7 @@ bs58 = "0.5"
 [features]
 default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
-decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
+jubjub = ["crypto/jubjub", "bulletin/jubjub", "common/jubjub"]
 
 
 [lints]

@@ -1,4 +1,4 @@
-use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
+use super::common::{Element, Fr, PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
@@ -6,32 +6,30 @@ use crate::{
         PubShare, TagKnowledgeProof,
     },
 };
-use ark_ff_05::{One, Zero};
-use ark_serialize_05::CanonicalSerialize;
-use decaf377::{Element, Fr};
+use blake2::Blake2b512;
 use rand_core::OsRng;
 use sha2::{Digest, Sha512};
 use std::collections::HashSet;
 use subtle::ConstantTimeEq;
 use zeroize::Zeroizing;
 
-const NAME: &str = "pet/decaf377";
+const NAME: &str = "pet/jubjub";
 /// Domain separator for the PET owner-fingerprint hash-to-scalar. Distinct from
-/// `DERIVATION_DOMAIN` (capability derivation) in `decaf377::pre` so the two
+/// `DERIVATION_DOMAIN` (capability derivation) in `jubjub::pre` so the two
 /// hash-to-scalar uses can never collide on the same input bytes.
-const FINGERPRINT_DOMAIN: &[u8] = b"orbis-pet-fingerprint-v1";
+const FINGERPRINT_DOMAIN: &[u8] = b"orbis-jubjub-pet-fingerprint-v1";
 /// Domain separator for the tag-knowledge proof's Fiat-Shamir challenge.
-const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-pet-tag-knowledge-proof-v1";
+const TAG_KNOWLEDGE_PROOF_DOMAIN: &[u8] = b"orbis-jubjub-pet-tag-knowledge-proof-v1";
 /// Domain separator for the per-share PET-check DLEQ proof's Fiat-Shamir
 /// challenge. Distinct from `TAG_KNOWLEDGE_PROOF_DOMAIN` and from PRE's own
 /// reencryption-proof domain so a proof from one scheme can never be
 /// confused for or replayed as another's.
-const PET_CHECK_DLEQ_DOMAIN: &[u8] = b"orbis-pet-check-dleq-proof-v1";
+const PET_CHECK_DLEQ_DOMAIN: &[u8] = b"orbis-jubjub-pet-check-dleq-proof-v1";
 /// Domain separator for the blind-equality-test blinding-correctness proof
 /// Distinct from every other proof domain in this file
 /// so a proof from one scheme can never be confused for or replayed as
 /// another's.
-const BLIND_PROOF_DOMAIN: &[u8] = b"orbis-pet-blind-proof-v1";
+const BLIND_PROOF_DOMAIN: &[u8] = b"orbis-jubjub-pet-blind-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct PetNode {}
@@ -54,7 +52,7 @@ impl Pet for PetNode {
         hasher.update(FINGERPRINT_DOMAIN);
         hasher.update(owner_id);
         let scalar = Fr::from_le_bytes_mod_order(&hasher.finalize());
-        Ok(Element::GENERATOR * scalar)
+        Ok(Element::generator() * scalar)
     }
 
     fn prove_tag_knowledge(
@@ -74,19 +72,16 @@ impl Pet for PetNode {
                 break candidate;
             }
         });
-        let r1 = Element::GENERATOR * *k;
+        let r1 = Element::generator() * *k;
 
         let c = Self::tag_knowledge_proof_challenge(&ephemeral_point, &r1, tag_transcript_digest)?;
-        // z = k + c*r_tag. Unlike the BLS12-381 backend, there is no
-        // constant-time scalar-arithmetic path available for decaf377's `Fr` in
-        // this codebase (no blst-equivalent) — flagged to the user rather than
-        // improvised; see the PET review discussion for the follow-up decision.
+        // z = k + c*r_tag, using native constant-time Jubjub scalar arithmetic.
         let z = *k + (c * r_tag);
 
         let mut challenge_bytes = Vec::new();
-        c.serialize_compressed(&mut challenge_bytes)?;
+        c.write_bytes(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
-        z.serialize_compressed(&mut response_bytes)?;
+        z.write_bytes(&mut response_bytes)?;
 
         Ok(TagKnowledgeProof {
             challenge: challenge_bytes,
@@ -129,7 +124,7 @@ impl Pet for PetNode {
         })?;
 
         // R1' = z*G - c*R
-        let r1_prime = Element::GENERATOR * response - ephemeral_point * challenge;
+        let r1_prime = Element::generator() * response - ephemeral_point * challenge;
 
         let recomputed_challenge = Self::tag_knowledge_proof_challenge(
             &ephemeral_point,
@@ -140,10 +135,10 @@ impl Pet for PetNode {
         let mut challenge_bytes = [0u8; 32];
         let mut recomputed_bytes = [0u8; 32];
         challenge
-            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .write_bytes(&mut &mut challenge_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .write_bytes(&mut &mut recomputed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if challenge_bytes.ct_ne(&recomputed_bytes).into() {
@@ -161,16 +156,13 @@ impl Pet for PetNode {
         tag: &PetTag,
     ) -> Result<PetCheckReply<Self::ShareValue, Self::PublicKey>> {
         let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
-        // No constant-time scalar-multiplication path available for decaf377
-        // in this codebase (same gap as `prove_tag_knowledge`'s `z`
-        // computation) — flagged for the planned Jubjub migration, not
-        // improvised here.
+        // Native Jubjub multiplication is constant-time in the secret scalar.
         let partial = r_point * *share_i;
         // Recomputed locally so the challenge below binds this node's own
         // claimed public share — see `bls12_381::pet`'s equivalent comment
         // for why an honest prover's value here equals `pub_poly.eval(node_id)`
         // and a dishonest one's does not.
-        let public_share = Element::GENERATOR * *share_i;
+        let public_share = Element::generator() * *share_i;
 
         let mut rng = OsRng;
         // Zeroizing: `ri` is this proof's secret nonce — same rationale as
@@ -182,7 +174,7 @@ impl Pet for PetNode {
             }
         });
         let ui_hat = r_point * *ri;
-        let hi_hat = Element::GENERATOR * *ri;
+        let hi_hat = Element::generator() * *ri;
 
         let challenge = Self::pet_check_proof_challenge(
             node_id,
@@ -191,8 +183,7 @@ impl Pet for PetNode {
             &partial,
             &[ui_hat, hi_hat],
         )?;
-        // proof = ri + challenge*share_i. Same non-constant-time gap as
-        // `prove_tag_knowledge`'s `z` computation — not improvised here.
+        // proof = ri + challenge*share_i, using constant-time scalar arithmetic.
         let proof = *ri + (challenge * share_i);
 
         Ok(PetCheckReply {
@@ -218,7 +209,7 @@ impl Pet for PetNode {
         // UiHat = f*R - e*partial
         let ui_hat = r_point * reply.proof - reply.partial.v * reply.challenge;
         // HiHat = f*G - e*public_share
-        let hi_hat = Element::GENERATOR * reply.proof - public_share * reply.challenge;
+        let hi_hat = Element::generator() * reply.proof - public_share * reply.challenge;
 
         let recomputed_challenge = Self::pet_check_proof_challenge(
             node_id,
@@ -232,10 +223,10 @@ impl Pet for PetNode {
         let mut recomputed_bytes = [0u8; 32];
         reply
             .challenge
-            .serialize_compressed(&mut &mut claimed_bytes[..])
+            .write_bytes(&mut &mut claimed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .write_bytes(&mut &mut recomputed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if claimed_bytes.ct_ne(&recomputed_bytes).into() {
@@ -310,9 +301,9 @@ impl Pet for PetNode {
         let expected = *target_fingerprint + *combined_check;
 
         let mut expected_bytes = Vec::new();
-        expected.serialize_compressed(&mut expected_bytes)?;
+        expected.write_bytes(&mut expected_bytes)?;
         let mut actual_bytes = Vec::new();
-        masked_fingerprint.serialize_compressed(&mut actual_bytes)?;
+        masked_fingerprint.write_bytes(&mut actual_bytes)?;
 
         if expected_bytes.ct_ne(&actual_bytes).into() {
             return Err(CryptoError::ElGamalError(
@@ -331,16 +322,12 @@ impl Pet for PetNode {
         let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
         let masked_fingerprint =
             Self::decode_group_element(&tag.masked_fingerprint, "masked_fingerprint")?;
-        // D = T - Y (no Sub impl on Element — negate and add). Unlike R/T
-        // individually, D may legitimately be the identity element (an
-        // exact pre-blinding match) — see
+        // D = T - Y. Unlike R/T individually, D may legitimately be the
+        // identity element (an exact pre-blinding match) — see
         // `Pet::prove_blinding_correctness`'s docs.
-        let diff_point = masked_fingerprint + (-(*target_fingerprint));
+        let diff_point = masked_fingerprint - *target_fingerprint;
 
-        // No constant-time scalar-multiplication path available for
-        // decaf377 in this codebase (same gap as `partial_pet_check`'s
-        // computation) — flagged for the planned Jubjub migration, not
-        // improvised here.
+        // Native Jubjub multiplication is constant-time in the blinding scalar.
         let blinded_r = r_point * *z_i;
         let blinded_diff = diff_point * *z_i;
         // R is nonidentity, so blinded_r == O iff z_i == 0 — reject here
@@ -372,8 +359,7 @@ impl Pet for PetNode {
             &v_i,
             blind_transcript_digest,
         )?;
-        // proof = w_i + challenge*z_i. Same non-constant-time gap as
-        // `partial_pet_check`'s response computation — not improvised here.
+        // proof = w_i + challenge*z_i, using constant-time scalar arithmetic.
         let proof = *w_i + (challenge * z_i);
 
         Ok(BlindingReply {
@@ -393,7 +379,7 @@ impl Pet for PetNode {
         let r_point = Self::decode_group_element(&tag.ephemeral_point, "ephemeral_point")?;
         let masked_fingerprint =
             Self::decode_group_element(&tag.masked_fingerprint, "masked_fingerprint")?;
-        let diff_point = masked_fingerprint + (-(*target_fingerprint));
+        let diff_point = masked_fingerprint - *target_fingerprint;
 
         if reply.blinded_r == Element::default() {
             return Err(CryptoError::ElGamalError(
@@ -420,10 +406,10 @@ impl Pet for PetNode {
         let mut recomputed_bytes = [0u8; 32];
         reply
             .challenge
-            .serialize_compressed(&mut &mut claimed_bytes[..])
+            .write_bytes(&mut &mut claimed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .write_bytes(&mut &mut recomputed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if claimed_bytes.ct_ne(&recomputed_bytes).into() {
@@ -439,9 +425,9 @@ impl Pet for PetNode {
 impl PetNode {
     /// Decompress and validate a tag component (`ephemeral_point` or
     /// `masked_fingerprint`): must be a canonically-encoded, non-identity
-    /// point. decaf377: no separate subgroup check needed — the decaf
-    /// construction guarantees every deserialized point is already in the
-    /// prime-order group. `field_name` is used only for error messages.
+    /// point in Jubjub's prime-order subgroup. `Element::from_bytes` rejects
+    /// noncanonical encodings and points outside that subgroup.
+    /// `field_name` is used only for error messages.
     fn decode_group_element(bytes: &[u8], field_name: &str) -> Result<Element> {
         if bytes.len() != ELEMENT_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
@@ -477,7 +463,7 @@ impl PetNode {
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
         for point in [ephemeral_point, r1] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
         hasher.update(tag_transcript_digest);
@@ -487,6 +473,7 @@ impl PetNode {
 
     /// Fiat-Shamir challenge for the per-share PET-check DLEQ proof — see
     /// `bls12_381::pet`'s equivalent for the exact binding rationale.
+    /// Uses unkeyed BLAKE2b-512 with full-width little-endian scalar reduction.
     fn pet_check_proof_challenge(
         node_id: u32,
         r_point: &Element,
@@ -494,19 +481,19 @@ impl PetNode {
         partial: &Element,
         proof_points: &[Element],
     ) -> Result<Fr> {
-        let mut hasher = Sha512::new();
+        let mut hasher = Blake2b512::new();
         hasher.update(PET_CHECK_DLEQ_DOMAIN);
         hasher.update(node_id.to_le_bytes());
 
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
         for point in [r_point, public_share, partial] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
         for point in proof_points {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
 
@@ -515,10 +502,11 @@ impl PetNode {
 
     /// Fiat-Shamir challenge for the blinding-correctness proof — see
     /// `bls12_381::pet`'s equivalent for the exact binding rationale. `D`/
-    /// `B`/`V` may be the identity element; `serialize_compressed` handles
+    /// `B`/`V` may be the identity element; `write_bytes` handles
     /// that encoding like any other point.
+    /// Uses unkeyed BLAKE2b-512 with full-width little-endian scalar reduction.
     /// Widened to `pub(crate)` (unlike this file's other challenge helpers)
-    /// solely so `decaf377::tests::pet_tests` can hand-construct a
+    /// solely so `jubjub::tests::pet_tests` can hand-construct a
     /// genuinely valid Chaum–Pedersen proof for a zero blinding scalar, to
     /// confirm `verify_blinding_correctness`'s explicit identity check is
     /// load-bearing rather than redundant with the proof math itself.
@@ -531,7 +519,7 @@ impl PetNode {
         v_point: &Element,
         blind_transcript_digest: &[u8; 32],
     ) -> Result<Fr> {
-        let mut hasher = Sha512::new();
+        let mut hasher = Blake2b512::new();
         hasher.update(BLIND_PROOF_DOMAIN);
 
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
@@ -544,7 +532,7 @@ impl PetNode {
             v_point,
         ] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
         hasher.update(blind_transcript_digest);

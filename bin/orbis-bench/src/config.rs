@@ -21,7 +21,7 @@ pub const DEFAULT_VERA_REF: &str = include_str!("../../../docker/VERA_REF");
 #[serde(rename_all = "kebab-case")]
 pub enum CryptoFeature {
     Bls12_381,
-    Decaf377,
+    Jubjub,
 }
 
 impl CryptoFeature {
@@ -30,16 +30,16 @@ impl CryptoFeature {
         {
             Self::Bls12_381
         }
-        #[cfg(feature = "decaf377")]
+        #[cfg(feature = "jubjub")]
         {
-            Self::Decaf377
+            Self::Jubjub
         }
     }
 
     pub fn feature_name(self) -> &'static str {
         match self {
             Self::Bls12_381 => "bls12-381",
-            Self::Decaf377 => "decaf377",
+            Self::Jubjub => "jubjub",
         }
     }
 }

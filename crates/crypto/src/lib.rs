@@ -10,12 +10,12 @@ pub mod r#trait;
 
 #[cfg(feature = "bls12-381")]
 pub mod bls12_381;
-#[cfg(feature = "decaf377")]
-pub mod decaf377;
+#[cfg(feature = "jubjub")]
+pub mod jubjub;
 
 // Enforce mutual exclusivity - only one curve can be selected
-#[cfg(all(feature = "bls12-381", feature = "decaf377"))]
-compile_error!("Features 'bls12-381' and 'decaf377' are mutually exclusive. Use --no-default-features to disable the default curve.");
+#[cfg(all(feature = "bls12-381", feature = "jubjub"))]
+compile_error!("Features 'bls12-381' and 'jubjub' are mutually exclusive. Use --no-default-features to disable the default curve.");
 
 // Export the selected implementation
 #[cfg(feature = "bls12-381")]
@@ -37,31 +37,31 @@ pub use bls12_381::pre::ThresholdDealerNode as PreImpl;
 #[cfg(feature = "bls12-381")]
 pub use bls12_381::sign::ThresholdBlsSigner as SignImpl;
 
-#[cfg(feature = "decaf377")]
-pub use ::decaf377::Fr as SigShareInner;
-#[cfg(feature = "decaf377")]
-pub use ::decaf377::{Element as GroupAffine, Fr as ScalarField};
-#[cfg(feature = "decaf377")]
-pub use decaf377::common::{
+#[cfg(feature = "jubjub")]
+pub use jubjub::common::Fr as SigShareInner;
+#[cfg(feature = "jubjub")]
+pub use jubjub::common::{Element as GroupAffine, Fr as ScalarField};
+#[cfg(feature = "jubjub")]
+pub use jubjub::common::{
     PolynomialCommitment as PolynomialCommitmentImpl, PubPoly as PubPolyImpl,
     ELEMENT_COMPRESSED_SIZE as GROUP_POINT_SIZE, FR_COMPRESSED_SIZE as SCALAR_SIZE,
 };
-#[cfg(feature = "decaf377")]
-pub use decaf377::dkg::DKGNode as DkgImpl;
-#[cfg(feature = "decaf377")]
-pub use decaf377::pet::PetNode as PetImpl;
-#[cfg(feature = "decaf377")]
-pub use decaf377::pre::ThresholdDealerNode as PreImpl;
-#[cfg(feature = "decaf377")]
-pub use decaf377::sign::SchnorrSignature as SignaturePoint;
-#[cfg(feature = "decaf377")]
-pub use decaf377::sign::ThresholdDecafSigner as SignImpl;
+#[cfg(feature = "jubjub")]
+pub use jubjub::dkg::DKGNode as DkgImpl;
+#[cfg(feature = "jubjub")]
+pub use jubjub::pet::PetNode as PetImpl;
+#[cfg(feature = "jubjub")]
+pub use jubjub::pre::ThresholdDealerNode as PreImpl;
+#[cfg(feature = "jubjub")]
+pub use jubjub::sign::SchnorrSignature as SignaturePoint;
+#[cfg(feature = "jubjub")]
+pub use jubjub::sign::ThresholdJubjubSigner as SignImpl;
 
 #[cfg(feature = "bls12-381")]
 pub const THRESHOLD_SIGNATURE_SCHEME: &str = "bls12_381_g1_pk_g2_sig_aug_v1";
 
-#[cfg(feature = "decaf377")]
-pub const THRESHOLD_SIGNATURE_SCHEME: &str = "decaf377_frost";
+#[cfg(feature = "jubjub")]
+pub const THRESHOLD_SIGNATURE_SCHEME: &str = "jubjub_frost";
 
 pub use context::CiphertextContext;
 pub use r#trait::{CryptoDeserialize, CryptoSerialize};
