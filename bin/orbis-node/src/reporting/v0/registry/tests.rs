@@ -1618,7 +1618,7 @@ mod invalid_crypto_generation_history {
     }
 }
 
-/// Reshare-atomicity finding #3 (PET audit fix checklist): PET decrypt report
+/// PET decrypt report
 /// verification authenticates the *responder's own claimed* public
 /// polynomial (now part of the signed statement) against the ring's known,
 /// generation-invariant `pet_pk`, rather than matching it against the

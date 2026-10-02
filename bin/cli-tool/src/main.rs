@@ -913,6 +913,7 @@ async fn main() -> Result<()> {
                 ring_id,
                 Some(reader_did_pk),
                 with_proof,
+                None,
             )
             .await?;
         }

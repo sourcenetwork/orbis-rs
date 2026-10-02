@@ -1049,7 +1049,7 @@ async fn test_dkg_session_init_fails_with_wrong_peer_ids() {
     cleanup_db(&db_path);
 }
 
-/// Finding #4 (PET audit fix checklist): a `FreshPet` `SessionInit` carries
+/// A `FreshPet` `SessionInit` carries
 /// two independent `ring_id`-shaped fields — the outer `ring_id` (used for
 /// authorization) and `kind`'s own inner `ring_id` (used, downstream at
 /// finalization, to derive the PET checking-key storage key). Nothing

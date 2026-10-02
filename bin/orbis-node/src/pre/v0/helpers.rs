@@ -158,8 +158,8 @@ pub fn deserialize_secret(document_json: &str) -> Result<Secret> {
 }
 
 /// Rebuilds the PET tag binding a `requires_pet` ring's encryptor folded into
-/// the payload's own encryption proof (see [`PetTagBinding`]'s doc comment
-/// and the PET audit fix checklist, finding #5) — `None` when the document
+/// the payload's own encryption proof (see [`PetTagBinding`]'s doc comment)
+/// — `None` when the document
 /// carries no tag at all (an ordinary, non-PET-gated document). Errors if the
 /// document has a tag but no `pet_pk_hex` was supplied: an inconsistent
 /// ring/document state must never silently verify against a mismatched or

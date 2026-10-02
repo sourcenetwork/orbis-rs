@@ -35,7 +35,7 @@ pub const CIPHERTEXT_DIGEST_DOMAIN: &[u8] = b"orbis-ciphertext-v1";
 /// AEAD decryption fails, and the original Schnorr proof no longer verifies.
 /// Forging a new, consistent proof for the new tag would require
 /// re-encrypting from the plaintext, which a ciphertext-only attacker
-/// doesn't have. See the PET audit fix checklist, finding #5.
+/// doesn't have.
 ///
 /// `None` for a ring that doesn't `requires_pet`.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

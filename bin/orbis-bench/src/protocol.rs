@@ -6,7 +6,8 @@ use crypto::{CryptoDeserialize, GroupAffine, PreImpl, ScalarField, SignImpl};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, PatchedKeyPair};
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse,
-    GetRingStateRequest, GetRingStateResponse, NodeStatus,
+    GetPetRingStateRequest, GetPetRingStateResponse, GetRingStateRequest, GetRingStateResponse,
+    NodeStatus,
 };
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 use proto::v0::pre::{pre_service_client::PreServiceClient, StartPreRequest};
@@ -276,6 +277,65 @@ impl DirectClients {
             .collect()
     }
 
+    /// Same shape as [`Self::ring_states`], but for a ring's independent PET
+    /// checking key — keyed by `ring_id` rather than a public key, since the
+    /// PET key has no aggregate-public-key storage handle to key by until
+    /// its own ceremony finishes (see `LocalStorageKeys::PetRingKey`'s doc
+    /// comment in orbis-node).
+    pub async fn pet_ring_states(
+        &self,
+        members: &[usize],
+        ring_id: &str,
+    ) -> Result<Vec<GetPetRingStateResponse>> {
+        let requests = members.iter().map(|member| {
+            let member_index = member.saturating_sub(1);
+            let client = self
+                .info
+                .get(member_index)
+                .cloned()
+                .ok_or_else(|| anyhow!("ring member {member} is outside the network"));
+            let info_url = self
+                .info_urls
+                .get(member_index)
+                .cloned()
+                .ok_or_else(|| anyhow!("ring member {member} has no info endpoint"));
+            let ring_id = ring_id.to_string();
+            async move {
+                let mut client = client?;
+                let request = || GetPetRingStateRequest {
+                    ring_id: ring_id.clone(),
+                };
+                match timeout(Duration::from_secs(3), client.get_pet_ring_state(request())).await
+                {
+                    Ok(Ok(response)) => Ok(response.into_inner()),
+                    first_attempt => {
+                        let info_url = info_url?;
+                        let mut fresh = timeout(
+                            Duration::from_secs(3),
+                            InfoServiceClient::connect(info_url.clone()),
+                        )
+                        .await
+                        .with_context(|| format!("connect timeout for ring member {member}"))?
+                        .with_context(|| format!("reconnect ring member {member} at {info_url}"))?;
+                        timeout(Duration::from_secs(3), fresh.get_pet_ring_state(request()))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "GetPetRingState timeout for ring member {member} after persistent attempt {first_attempt:?}"
+                                )
+                            })?
+                            .map(tonic::Response::into_inner)
+                            .map_err(anyhow::Error::from)
+                    }
+                }
+            }
+        });
+        futures::future::join_all(requests)
+            .await
+            .into_iter()
+            .collect()
+    }
+
     pub async fn wait_ring_finalized_everywhere(
         &self,
         vera: &VeraClient,
@@ -428,6 +488,12 @@ pub struct PreFixture {
     pub derivation: Option<Vec<u8>>,
     pub salt: Option<String>,
     pub expected_plaintext: Vec<u8>,
+    /// `Some` only for a PET trial, against a `requires_pet` ring whose
+    /// document carries a genuine tag for this identity — triggers the
+    /// 3-round blind equality test inside `start_pre` before any share is
+    /// released. `None` for a plain PRE trial, identical to today's
+    /// behavior.
+    pub audit_target_object_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -470,7 +536,7 @@ pub async fn pre_call(
                 challenge: rdr_pk_proof.challenge,
                 response: rdr_pk_proof.response,
             }),
-            audit_target_object_id: None,
+            audit_target_object_id: fixture.audit_target_object_id.clone(),
         },
         &token,
     )?;

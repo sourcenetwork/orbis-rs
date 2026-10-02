@@ -97,7 +97,8 @@ where
 
     /// Round 1 (Commit): independently verify the request, then generate and
     /// store a fresh blinding secret, replying with only its hiding
-    /// commitment — see the design doc's "Round 1 — Commit" section.
+    /// commitment — nothing in a commitment alone reveals `z_i` or the
+    /// blinded points, so there is nothing sensitive to withhold here.
     pub(crate) async fn handle_commit_request(
         &self,
         req: CommitRequest,

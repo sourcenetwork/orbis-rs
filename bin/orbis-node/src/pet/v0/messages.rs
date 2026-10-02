@@ -21,8 +21,10 @@ use crate::reporting::v0::types::PetBlindCertificate;
 /// every peer re-derives and re-verifies this from primary sources, never
 /// trusting the initiator's word. Carried unchanged in every one of the
 /// three phases' requests, and independently re-authenticated/re-authorized
-/// at each one — see the design doc's "Protocol: three rounds" section for
-/// why copying an earlier phase's approval is insufficient.
+/// at each one: each phase arrives as its own request, potentially relayed
+/// by a different node than the last, so trusting an earlier phase's
+/// approval would mean trusting that relay not to have tampered with
+/// anything in between.
 ///
 /// Deliberately does *not* carry the audit target's resolution beyond
 /// `audit_target_object_id` itself: computing a blinding contribution needs
@@ -57,8 +59,7 @@ pub struct PetCheckContext {
     /// ever touched, exactly like PRE's own responders re-verify
     /// `PreRequestContext::token_string`. Without this, a direct peer
     /// request could obtain a genuine contribution for any document/target
-    /// without ever going through the ACP-gated normal PRE entry point —
-    /// see the PET audit fix checklist, finding #3.
+    /// without ever going through the ACP-gated normal PRE entry point.
     pub token_string: String,
     /// The plaintext owner identity being audited — not an ACP handle to
     /// resolve, see `pet::README.md`'s "no ACP identity-resolution step"
@@ -76,8 +77,7 @@ pub struct PetCheckContext {
 
 /// Round 1 (Commit): request for a hiding commitment to a fresh blinding
 /// contribution. Over-asked to every ring member; exactly `threshold` of the
-/// responders are selected before anything sensitive is revealed — see the
-/// design doc's "Round 1 — Commit" section.
+/// responders are selected before anything sensitive is revealed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitRequest {
     /// Phase-specific transport id (`format!("commit-{attempt_id}")`).
@@ -92,7 +92,8 @@ pub struct CommitRequest {
 /// Round 2 (Reveal): request that only the exact `threshold` participants
 /// selected after round 1 ever receive. No substitution — a shortfall here
 /// discards the whole attempt rather than swapping in a different blinder,
-/// see the design doc's cancellation-attack derivation for why.
+/// which would mix state across attempts in exactly the way the blinding
+/// scheme's cancellation-attack protection depends on not happening.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevealRequest {
     pub request_id: String,

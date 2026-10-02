@@ -900,10 +900,16 @@ async fn test_concurrent_pre_requests() {
     )
     .expect("prepare secret");
 
-    let obj_resp =
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true)
-            .await
-            .expect("store prepared secret");
+    let obj_resp = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared,
+        ring_id.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("store prepared secret");
     let object_id = obj_resp.object_id;
 
     // Step 3: Authz — register the object and grant read access to the test DID
@@ -1041,9 +1047,30 @@ async fn test_concurrent_sign_requests() {
     // Step 3: Three concurrent store_prepared_secret calls
     //         Each triggers a full FROST threshold BLS signing round-trip
     let (r1, r2, r3) = tokio::join!(
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[0], ring_id.clone(), None, true,),
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[1], ring_id.clone(), None, true,),
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[2], ring_id.clone(), None, true,),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[0],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[1],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[2],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
     );
 
     let resp1 = r1.expect("SIGN 1 failed");

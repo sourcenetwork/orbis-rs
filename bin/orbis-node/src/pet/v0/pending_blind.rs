@@ -105,8 +105,11 @@ impl PetPendingBlindingStore {
     /// Store this responder's freshly generated commit-phase secret. Fails
     /// with `AlreadyExists` if a pending entry already exists for this
     /// `attempt_id` — a genuine retry gets a fresh `attempt_id`, so a second
-    /// commit for the same one is a replay, not a legitimate resend; see the
-    /// design doc's "why partial retries are unsafe" section.
+    /// commit for the same one is a replay, not a legitimate resend: letting
+    /// it through would mean this responder's `z_i` gets reused across two
+    /// different commit attempts, the exact reuse `prove_blinding_correctness`'s
+    /// doc comment (`crates/crypto/src/trait/pet.rs`) says reopens the
+    /// fingerprint leak this whole construction exists to close.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn store(
         &self,

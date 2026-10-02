@@ -13,10 +13,9 @@
 //! [`build_and_verify_pet_blind_certificate`] is the single shared
 //! certificate-validation routine used identically by the decrypt-phase
 //! responder handler, the initiator's own certificate assembly, and PRE
-//! admission's independent re-check — see the design doc's "Round 2 —
-//! Reveal" section: "Validating this complete certificate is a shared
-//! operation used by the initiator, every decryptor, PRE admission, and
-//! relevant reporting verifiers."
+//! admission's independent re-check — one operation, reused by the
+//! initiator, every decryptor, PRE admission, and relevant reporting
+//! verifiers, rather than four hand-duplicated copies.
 //!
 //! [`PetCoordinator::verify_pet_admission`] exists so a PRE peer can refuse
 //! to release its reencryption share for a `requires_pet` ring unless it is
@@ -160,8 +159,7 @@ pub(crate) async fn verify_pet_audit_authorization(
 
 /// Resolve the authenticated transport sender's ring-committee node key —
 /// `from_node_id`/any request field is a claim to validate, never proof of
-/// coordinator identity (see the design doc's "Protocol: three rounds"
-/// section). Used to bind `PetBlindContext::coordinator_node_key` from a
+/// coordinator identity. Used to bind `PetBlindContext::coordinator_node_key` from a
 /// live connection's own peer id, exactly as `resolve_node_routes` already
 /// lets the initiator resolve the reverse direction.
 pub(crate) async fn resolve_coordinator_node_key(
@@ -198,8 +196,7 @@ fn build_ciphertext_context(
     let ring_pk = hex::decode(ring_pk_hex)
         .map_err(|e| PetError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
     // Shared with `pre::v0::helpers::build_ciphertext_context`, mirroring how
-    // `check_document_id_binding` is already reused across both modules —
-    // see finding #5 in the PET audit fix checklist.
+    // `check_document_id_binding` is already reused across both modules.
     let pet_tag = crate::pre::v0::helpers::build_pet_tag_binding(document, pet_pk_hex)
         .map_err(|e| PetError::InvalidInput(format!("PET tag binding: {e}")))?;
     Ok(CiphertextContext {
@@ -817,9 +814,9 @@ where
 
 /// Outcome of verifying one live `CommitResponse` during the initiator's
 /// round-1 collection loop. Commit responses carry no signature (they are
-/// transport-authenticated only, per the design doc's Round 1 section: a
-/// hiding commitment has nothing yet worth attributing misconduct over), so
-/// there is no reportable failure mode here — only accept or reject.
+/// transport-authenticated only — a hiding commitment has nothing yet worth
+/// attributing misconduct over), so there is no reportable failure mode
+/// here — only accept or reject.
 pub(crate) enum PetCommitResponseVerification {
     Verified { node_id: u32, commitment: [u8; 32] },
     Rejected,

@@ -2553,6 +2553,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
             RING_ID.to_string(),
             Some(did_pk_string.clone()),
             true,
+            None,
         )
         .await
         {
@@ -2811,6 +2812,7 @@ async fn store_secret_with_retry(
             ring_id.clone(),
             reader_did_pk.clone(),
             true,
+            None,
         )
         .await
         {

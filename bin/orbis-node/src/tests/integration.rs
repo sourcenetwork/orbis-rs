@@ -1413,10 +1413,9 @@ resources:
 
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
-    // Required noncircular construction order (PET audit fix checklist,
-    // finding #5): generate the tag *before* encrypting the payload, so the
-    // payload's own encryption can bind to it, then prove tag knowledge over
-    // the now-completed payload.
+    // Required noncircular construction order: generate the tag *before*
+    // encrypting the payload, so the payload's own encryption can bind to
+    // it, then prove tag knowledge over the now-completed payload.
     let (generated_tag, tag_r_tag) =
         cli_tool::generate_pet_tag(&pet_pk_hex, &audit_target_object_id)
             .expect("generate a genuine PET tag");
@@ -2107,9 +2106,9 @@ resources:
     let pet_reader_pk_hex =
         hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
 
-    // Required noncircular construction order (PET audit fix checklist,
-    // finding #5): generate the tag before encrypting the payload, then
-    // prove tag knowledge over the now-completed payload.
+    // Required noncircular construction order: generate the tag before
+    // encrypting the payload, then prove tag knowledge over the
+    // now-completed payload.
     let (generated_tag, tag_r_tag) =
         cli_tool::generate_pet_tag(pet_pk_hex, &audit_target_object_id)
             .expect("generate a genuine PET tag");
@@ -2609,6 +2608,7 @@ async fn store_prepared_secret_expect_success(
             ring_id.clone(),
             reader_did_pk.clone(),
             with_proof,
+            None,
         )
         .await
         {

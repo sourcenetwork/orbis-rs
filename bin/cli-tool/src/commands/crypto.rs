@@ -44,8 +44,7 @@ pub struct PreparedSecret {
 /// for a `requires_pet` ring, and `None` otherwise. Binding it into the
 /// encryption context here, *before* the payload is encrypted, is what lets
 /// a verifier detect a copied ciphertext/proof reattached to a different
-/// tag: see [`PetTagBinding`]'s doc comment and the PET audit fix checklist,
-/// finding #5. Passing `None` for a `requires_pet` ring's document (or
+/// tag: see [`PetTagBinding`]'s doc comment. Passing `None` for a `requires_pet` ring's document (or
 /// generating the tag *after* calling this) silently reopens that gap.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_secret(
@@ -116,8 +115,7 @@ pub struct PreparedPetTag {
 
 /// Generate a fresh PET ownership tag ciphertext `(R, T)` for `owner_id`
 /// against a ring's public PET checking key — step 1 of the required
-/// noncircular construction order (PET audit fix checklist, finding #5):
-/// the tag must exist *before* the payload it will be attached to is
+/// noncircular construction order: the tag must exist *before* the payload it will be attached to is
 /// encrypted, so the payload's own encryption can bind to it (via
 /// [`PetTagBinding`], passed to [`prepare_secret`]). Only after that payload
 /// is complete should [`prove_pet_tag_knowledge`] be called, with the exact

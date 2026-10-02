@@ -18,7 +18,7 @@ use proto::v0::sign::sign_service_client::SignServiceClient;
 use proto::v0::store_secret::store_secret_service_client::StoreSecretServiceClient;
 
 use super::crypto::did_seed;
-use super::crypto::PreparedSecret;
+use super::crypto::{PreparedPetTag, PreparedSecret};
 
 const DKG_START_MAX_ATTEMPTS: usize = 3;
 const DKG_START_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -122,12 +122,20 @@ pub struct StoreSecretResult {
 /// Store a prepared (pre-encrypted) secret using the StoreSecret service.
 /// This is idempotent - calling with the same PreparedSecret will return
 /// the same object_id without creating duplicates.
+///
+/// `pet_tag` must be `Some` — from [`crate::commands::crypto::prove_pet_tag_knowledge`]
+/// — for a `requires_pet` ring's document, and `None` otherwise. `prepared.context.pet_tag`
+/// (the `PetTagBinding` folded into the encryption proof) is *not* read for this by
+/// itself: the proof and the on-the-wire attachment are produced from the same
+/// `PreparedPetTag` by two separate, deliberately explicit steps, so a caller can never
+/// silently store a document whose stated binding and attached tag diverge.
 pub async fn store_prepared_secret(
     endpoint: String,
     prepared: &PreparedSecret,
     ring_id: String,
     reader_did_pk: Option<String>,
     with_proof: bool,
+    pet_tag: Option<&PreparedPetTag>,
 ) -> Result<StoreSecretResult> {
     println!("Storing secret via StoreSecret service:");
     println!("  Endpoint: {}", endpoint);
@@ -154,7 +162,12 @@ pub async fn store_prepared_secret(
         with_proof,
         tier: ctx.tier.clone(),
         timestamp: ctx.timestamp,
-        pet_tag: None,
+        pet_tag: pet_tag.map(|prepared_tag| proto::v0::store_secret::PetTagAttachment {
+            ephemeral_point: prepared_tag.tag.ephemeral_point.clone(),
+            masked_fingerprint: prepared_tag.tag.masked_fingerprint.clone(),
+            knowledge_proof_challenge: prepared_tag.tag_proof.challenge.clone(),
+            knowledge_proof_response: prepared_tag.tag_proof.response.clone(),
+        }),
     };
 
     // Create JWT for authentication with all request fields
@@ -245,7 +258,15 @@ pub async fn do_store_secret(
         salt,
         None,
     )?;
-    store_prepared_secret(endpoint, &prepared, ring_id, reader_did_pk, with_proof).await
+    store_prepared_secret(
+        endpoint,
+        &prepared,
+        ring_id,
+        reader_did_pk,
+        with_proof,
+        None,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
