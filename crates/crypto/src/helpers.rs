@@ -11,8 +11,7 @@ use ark_serialize::CanonicalSerialize;
 /// Protocol proof nonces must never be zero: for a Schnorr-style response
 /// `z = r + c*x`, setting `r = 0` exposes `x` whenever `c` is non-zero.
 ///
-/// bls12-381 only: decaf377's one call site inlines this same loop directly
-/// instead of sharing it — see `decaf377/pre.rs`.
+/// The Jubjub backend uses its own scalar sampler.
 #[cfg(feature = "bls12-381")]
 pub(crate) fn sample_nonzero<F: Zero>(mut sample: impl FnMut() -> F) -> F {
     loop {
@@ -43,13 +42,13 @@ pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
 ///
 /// Uses OsRng for cryptographic randomness.
 /// pk = sk * G where G is the generator of the selected curve.
-#[cfg(feature = "decaf377")]
+#[cfg(feature = "jubjub")]
 pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     use rand_core::OsRng;
 
     let mut rng = OsRng;
-    let sk = ::decaf377::Fr::rand(&mut rng);
-    let pk = ::decaf377::Element::GENERATOR * sk;
+    let sk = crate::jubjub::common::Fr::rand(&mut rng);
+    let pk = crate::jubjub::common::Element::generator() * sk;
     Ok((sk, pk))
 }
 
@@ -70,19 +69,14 @@ pub fn sample_scalar() -> Result<crate::ScalarField> {
     Ok(sample_nonzero(|| crate::ScalarField::rand(&mut rng)))
 }
 
-/// Same as the bls12-381 variant above, for decaf377 — inlined rather than
-/// sharing [`sample_nonzero`], which is bounded by the (incompatible,
-/// major-version-0.4) arkworks `Zero` trait bls12-381 uses; decaf377
-/// depends on arkworks 0.5 instead (see `decaf377/pre.rs`'s own identical
-/// inlined loop, for the same reason).
-#[cfg(feature = "decaf377")]
+/// Sample a fresh, uniformly random, nonzero Jubjub scalar.
+#[cfg(feature = "jubjub")]
 pub fn sample_scalar() -> Result<crate::ScalarField> {
-    use ark_ff_05::Zero;
     use rand_core::OsRng;
 
     let mut rng = OsRng;
     Ok(loop {
-        let candidate = ::decaf377::Fr::rand(&mut rng);
+        let candidate = crate::jubjub::common::Fr::rand(&mut rng);
         if !candidate.is_zero() {
             break candidate;
         }
@@ -107,7 +101,7 @@ pub fn add_points(a: &crate::GroupAffine, b: &crate::GroupAffine) -> Result<crat
 }
 
 /// Add two group elements: `a + b`.
-#[cfg(feature = "decaf377")]
+#[cfg(feature = "jubjub")]
 pub fn add_points(a: &crate::GroupAffine, b: &crate::GroupAffine) -> Result<crate::GroupAffine> {
     Ok(*a + *b)
 }
@@ -140,9 +134,8 @@ pub fn mul_point(
 
 /// Multiply a group element by a scalar: `point * scalar`.
 ///
-/// **Variable-time in `scalar`. Never call this with a secret scalar** — see
-/// [`mul_point_secret`].
-#[cfg(feature = "decaf377")]
+/// Uses zkcrypto's constant-time Jubjub arithmetic.
+#[cfg(feature = "jubjub")]
 pub fn mul_point(
     point: &crate::GroupAffine,
     scalar: &crate::ScalarField,
@@ -176,13 +169,9 @@ pub fn mul_point_secret(
 
 /// Multiply a group element by a SECRET scalar: `point * scalar`.
 ///
-/// decaf377 has no constant-time scalar-multiplication path in this
-/// codebase — the same documented, tracked gap as `prove_tag_knowledge`'s
-/// decaf377 twin (`decaf377/pet.rs`). This is the same operation as
-/// [`mul_point`], named separately so call sites document which of their
-/// scalars are secret, and so a future constant-time decaf377 path only
-/// needs to change this one function.
-#[cfg(feature = "decaf377")]
+/// Uses zkcrypto's constant-time Jubjub arithmetic. The separate helper
+/// documents secret-scalar use at call sites shared with the BLS backend.
+#[cfg(feature = "jubjub")]
 pub fn mul_point_secret(
     point: &crate::GroupAffine,
     scalar: &crate::ScalarField,
@@ -223,8 +212,7 @@ where
 /// decoded value and compares it to the original bytes, rejecting anything that
 /// doesn't round-trip exactly.
 ///
-/// bls12-381 only: decaf377 has its own twin bound to arkworks 0.5
-/// (`decaf377::common::reject_non_canonical`) — see Cargo.toml.
+/// Only the BLS backend uses arkworks serialization.
 #[cfg(feature = "bls12-381")]
 pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
     let mut canonical = Vec::with_capacity(bytes.len());

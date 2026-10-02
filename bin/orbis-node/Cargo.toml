@@ -68,7 +68,7 @@ test-support = { path = "../../crates/test-support" }
 [features]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
-decaf377 = ["crypto/decaf377", "cli-tool?/decaf377", "common/decaf377", "bulletin/decaf377"]
+jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "common/jubjub", "bulletin/jubjub"]
 redb = ["local-storage/redb"]
 memory = ["local-storage/memory"]
 authz-vera = ["authz/vera"]

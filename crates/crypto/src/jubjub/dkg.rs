@@ -1,9 +1,7 @@
-use ark_ff_05::{One, Zero};
-use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use std::collections::HashMap;
 
-use super::common::{PolynomialCommitment, PubPoly};
+use super::common::{Element, Fr, PolynomialCommitment, PubPoly};
 use crate::{
     error::{CryptoError, Result},
     r#trait::{
@@ -12,7 +10,7 @@ use crate::{
     },
 };
 
-/// Complete DKG state for a single node (decaf377)
+/// Complete DKG state for a single node (Jubjub prime-order subgroup)
 #[derive(Clone)]
 pub struct DKGNode {
     pub id: u32,
@@ -97,7 +95,7 @@ impl Dkg for DKGNode {
     type PolynomialCommitment = PolynomialCommitment;
 
     fn name() -> String {
-        "dkg/decaf377".to_string()
+        "dkg/jubjub".to_string()
     }
 
     fn new(
@@ -215,7 +213,7 @@ impl Dkg for DKGNode {
         self.commitment.coefficients = self
             .polynomial_coeffs
             .iter()
-            .map(|coeff| Element::GENERATOR * coeff)
+            .map(|coeff| Element::generator() * coeff)
             .collect();
 
         Ok(())

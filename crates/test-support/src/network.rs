@@ -23,10 +23,10 @@ pub struct NodeInfo {
 ///
 /// The node image is built (`docker compose up --build`) with the crypto
 /// implementation named by the `ORBIS_INTEGRATION_CRYPTO` env var, which the
-/// compose subprocess inherits. **Unset ⇒ bls12-381.** A decaf377 run must
+/// compose subprocess inherits. **Unset ⇒ bls12-381.** A jubjub run must
 /// export it so the built images match the host feature set — there is no
 /// auto-detection:
-/// `ORBIS_INTEGRATION_CRYPTO=decaf377 cargo test --no-default-features --features integration-test,decaf377 test_cli_calls_dkg_and_pre_endpoint`
+/// `ORBIS_INTEGRATION_CRYPTO=jubjub cargo test --no-default-features --features integration-test,jubjub test_cli_calls_dkg_and_pre_endpoint`
 pub struct IntegrationTestNetwork {
     compose_file: String,
     project_name: String,
@@ -351,8 +351,8 @@ impl IntegrationTestNetworkBuilder {
 
             // `ORBIS_INTEGRATION_CRYPTO` (if set) is inherited by the compose
             // subprocess; when unset the compose file defaults to bls12-381. A
-            // decaf run must export it so the built node images match the host —
-            // see this type's doc comment and the CI `decaf377` matrix leg.
+            // Jubjub run must export it so the built node images match the host —
+            // see this type's doc comment and the CI `jubjub` matrix leg.
             command.env(
                 "ORBIS_BUILD_INTEGRATION_TEST",
                 if production_node_build {

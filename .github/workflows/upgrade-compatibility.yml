@@ -22,7 +22,7 @@ on:
         options:
           - both
           - bls12-381
-          - decaf377
+          - jubjub
 
 permissions:
   contents: read
@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crypto: ${{ fromJSON(github.event_name == 'pull_request' && '["bls12-381","decaf377"]' || inputs.crypto == 'both' && '["bls12-381","decaf377"]' || format('["{0}"]', inputs.crypto)) }}
+        crypto: ${{ fromJSON(github.event_name == 'pull_request' && '["bls12-381","jubjub"]' || inputs.crypto == 'both' && '["bls12-381","jubjub"]' || format('["{0}"]', inputs.crypto)) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -68,15 +68,37 @@ jobs:
           fi
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
+      - name: Check baseline curve support
+        id: curve
+        env:
+          BASELINE_SHA: ${{ steps.baseline.outputs.sha }}
+          CRYPTO: ${{ matrix.crypto }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git show "$BASELINE_SHA:crates/crypto/Cargo.toml" | grep -Eq "^${CRYPTO}[[:space:]]*="; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == pull_request && "$CRYPTO" == jubjub ]]; then
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "Jubjub upgrade: not applicable / not tested. Baseline $BASELINE_SHA predates Jubjub; existing rings require fresh DKG to change curves." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Baseline $BASELINE_SHA does not support $CRYPTO. Select a baseline with the requested curve."
+            exit 1
+          fi
+
       - name: Run cross-commit upgrade gate
+        if: steps.curve.outputs.supported == 'true'
+        env:
+          BASELINE_SHA: ${{ steps.baseline.outputs.sha }}
         shell: bash
         # The harness auto-selects --fresh-target-chain when HEAD's
-        # docker/VERA_REF differs from the pinned baseline's (the baseline
+        # docker/VERA_REF differs from the selected baseline's (the baseline
         # chain otherwise cannot verify the target's threshold signatures).
         run: |
           scripts/test-upgrade-unit.sh
           scripts/test-upgrade.sh \
-            --from 94d6e778e08dbbe00717212864010047c64a25ed \
+            --from "$BASELINE_SHA" \
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \
             --output "upgrade-results/${{ matrix.crypto }}"

@@ -575,7 +575,7 @@ mod tests {
         assert_ne!(protocol_version.context_digest(), base);
 
         let mut backend = context();
-        backend.crypto_backend = "decaf377".to_string();
+        backend.crypto_backend = "jubjub".to_string();
         assert_ne!(backend.context_digest(), base);
 
         let mut ring_id = context();

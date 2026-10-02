@@ -31,7 +31,7 @@ dummy = ["dummy-type"]
 # `vera`+`dummy` mutual-exclusivity check below.
 dummy-type = []
 bls12-381 = ["dep:crypto", "crypto/bls12-381"]
-decaf377 = ["dep:crypto", "crypto/decaf377"]
+jubjub = ["dep:crypto", "crypto/jubjub"]
 
 [dev-dependencies]
 serial_test = "3.2.0"
