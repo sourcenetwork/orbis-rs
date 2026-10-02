@@ -268,7 +268,7 @@ fn render_report(
     html.push_str("</tbody></table></div>");
     html.push_str("</section>");
 
-    html.push_str("<section><h2>PRE and SIGN closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>All pass</th></tr></thead><tbody>");
+    html.push_str("<section><h2>Closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>All pass</th></tr></thead><tbody>");
     for row in load_rows {
         write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, row.concurrency.unwrap_or(0), fmt(row.throughput_per_sec), fmt_seconds(row.p50_ms), fmt_seconds(row.p95_ms), fmt_seconds(row.p99_ms), pass_badge(row.viable)).ok();
     }

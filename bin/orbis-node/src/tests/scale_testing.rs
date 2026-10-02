@@ -258,6 +258,7 @@ async fn test_scale_dkg_pre_sign() {
         ring_id.clone(),
         Some(reader_identity.clone()),
         true,
+        None,
     )
     .await
     .expect("store PRE secret");

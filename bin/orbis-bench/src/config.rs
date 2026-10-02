@@ -49,6 +49,15 @@ impl CryptoFeature {
 pub enum Operation {
     Dkg,
     Pre,
+    /// PRE against a `requires_pet` ring: the same `start_pre` call as
+    /// `Pre`, but with an `audit_target_object_id` set so the node runs the
+    /// 3-round PET blind equality test before releasing its reencryption
+    /// share. Deliberately its own operation rather than a flag on `Pre` —
+    /// `requires_pet` is fixed at ring creation, so it needs its own ring,
+    /// and giving it its own row is exactly what makes a `pre`/`pet`
+    /// side-by-side comparison fall out of the existing summary/report
+    /// grouping for free.
+    Pet,
     Sign,
     PssRefresh,
     PssReshare,
@@ -169,6 +178,12 @@ pub struct TimeoutConfig {
     pub pre_secs: u64,
     pub sign_secs: u64,
     pub pss_refresh_secs: u64,
+    /// Separate from `pre_secs`: a PET-gated PRE call runs the 3-round
+    /// commit/reveal/decrypt blind equality test (each round its own
+    /// collection timeout, `PET_COLLECTION_TIMEOUT` in orbis-node) *inside*
+    /// `start_pre`, on top of PRE's own reencryption round — meaningfully
+    /// more network work than plain PRE, especially on a WAN profile.
+    pub pet_secs: u64,
 }
 
 impl Default for TimeoutConfig {
@@ -179,6 +194,7 @@ impl Default for TimeoutConfig {
             pre_secs: 2 * 60,
             sign_secs: 2 * 60,
             pss_refresh_secs: 15 * 60,
+            pet_secs: 8 * 60,
         }
     }
 }
@@ -371,6 +387,7 @@ impl Experiment {
             self.timeouts.pre_secs,
             self.timeouts.sign_secs,
             self.timeouts.pss_refresh_secs,
+            self.timeouts.pet_secs,
         ]
         .contains(&0)
         {
@@ -438,10 +455,12 @@ impl Experiment {
                 );
             }
         }
-        if (self.operations.contains(&Operation::Pre) || self.operations.contains(&Operation::Sign))
+        if (self.operations.contains(&Operation::Pre)
+            || self.operations.contains(&Operation::Sign)
+            || self.operations.contains(&Operation::Pet))
             && self.load.concurrency.is_empty()
         {
-            bail!("PRE or SIGN experiments require at least one load concurrency");
+            bail!("PRE, SIGN, or PET experiments require at least one load concurrency");
         }
         for (group_index, group) in self.networks.iter().enumerate() {
             if group.network_size == 0 {
@@ -504,13 +523,23 @@ impl Experiment {
             && self.operations.iter().any(|operation| {
                 !matches!(
                     operation,
-                    Operation::Dkg | Operation::Pre | Operation::Sign | Operation::PssRefresh
+                    Operation::Dkg
+                        | Operation::Pre
+                        | Operation::Pet
+                        | Operation::Sign
+                        | Operation::PssRefresh
                 )
             })
         {
             bail!(
-                "backend 'in-process' supports only dkg, pre, sign, and pss_refresh operations in v1; got {:?}",
+                "backend 'in-process' supports only dkg, pre, pet, sign, and pss_refresh operations in v1; got {:?}",
                 self.operations
+            );
+        }
+        if self.backend == ExecutionBackend::Docker && self.operations.contains(&Operation::Pet) {
+            bail!(
+                "the 'pet' operation is only implemented for backend 'in-process' so far; \
+                 Docker support is planned but not yet built"
             );
         }
         Ok(())
@@ -613,13 +642,22 @@ impl Experiment {
         };
         let needs_online_ring =
             self.operations.contains(&Operation::Pre) || self.operations.contains(&Operation::Sign);
+        // PET needs its own ring, separate from the plain online ring above:
+        // `requires_pet` is fixed at ring creation, so a `pre`/`pet`
+        // comparison run can't share one ring between the gated and
+        // ungated cases.
+        let needs_pet_ring = self.operations.contains(&Operation::Pet);
         let needs_refresh_ring = self.operations.contains(&Operation::PssRefresh);
         let reshare_rings = if self.operations.contains(&Operation::PssReshare) {
             self.warmups + self.repetitions
         } else {
             0
         };
-        dkg_rings + usize::from(needs_online_ring) + usize::from(needs_refresh_ring) + reshare_rings
+        dkg_rings
+            + usize::from(needs_online_ring)
+            + usize::from(needs_pet_ring)
+            + usize::from(needs_refresh_ring)
+            + reshare_rings
     }
 }
 

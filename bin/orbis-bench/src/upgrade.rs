@@ -424,6 +424,7 @@ async fn prepare_online_fixtures(
         ring_id.to_string(),
         Some(reader_identity.clone()),
         true,
+        None,
     )
     .await?;
     cli_tool::register_object_to_chain_with_config(
@@ -847,6 +848,7 @@ impl PreFixtureV1 {
             derivation: self.derivation_hex.as_ref().map(hex::decode).transpose()?,
             salt: self.salt.clone(),
             expected_plaintext: hex::decode(&self.expected_plaintext_hex)?,
+            audit_target_object_id: None,
         })
     }
 }

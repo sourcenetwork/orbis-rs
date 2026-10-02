@@ -1186,6 +1186,7 @@ async fn prepare_online_fixtures(
         ring_id.to_string(),
         Some(reader_identity.clone()),
         true,
+        None,
     )
     .await?;
     cli_tool::register_object_to_chain_with_config(
@@ -1242,6 +1243,7 @@ async fn prepare_online_fixtures(
             derivation: None,
             salt: None,
             expected_plaintext: plaintext,
+            audit_target_object_id: None,
         },
         sign: SignFixture {
             derivation_id,

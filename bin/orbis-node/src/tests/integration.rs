@@ -2608,6 +2608,7 @@ async fn store_prepared_secret_expect_success(
             ring_id.clone(),
             reader_did_pk.clone(),
             with_proof,
+            None,
         )
         .await
         {

@@ -108,6 +108,7 @@ impl BenchmarkRunner {
                         86_400,
                         Duration::from_secs(self.experiment.timeouts.dkg_secs),
                         &mut rng,
+                        false,
                     )
                     .await?;
                     let fixtures = prepare_online_fixtures_in_process(
@@ -161,6 +162,55 @@ impl BenchmarkRunner {
                     }
                 }
 
+                if self.experiment.operations.contains(&Operation::Pet) {
+                    eprintln!(
+                        "[{stack_id}] establishing PET ring={} threshold={} (in-process, pet)",
+                        case.ring_size, case.threshold
+                    );
+                    let (ring_id, members, ring_pk) = establish_ring_in_process(
+                        &harness,
+                        &mut clients,
+                        case.ring_size,
+                        case.threshold,
+                        stack.network_size,
+                        86_400,
+                        Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                        &mut rng,
+                        true,
+                    )
+                    .await?;
+                    let pet_pk = harness
+                        .pet_pk(&ring_id)
+                        .await?
+                        .context("PET ring finalized without a pet_pk")?;
+                    let fixture = prepare_pet_fixture_in_process(
+                        &harness.endpoints[members[0] - 1],
+                        &ring_id,
+                        &ring_pk,
+                        &pet_pk,
+                        case.ring_size,
+                    )
+                    .await?;
+                    let viable = self
+                        .run_pet_trials_in_process(
+                            &mut TrialContext {
+                                store: &mut *store,
+                                manifest: &*manifest,
+                                stack,
+                                stack_id,
+                                clients: &mut clients,
+                                completed,
+                                rng: &mut rng,
+                            },
+                            case,
+                            &ring_id,
+                            &members,
+                            &fixture,
+                        )
+                        .await?;
+                    all_cases_viable &= viable;
+                }
+
                 if wants_pss_refresh {
                     eprintln!(
                         "[{stack_id}] establishing refresh ring={} threshold={} (in-process, pss_refresh)",
@@ -175,6 +225,7 @@ impl BenchmarkRunner {
                         self.experiment.pss_interval_secs,
                         Duration::from_secs(self.experiment.timeouts.dkg_secs),
                         &mut rng,
+                        false,
                     )
                     .await?;
                     let viable = self
@@ -247,7 +298,7 @@ impl BenchmarkRunner {
             // Not a PSS-tested ring: a long interval keeps it effectively
             // never-due, matching Docker's DKG/online rings (`docker::plan_rings`'s
             // `make(86_400)`).
-            harness.seed_pending_ring(&ring_id, &members, case.threshold, 86_400)?;
+            harness.seed_pending_ring(&ring_id, &members, case.threshold, 86_400, false)?;
             let initiator_position = (initiator_offset + trial) % members.len();
             let initiator = members[initiator_position] - 1;
             let started_at = unix_ms();
@@ -262,6 +313,7 @@ impl BenchmarkRunner {
                             &ring_id,
                             &members,
                             Duration::from_secs(self.experiment.timeouts.dkg_secs),
+                            false,
                         )
                         .await?;
                     Ok::<_, anyhow::Error>((acknowledgement, ring_pk))
@@ -443,6 +495,134 @@ impl BenchmarkRunner {
                 case,
                 ring_id,
                 Operation::Pre,
+                concurrency,
+                measurement,
+            ))?;
+        }
+        Ok(viable)
+    }
+
+    /// PET counterpart of `run_pre_trials_in_process` — identical shape,
+    /// against PET's own `requires_pet` ring/fixture and
+    /// `timeouts.pet_secs` instead of `pre_secs` (the 3-round commit/reveal/
+    /// decrypt blind equality test inside `start_pre` does meaningfully more
+    /// network work than plain PRE). `clients.pre`/`pre_call`/`run_pre_load`
+    /// are fully shared with `Pre` — a PET trial is just a `PreFixture` with
+    /// `audit_target_object_id` set, not a parallel call path.
+    async fn run_pet_trials_in_process(
+        &self,
+        ctx: &mut TrialContext<'_>,
+        case: &RingCase,
+        ring_id: &str,
+        members: &[usize],
+        fixture: &PreFixture,
+    ) -> Result<bool> {
+        let mut viable = true;
+        let initiator_offset = (ctx.rng.next_u64() as usize) % case.ring_size;
+        for trial in 0..self.experiment.warmups + self.experiment.repetitions {
+            let warmup = trial < self.experiment.warmups;
+            let trial_index = trial.saturating_sub(self.experiment.warmups);
+            let key = TrialKey::serial(
+                ctx.stack_id,
+                &ctx.stack.profile.name,
+                case,
+                Operation::Pet,
+                trial_index,
+                warmup,
+            );
+            if ctx.completed.contains(&key) {
+                continue;
+            }
+            let initiator_position = (initiator_offset + trial) % members.len();
+            let initiator = members[initiator_position] - 1;
+            let started = Instant::now();
+            let result = timeout(
+                Duration::from_secs(self.experiment.timeouts.pet_secs),
+                ctx.clients.pre(initiator, fixture),
+            )
+            .await;
+            let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let (success, duration_ms, client_total_ms, verification_ms, class, error) =
+                match result {
+                    Ok(Ok(result)) => (
+                        true,
+                        result.rpc_ms,
+                        Some(result.total_ms),
+                        Some(result.decrypt_ms),
+                        None,
+                        None,
+                    ),
+                    Ok(Err(error)) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("correctness_or_protocol_failure".into()),
+                        Some(format!("{error:#}")),
+                    ),
+                    Err(_) => (
+                        false,
+                        elapsed_ms,
+                        None,
+                        None,
+                        Some("timeout".into()),
+                        Some("PET deadline exceeded".into()),
+                    ),
+                };
+            viable &= success || warmup;
+            let mut record = base_trial_in_process(
+                ctx.manifest,
+                ctx.stack,
+                ctx.stack_id,
+                case,
+                ring_id,
+                Operation::Pet,
+                trial_index,
+                warmup,
+                duration_ms,
+                verification_ms,
+                success,
+                class,
+                error,
+            );
+            record.client_total_ms = client_total_ms;
+            ctx.store.append_trial(&record)?;
+        }
+        for (stage_index, &concurrency) in self.experiment.load.concurrency.iter().enumerate() {
+            let key = TrialKey::load(
+                ctx.stack_id,
+                &ctx.stack.profile.name,
+                case,
+                Operation::Pet,
+                concurrency,
+            );
+            if ctx.completed.contains(&key) {
+                continue;
+            }
+            let initiator = members[(initiator_offset + stage_index) % members.len()] - 1;
+            let client = ctx.clients.pre_client(initiator)?;
+            run_pre_load(
+                client.clone(),
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.warmup_secs),
+            )
+            .await;
+            let measurement = run_pre_load(
+                client,
+                fixture.clone(),
+                concurrency,
+                Duration::from_secs(self.experiment.load.measure_secs),
+            )
+            .await;
+            viable &= measurement.failures == 0 && measurement.successes > 0;
+            ctx.store.append_trial(&load_trial_in_process(
+                ctx.manifest,
+                ctx.stack,
+                ctx.stack_id,
+                case,
+                ring_id,
+                Operation::Pet,
                 concurrency,
                 measurement,
             ))?;
@@ -696,6 +876,7 @@ impl BenchmarkRunner {
 /// already-finalized on-chain ring across a resumed run) since in-process
 /// state is ephemeral per run to begin with. Returns `(ring_id, members,
 /// ring_pk)`.
+#[allow(clippy::too_many_arguments)]
 async fn establish_ring_in_process(
     harness: &HarnessNetwork,
     clients: &mut DirectClients,
@@ -705,17 +886,24 @@ async fn establish_ring_in_process(
     pss_interval_secs: u64,
     deadline: Duration,
     rng: &mut StdRng,
+    requires_pet: bool,
 ) -> Result<(String, Vec<usize>, String)> {
     let mut members: Vec<usize> = (1..=network_size).collect();
     members.shuffle(rng);
     members.truncate(ring_size);
     members.sort_unstable();
     let ring_id = format!("harness-ring-{}", uuid::Uuid::new_v4());
-    harness.seed_pending_ring(&ring_id, &members, threshold, pss_interval_secs)?;
+    harness.seed_pending_ring(
+        &ring_id,
+        &members,
+        threshold,
+        pss_interval_secs,
+        requires_pet,
+    )?;
     let initiator = members[(rng.next_u64() as usize) % members.len()] - 1;
     clients.start_dkg(initiator, &ring_id).await?;
     let ring_pk = harness
-        .wait_ring_finalized_everywhere(clients, &ring_id, &members, deadline)
+        .wait_ring_finalized_everywhere(clients, &ring_id, &members, deadline, requires_pet)
         .await?;
     Ok((ring_id, members, ring_pk))
 }
@@ -762,6 +950,7 @@ async fn prepare_online_fixtures_in_process(
         ring_id.to_string(),
         Some(reader_identity.clone()),
         true,
+        None,
     )
     .await?;
 
@@ -787,11 +976,86 @@ async fn prepare_online_fixtures_in_process(
             derivation: None,
             salt: None,
             expected_plaintext: plaintext,
+            audit_target_object_id: None,
         },
         sign: SignFixture {
             derivation_id,
             derived_public_key,
             reader_identity: sign_identity,
         },
+    })
+}
+
+/// PET counterpart of `prepare_online_fixtures_in_process`'s PRE half — mints
+/// a genuine PET ownership tag (standing in for Bankd, same as
+/// `cli_tool::generate_pet_tag`/`prove_pet_tag_knowledge` already do for the
+/// PET Docker integration test) for a synthetic owner identity, attaches it
+/// to the stored document, and uses that same identity as both the request's
+/// authenticated actor and the audited `audit_target_object_id`. No ACP
+/// registration/grant calls needed — see `harness.rs`'s module docs:
+/// `DummyAuthZ` authorizes unconditionally, so `check_pet_permission` (PET's
+/// own ACP gate, additive to the cryptographic tag match) passes regardless
+/// of identity. Collapsing requester and audited owner into one identity is
+/// a simplification that's fine for a benchmark fixture — this measures the
+/// threshold protocol's cost, not cross-identity ACP semantics.
+async fn prepare_pet_fixture_in_process(
+    endpoint: &NodeEndpoint,
+    ring_id: &str,
+    ring_pk: &str,
+    pet_pk_hex: &str,
+    ring_size: usize,
+) -> Result<PreFixture> {
+    let policy_id = HARNESS_POLICY_ID.to_string();
+    let owner_id = format!("orbis-bench-pet-owner-{ring_size}");
+    let (reader_sk, reader_pk) = generate_keypair()?;
+    let reader_pk_bytes = reader_pk.to_bytes()?;
+    let plaintext = format!("orbis benchmark PET plaintext for ring {ring_size}").into_bytes();
+    let resource = "document".to_string();
+    let permission = "read".to_string();
+
+    // Noncircular construction order (see `cli_tool::generate_pet_tag`'s doc
+    // comment): the tag must exist before the payload it's attached to is
+    // encrypted, so the encryption proof can bind to it.
+    let (tag, r_tag) = cli_tool::generate_pet_tag(pet_pk_hex, &owner_id)?;
+    let pet_tag_binding = crypto::context::PetTagBinding {
+        ring_id: ring_id.to_string(),
+        pet_pk: hex::decode(pet_pk_hex).context("decode pet_pk hex")?,
+        ephemeral_point: tag.ephemeral_point.clone(),
+        masked_fingerprint: tag.masked_fingerprint.clone(),
+    };
+    let prepared = cli_tool::prepare_secret(
+        &plaintext,
+        ring_pk,
+        None,
+        policy_id,
+        resource,
+        permission,
+        None,
+        None,
+        None,
+        Some(pet_tag_binding),
+    )?;
+    let prepared_pet_tag =
+        cli_tool::prove_pet_tag_knowledge(&prepared, ring_id, pet_pk_hex, tag, r_tag)?;
+    let stored = cli_tool::store_prepared_secret(
+        endpoint.grpc_url.clone(),
+        &prepared,
+        ring_id.to_string(),
+        Some(owner_id.clone()),
+        true,
+        Some(&prepared_pet_tag),
+    )
+    .await?;
+
+    Ok(PreFixture {
+        ring_pk: ring_pk.to_string(),
+        reader_pk: reader_pk_bytes,
+        reader_sk,
+        object_id: stored.object_id,
+        reader_identity: owner_id.clone(),
+        derivation: None,
+        salt: None,
+        expected_plaintext: plaintext,
+        audit_target_object_id: Some(owner_id),
     })
 }
