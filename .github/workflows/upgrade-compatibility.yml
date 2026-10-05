@@ -4,6 +4,7 @@ on:
   pull_request:
     branches:
       - develop
+      - "iverc/**"
   workflow_dispatch:
     inputs:
       from_ref:
