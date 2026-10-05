@@ -13,7 +13,10 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state_mut(attempt, |state| {
-            if !matches!(state.kind, SessionKind::Fresh) {
+            if !matches!(
+                state.kind,
+                SessionKind::Fresh | SessionKind::FreshPet { .. }
+            ) {
                 return Err(DkgError::ProtocolError(
                     "Commitment hash pre-round is only valid for Fresh DKG".to_string(),
                 ));

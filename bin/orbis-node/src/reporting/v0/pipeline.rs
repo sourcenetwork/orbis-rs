@@ -170,6 +170,7 @@ where
                 now,
                 mode: ReportValidationMode::ReporterObservation,
                 inline_document: prepared.inline_document.clone(),
+                pet_blind_context: prepared.pet_blind_context.clone(),
             },
         )
         .await?;
@@ -206,6 +207,7 @@ where
             SignContext::Report(Box::new(ReportSigningContext {
                 envelope: prepared.envelope.clone(),
                 inline_document: prepared.inline_document.clone(),
+                pet_blind_context: prepared.pet_blind_context.clone(),
             })),
             prepared.signing_options,
         )
@@ -261,6 +263,7 @@ where
                     perform_health_probe,
                 },
                 inline_document: context.inline_document.clone(),
+                pet_blind_context: context.pet_blind_context.clone(),
             },
         )
         .await?;

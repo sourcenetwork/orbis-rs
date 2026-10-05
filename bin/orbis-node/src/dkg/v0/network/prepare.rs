@@ -30,7 +30,10 @@ where
 {
     let result = coordinate_prepared_inner(state.clone(), routes, prepare.clone()).await;
     if let Err(error) = &result {
-        if matches!(prepare.kind, SessionKind::Fresh) {
+        if matches!(
+            prepare.kind,
+            SessionKind::Fresh | SessionKind::FreshPet { .. }
+        ) {
             if let DkgError::BarrierFailure { failed_peers, .. } = error {
                 state
                     .dkg_session_state
@@ -598,9 +601,12 @@ where
     let readiness_start = Instant::now();
     let deadline = readiness_start + DKG_PREPARATION_TIMEOUT;
     let ceremony_kind = match &prepare.kind {
-        SessionKind::Fresh => DkgCeremonyKind::Fresh,
-        SessionKind::Refresh { .. } => DkgCeremonyKind::Refresh,
-        SessionKind::Reshare { .. } => DkgCeremonyKind::Reshare,
+        // Reuses the Fresh metrics bucket — a PET ceremony is a fresh DKG in
+        // every respect metrics care about; split it out later if PET-specific
+        // observability is ever needed.
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => DkgCeremonyKind::Fresh,
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => DkgCeremonyKind::Refresh,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => DkgCeremonyKind::Reshare,
     };
     let ceremony_id = prepare.ceremony_id;
     let attempt_id = prepare.attempt_id;

@@ -147,6 +147,21 @@ where
                 ))
             })?;
 
+        let (pet_tag, pet_tag_proof) = match req.pet_tag {
+            Some(attachment) => {
+                let (pet_tag, pet_tag_proof) =
+                    crate::helpers::pet_tag::pet_tag_attachment_to_document_fields(
+                        attachment.ephemeral_point,
+                        attachment.masked_fingerprint,
+                        attachment.knowledge_proof_challenge,
+                        attachment.knowledge_proof_response,
+                    )
+                    .map_err(StoreSecretError::Validation)?;
+                (Some(pet_tag), Some(pet_tag_proof))
+            }
+            None => (None, None),
+        };
+
         let document_payload = DocumentPayload {
             ring_id: req.ring_id.clone(),
             document: encrypted_document_str,
@@ -158,6 +173,8 @@ where
             permission: req.permission,
             tier: req.tier,
             timestamp: req.timestamp,
+            pet_tag,
+            pet_tag_proof,
         };
 
         let payload_bytes: Vec<u8> =

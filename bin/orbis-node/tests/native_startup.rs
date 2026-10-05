@@ -710,6 +710,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let (commitment, secret, proof) =
         crypto::PreImpl::encrypt_secret(&public_key, plaintext, None, &context).unwrap();
@@ -743,6 +744,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             with_proof: false,
             tier: None,
             timestamp: None,
+            pet_tag: None,
         },
         &token,
     )
@@ -775,6 +777,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 salt: None,
                 valid_window: None,
                 document: None,
+                audit_target_object_id: None,
                 rdr_pk_proof: Some(ReaderKeyProof {
                     challenge: reader_proof.challenge.clone(),
                     response: reader_proof.response.clone(),

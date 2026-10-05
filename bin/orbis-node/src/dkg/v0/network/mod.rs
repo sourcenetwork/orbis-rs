@@ -47,8 +47,10 @@ use crate::dkg::v0::coordinator::types::{CoordinatorDkg, CoordinatorReportSigner
 use crate::dkg::v0::coordinator::DkgCoordinator;
 use crate::dkg::v0::error::{DkgError, Result};
 use crate::dkg::v0::helpers::{
-    derive_fresh_dkg_session_id, derive_refresh_session_id, derive_reshare_session_id,
+    derive_fresh_dkg_session_id, derive_fresh_pet_dkg_session_id, derive_refresh_pet_session_id,
+    derive_refresh_session_id, derive_reshare_pet_session_id, derive_reshare_session_id,
     ring_payload_matches_ring_key, validate_fresh_dkg_ring_payload,
+    validate_fresh_pet_dkg_ring_payload,
 };
 use crate::dkg::v0::messages::{
     ControlSignature, SessionKind, SignedDkgCommitment, SignedDkgShare,
@@ -118,12 +120,13 @@ use self::{
     pss_offline::*, public_batch::*, public_contribution::*, public_publish::*, public_repair::*,
 };
 
-pub use ceremony_start::{fetch_dkg_session_status, start_fresh};
+pub use ceremony_start::{fetch_dkg_session_status, start_fresh, start_fresh_pet};
 pub use control_handler::DkgControlHandler;
 pub use private::DkgPrivateHandler;
 
 pub(crate) use ceremony_start::{
-    start_refresh, start_reshare, RefreshStartOutcome, ReshareStartOutcome,
+    coordinate_reshare_pet, start_refresh, start_refresh_pet, start_reshare, RefreshStartOutcome,
+    ReshareStartOutcome,
 };
 // Only `unsafe_testing` drives the leader broadcast path directly; gating the
 // re-export keeps it out of non-`unsafe-testing` builds without an unused import.

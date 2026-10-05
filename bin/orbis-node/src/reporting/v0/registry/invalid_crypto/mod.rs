@@ -70,6 +70,7 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             envelope,
             ring_config,
             inline_document: observation.inline_document,
+            pet_blind_context: observation.pet_blind_context,
         })
     }
 
@@ -102,6 +103,36 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             } => {
                 self.validate_sign_evidence(envelope, context, &ring, statement, response_signature)
                     .await
+            }
+            InvalidCryptoResponse::PetBlindReveal {
+                statement,
+                response_signature,
+            } => {
+                let blind_context = require_pet_blind_context(context)?;
+                self.validate_pet_blind_reveal_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    blind_context,
+                    statement,
+                    response_signature,
+                )
+                .await
+            }
+            InvalidCryptoResponse::PetBlindDecrypt {
+                statement,
+                response_signature,
+            } => {
+                let blind_context = require_pet_blind_context(context)?;
+                self.validate_pet_blind_decrypt_evidence(
+                    envelope,
+                    context,
+                    &ring,
+                    blind_context,
+                    statement,
+                    response_signature,
+                )
+                .await
             }
             InvalidCryptoResponse::DkgShare {
                 statement,
@@ -320,6 +351,7 @@ pub(super) fn is_valid_invalid_crypto_dkg_origin(origin_protocol: &str) -> bool 
 mod control_message;
 mod dkg_share;
 mod leader_delivery;
+mod pet;
 mod pre_sign;
 mod public_origin;
 
@@ -327,5 +359,5 @@ mod public_origin;
 // test module reaches them through mod.rs's flatten glob.
 #[allow(unused_imports)]
 pub(crate) use self::{
-    control_message::*, dkg_share::*, leader_delivery::*, pre_sign::*, public_origin::*,
+    control_message::*, dkg_share::*, leader_delivery::*, pet::*, pre_sign::*, public_origin::*,
 };

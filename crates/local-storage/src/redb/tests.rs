@@ -208,6 +208,8 @@ fn persisted_storage_tags_remain_stable() {
         LocalStorageKeys::RingPolyHistory("ring".into()),
         LocalStorageKeys::PendingReshareBundle("ring".into()),
         LocalStorageKeys::NativeWorkerKey("vera-worker-test".into()),
+        LocalStorageKeys::PetRingKey("ring".into()),
+        LocalStorageKeys::PendingResharePetBundle("ring".into()),
     ];
     for (tag, key) in keys.iter().enumerate() {
         assert_eq!(

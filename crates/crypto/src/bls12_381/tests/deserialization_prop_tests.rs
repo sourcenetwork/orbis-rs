@@ -98,6 +98,7 @@ proptest! {
             nonce: vec![0u8; 12],
         };
         let ctx = CiphertextContext {
+            pet_tag: None,
             ring_pk: vec![1, 2, 3],
             policy_id: "p".to_string(),
             resource: "r".to_string(),
@@ -161,6 +162,7 @@ fn non_canonical_identity_encodings_are_rejected() {
 fn pre_proof_component_lengths_are_exact() {
     let dkg_pk = g1(11);
     let ctx = CiphertextContext {
+        pet_tag: None,
         ring_pk: vec![9, 9, 9],
         policy_id: "p".to_string(),
         resource: "r".to_string(),

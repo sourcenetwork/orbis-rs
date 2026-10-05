@@ -10,8 +10,8 @@ use authz::r#trait::Authz;
 use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
-use crypto::context::CiphertextContext;
-use crypto::r#trait::{EncryptionProof, Secret, ThresholdDealer};
+use crypto::context::{CiphertextContext, PetTagBinding};
+use crypto::r#trait::{EncryptionProof, PetTag, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
 use std::sync::Arc;
@@ -40,7 +40,17 @@ async fn fetch_document_payload(
 /// on the wire, and one read back from the bulletin (where a match is expected, but recomputing
 /// it in-process fails PRE closed rather than re-encrypting to the wrong identity if the on-chain
 /// and in-process canonicalizations ever diverge).
-fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
+///
+/// `pub(crate)` so `pet::v0::coordinator::verification::verify_pet_check_request` can reuse it
+/// too: PET's own P2P round (`PetCheckRequest`/`PetCheckContext`) carries `document` and
+/// `object_id` as independent fields, supplied directly by the initiator with no upstream check
+/// — unlike PRE's own request handling, which always resolves both together via
+/// `resolve_document_and_ring_payloads` (which already calls this). Without this reuse, a
+/// malicious initiator could pair a genuine document A with a different document B's id, and an
+/// honest PET responder would sign a statement claiming B's id for a proof it actually computed
+/// over A — false evidence a report validator (who loads B by that signed id) could use to accuse
+/// the honest responder.
+pub(crate) fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Result<()> {
     let expected = generate_document_id(
         &document.ring_id,
         &document.document,
@@ -50,6 +60,8 @@ fn check_document_id_binding(object_id: &str, document: &DocumentPayload) -> Res
         &document.permission,
         document.tier.as_deref(),
         document.timestamp,
+        document.pet_tag.as_deref(),
+        document.pet_tag_proof.as_deref(),
     )
     .map_err(|e| PreError::InvalidInput(format!("malformed document: {e}")))?;
 
@@ -145,16 +157,53 @@ pub fn deserialize_secret(document_json: &str) -> Result<Secret> {
         .map_err(|e| PreError::Deserialization(format!("Failed to deserialize secret: {}", e)))
 }
 
+/// Rebuilds the PET tag binding a `requires_pet` ring's encryptor folded into
+/// the payload's own encryption proof (see [`PetTagBinding`]'s doc comment)
+/// — `None` when the document
+/// carries no tag at all (an ordinary, non-PET-gated document). Errors if the
+/// document has a tag but no `pet_pk_hex` was supplied: an inconsistent
+/// ring/document state must never silently verify against a mismatched or
+/// absent binding. Shared with `pet::v0::coordinator::verification`'s own
+/// `build_ciphertext_context`, mirroring how `check_document_id_binding` is
+/// already reused across both modules.
+pub(crate) fn build_pet_tag_binding(
+    document: &DocumentPayload,
+    pet_pk_hex: Option<&str>,
+) -> Result<Option<PetTagBinding>> {
+    let Some(tag_json) = document.pet_tag.as_deref() else {
+        return Ok(None);
+    };
+    let pet_pk_hex = pet_pk_hex.ok_or_else(|| {
+        PreError::InvalidState(
+            "document has a PET tag but the ring has no PET checking key".to_string(),
+        )
+    })?;
+    let tag = PetTag::try_from(tag_json.to_string())
+        .map_err(|e| PreError::Deserialization(format!("Failed to deserialize PET tag: {}", e)))?;
+    let pet_pk = hex::decode(pet_pk_hex)
+        .map_err(|e| PreError::InvalidInput(format!("Invalid pet_pk hex encoding: {}", e)))?;
+    Ok(Some(PetTagBinding {
+        ring_id: document.ring_id.clone(),
+        pet_pk,
+        ephemeral_point: tag.ephemeral_point,
+        masked_fingerprint: tag.masked_fingerprint,
+    }))
+}
+
 /// Rebuilds the [`CiphertextContext`] that the encryptor bound into the
 /// encryption proof: the ring key, the policy fields from the resolved on-chain
-/// (or inline, id-checked) document, and the reader-supplied `salt`.
+/// (or inline, id-checked) document, the reader-supplied `salt`, and (for a
+/// `requires_pet` ring) the document's PET tag binding — see
+/// [`build_pet_tag_binding`].
 pub fn build_ciphertext_context(
     ring_pk_hex: &str,
     document: &DocumentPayload,
     salt: Option<&str>,
+    pet_pk_hex: Option<&str>,
 ) -> Result<CiphertextContext> {
     let ring_pk = hex::decode(ring_pk_hex)
         .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+    let pet_tag = build_pet_tag_binding(document, pet_pk_hex)?;
     Ok(CiphertextContext {
         ring_pk,
         policy_id: document.policy_id.clone(),
@@ -163,6 +212,7 @@ pub fn build_ciphertext_context(
         tier: document.tier.clone(),
         timestamp: document.timestamp,
         salt: salt.map(str::to_string),
+        pet_tag,
     })
 }
 
@@ -278,6 +328,8 @@ mod tests {
             permission: "read".to_string(),
             tier: Some("gold".to_string()),
             timestamp: Some(1_700_000_000),
+            pet_tag: None,
+            pet_tag_proof: None,
         }
     }
 
@@ -291,6 +343,8 @@ mod tests {
             &document.permission,
             document.tier.as_deref(),
             document.timestamp,
+            document.pet_tag.as_deref(),
+            document.pet_tag_proof.as_deref(),
         )
         .expect("well-formed test document")
     }
@@ -339,6 +393,14 @@ mod tests {
                 "timestamp",
                 Box::new(|d: &mut DocumentPayload| d.timestamp = Some(1)),
             ),
+            (
+                "pet_tag+pet_tag_proof",
+                Box::new(|d: &mut DocumentPayload| {
+                    d.pet_tag =
+                        Some(r#"{"ephemeral_point":[1],"masked_fingerprint":[2]}"#.to_string());
+                    d.pet_tag_proof = Some(r#"{"challenge":[3],"response":[4]}"#.to_string());
+                }),
+            ),
         ];
 
         for (field, mutate) in mutations {
@@ -372,6 +434,8 @@ mod tests {
             permission: "read".to_string(),
             tier: Some("gold".to_string()),
             timestamp: Some(1_700_000_000),
+            pet_tag: None,
+            pet_tag_proof: None,
         };
         // document_c is itself internally valid for its own object_id...
         assert!(check_document_id_binding(&object_id_for(&document_c), &document_c).is_ok());

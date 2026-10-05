@@ -136,6 +136,52 @@ fn pre_statement() -> PreReencryptResponseStatement {
     }
 }
 
+fn pet_blind_reveal_statement() -> PetBlindRevealStatement {
+    PetBlindRevealStatement {
+        domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
+        chain_id: "vera-test".to_string(),
+        ring_id: "ring-1".to_string(),
+        ring_pk: "aabb".to_string(),
+        ring_state_sha256: "11".repeat(32),
+        protocol_version: 7,
+        attempt_id: "attempt-1".to_string(),
+        context_digest: [1u8; 32],
+        selection_digest: [2u8; 32],
+        responder_node_key: "accused".to_string(),
+        from_node_id: 2,
+        commitment: vec![3, 4],
+        blinded_r: vec![5, 6],
+        blinded_diff: vec![7, 8],
+        commit_salt: [9u8; 32],
+        challenge: vec![10, 11],
+        proof: vec![12, 13],
+        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+    }
+}
+
+fn pet_blind_decrypt_statement() -> PetBlindDecryptStatement {
+    PetBlindDecryptStatement {
+        domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
+        chain_id: "vera-test".to_string(),
+        ring_id: "ring-1".to_string(),
+        ring_pk: "aabb".to_string(),
+        ring_state_sha256: "11".repeat(32),
+        protocol_version: 7,
+        attempt_id: "attempt-1".to_string(),
+        context_digest: [1u8; 32],
+        certificate_digest: [2u8; 32],
+        responder_node_key: "accused".to_string(),
+        from_node_id: 2,
+        aggregate_r: vec![3, 4],
+        aggregate_diff: vec![5, 6],
+        partial: vec![7, 8],
+        challenge: vec![9, 10],
+        proof: vec![11, 12],
+        signed_at: 1_700_000_000 + CHAIN_BLOCK_GRACE_SECS,
+        public_polynomial: vec![13, 14],
+    }
+}
+
 fn dkg_commitment_statement() -> DkgCommitmentStatement {
     DkgCommitmentStatement {
         domain: DKG_COMMITMENT_DOMAIN.to_string(),
@@ -221,6 +267,104 @@ fn invalid_crypto_response_pre_payload_round_trips() {
     assert_eq!(
         InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
         payload
+    );
+}
+
+#[test]
+fn pet_blind_reveal_statement_round_trips_and_is_domain_separated() {
+    let statement = pet_blind_reveal_statement();
+    assert_eq!(
+        PetBlindRevealStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+
+    let mut changed = pet_blind_reveal_statement();
+    changed.domain = "other".to_string();
+    assert_ne!(
+        pet_blind_reveal_statement().canonical_bytes(),
+        changed.canonical_bytes()
+    );
+}
+
+#[test]
+fn pet_blind_reveal_statement_with_identity_diff_round_trips() {
+    // blinded_diff may legitimately be an empty/identity encoding (an exact
+    // pre-blinding match) — this must still round-trip cleanly.
+    let mut statement = pet_blind_reveal_statement();
+    statement.blinded_diff = vec![];
+    assert_eq!(
+        PetBlindRevealStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+}
+
+#[test]
+fn invalid_crypto_response_pet_blind_reveal_payload_round_trips() {
+    let payload = InvalidCryptoResponse::PetBlindReveal {
+        statement: pet_blind_reveal_statement(),
+        response_signature: vec![42; 64],
+    };
+
+    assert_eq!(
+        InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+        payload
+    );
+}
+
+// This value is shared with Vera's report_test.go golden vector — regenerate both sides
+// together (see decodePetBlindRevealStatement's doc comment in Vera's report.go).
+#[test]
+fn invalid_crypto_response_pet_blind_reveal_payload_matches_golden_vector() {
+    let payload = InvalidCryptoResponse::PetBlindReveal {
+        statement: pet_blind_reveal_statement(),
+        response_signature: vec![42; 64],
+    };
+    assert_eq!(
+        hex::encode(payload.canonical_bytes()),
+        "000000107065745f626c696e645f72657665616c00000133000000226f726269732d7065742d626c696e642d72657665616c2d726573706f6e73652d763100000009766572612d746573740000000672696e672d3100000004616162620000004031313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131000000000000000700000009617474656d70742d31010101010101010101010101010101010101010101010101010101010101010102020202020202020202020202020202020202020202020202020202020202020000000761636375736564000000020000000203040000000205060000000207080909090909090909090909090909090909090909090909090909090909090909000000020a0b000000020c0d000000006553f10a000000402a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
+    );
+}
+
+#[test]
+fn pet_blind_decrypt_statement_round_trips_and_is_domain_separated() {
+    let statement = pet_blind_decrypt_statement();
+    assert_eq!(
+        PetBlindDecryptStatement::from_canonical_bytes(&statement.canonical_bytes()).unwrap(),
+        statement
+    );
+
+    let mut changed = pet_blind_decrypt_statement();
+    changed.domain = "other".to_string();
+    assert_ne!(
+        pet_blind_decrypt_statement().canonical_bytes(),
+        changed.canonical_bytes()
+    );
+}
+
+#[test]
+fn invalid_crypto_response_pet_blind_decrypt_payload_round_trips() {
+    let payload = InvalidCryptoResponse::PetBlindDecrypt {
+        statement: pet_blind_decrypt_statement(),
+        response_signature: vec![42; 64],
+    };
+
+    assert_eq!(
+        InvalidCryptoResponse::from_canonical_bytes(&payload.canonical_bytes()).unwrap(),
+        payload
+    );
+}
+
+// This value is shared with Vera's report_test.go golden vector — regenerate both sides
+// together (see decodePetBlindDecryptStatement's doc comment in Vera's report.go).
+#[test]
+fn invalid_crypto_response_pet_blind_decrypt_payload_matches_golden_vector() {
+    let payload = InvalidCryptoResponse::PetBlindDecrypt {
+        statement: pet_blind_decrypt_statement(),
+        response_signature: vec![42; 64],
+    };
+    assert_eq!(
+        hex::encode(payload.canonical_bytes()),
+        "000000117065745f626c696e645f646563727970740000011a000000236f726269732d7065742d626c696e642d646563727970742d726573706f6e73652d763100000009766572612d746573740000000672696e672d3100000004616162620000004031313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131000000000000000700000009617474656d70742d310101010101010101010101010101010101010101010101010101010101010101020202020202020202020202020202020202020202020202020202020202020200000007616363757365640000000200000002030400000002050600000002070800000002090a000000020b0c000000006553f10a000000020d0e000000402a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
     );
 }
 

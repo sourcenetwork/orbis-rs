@@ -21,6 +21,7 @@ use std::fmt::Debug;
 /// every rotation round in this lifecycle test.
 fn lifecycle_ctx() -> CiphertextContext {
     CiphertextContext {
+        pet_tag: None,
         ring_pk: b"lifecycle-ring-pk".to_vec(),
         policy_id: "lifecycle-policy".to_string(),
         resource: "lifecycle-resource".to_string(),

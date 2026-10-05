@@ -290,6 +290,44 @@ pub const FINALIZATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 6
 pub const MAX_PRE_RESPONSES: usize = 1000;
 
 // ============================================================================
+// PET (Ownership-Tag Check) Constants
+// ============================================================================
+
+/// Maximum number of pending PET-check responses.
+///
+/// Mirrors `MAX_PRE_RESPONSES`: PET-check responses are collected
+/// asynchronously from multiple nodes, and this limit prevents unbounded
+/// growth of response storage. Shared by all three PET blind-equality-test
+/// phases (commit/reveal/decrypt) — see `PET_COLLECTION_TIMEOUT`.
+pub const MAX_PET_RESPONSES: usize = 1000;
+
+/// Overall deadline for collecting responses in any one PET blind-equality-test
+/// phase (commit, reveal, or decrypt), mirroring `SIGN_COLLECTION_TIMEOUT`. A
+/// PET check runs at most once per PRE request, so a generous bound is fine.
+pub const PET_COLLECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of pending PET blinding-secret states.
+///
+/// Mirrors `MAX_NONCE_STATES`: a responder holds its freshly generated `z_i`
+/// and `commit_salt_i` between the commit and reveal phases. This limit
+/// prevents unbounded memory growth from commit requests that never receive
+/// a matching reveal.
+pub const MAX_PET_BLIND_PENDING: usize = 1000;
+
+/// Time-to-live for PET blinding-secret states before they are eligible for
+/// cleanup.
+///
+/// Mirrors `SIGN_NONCE_TTL`'s reasoning: a genuine reveal should arrive within
+/// one `PET_COLLECTION_TIMEOUT` of its commit. This covers that collection
+/// deadline plus grace for the coordinator to build and send the reveal
+/// request afterward.
+pub const PET_BLIND_PENDING_TTL: Duration = Duration::from_secs(45);
+
+/// Interval between PET blinding-secret-state expiration checks. Mirrors
+/// `SIGN_EXPIRATION_CHECK_INTERVAL`.
+pub const PET_BLIND_EXPIRATION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+// ============================================================================
 // Sign (Threshold BLS Signing) Constants
 // ============================================================================
 
@@ -634,6 +672,18 @@ pub const REFRESH_HEALTH_CHECK_MAX_ATTEMPTS: usize = 6;
 /// Delay between post-refresh diagnostic threshold signature retries.
 pub const REFRESH_HEALTH_CHECK_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+/// Attempts for a single `LocalStorage::delete` of a departed member's
+/// secret key material (main or PET share) before giving up and logging.
+/// Not a durable, crash-proof guarantee — the ring's index entry is already
+/// gone by the time this runs, so there is no later retry across a restart
+/// — just enough to ride out an ordinary transient storage error (e.g.
+/// `redb` write-transaction lock contention) instead of permanently
+/// orphaning sensitive material on the very first failed attempt.
+pub const DEPARTED_KEY_DELETE_RETRY_ATTEMPTS: u32 = 3;
+
+/// Delay between retries of a failed departed-key-material delete.
+pub const DEPARTED_KEY_DELETE_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 /// How often a non-node-1 reshare member polls the bulletin waiting for the
 /// node-1 bulletin update to land before releasing its PSS claim.
 pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs(2);
@@ -642,16 +692,33 @@ pub const RESHARE_BULLETIN_CONFIRM_POLL_INTERVAL: Duration = Duration::from_secs
 /// node's staged reshare bundle (see `reshare/cleanup.rs`) and releasing the
 /// PSS claim unconditionally.
 ///
-/// This is a comfortable multiple — not just a slim margin — of
-/// RESHARE_SIGNATURE_MAX_ATTEMPTS × SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s,
-/// node 1's worst-case finalize-signing retry budget): unlike before this
-/// timeout gated only cleanup-task bookkeeping, it now decides whether to
-/// promote a continuing node's locally-computed share to disk at all, so a
-/// legitimately slow-but-succeeding reshare must not lose that race. Must
-/// stay comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
+/// A comfortable multiple — not just a slim margin — of node 1's worst-case
+/// time-to-post: RESHARE_PET_COMPLETION_WAIT_TIMEOUT (150 s — for a
+/// `requires_pet` ring, node 1 defers signing until `ResharePet` also
+/// completes; see `bulletin_update.rs`) plus RESHARE_SIGNATURE_MAX_ATTEMPTS ×
+/// SIGN_COLLECTION_TIMEOUT (6 × 30 s = 180 s, the finalize-signing retry
+/// budget itself) = 330 s worst case. Unlike before this timeout gated only
+/// cleanup-task bookkeeping, it now decides whether to promote a continuing
+/// node's locally-computed share to disk at all, so a legitimately
+/// slow-but-succeeding reshare must not lose that race. Must stay
+/// comfortably under `DKG_COMPLETED_SESSION_TTL`, which the completed
 /// session (and its `reshare_signature_ready` marker) is otherwise aged out
 /// by independently.
-pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(360);
+pub const RESHARE_BULLETIN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(480);
+
+/// Maximum time new-committee node 1 waits, after triggering `ResharePet`,
+/// for it to complete locally before giving up on signing the deferred
+/// main-ring bulletin update this tick (see `bulletin_update.rs`'s
+/// `requires_pet` gate). Comfortably above `DKG_PREPARATION_TIMEOUT` (120 s
+/// — the committee-activation barrier `ResharePet` itself is bounded by)
+/// without being wastefully long; giving up here is not a failure in
+/// itself, just a missed window — the next PSS tick retries the whole
+/// reshare (main key and PET both) from scratch.
+pub const RESHARE_PET_COMPLETION_WAIT_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// How often node 1 polls for `ResharePet`'s staged bundle while waiting
+/// under `RESHARE_PET_COMPLETION_WAIT_TIMEOUT`.
+pub const RESHARE_PET_COMPLETION_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// How long a retired ring polynomial stays available for invalid-crypto report
 /// verification (`ring_state::RingPolyHistory`) after a PSS ceremony replaces it.

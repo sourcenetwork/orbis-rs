@@ -113,6 +113,23 @@ pub fn determine_session_node_id(our_peer_id: &str, all_peer_ids: &[String]) -> 
         .map(|index| (index + 1) as u32)
 }
 
+/// Inverse of [`determine_session_node_id`]: given a 1-based node id, find
+/// the identity key at that position in `all_peer_ids`'s canonical sort
+/// order. Used to verify a signed attestation actually came from the
+/// committee member it claims to be — a node that mislabels its own
+/// `from_node_id` cannot borrow another member's identity this way, since
+/// the caller checks the returned key against the signature itself.
+pub fn node_key_for_id(node_id: u32, all_peer_ids: &[String]) -> Option<String> {
+    let mut sorted_peer_ids: Vec<String> = all_peer_ids
+        .iter()
+        .map(|peer_id| extract_node_part(peer_id))
+        .collect();
+    sorted_peer_ids.sort();
+    sorted_peer_ids.dedup();
+    let index = (node_id as usize).checked_sub(1)?;
+    sorted_peer_ids.get(index).cloned()
+}
+
 pub fn determine_ring_node_id_from_peer_id(peer_id: &str, ring: &RingConfig) -> Option<u32> {
     if ring.peer_node_keys.len() != ring.peer_ids.len() {
         return None;
@@ -190,5 +207,28 @@ mod tests {
             determine_ring_node_id_from_peer_id("peer-b", &ring),
             Some(2)
         );
+    }
+
+    #[test]
+    fn node_key_for_id_is_the_inverse_of_determine_session_node_id() {
+        let peer_node_keys = vec![
+            "node-c".to_string(),
+            "node-a".to_string(),
+            "node-b".to_string(),
+        ];
+        for key in &peer_node_keys {
+            let id = determine_session_node_id(key, &peer_node_keys).unwrap();
+            assert_eq!(
+                node_key_for_id(id, &peer_node_keys).as_deref(),
+                Some(key.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn node_key_for_id_rejects_zero_and_out_of_range() {
+        let peer_node_keys = vec!["node-a".to_string(), "node-b".to_string()];
+        assert_eq!(node_key_for_id(0, &peer_node_keys), None);
+        assert_eq!(node_key_for_id(3, &peer_node_keys), None);
     }
 }

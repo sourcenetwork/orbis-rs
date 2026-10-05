@@ -647,6 +647,7 @@ fn signed_bad_refresh_dkg_share_observation(
         accused_peer_id,
         observed_at,
         inline_document: None,
+        pet_blind_context: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature,
@@ -680,6 +681,7 @@ async fn test_delegated_dkg_with_vera_end_to_end() {
         &net.policy_id,
         None,
         vec![relay.did_uri.clone()],
+        false,
     )
     .await;
     let token = relay
@@ -898,13 +900,20 @@ async fn test_concurrent_pre_requests() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
-    let obj_resp =
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true)
-            .await
-            .expect("store prepared secret");
+    let obj_resp = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared,
+        ring_id.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("store prepared secret");
     let object_id = obj_resp.object_id;
 
     // Step 3: Authz — register the object and grant read access to the test DID
@@ -1033,6 +1042,7 @@ async fn test_concurrent_sign_requests() {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("prepare secret")
         })
@@ -1041,9 +1051,30 @@ async fn test_concurrent_sign_requests() {
     // Step 3: Three concurrent store_prepared_secret calls
     //         Each triggers a full FROST threshold BLS signing round-trip
     let (r1, r2, r3) = tokio::join!(
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[0], ring_id.clone(), None, true,),
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[1], ring_id.clone(), None, true,),
-        cli_tool::store_prepared_secret(endpoint.clone(), &preps[2], ring_id.clone(), None, true,),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[0],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[1],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &preps[2],
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
     );
 
     let resp1 = r1.expect("SIGN 1 failed");

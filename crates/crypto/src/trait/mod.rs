@@ -9,9 +9,11 @@
 //! - [`dkg`] — the DKG abstractions (`Dkg`, `PubPoly`, `PolynomialCommitment`, ...).
 //! - [`pre`] — the PRE abstraction (`ThresholdDealer`).
 //! - [`sign`] — the threshold-signing abstraction (`ThresholdSigner`).
+//! - [`pet`] — the PET ownership-tag abstraction (`Pet`).
 
 mod codec;
 mod dkg;
+mod pet;
 mod pre;
 mod serialize;
 mod sign;
@@ -19,6 +21,7 @@ mod types;
 
 pub use codec::*;
 pub use dkg::*;
+pub use pet::*;
 pub use pre::*;
 pub use sign::*;
 pub use types::*;

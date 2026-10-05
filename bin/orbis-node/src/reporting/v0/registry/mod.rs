@@ -20,15 +20,18 @@ use crate::reporting::v0::observation::{
 };
 use crate::reporting::v0::state::InFlightReportKey;
 use crate::reporting::v0::types::{
-    ring_state_sha256, CommitteeScope, DkgCommitmentStatement, DkgControlMessageFaultKind,
-    DkgControlMessageFaultStatement, DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind,
-    DkgLeaderPublicFaultStatement, DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement,
-    DkgShareStatement, EndpointSignedContribution, InvalidCryptoResponse, NodeOffline,
-    PreReencryptResponseStatement, RelayRequestStatement, ReportEnvelope, ReportedDocumentEvidence,
-    SignResponseStatement, UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS,
-    DKG_COMMITMENT_DOMAIN, DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_BATCH_MISMATCH_DOMAIN,
+    pet_blind_commit_hash, pet_blind_proof_transcript_digest, ring_state_sha256, CommitteeScope,
+    DkgCommitmentStatement, DkgControlMessageFaultKind, DkgControlMessageFaultStatement,
+    DkgLeaderEquivocationStatement, DkgLeaderPublicFaultKind, DkgLeaderPublicFaultStatement,
+    DkgPublicOriginFaultKind, DkgPublicOriginFaultStatement, DkgShareStatement,
+    EndpointSignedContribution, InvalidCryptoResponse, NodeOffline, PetBlindContext,
+    PetBlindDecryptStatement, PetBlindRevealStatement, PreReencryptResponseStatement,
+    RelayRequestStatement, ReportEnvelope, ReportedDocumentEvidence, SignResponseStatement,
+    UnauthorizedRequestPayload, CHAIN_BLOCK_GRACE_SECS, DKG_COMMITMENT_DOMAIN,
+    DKG_CONTROL_MESSAGE_FAULT_DOMAIN, DKG_LEADER_BATCH_MISMATCH_DOMAIN,
     DKG_LEADER_EQUIVOCATION_DOMAIN, DKG_LEADER_PUBLIC_FAULT_DOMAIN, DKG_PUBLIC_ORIGIN_FAULT_DOMAIN,
     DKG_SHARE_DOMAIN, INVALID_CRYPTO_RESPONSE_REPORT_TYPE, NODE_OFFLINE_REPORT_TYPE,
+    PET_BLIND_DECRYPT_RESPONSE_DOMAIN, PET_BLIND_REVEAL_RESPONSE_DOMAIN,
     PRE_REENCRYPT_RESPONSE_DOMAIN, RELAY_REQUEST_DOMAIN, REPORT_DOMAIN, REPORT_TTL_SECS,
     SIGN_RESPONSE_DOMAIN, UNAUTHORIZED_REQUEST_REPORT_TYPE,
 };
@@ -48,11 +51,12 @@ use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
 use crypto::r#trait::{
-    CryptoDeserialize, Dkg, PolynomialCommitment as PolynomialCommitmentTrait, PubShare,
-    ReencryptReply, ThresholdDealer, ThresholdSigner,
+    CryptoDeserialize, Dkg, Pet, PetCheckReply, PetTag,
+    PolynomialCommitment as PolynomialCommitmentTrait, PubShare, ReencryptReply, ThresholdDealer,
+    ThresholdSigner,
 };
 use crypto::{
-    DkgImpl, GroupAffine, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
+    DkgImpl, GroupAffine, PetImpl, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
     SignaturePoint, GROUP_POINT_SIZE,
 };
 use local_storage::LocalStorageImpl;
@@ -87,6 +91,13 @@ pub struct ReportValidationContext {
     /// (`require_pre_proof_verification_failure`, `require_relayed_request_unauthorized`) re-bind
     /// it to `object_id` before use. `None` for every bulletin-sourced report.
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band `PetBlindContext` for a PET blind-equality-test
+    /// `invalid_crypto_response` report — supplied by the reporter's own
+    /// observation, or by `ReportSigningContext` when validating as an
+    /// independent co-signer. `None` for every non-PET report. Mirrors
+    /// `inline_document` exactly, and for the same reason: the audit target
+    /// (and every other context field) must never be published on chain.
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 pub struct ReportPreparationContext {
@@ -103,6 +114,10 @@ pub struct PreparedReport {
     /// reporter's own local validation). `None` for every report except a PRE one whose request
     /// carried its document inline.
     pub inline_document: Option<ReportedDocumentEvidence>,
+    /// Out-of-band `PetBlindContext` to carry into `ReportSigningContext` (and this reporter's
+    /// own local validation). `None` for every report except a PET blind-equality-test
+    /// `invalid_crypto_response`. Mirrors `inline_document` exactly.
+    pub pet_blind_context: Option<PetBlindContext>,
 }
 
 #[async_trait]

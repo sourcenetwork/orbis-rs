@@ -320,7 +320,7 @@ impl VeraBulletin {
             .map_err(|e| BulletinError::ParseError(e.to_string()))?;
         let result = self
             .chain_client
-            .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk)
+            .orbis_finalize_ring(&finalize.ring_id, &finalize.ring_pk, finalize.pet_pk)
             .await
             .map_err(|e| BulletinError::ChainError(e.to_string()))?;
         check_result(result, "finalize ring")?;
@@ -353,6 +353,8 @@ impl VeraBulletin {
                 &doc.permission,
                 doc.tier.clone(),
                 doc.timestamp,
+                doc.pet_tag.clone(),
+                doc.pet_tag_proof.clone(),
             )
             .await
         {
@@ -369,6 +371,8 @@ impl VeraBulletin {
                 &doc.permission,
                 doc.tier.as_deref(),
                 doc.timestamp,
+                doc.pet_tag.as_deref(),
+                doc.pet_tag_proof.as_deref(),
             )
             .map_err(|e| BulletinError::ParseError(e.to_string())),
             Err(e) => Err(BulletinError::ChainError(e.to_string())),
@@ -492,6 +496,8 @@ fn ring_to_bulletin_post(ring: orbis::Ring) -> Result<BulletinPost> {
                 backup_node_keys: reporting.backup_node_keys,
                 kick_threshold: reporting.kick_threshold,
             }),
+        requires_pet: ring.requires_pet,
+        pet_pk: ring.pet_pk,
     };
     Ok(BulletinPost {
         id: ring.id,
@@ -510,6 +516,8 @@ fn document_to_bulletin_post(doc: orbis::Document) -> Result<BulletinPost> {
         permission: doc.permission,
         tier: doc.tier,
         timestamp: doc.timestamp,
+        pet_tag: doc.pet_tag,
+        pet_tag_proof: doc.pet_tag_proof,
     };
     Ok(BulletinPost {
         id: doc.id,

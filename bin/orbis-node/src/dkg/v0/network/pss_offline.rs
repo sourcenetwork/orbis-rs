@@ -139,42 +139,80 @@ pub(super) async fn validate_offline_relay_transition<D>(
 where
     D: CoordinatorDkg,
 {
-    let SessionKind::Reshare {
-        ring_pk_hex,
-        new_peer_node_keys,
-        new_threshold,
-        bulletin_post_id,
-    } = kind
-    else {
-        return Err(DkgError::Unauthorized(
-            "offline-candidate relay is only valid for reshare".into(),
-        ));
-    };
-    if bulletin_post_id != ring_id {
-        return Err(DkgError::Unauthorized(
-            "offline-candidate relay ring binding is inconsistent".into(),
-        ));
-    }
-    let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
-        .await
-        .map_err(DkgError::ProtocolError)?;
-    let (pending_keys, pending_threshold) = pending_reshare_parameters(&ring, ring_pk_hex)?;
-    if pending_keys != *new_peer_node_keys || pending_threshold != *new_threshold {
-        return Err(DkgError::Unauthorized(
-            "offline-candidate relay targets a superseded reshare transition".into(),
-        ));
-    }
-    let expected_ceremony = CeremonyId(derive_reshare_session_id(
-        ring_pk_hex,
-        ring_id,
-        &ring.peer_node_keys,
-        &pending_keys,
-        pending_threshold,
-    )?);
-    if expected_ceremony != ceremony_id {
-        return Err(DkgError::Unauthorized(
-            "offline-candidate relay ceremony binding is stale".into(),
-        ));
+    match kind {
+        SessionKind::Reshare {
+            ring_pk_hex,
+            new_peer_node_keys,
+            new_threshold,
+            bulletin_post_id,
+        } => {
+            if bulletin_post_id != ring_id {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay ring binding is inconsistent".into(),
+                ));
+            }
+            let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
+            let (pending_keys, pending_threshold) = pending_reshare_parameters(&ring, ring_pk_hex)?;
+            if pending_keys != *new_peer_node_keys || pending_threshold != *new_threshold {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay targets a superseded reshare transition".into(),
+                ));
+            }
+            let expected_ceremony = CeremonyId(derive_reshare_session_id(
+                ring_pk_hex,
+                ring_id,
+                &ring.peer_node_keys,
+                &pending_keys,
+                pending_threshold,
+            )?);
+            if expected_ceremony != ceremony_id {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay ceremony binding is stale".into(),
+                ));
+            }
+        }
+        // Same as the `Reshare` arm above, for the ring's independent PET
+        // checking key: no separate `bulletin_post_id`/`ring_pk_hex` — `ring_id`
+        // alone is PET's identity anchor (see `SessionKind::ResharePet`'s doc
+        // comment), so the binding check compares it directly instead.
+        SessionKind::ResharePet {
+            ring_id: kind_ring_id,
+            new_peer_node_keys,
+            new_threshold,
+        } => {
+            if kind_ring_id != ring_id {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay ring binding is inconsistent".into(),
+                ));
+            }
+            let ring = read_ring_for_route(&*state.bulletin, ring_id, routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
+            let (pending_keys, pending_threshold) = pending_reshare_pet_parameters(&ring)?;
+            if pending_keys != *new_peer_node_keys || pending_threshold != *new_threshold {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay targets a superseded reshare transition".into(),
+                ));
+            }
+            let expected_ceremony = CeremonyId(derive_reshare_pet_session_id(
+                ring_id,
+                &ring.peer_node_keys,
+                &pending_keys,
+                pending_threshold,
+            )?);
+            if expected_ceremony != ceremony_id {
+                return Err(DkgError::Unauthorized(
+                    "offline-candidate relay ceremony binding is stale".into(),
+                ));
+            }
+        }
+        _ => {
+            return Err(DkgError::Unauthorized(
+                "offline-candidate relay is only valid for reshare".into(),
+            ));
+        }
     }
     Ok(())
 }

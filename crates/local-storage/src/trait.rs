@@ -37,6 +37,23 @@ pub enum LocalStorageKeys {
     PendingReshareBundle(String),
     /// Independent native submission key, encrypted at rest.
     NativeWorkerKey(String),
+    /// Encrypted `RingShareBundle` for one ring's independent PET checking
+    /// key, keyed by `ring_id` (the chain ring identifier, not a public key —
+    /// the checking key has no stable public identity to key by until its
+    /// own ceremony finishes, see `SessionKind::FreshPet`). Deliberately a
+    /// separate variant from `RingKey`, even though both wrap a plain
+    /// `String` and both hold a `RingShareBundle`: a `ring_id` and a main
+    /// key's `aggregate_pk.to_string()` are drawn from unrelated namespaces
+    /// with no structural reason they can never collide, and a `FreshPet`
+    /// ceremony must never be able to overwrite a main-key bundle (or a
+    /// different ring's PET bundle) by naming the wrong identifier.
+    PetRingKey(String),
+    /// Same as [`Self::PendingReshareBundle`], for a ring's independent PET
+    /// checking key, keyed by `ring_id` — a distinct namespace for the same
+    /// reason [`Self::PetRingKey`] is distinct from [`Self::RingKey`]: a
+    /// `ring_id` and a main key's `aggregate_pk.to_string()` share no
+    /// structural guarantee against collision.
+    PendingResharePetBundle(String),
 }
 
 pub trait LocalStorage {

@@ -201,6 +201,8 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
@@ -248,6 +250,130 @@ async fn test_refresh_ring_reconciles_finalized_removed_member() {
     cleanup_db(&db_path);
 }
 
+/// Reshare-atomicity: a `requires_pet`
+/// ring's finalized-removal reconciliation must delete the PET checking
+/// key's live share *and* any pending bundle in either namespace, not just
+/// the main key's live share — otherwise a node that missed the live,
+/// confirmation-driven cleanup because it was offline keeps every one of
+/// these indefinitely (no remaining `RingIndex` entry means nothing will
+/// ever revisit this ring to clean them up again).
+#[tokio::test]
+async fn test_reconcile_finalized_removed_member_deletes_pet_material() {
+    let db_name = "pss_non_member_pet";
+
+    let fake_node_key_1 = "non-member-node-key-1".to_string();
+    let fake_node_key_2 = "non-member-node-key-2".to_string();
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "fake_pk_pet".to_string(),
+        peer_node_keys: vec![fake_node_key_1, fake_node_key_2],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 86400,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aabb".to_string()),
+    };
+
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    assert!(
+        !ring_payload
+            .peer_node_keys
+            .iter()
+            .any(|node_key| node_key == &app_state.node_key),
+        "Test setup: our node must not be in the committee for this test to be meaningful"
+    );
+
+    // Main key: stale live share only (mirrors the existing non-PET test).
+    RingShareBundle {
+        share_bytes: vec![1, 2, 3].into(),
+        public_polynomial: "stale-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed stale finalized ring bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: RingShareBundle {
+            share_bytes: vec![4, 5, 6].into(),
+            public_polynomial: "stale-pending-main-polynomial".to_string(),
+            last_pss: 1,
+        },
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["some-other-committee".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save(&app_state.local_storage, &entry.ring_pk_str)
+    .expect("seed stale pending main bundle");
+
+    // PET checking key: both a live share and a pending bundle, exactly the
+    // material this fix must not leave behind.
+    RingShareBundle {
+        share_bytes: vec![7, 8, 9].into(),
+        public_polynomial: "stale-pet-polynomial".to_string(),
+        last_pss: 1,
+    }
+    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed stale finalized PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: RingShareBundle {
+            share_bytes: vec![10, 11, 12].into(),
+            public_polynomial: "stale-pending-pet-polynomial".to_string(),
+            last_pss: 1,
+        },
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["some-other-committee".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed stale pending PET bundle");
+
+    let state_arc = Arc::new(app_state);
+    let result = super::pss_ring(&state_arc, &entry).await;
+
+    assert!(
+        result.is_ok(),
+        "removed-member reconciliation failed: {result:?}"
+    );
+    assert!(
+        RingShareBundle::load_by_ring_key(&state_arc.local_storage, &entry.ring_pk_str).is_err(),
+        "finalized removal must delete stale main secret material"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load(&state_arc.local_storage, &entry.ring_pk_str)
+            .expect("pending lookup must not error")
+            .is_none(),
+        "finalized removal must delete the stale pending main bundle"
+    );
+    assert!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .is_err(),
+        "finalized removal must delete stale PET secret material"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "finalized removal must delete the stale pending PET bundle"
+    );
+    assert!(
+        !ring_index_entries(&state_arc)
+            .iter()
+            .any(|candidate| candidate.ring_pk_str == entry.ring_pk_str),
+        "finalized removal must delete the stale ring-index entry"
+    );
+
+    cleanup_db(&db_path);
+}
+
 #[tokio::test]
 async fn test_removed_member_reconciliation_preserves_an_active_ring() {
     let db_name = "pss_non_member_active";
@@ -263,6 +389,8 @@ async fn test_removed_member_reconciliation_preserves_an_active_ring() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
     RingShareBundle {
@@ -319,6 +447,8 @@ async fn test_refresh_setup_invalid_peer_does_not_wedge_ring_claim() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -376,6 +506,8 @@ async fn test_refresh_follower_does_not_fall_back_when_canonical_route_is_missin
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
     let state = Arc::new(app_state);
@@ -454,6 +586,8 @@ async fn test_refresh_ring_rejects_bulletin_ring_pk_mismatch() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let post_id = "test-pss-ring-pk-mismatch".to_string();
@@ -501,6 +635,8 @@ async fn test_pending_fresh_dkg_elapsed_interval_cleans_local_state() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -574,6 +710,8 @@ async fn test_pending_fresh_dkg_cancellation_failure_still_cleans_local_state() 
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -634,6 +772,8 @@ async fn test_pending_fresh_dkg_missing_bulletin_ring_cleans_local_state() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
     let entry = post_ring_and_seed_index_with_local_key(
         &app_state,
@@ -686,6 +826,8 @@ async fn test_pending_fresh_dkg_elapsed_interval_preserves_completed_bundle() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let mut entry = post_ring_and_seed_index_with_local_key(
@@ -759,6 +901,8 @@ async fn test_pending_fresh_dkg_before_interval_remains_indexed() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index_with_local_key(
@@ -922,6 +1066,8 @@ async fn test_pss_ring_reshare_bypasses_interval() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -969,6 +1115,8 @@ async fn test_pss_ring_reshare_rejects_new_committee_node_without_allowlist() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1012,6 +1160,8 @@ async fn test_pss_ring_new_threshold_alone_triggers_reshare() {
         policy_id: Some("test-policy".to_string()),
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1045,6 +1195,8 @@ async fn test_pss_ring_refresh_skips_before_interval_elapsed() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1084,6 +1236,8 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     };
 
     let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
@@ -1093,6 +1247,242 @@ async fn test_pss_ring_refresh_zero_interval_is_due() {
         matches!(result, Err(DkgError::Storage(_))),
         "Expected Storage error: present zero interval should reach trigger_refresh and fail \
          only because the test has no share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// `check_and_trigger_refresh_pet`: the PET checking key's own independent
+// refresh clock (Stage 1 of the PSS-for-PET-key plan). These call the
+// function directly (rather than through `pss_ring`) so each case is isolated
+// from the main key's own due-check entirely — proving the PET clock reads
+// only its own `RingShareBundle::load_by_pet_ring_key` bundle and the ring's
+// `requires_pet`/`pet_pk` fields, never anything from the main key's state.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// A ring that doesn't require PET must never attempt a PET refresh, no
+/// matter how the PET namespace's own bundle (if any) looks.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_when_ring_does_not_require_pet() {
+    let db_name = "pss_pet_refresh_skips_when_not_required";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_not_required_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0, // due, if PET were checked at all
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(())),
+        "a ring that does not require PET must skip the PET refresh check entirely: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// A `requires_pet` ring whose PET checking key hasn't finalized yet
+/// (`pet_pk: None`) must also skip — there is nothing to refresh.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_when_pet_pk_not_finalized() {
+    let db_name = "pss_pet_refresh_skips_when_pet_pk_missing";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_pk_missing_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: None, // FreshPet hasn't finalized on-chain yet
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(())),
+        "a ring whose PET checking key has not finalized must skip the PET refresh check: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// The PET refresh check reads its own bundle's `last_pss` — independent of
+/// whatever the main key's `RingShareBundle` looks like (there isn't even one
+/// seeded here). A recent PET `last_pss` against a far-future interval must
+/// skip.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_skips_before_interval_elapsed() {
+    let db_name = "pss_pet_refresh_skips_not_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_not_due_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: u64::MAX, // far in the future — PET refresh must skip
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("aa".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "pet_poly".to_string(),
+        last_pss: u64::MAX - 1,
+    }
+    .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("store PET bundle");
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Expected Ok(()): PET refresh not yet due must skip silently. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// `pss_interval = 0` means the PET refresh is immediately due, purely off
+/// its own (absent) `last_pss` — reaching `trigger_refresh_pet` and failing
+/// only because the test seeded no PET share to load proves dispatch
+/// happened, mirroring `test_pss_ring_refresh_zero_interval_is_due`'s same
+/// proof-by-missing-bundle technique for the main key.
+#[tokio::test]
+async fn test_check_and_trigger_refresh_pet_triggers_when_due() {
+    let db_name = "pss_pet_refresh_zero_interval_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_pet_zero_interval_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        pss_interval: 0,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("bb".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    // No PET bundle seeded: `trigger_refresh_pet` must be reached and fail
+    // trying to load it.
+
+    let result = super::check_and_trigger_refresh_pet(
+        &Arc::new(app_state),
+        &entry,
+        &ring_payload,
+        &::network::V0,
+    )
+    .await;
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error: due PET refresh should reach trigger_refresh_pet and fail \
+         only because the test has no PET share bundle. Got: {:?}",
+        result
+    );
+    cleanup_db(&db_path);
+}
+
+/// End-to-end through `pss_ring`: the ring's shared `pss_interval` is small
+/// enough that the PET key's independent clock (no PET bundle at all, so its
+/// `last_pss` reads as 0) is due, while the main key's own clock is *not*
+/// due — its bundle's `last_pss` is set so far in the future that its
+/// `elapsed` saturates to zero regardless of the shared interval. `pss_ring`
+/// must still reach the PET trigger and surface its failure, proving the two
+/// checks are both attempted on every tick rather than the PET check being
+/// gated behind (or skipped because of) the main key's own outcome.
+#[tokio::test]
+async fn test_pss_ring_pet_refresh_triggers_independently_when_main_refresh_is_not_due() {
+    let db_name = "pss_ring_pet_independent_of_main_not_due";
+    let (app_state, our_hex, db_path, bulletin) = make_initiator_state(db_name).await;
+
+    let ring_payload = RingPayload {
+        upgrade_info: Default::default(),
+        ring_pk: "pss_ring_pet_independent_pk".to_string(),
+        peer_node_keys: vec![our_hex.clone()],
+        new_peer_node_keys: None,
+        new_threshold: None,
+        threshold: 1,
+        // Small enough that PET's ~now-sized elapsed (no bundle → last_pss=0)
+        // clears it, but see below for why main still skips despite sharing
+        // this same field.
+        pss_interval: 3600,
+        block_number_nonce: 0,
+        policy_id: None,
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+        requires_pet: true,
+        pet_pk: Some("cc".repeat(32)),
+    };
+    let entry = post_ring_and_seed_index(&app_state, &bulletin, &ring_payload).await;
+    // Main key: a `last_pss` far in the future makes `elapsed` saturate to
+    // zero, so its own check skips (Ok) regardless of the shared interval —
+    // isolating the PET failure below as the only possible source of an
+    // overall error.
+    RingShareBundle {
+        share_bytes: vec![].into(),
+        public_polynomial: "main_poly".to_string(),
+        last_pss: u64::MAX - 1,
+    }
+    .save_by_ring_key(&app_state.local_storage, &ring_payload.ring_pk)
+    .expect("store main bundle");
+    // PET key: no bundle at all, so its independent clock reads last_pss=0
+    // and elapsed ~= now, clearing the 3600s interval and triggering.
+
+    let result = super::pss_ring(&Arc::new(app_state), &entry).await;
+    assert!(
+        matches!(result, Err(DkgError::Storage(_))),
+        "Expected Storage error from the PET refresh trigger even though the main \
+         key's own refresh was not due: {:?}",
         result
     );
     cleanup_db(&db_path);
@@ -1164,6 +1554,8 @@ fn reshare_test_ring_payload_pending(
         policy_id: None,
         trusted_auth_relay_dids: None,
         reporting: Default::default(),
+        requires_pet: false,
+        pet_pk: None,
     }
 }
 
@@ -1380,6 +1772,127 @@ async fn reconcile_pending_reshares_ignores_ring_without_pending_entry() {
             .public_polynomial,
         "old-poly",
         "a ring without a pending entry must be left untouched"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// Reshare-atomicity: the PET pending
+/// bundle must be reconciled independently of the main one, not skipped just
+/// because the main lookup already returned `None` (e.g. a prior startup's
+/// reconciliation already promoted+cleared main, but crashed or was killed
+/// before reaching the PET side — or the two were simply never coupled to
+/// begin with). This is the exact scenario the old code could never recover
+/// from: once the main entry was gone, it never even looked at PET's.
+#[tokio::test]
+async fn reconcile_pending_reshares_promotes_pet_only_pending_bundle_when_main_already_absent() {
+    let db_name = "pss_reconcile_pet_only_promote";
+    let ring_pk = "reconcile-pet-only-promote-ring-pk".to_string();
+    let mut pending_payload = reshare_test_ring_payload_pending(
+        &ring_pk,
+        vec!["old-a".to_string()],
+        1,
+        Some(vec!["old-a".to_string(), "new-b".to_string()]),
+        Some(1),
+    );
+    pending_payload.requires_pet = true;
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &pending_payload).await;
+
+    // Main share: already on the new committee's bundle, as if a previous
+    // startup's reconciliation already promoted it — no main pending entry
+    // exists at all. PET share: still the pre-reshare bundle, with its own
+    // pending entry still staged (this node crashed between the two).
+    old_reshare_test_bundle()
+        .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+        .expect("seed old PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed pending PET reshare bundle");
+
+    app_state
+        .bulletin
+        .update(
+            entry.bulletin_post_id.clone(),
+            "test-scheme".to_string(),
+            vec![],
+        )
+        .await
+        .expect("apply real bulletin finalization");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .expect("PET bundle must be present")
+            .public_polynomial,
+        "new-poly",
+        "matching bulletin state must promote the staged PET bundle even with no main pending entry"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "PET pending entry must be cleared after reconciliation"
+    );
+
+    cleanup_db(&db_path);
+}
+
+/// Same starting point as above (main pending entry absent), but the
+/// bulletin does not match what was staged for PET — it must be discarded
+/// and cleared, not silently left stranded forever just because there was
+/// no main entry to key off of.
+#[tokio::test]
+async fn reconcile_pending_reshares_discards_pet_only_pending_bundle_when_main_already_absent() {
+    let db_name = "pss_reconcile_pet_only_discard";
+    let ring_pk = "reconcile-pet-only-discard-ring-pk".to_string();
+    let mut ring_payload = reshare_test_ring_payload(&ring_pk, vec!["old-a".to_string()], 1);
+    ring_payload.requires_pet = true;
+    let (app_state, entry, db_path) = make_state_with_ring(db_name, &ring_payload).await;
+
+    old_reshare_test_bundle()
+        .save_by_pet_ring_key(&app_state.local_storage, &entry.bulletin_post_id)
+        .expect("seed old PET bundle");
+    crate::ring_state::PendingReshareBundle {
+        bundle: staged_reshare_test_bundle(),
+        bulletin_post_id: entry.bulletin_post_id.clone(),
+        expected_new_committee: vec!["old-a".to_string(), "new-b".to_string()],
+        expected_new_threshold: 1,
+    }
+    .save_pet(&app_state.local_storage, &entry.bulletin_post_id)
+    .expect("seed pending PET reshare bundle");
+
+    let state_arc = Arc::new(app_state);
+    super::reconcile_pending_reshares(&state_arc)
+        .await
+        .expect("reconciliation should succeed");
+
+    assert_eq!(
+        RingShareBundle::load_by_pet_ring_key(&state_arc.local_storage, &entry.bulletin_post_id)
+            .expect("PET bundle must be present")
+            .public_polynomial,
+        "old-poly",
+        "non-matching bulletin state must discard the staged PET bundle and preserve the old one"
+    );
+    assert!(
+        crate::ring_state::PendingReshareBundle::load_pet(
+            &state_arc.local_storage,
+            &entry.bulletin_post_id
+        )
+        .expect("PET pending lookup must not error")
+        .is_none(),
+        "PET pending entry must be cleared after reconciliation"
     );
 
     cleanup_db(&db_path);

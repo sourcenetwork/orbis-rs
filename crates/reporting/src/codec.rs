@@ -21,6 +21,13 @@ pub fn write_bytes(out: &mut Vec<u8>, value: &[u8]) {
     out.extend_from_slice(value);
 }
 
+/// Unlike [`write_bytes`], the length is fixed and implicit — used for
+/// digests, which are always exactly 32 bytes, so no length prefix is
+/// needed to disambiguate field boundaries.
+pub(super) fn write_fixed_32(out: &mut Vec<u8>, value: &[u8; 32]) {
+    out.extend_from_slice(value);
+}
+
 pub fn write_string(out: &mut Vec<u8>, value: &str) {
     write_bytes(out, value.as_bytes());
 }
@@ -156,6 +163,18 @@ impl<'a> Decoder<'a> {
             .ok_or_else(|| ReportingError::InvalidReport(format!("truncated {label}")))?;
         self.cursor = end;
         Ok(bytes.to_vec())
+    }
+
+    pub(super) fn read_fixed_32(&mut self, label: &str) -> Result<[u8; 32]> {
+        let end = self.cursor.saturating_add(32);
+        let bytes = self
+            .bytes
+            .get(self.cursor..end)
+            .ok_or_else(|| ReportingError::InvalidReport(format!("truncated {label}")))?;
+        self.cursor = end;
+        let mut out = [0u8; 32];
+        out.copy_from_slice(bytes);
+        Ok(out)
     }
 
     pub fn read_optional_bytes(&mut self, label: &str) -> Result<Option<Vec<u8>>> {

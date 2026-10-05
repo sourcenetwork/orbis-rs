@@ -45,6 +45,15 @@ where
         .await
         .map_err(|error| attempt_state_error(attempt, error))?;
 
+    // Reshare PET: fully self-contained, resolving the ring directly by
+    // `ring_id` rather than through the main-ring index. Handled before the
+    // generic Dealer check below, since a departing PET Dealer's cleanup
+    // must not touch the main-ring storage/index machinery
+    // `ring_storage::cleanup_departing_dealer` assumes.
+    if let SessionKind::ResharePet { ring_id, .. } = &kind {
+        return complete_reshare_pet_phase4(coord, attempt, ring_id, dkg_role).await;
+    }
+
     // Pure Dealer nodes don't compute a secret share — they just clean up.
     // Because they are leaving the ring, delete the local secret share and
     // remove the ring from the index so the PSS scheduler ignores it.
@@ -124,9 +133,15 @@ where
 
     // Fresh DKG and reshare produce a usable ring key. The identity is never a
     // valid signing/PRE key: accepting it would make Decaf Schnorr signatures
-    // forgeable. Refresh is excluded because its delta polynomial intentionally
-    // has an identity constant term; the combined staged key is checked below.
-    if !matches!(kind, SessionKind::Refresh { .. }) && D::public_key_is_identity(&aggregate_pk) {
+    // forgeable. Refresh/RefreshPet are excluded because their delta polynomial
+    // intentionally has an identity constant term; the combined key is checked
+    // below (Refresh: against the staged key; RefreshPet: no equivalent check
+    // exists yet since it isn't staged — see the PET refresh doc comment).
+    if !matches!(
+        kind,
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. }
+    ) && D::public_key_is_identity(&aggregate_pk)
+    {
         return Err(DkgError::Crypto(
             "DKG produced the identity aggregate public key; aborting before persistence"
                 .to_string(),
@@ -293,6 +308,85 @@ where
             last_pss: now_secs,
         });
         None
+    } else if let SessionKind::RefreshPet { ring_id } = &kind {
+        // PET refresh: no staging/health-check (see the ceremony's own doc
+        // comment), but still guard against the same class of drift Refresh's
+        // staged-key check catches — a cheating dealer's non-zero-constant-term
+        // delta could otherwise silently move the ring's PET checking key.
+        // `build_refresh_pet_ring_bundle` doesn't carry a `D` type param to do
+        // this itself, so it's done here, symmetrically with Refresh's own
+        // external check, just against the old PET key directly (PET's storage
+        // key is `ring_id`, not a public-key string, so
+        // `public_key_matches_storage_key` doesn't apply).
+        let old_pet_bundle =
+            RingShareBundle::load_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
+                .map_err(|e| {
+                    DkgError::Storage(format!("Refresh PET: failed to load old PET bundle: {}", e))
+                })?;
+        let old_pet_poly_bytes = hex::decode(&old_pet_bundle.public_polynomial).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh PET: failed to decode old PET polynomial hex: {}",
+                e
+            ))
+        })?;
+        let old_pet_pk = <D::PubPoly>::from_bytes(&old_pet_poly_bytes)
+            .map_err(|e| {
+                DkgError::Deserialization(format!(
+                    "Refresh PET: failed to deserialize old PET polynomial: {}",
+                    e
+                ))
+            })?
+            .eval(0);
+
+        let new_bundle = build_refresh_pet_ring_bundle(
+            &coord.app_state.local_storage,
+            ring_id,
+            &final_share_bytes,
+            &pub_poly_bytes,
+            now_secs,
+            session_id,
+            |old, delta| D::combine_pub_poly_bytes(old, delta).map_err(|e| e.to_string()),
+        )?;
+        let new_pet_poly_bytes = hex::decode(&new_bundle.public_polynomial).map_err(|e| {
+            DkgError::Deserialization(format!(
+                "Refresh PET: failed to decode new PET polynomial hex: {}",
+                e
+            ))
+        })?;
+        let new_pet_pk = <D::PubPoly>::from_bytes(&new_pet_poly_bytes)
+            .map_err(|e| {
+                DkgError::Deserialization(format!(
+                    "Refresh PET: failed to deserialize new PET polynomial: {}",
+                    e
+                ))
+            })?
+            .eval(0);
+        if new_pet_pk.to_string() != old_pet_pk.to_string() {
+            return Err(DkgError::Crypto(format!(
+                "Refresh PET: combined PET checking key {} does not match the ring's existing \
+                 PET key {}; aborting before persistence",
+                new_pet_pk, old_pet_pk
+            )));
+        }
+
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |_| ())
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        new_bundle
+            .save_by_pet_ring_key(&coord.app_state.local_storage, ring_id)
+            .map_err(|e| {
+                DkgError::Storage(format!("Refresh PET: failed to store new bundle: {}", e))
+            })?;
+
+        tracing::info!(
+            session_id = session_id,
+            ring_id = %ring_id,
+            "Refresh PET: Phase 4 complete — RingShareBundle updated atomically"
+        );
+        None
     } else {
         // Fresh DKG only, now: no old material at risk for a brand-new ring, so
         // persisting immediately is fine and intentional (see the fresh_ring_id
@@ -368,19 +462,139 @@ where
                 );
             })?;
 
-        ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
-            .await
-            .inspect_err(|error| {
+        // A requires_pet ring holds this main key locally rather than
+        // submitting MsgFinalizeRing on its own: both ceremonies' results are
+        // submitted together in one combined finalize once the PET checking
+        // key's own ceremony also completes (see the FreshPet branch of this
+        // function). Ordinary rings are unaffected.
+        let ring_payload =
+            read_ring_for_route(&*coord.app_state.bulletin, &ring_id, coord.routes.version)
+                .await
+                .map_err(DkgError::ProtocolError)?;
+
+        if ring_payload.requires_pet {
+            // Only the canonical leader triggers the PET ceremony here. Every
+            // participant reaches this same branch independently (each on its
+            // own copy of the just-finished main-key `Fresh` ceremony), so
+            // without this gate all three would race to call `start_fresh_pet`
+            // at once — this was tried and confirmed to produce three separate
+            // `PrepareSession`s (same ceremony_id, three different random
+            // attempt_ids) for the same ring, none of which ever converges.
+            // The other participants don't need to do anything here: they'll
+            // receive the leader's `Prepare` broadcast over gossip once it
+            // starts, exactly like joining any other ceremony they didn't
+            // personally initiate.
+            let is_leader = canonical_leader(&ring_payload.peer_node_keys)
+                == Some(coord.app_state.node_key.as_str());
+            if is_leader {
+                start_fresh_pet(coord.app_state.clone(), coord.routes, ring_id.clone())
+                    .await
+                    .inspect_err(|error| {
+                        tracing::error!(
+                            ring_id = %ring_id,
+                            error = %error,
+                            "Phase 4: failed to start the ring's PET checking-key ceremony after \
+                             the main key completed locally. This node holds a valid main-key \
+                             share and index entry but has not submitted the (deferred, combined) \
+                             finalize. The ring will remain pending until another participant \
+                             retries or operator intervention. Local state is preserved."
+                        );
+                    })?;
+            }
+        } else {
+            ring_storage::post_fresh_ring_finalization(coord, &ring_id, &ring_pk_bytes)
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        ring_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: FinalizeRing chain post failed after local state was written. \
+                         This node holds a valid share and index entry but has not confirmed \
+                         on-chain. The ring will remain pending until another participant \
+                         retries or operator intervention. Local state is preserved."
+                    );
+                })?;
+        }
+    }
+
+    // The PET checking key's own ceremony completing is where the deferred,
+    // combined finalize actually gets submitted — covering both keys in one
+    // MsgFinalizeRing. See the `requires_pet` branch above, which triggered
+    // this ceremony instead of finalizing the main key on its own.
+    if let SessionKind::FreshPet { ring_id } = &kind {
+        match ring_storage::local_ring_pk_by_ring_id(&coord.app_state.local_storage, ring_id) {
+            Ok(Some(main_ring_pk_str)) => {
+                // `main_ring_pk_str` is `aggregate_pk.to_string()` — the local
+                // storage key for the main key's `RingShareBundle`, not a hex
+                // encoding of the key itself. Load the bundle and re-derive
+                // the actual public key bytes (its public polynomial's
+                // constant term) for the on-chain payload.
+                let main_bundle = RingShareBundle::load_by_ring_key(
+                    &coord.app_state.local_storage,
+                    &main_ring_pk_str,
+                )
+                .map_err(DkgError::Bulletin)?;
+                let main_pub_poly_bytes =
+                    hex::decode(&main_bundle.public_polynomial).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                            "FreshPet: failed to decode main key's stored public polynomial: {}",
+                            e
+                        ))
+                    })?;
+                let main_pub_poly =
+                    <D::PubPoly>::from_bytes(&main_pub_poly_bytes).map_err(|e| {
+                        DkgError::Deserialization(format!(
+                        "FreshPet: failed to deserialize main key's stored public polynomial: {}",
+                        e
+                    ))
+                    })?;
+                let main_ring_pk_bytes = CryptoSerialize::to_bytes(&main_pub_poly.eval(0))
+                    .map_err(|e| {
+                        DkgError::Serialization(format!(
+                            "FreshPet: failed to serialize main key: {}",
+                            e
+                        ))
+                    })?;
+                let main_ring_pk_hex = hex::encode(&main_ring_pk_bytes);
+                ring_storage::post_fresh_pet_ring_finalization(
+                    coord,
+                    ring_id,
+                    &main_ring_pk_hex,
+                    &ring_pk_bytes,
+                )
+                .await
+                .inspect_err(|error| {
+                    tracing::error!(
+                        ring_id = %ring_id,
+                        main_ring_pk = %main_ring_pk_hex,
+                        pet_pk = %hex::encode(&ring_pk_bytes),
+                        error = %error,
+                        "Phase 4: combined FinalizeRing chain post failed after local state \
+                         was written. This node holds a valid PET-key share and index entry \
+                         but has not confirmed on-chain. The ring will remain pending until \
+                         another participant retries or operator intervention. Local state \
+                         is preserved."
+                    );
+                })?;
+            }
+            Ok(None) => {
                 tracing::error!(
                     ring_id = %ring_id,
-                    ring_pk = %hex::encode(&ring_pk_bytes),
-                    error = %error,
-                    "Phase 4: FinalizeRing chain post failed after local state was written. \
-                     This node holds a valid share and index entry but has not confirmed \
-                     on-chain. The ring will remain pending until another participant \
-                     retries or operator intervention. Local state is preserved."
+                    pet_pk = %hex::encode(&ring_pk_bytes),
+                    "Phase 4: PET checking-key ceremony completed locally, but this node has \
+                     no local record of the ring's main key — cannot submit the combined \
+                     finalize yet. This node holds a valid PET-key share; the ring will \
+                     remain pending until this node's own main-key ceremony result is \
+                     available (or operator intervention)."
                 );
-            })?;
+                return Err(DkgError::Bulletin(format!(
+                    "Fresh PET DKG for ring {} completed locally with no local main-key record",
+                    ring_id
+                )));
+            }
+            Err(error) => return Err(error),
+        }
     }
 
     tracing::info!(
@@ -414,8 +628,19 @@ where
     // For Reshare non-Dealers the bulletin update still happens below (node 1
     // must sign and post), so defer the unmark until after that completes.
     // Error paths are handled by check_and_trigger_phase4 → remove_session.
+    //
+    // `Fresh` never claims a ring_pss slot in the first place (session_init's
+    // claim is gated on `kind.ring_key()`, which is `None` for `Fresh` — there
+    // is no existing ring to protect against a concurrent refresh/reshare
+    // before its key exists), so this branch is unreachable for it; that's
+    // pre-existing, not something this change alters. `FreshPet` does claim
+    // one (keyed by `ring_id`, same session_init path, now extended for free)
+    // as a cheap safety net against an accidental duplicate PET ceremony for
+    // the same ring, so it must release it here — immediately, the same as
+    // this branch already does for Refresh's non-deferred cases, since
+    // FreshPet has no "bulletin update below" step to wait for.
     if let Some(ring_key) = kind.ring_key() {
-        if matches!(kind, SessionKind::Fresh) {
+        if matches!(kind, SessionKind::Fresh | SessionKind::FreshPet { .. }) {
             coord
                 .app_state
                 .dkg_session_state
@@ -491,6 +716,196 @@ where
         "DKG Coordinator: Session cleanup complete"
     );
 
+    Ok(())
+}
+
+/// Phase 4 completion for a ring's independent PET checking key's `Reshare`.
+/// Stage 2 of the PSS-for-PET-key plan — deliberately simpler than the main
+/// ring's own `Reshare` completion (`initiate_phase4_completion`'s Reshare
+/// path, `reshare/bulletin_update.rs`, `reshare/cleanup.rs`): there is no
+/// confirmation-driven promotion yet (that's Stage 3, gated on when the main
+/// ring's own reshare bulletin update — deferred until this ceremony also
+/// completes — actually confirms), so this only stages the result and
+/// completes the attempt. A departing Dealer's old PET share is left in
+/// place untouched; a stale, never-promoted `PendingReshareBundle` for an
+/// abandoned attempt is superseded (never double-applied) by any later
+/// attempt's own staging write, the same reasoning `RefreshPet`'s own
+/// drift check relies on.
+async fn complete_reshare_pet_phase4<D>(
+    coord: &DkgCoordinator<D>,
+    attempt: AttemptKey,
+    ring_id: &str,
+    dkg_role: DkgRole,
+) -> Result<()>
+where
+    D: CoordinatorDkg + Send + Sync,
+    SignImpl: CoordinatorReportSigner<D>,
+{
+    let session_id = attempt.session_id();
+
+    if dkg_role == DkgRole::Dealer {
+        coord
+            .app_state
+            .dkg_session_state
+            .update_phase_for_attempt(attempt, DkgPhase::Phase4Complete)
+            .await
+            .map_err(|error| attempt_state_error(attempt, error))?;
+        coord
+            .app_state
+            .dkg_session_state
+            .unmark_ring_pss_for_attempt(ring_id, attempt)
+            .await;
+        coord
+            .app_state
+            .dkg_session_state
+            .complete_transport_attempt(attempt, TopicTaskDisposition::DetachCurrent)
+            .await;
+        tracing::info!(
+            session_id = session_id,
+            ring_id = %ring_id,
+            "Reshare PET Dealer: share distribution complete; old PET share retained \
+             (Stage 2 — no confirmation-driven cleanup yet)"
+        );
+        return Ok(());
+    }
+
+    let (aggregate_pk, final_share_bytes, pub_poly_bytes) = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| {
+            let final_share = state.node.compute_secret_share().map_err(|e| {
+                DkgError::Crypto(format!(
+                    "Reshare PET: failed to compute secret share: {}",
+                    e
+                ))
+            })?;
+            let aggregate_pk = state.node.compute_aggregate_public_key().map_err(|e| {
+                DkgError::Crypto(format!(
+                    "Reshare PET: failed to compute aggregate public key: {}",
+                    e
+                ))
+            })?;
+            let final_share_bytes = CryptoSerialize::to_bytes(&final_share).map_err(|e| {
+                DkgError::Serialization(format!(
+                    "Reshare PET: failed to serialize final share: {}",
+                    e
+                ))
+            })?;
+            let pub_poly = state.node.compute_public_polynomial().map_err(|e| {
+                DkgError::Crypto(format!(
+                    "Reshare PET: failed to compute public polynomial: {}",
+                    e
+                ))
+            })?;
+            let pub_poly_bytes = CryptoSerialize::to_bytes(&pub_poly).map_err(|e| {
+                DkgError::Serialization(format!(
+                    "Reshare PET: failed to serialize public polynomial: {}",
+                    e
+                ))
+            })?;
+            Ok::<_, DkgError>((aggregate_pk, final_share_bytes, pub_poly_bytes))
+        })
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))??;
+
+    if D::public_key_is_identity(&aggregate_pk) {
+        return Err(DkgError::Crypto(
+            "Reshare PET produced the identity checking key; aborting before persistence"
+                .to_string(),
+        ));
+    }
+
+    // Drift/equivocation guard, mirroring main Reshare's own
+    // `public_key_matches_storage_key` check: the newly redistributed
+    // checking key must equal the ring's known one. Unlike the main key
+    // (whose identity string is already known from the wire, no bulletin
+    // read needed), PET's only known-good identity is the bulletin's own
+    // `pet_pk` — fetched fresh here rather than threaded through session
+    // state, mirroring how `FreshPet`'s own phase4 branch already reads the
+    // bulletin directly at completion time.
+    let ring = read_ring_for_route(&*coord.app_state.bulletin, ring_id, coord.routes.version)
+        .await
+        .map_err(DkgError::ProtocolError)?;
+    let old_pet_pk_hex = ring.pet_pk.clone().ok_or_else(|| {
+        DkgError::InvalidState(format!(
+            "Reshare PET: ring {} has no pet_pk on the bulletin at Phase 4 completion",
+            ring_id
+        ))
+    })?;
+    let new_pet_pk_bytes = CryptoSerialize::to_bytes(&aggregate_pk).map_err(|e| {
+        DkgError::Serialization(format!(
+            "Reshare PET: failed to serialize new checking key: {}",
+            e
+        ))
+    })?;
+    let new_pet_pk_hex = hex::encode(&new_pet_pk_bytes);
+    if new_pet_pk_hex != old_pet_pk_hex {
+        return Err(DkgError::Crypto(format!(
+            "Reshare PET: computed checking key {} does not match the ring's existing PET key \
+             {}; aborting before persisting staged bundle",
+            new_pet_pk_hex, old_pet_pk_hex
+        )));
+    }
+
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (expected_new_committee, expected_new_threshold) = coord
+        .app_state
+        .dkg_session_state
+        .with_attempt_state(attempt, |state| {
+            state
+                .reshare
+                .params
+                .as_ref()
+                .map(|p| (p.new_peer_node_keys.clone(), p.new_threshold as u32))
+        })
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?
+        .ok_or_else(|| {
+            DkgError::InvalidState("Reshare PET session missing reshare_params".to_string())
+        })?;
+
+    let pending = PendingReshareBundle {
+        bundle: RingShareBundle {
+            share_bytes: Zeroizing::new(final_share_bytes),
+            public_polynomial: hex::encode(&pub_poly_bytes),
+            last_pss: now_secs,
+        },
+        bulletin_post_id: ring_id.to_string(),
+        expected_new_committee,
+        expected_new_threshold,
+    };
+    pending
+        .save_pet(&coord.app_state.local_storage, ring_id)
+        .map_err(|e| {
+            DkgError::Storage(format!("Reshare PET: failed to stage new bundle: {}", e))
+        })?;
+
+    coord
+        .app_state
+        .dkg_session_state
+        .update_phase_for_attempt(attempt, DkgPhase::Phase4Complete)
+        .await
+        .map_err(|error| attempt_state_error(attempt, error))?;
+    coord
+        .app_state
+        .dkg_session_state
+        .unmark_ring_pss_for_attempt(ring_id, attempt)
+        .await;
+    coord
+        .app_state
+        .dkg_session_state
+        .complete_transport_attempt(attempt, TopicTaskDisposition::DetachCurrent)
+        .await;
+
+    tracing::info!(
+        session_id = session_id,
+        ring_id = %ring_id,
+        "Reshare PET: Phase 4 complete — new PET bundle staged (not yet promoted; Stage 3 \
+         of the PSS-for-PET-key plan adds confirmation-driven promotion)"
+    );
     Ok(())
 }
 

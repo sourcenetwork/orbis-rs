@@ -231,3 +231,38 @@ async fn reads_and_ring_status_honor_configured_deadline() {
         let _ = server.await;
     }
 }
+
+#[tokio::test]
+async fn unsupported_pet_fields_are_rejected_without_journaling() {
+    let (_root, backend) = read_fixture("http://127.0.0.1:1");
+    for field in ["pet_tag", "pet_tag_proof"] {
+        let request = json!({field: "attachment"});
+        let failure = backend
+            .post_inner(
+                BulletinWriteKind::Document,
+                &serde_json::to_vec(&request).unwrap(),
+            )
+            .await
+            .unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("does not support PET documents"));
+        assert!(backend.writer.lock().await.pending_id().unwrap().is_none());
+    }
+    let request = RingFinalizationPayload {
+        ring_id: "11".repeat(32),
+        ring_pk: "22".repeat(48),
+        pet_pk: Some("33".repeat(48)),
+    };
+    let failure = backend
+        .post_inner(
+            BulletinWriteKind::Finalize,
+            &serde_json::to_vec(&request).unwrap(),
+        )
+        .await
+        .unwrap_err();
+    assert!(failure
+        .to_string()
+        .contains("does not support PET ring finalization"));
+    assert!(backend.writer.lock().await.pending_id().unwrap().is_none());
+}

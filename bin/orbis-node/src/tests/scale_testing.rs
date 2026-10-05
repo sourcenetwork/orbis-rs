@@ -250,6 +250,7 @@ async fn test_scale_dkg_pre_sign() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare PRE secret");
     let stored = cli_tool::store_prepared_secret(
@@ -258,6 +259,7 @@ async fn test_scale_dkg_pre_sign() {
         ring_id.clone(),
         Some(reader_identity.clone()),
         true,
+        None,
     )
     .await
     .expect("store PRE secret");

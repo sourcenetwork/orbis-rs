@@ -19,7 +19,7 @@ pub struct DummyBulletin {
     /// Storage for typed Orbis objects by object ID.
     posts: Mutex<HashMap<String, BulletinPost>>,
     /// Pending fresh-DKG aggregate public key candidates by ring ID.
-    pending_finalization_ring_pks: Mutex<HashMap<String, String>>,
+    pending_finalization_ring_pks: Mutex<HashMap<String, (String, Option<String>)>>,
     /// Successful fresh-DKG finalization confirmations by ring ID.
     finalization_counts: Mutex<HashMap<String, usize>>,
     /// Test-only failure injection for pending-ring cancellation.
@@ -212,15 +212,18 @@ impl DummyBulletin {
         if payload.ring_pk.is_empty() {
             {
                 let mut pending = self.pending_finalization_ring_pks.lock().unwrap();
-                if let Some(pending_ring_pk) = pending.get(&finalize.ring_id) {
-                    if pending_ring_pk != &finalize.ring_pk {
+                if let Some((pending_ring_pk, pending_pet_pk)) = pending.get(&finalize.ring_id) {
+                    if pending_ring_pk != &finalize.ring_pk || pending_pet_pk != &finalize.pet_pk {
                         return Err(BulletinError::ParseError(format!(
                             "ring_pk conflict for ring {}",
                             finalize.ring_id
                         )));
                     }
                 } else {
-                    pending.insert(finalize.ring_id.clone(), finalize.ring_pk.clone());
+                    pending.insert(
+                        finalize.ring_id.clone(),
+                        (finalize.ring_pk.clone(), finalize.pet_pk.clone()),
+                    );
                 }
             }
 
@@ -233,6 +236,7 @@ impl DummyBulletin {
 
             if finalization_count >= participant_count {
                 payload.ring_pk = finalize.ring_pk;
+                payload.pet_pk = finalize.pet_pk;
                 post.payload = serde_json::to_vec(&payload)
                     .map_err(|e| BulletinError::ParseError(e.to_string()))?;
                 self.pending_finalization_ring_pks
@@ -244,7 +248,7 @@ impl DummyBulletin {
             return Ok(finalize.ring_id);
         }
 
-        if payload.ring_pk == finalize.ring_pk {
+        if payload.ring_pk == finalize.ring_pk && payload.pet_pk == finalize.pet_pk {
             *self
                 .finalization_counts
                 .lock()
@@ -332,6 +336,8 @@ impl DummyBulletin {
             &doc.permission,
             doc.tier.as_deref(),
             doc.timestamp,
+            doc.pet_tag.as_deref(),
+            doc.pet_tag_proof.as_deref(),
         )
         .map_err(|e| BulletinError::ParseError(e.to_string()))
     }
@@ -408,6 +414,7 @@ mod tests {
         let payload = RingFinalizationPayload {
             ring_id: ring_id.to_string(),
             ring_pk: ring_pk.to_string(),
+            pet_pk: None,
         };
         let payload_bytes: Vec<u8> = payload.try_into()?;
         bulletin

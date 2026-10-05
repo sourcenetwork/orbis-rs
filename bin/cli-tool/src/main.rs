@@ -8,7 +8,7 @@ pub use commands::{
     cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
     derive_signer_did, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
     do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring, list_bulletin_posts,
-    post_key_derivation, prepare_secret, query_node_info, query_ring_state,
+    post_key_derivation, prepare_secret, query_node_info, query_pet_ring_state, query_ring_state,
     read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
     remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
     set_ring_pss_interval_by_acp, start_ring_reshare_by_acp, store_prepared_secret,
@@ -148,6 +148,9 @@ pub enum SubCommands {
         /// Trusted auth-relay DIDs allowed to relay requests on this ring's behalf (comma-separated)
         #[clap(long, value_delimiter = ',')]
         trusted_auth_relay_dids: Vec<String>,
+        /// Opt this ring into requiring a PET check before PRE release
+        #[clap(long)]
+        requires_pet: bool,
     },
     /// Start a Distributed Key Generation session
     Dkg {
@@ -481,6 +484,13 @@ pub enum SubCommands {
         #[clap(long)]
         ring_pk_hex: String,
     },
+    /// Query the local PET checking-key ring state (public polynomial + last
+    /// RefreshPet/ResharePet timestamp) from a node
+    PetRingState {
+        /// Ring ID (the PET key has no public key of its own to query by)
+        #[clap(long)]
+        ring_id: String,
+    },
     /// Fetch a ring from the orbis module by ring_id. Prints RING_ID and RING_PK for sourcing in scripts.
     GetLatestRing {
         /// Ring ID to look up
@@ -611,6 +621,7 @@ async fn main() -> Result<()> {
             nonce,
             current_version,
             trusted_auth_relay_dids,
+            requires_pet,
         } => {
             let signing_key = network.require_signing_key()?;
             let ring_id = create_ring(
@@ -621,6 +632,7 @@ async fn main() -> Result<()> {
                 nonce,
                 current_version,
                 trusted_auth_relay_dids,
+                requires_pet,
                 network.chain_config(),
                 &signing_key,
             )
@@ -879,6 +891,7 @@ async fn main() -> Result<()> {
                 tier,
                 timestamp,
                 salt,
+                None,
             )?;
             let json = serde_json::to_string_pretty(&prepared)?;
             println!("Prepared Secret (save this for store-prepared-secret):");
@@ -900,6 +913,7 @@ async fn main() -> Result<()> {
                 ring_id,
                 Some(reader_did_pk),
                 with_proof,
+                None,
             )
             .await?;
         }
@@ -942,6 +956,11 @@ async fn main() -> Result<()> {
         }
         SubCommands::RingState { ring_pk_hex } => {
             let (poly, last_pss) = query_ring_state(network.endpoint.clone(), ring_pk_hex).await?;
+            println!("PUBLIC_POLYNOMIAL={}", poly);
+            println!("LAST_PSS={}", last_pss);
+        }
+        SubCommands::PetRingState { ring_id } => {
+            let (poly, last_pss) = query_pet_ring_state(network.endpoint.clone(), ring_id).await?;
             println!("PUBLIC_POLYNOMIAL={}", poly);
             println!("LAST_PSS={}", last_pss);
         }

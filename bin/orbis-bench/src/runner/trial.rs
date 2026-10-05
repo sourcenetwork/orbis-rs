@@ -119,13 +119,26 @@ pub(super) async fn run_pre_load(
         let fixture = fixture.clone();
         tokio::spawn(async move {
             let mut result = LoadMeasurement::default();
-            while Instant::now() < deadline {
-                match crate::protocol::pre_call(&mut client, &fixture).await {
-                    Ok(measurement) => {
+            loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match timeout(remaining, crate::protocol::pre_call(&mut client, &fixture)).await {
+                    Ok(Ok(measurement)) => {
                         result.successes += 1;
                         result.latencies.push(measurement.total_ms);
                     }
-                    Err(_) => result.failures += 1,
+                    Ok(Err(_)) => result.failures += 1,
+                    Err(_) => {
+                        // The call outlived the remaining load-stage budget: count
+                        // it as a failure and stop this worker rather than keep
+                        // awaiting an already-stalled request past the deadline,
+                        // which would otherwise block warmup/measurement from
+                        // ever completing (`join_all` waits on every worker).
+                        result.failures += 1;
+                        break;
+                    }
                 }
             }
             result

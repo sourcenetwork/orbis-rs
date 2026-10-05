@@ -16,7 +16,10 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state(attempt, |state| -> Result<_> {
-            if !matches!(state.kind, SessionKind::Fresh) {
+            if !matches!(
+                state.kind,
+                SessionKind::Fresh | SessionKind::FreshPet { .. }
+            ) {
                 return Err(DkgError::ProtocolError(
                     "CommitmentHash is only valid for Fresh DKG sessions".to_string(),
                 ));
@@ -72,7 +75,10 @@ where
         .app_state
         .dkg_session_state
         .with_attempt_state_mut(attempt, |state| {
-            if !matches!(state.kind, SessionKind::Fresh) {
+            if !matches!(
+                state.kind,
+                SessionKind::Fresh | SessionKind::FreshPet { .. }
+            ) {
                 return Err(DkgError::ProtocolError(
                     "CommitmentHash is only valid for Fresh DKG sessions".to_string(),
                 ));

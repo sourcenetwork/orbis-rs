@@ -11,10 +11,26 @@ message TimestampRange {
   uint64 end = 2;
 }
 
+// PET ownership-tag ciphertext and its knowledge proof, carried alongside a
+// document only on a ring that requires PET. Not yet enforced: no PET ring
+// can exist yet, and this attachment is not included in authorization.
+// Presence is all-or-nothing — a caller cannot supply only some of these
+// fields; nodes reject a document whose attachment is only partially decoded.
+message PetTagAttachment {
+  // R = r_tag * G (compressed group point).
+  bytes ephemeral_point = 1;
+  // T = F(owner_id) + r_tag * pet_pk (compressed group point).
+  bytes masked_fingerprint = 2;
+  // Tag-knowledge-proof challenge (Schnorr PoK of r_tag).
+  bytes knowledge_proof_challenge = 3;
+  // Tag-knowledge-proof response.
+  bytes knowledge_proof_response = 4;
+}
+
 // The document, in full, supplied directly by the caller instead of already being on the
 // bulletin. object_id must equal generate_document_id(ring_id, encrypted_document, proof,
-// policy_id, resource, permission, tier, timestamp) — nodes recompute and check this locally
-// before doing anything else with the request.
+// policy_id, resource, permission, tier, timestamp, pet_tag) — nodes recompute and check this
+// locally before doing anything else with the request.
 message InlineDocument {
   string ring_id = 1;
   // The pre-encrypted document (serialized Secret struct from crypto crate).
@@ -31,6 +47,8 @@ message InlineDocument {
   bytes response = 8;
   optional string tier = 9;
   optional uint64 timestamp = 10;
+  // PET tag, present only when the ring requires PET.
+  optional PetTagAttachment pet_tag = 11;
 }
 
 // Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
@@ -60,6 +78,11 @@ message StartPreRequest {
   optional InlineDocument document = 6;
   // Proof of knowledge of rdr_pk's discrete log.
   ReaderKeyProof rdr_pk_proof = 7;
+  // The ACP object being audited, required on a ring that requires PET. Not yet
+  // enforced: no PET ring can exist yet, and this field is not checked against
+  // ACP or bound in authorization. Distinct from object_id, which keeps its
+  // current document-identity meaning.
+  optional string audit_target_object_id = 8;
 }
 
 message StartPreResponse {

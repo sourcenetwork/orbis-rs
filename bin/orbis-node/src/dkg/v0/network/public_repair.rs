@@ -185,15 +185,18 @@ pub(super) fn repairable_public_phases(kind: &SessionKind) -> &'static [PublicPh
         PublicPhase::CommitmentAudit,
         PublicPhase::RefreshHealthCheck,
     ];
+    // No health check for RefreshPet — one fewer repairable phase than plain Refresh.
+    const REFRESH_PET: &[PublicPhase] = &[PublicPhase::Commitments, PublicPhase::CommitmentAudit];
     const RESHARE: &[PublicPhase] = &[
         PublicPhase::Commitments,
         PublicPhase::CommitmentAudit,
         PublicPhase::ReshareParticipantSet,
     ];
     match kind {
-        SessionKind::Fresh => FRESH,
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => FRESH,
         SessionKind::Refresh { .. } => REFRESH,
-        SessionKind::Reshare { .. } => RESHARE,
+        SessionKind::RefreshPet { .. } => REFRESH_PET,
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => RESHARE,
     }
 }
 

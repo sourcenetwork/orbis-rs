@@ -233,6 +233,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
     let finalization = serde_json::to_vec(&RingFinalizationPayload {
         ring_id: ring_id.clone(),
         ring_pk: ring_key.clone(),
+        pet_pk: None,
     })
     .unwrap();
     assert!(backend
@@ -298,6 +299,8 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         permission: "read".into(),
         tier: Some("gold".into()),
         timestamp: Some(now),
+        pet_tag: None,
+        pet_tag_proof: None,
     };
     let payload = serde_json::to_vec(&document).unwrap();
     let document_id = backend

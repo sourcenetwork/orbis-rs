@@ -1,0 +1,41 @@
+schema_version: 1
+name: orbis-inprocess-pet-comparison
+crypto: bls12-381
+
+# Small in-process network comparing plain PRE against PET-gated PRE on an
+# identical ring_size/threshold case. `pre` and `pet` are independent
+# operations, each against their own ring (`requires_pet` is fixed at ring
+# creation, so they can't share one) — but the report's summary table groups
+# rows by (profile, network_size, ring_size, threshold, operation,
+# concurrency), so running them together here produces two directly
+# comparable rows for the same case: how much the 3-round PET blind equality
+# test (commit/reveal/decrypt, inside start_pre) adds on top of plain PRE's
+# own reencryption round.
+backend: in-process
+
+networks:
+  - network_size: 4
+    cases:
+      - { ring_size: 4, threshold: 2 }
+
+operations: [dkg, pre, pet]
+profiles:
+  - name: lan
+    kind: lan
+
+warmups: 1
+repetitions: 5
+seed: 185974508
+output_dir: bench-results
+
+load:
+  concurrency: [1]
+  warmup_secs: 5
+  measure_secs: 15
+
+timeouts:
+  setup_secs: 120
+  dkg_secs: 120
+  pre_secs: 60
+  pet_secs: 180
+  sign_secs: 60

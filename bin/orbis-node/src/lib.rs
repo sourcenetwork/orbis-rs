@@ -7,6 +7,7 @@ pub mod harness;
 mod helpers;
 mod info;
 mod metrics;
+mod pet;
 mod pre;
 mod pss;
 mod reporting;

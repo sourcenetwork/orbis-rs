@@ -64,7 +64,7 @@ where
         .ok_or_else(|| DkgError::SessionNotFound(contribution.ceremony_id.0.to_string()))?;
     let phase = contribution.payload.phase();
     let allowed = match kind {
-        SessionKind::Fresh => {
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => {
             contribution.origin.scope == CommitteeScope::Current
                 && matches!(
                     phase,
@@ -80,7 +80,16 @@ where
                         | PublicPhase::RefreshHealthCheck
                 )
         }
-        SessionKind::Reshare { .. } => match phase {
+        // No health check for RefreshPet (see `SessionKind::RefreshPet`'s doc
+        // comment) — one fewer allowed phase than plain `Refresh`.
+        SessionKind::RefreshPet { .. } => {
+            contribution.origin.scope == CommitteeScope::Current
+                && matches!(
+                    phase,
+                    PublicPhase::Commitments | PublicPhase::CommitmentAudit
+                )
+        }
+        SessionKind::Reshare { .. } | SessionKind::ResharePet { .. } => match phase {
             PublicPhase::Commitments => active_dealers.contains(&contribution.origin),
             PublicPhase::CommitmentAudit => contribution.origin.scope == CommitteeScope::Next,
             PublicPhase::ReshareParticipantSet => contribution.origin == ParticipantRef::next(1),

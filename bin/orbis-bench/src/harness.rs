@@ -168,6 +168,7 @@ impl HarnessNetwork {
         members: &[usize],
         threshold: usize,
         pss_interval_secs: u64,
+        requires_pet: bool,
     ) -> Result<()> {
         let peer_node_keys = members
             .iter()
@@ -184,6 +185,7 @@ impl HarnessNetwork {
             threshold: threshold as u32,
             pss_interval: pss_interval_secs,
             policy_id: Some(HARNESS_POLICY_ID.to_string()),
+            requires_pet,
             ..Default::default()
         };
         self.bulletin
@@ -256,6 +258,7 @@ impl HarnessNetwork {
         ring_id: &str,
         members: &[usize],
         deadline: Duration,
+        requires_pet: bool,
     ) -> Result<String> {
         tokio::time::timeout(deadline, async {
             let mut last_progress = tokio::time::Instant::now()
@@ -269,14 +272,53 @@ impl HarnessNetwork {
                                 .first()
                                 .map(|state| state.public_polynomial.as_str())
                                 .filter(|polynomial| !polynomial.is_empty());
-                            if expected_polynomial.is_some()
+                            let main_key_converged = expected_polynomial.is_some()
                                 && states.iter().all(|state| {
                                     Some(state.public_polynomial.as_str()) == expected_polynomial
-                                })
-                            {
-                                return Ok::<_, anyhow::Error>(ring_pk);
-                            }
-                            if last_progress.elapsed() >= Duration::from_secs(10) {
+                                });
+                            if main_key_converged {
+                                if !requires_pet {
+                                    return Ok::<_, anyhow::Error>(ring_pk);
+                                }
+                                // Combined finalize lands `ring_pk` and
+                                // `pet_pk` together, but the auto-chained
+                                // FreshPet ceremony's own local completion on
+                                // every committee member can still lag
+                                // slightly behind the main key's — poll the
+                                // same way for the PET polynomial before
+                                // declaring the ring usable.
+                                match clients.pet_ring_states(members, ring_id).await {
+                                    Ok(pet_states) => {
+                                        let expected_pet_polynomial = pet_states
+                                            .first()
+                                            .map(|state| state.public_polynomial.as_str())
+                                            .filter(|polynomial| !polynomial.is_empty());
+                                        if expected_pet_polynomial.is_some()
+                                            && pet_states.iter().all(|state| {
+                                                Some(state.public_polynomial.as_str())
+                                                    == expected_pet_polynomial
+                                            })
+                                        {
+                                            return Ok::<_, anyhow::Error>(ring_pk);
+                                        }
+                                        if last_progress.elapsed() >= Duration::from_secs(10) {
+                                            eprintln!(
+                                                "ring {ring_id}: main key converged; waiting for matching PET key local state on {} committee nodes",
+                                                members.len()
+                                            );
+                                            last_progress = tokio::time::Instant::now();
+                                        }
+                                    }
+                                    Err(error) => {
+                                        if last_progress.elapsed() >= Duration::from_secs(10) {
+                                            eprintln!(
+                                                "ring {ring_id}: main key converged; PET key local-state verification pending: {error:#}"
+                                            );
+                                            last_progress = tokio::time::Instant::now();
+                                        }
+                                    }
+                                }
+                            } else if last_progress.elapsed() >= Duration::from_secs(10) {
                                 eprintln!(
                                     "ring {ring_id}: finalized on bulletin; waiting for matching local state on {} committee nodes",
                                     members.len()
@@ -319,6 +361,25 @@ impl HarnessNetwork {
                 let payload = RingPayload::try_from(post)
                     .map_err(|error| anyhow::anyhow!("parse ring {ring_id}: {error}"))?;
                 Ok((!payload.ring_pk.is_empty()).then_some(payload.ring_pk))
+            }
+            Err(BulletinError::NotFound { .. }) => Ok(None),
+            Err(error) => Err(anyhow::anyhow!("read ring {ring_id}: {error}")),
+        }
+    }
+
+    /// Same as [`Self::ring_pk`], for a `requires_pet` ring's independent PET
+    /// checking key — landed on the bulletin together with `ring_pk` by the
+    /// combined finalize, so it converges at the same time.
+    pub async fn pet_pk(&self, ring_id: &str) -> Result<Option<String>> {
+        match self
+            .bulletin
+            .read(ring_id.to_string(), BulletinKind::Ring)
+            .await
+        {
+            Ok(post) => {
+                let payload = RingPayload::try_from(post)
+                    .map_err(|error| anyhow::anyhow!("parse ring {ring_id}: {error}"))?;
+                Ok(payload.pet_pk.filter(|pet_pk| !pet_pk.is_empty()))
             }
             Err(BulletinError::NotFound { .. }) => Ok(None),
             Err(error) => Err(anyhow::anyhow!("read ring {ring_id}: {error}")),

@@ -237,16 +237,7 @@ impl NativeVeraClient {
         document: DocumentPayload,
         token: &str,
     ) -> Result<B256, ClientError> {
-        let object = ThresholdObject::Document(EncryptedDocument {
-            ring_id: document.ring_id,
-            document: document.document,
-            proof: document.proof,
-            policy_id: document.policy_id,
-            resource: document.resource,
-            permission: document.permission,
-            tier: document.tier,
-            timestamp: document.timestamp,
-        });
+        let object = ThresholdObject::Document(native_document(document)?);
         self.prepare_call(encode_threshold_object(&object, token)?)
     }
 
@@ -434,6 +425,24 @@ impl NativeVeraClient {
     }
 }
 
+fn native_document(document: DocumentPayload) -> Result<EncryptedDocument, ClientError> {
+    if document.pet_tag.is_some() || document.pet_tag_proof.is_some() {
+        return Err(ClientError::Signing(
+            "native Vera does not support PET documents".into(),
+        ));
+    }
+    Ok(EncryptedDocument {
+        ring_id: document.ring_id,
+        document: document.document,
+        proof: document.proof,
+        policy_id: document.policy_id,
+        resource: document.resource,
+        permission: document.permission,
+        tier: document.tier,
+        timestamp: document.timestamp,
+    })
+}
+
 fn object_post(
     record: vera_client::threshold_objects::ObjectRecord,
 ) -> crate::error::Result<BulletinPost> {
@@ -501,6 +510,8 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
             (Some(upgrade.version), Some(upgrade.activates_at))
         });
     let ring = RingPayload {
+        requires_pet: false,
+        pet_pk: None,
         ring_pk: status.ring_pk,
         new_peer_node_keys,
         new_threshold,
@@ -563,6 +574,8 @@ mod tests {
             &document.permission,
             document.tier.as_deref(),
             document.timestamp,
+            None,
+            None,
         )
         .unwrap();
         let derivation = KeyDerivation {

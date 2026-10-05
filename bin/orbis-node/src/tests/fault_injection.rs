@@ -575,13 +575,20 @@ async fn test_pre_one_node_down_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
-    let obj_resp =
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true)
-            .await
-            .expect("store prepared secret");
+    let obj_resp = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared,
+        ring_id.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("store prepared secret");
     let object_id = obj_resp.object_id;
 
     let did = "fault_reader_1".to_string();
@@ -684,13 +691,20 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
-    let obj_resp =
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true)
-            .await
-            .expect("store prepared secret");
+    let obj_resp = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared,
+        ring_id.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("store prepared secret");
     let object_id = obj_resp.object_id;
 
     let did = "fault_reader_2".to_string();
@@ -800,6 +814,7 @@ async fn test_sign_one_node_down_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -808,10 +823,16 @@ async fn test_sign_one_node_down_succeeds() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Step 5: store_prepared_secret triggers FROST signing — should succeed with alice+bob
-    let resp =
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true)
-            .await
-            .expect("SIGN should succeed with one node down (threshold=2)");
+    let resp = cli_tool::store_prepared_secret(
+        endpoint.clone(),
+        &prepared,
+        ring_id.clone(),
+        None,
+        true,
+        None,
+    )
+    .await
+    .expect("SIGN should succeed with one node down (threshold=2)");
 
     assert!(
         !resp.object_id.is_empty(),
@@ -870,6 +891,7 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
         None,
         None,
         None,
+        None,
     )
     .expect("prepare secret");
 
@@ -882,7 +904,14 @@ async fn test_sign_below_threshold_nodes_down_fails_fast() {
     let deadline = SIGN_COLLECTION_TIMEOUT + Duration::from_secs(5);
     let timed = tokio::time::timeout(
         deadline,
-        cli_tool::store_prepared_secret(endpoint.clone(), &prepared, ring_id.clone(), None, true),
+        cli_tool::store_prepared_secret(
+            endpoint.clone(),
+            &prepared,
+            ring_id.clone(),
+            None,
+            true,
+            None,
+        ),
     )
     .await;
 

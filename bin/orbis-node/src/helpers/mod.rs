@@ -6,6 +6,7 @@ pub mod identity;
 pub mod jti_replay;
 pub mod launch;
 pub mod node_routes;
+pub mod pet_tag;
 pub mod protocol_handler;
 pub mod protocol_version;
 pub mod response_manager;

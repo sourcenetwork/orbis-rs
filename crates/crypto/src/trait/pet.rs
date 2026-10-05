@@ -1,0 +1,193 @@
+use super::codec::{CryptoDeserialize, CryptoSerialize};
+use super::dkg::PubPoly;
+use super::types::{BlindingReply, PetCheckReply, PetTag, PubShare, TagKnowledgeProof};
+use crate::error::Result;
+use zeroize::Zeroize;
+
+/// PET (ownership-tag) primitives, defined once per curve backend alongside the
+/// existing PRE ([`super::pre::ThresholdDealer`]) and signing
+/// ([`super::sign::ThresholdSigner`]) abstractions.
+///
+/// A PET tag masks a fingerprint of the claimed owner's identity under an
+/// independently generated PET public key: `T = F(owner_id) + r_tag * pet_pk`.
+/// [`Pet::owner_fingerprint`] computes `F`, the deterministic mapping from an
+/// owner identifier to a group element.
+///
+/// `F` is defined and owned here, on the Orbis side, not supplied by the tag
+/// producer (Bankd): every PET participant reconstructs the expected
+/// fingerprint for an authenticated audit target from this same function
+/// rather than trusting a caller-supplied value.
+pub trait Pet {
+    /// Group element type (matches the curve's `ThresholdDealer::PublicKey`).
+    type PublicKey: CryptoSerialize + CryptoDeserialize + Clone;
+    /// Scalar field type (matches the curve's `ThresholdDealer::ShareValue`).
+    type ShareValue: CryptoSerialize + CryptoDeserialize + Clone + Zeroize;
+    /// Public polynomial commitment type (matches the curve's
+    /// `ThresholdDealer::PubPoly`/`Dkg::PubPoly` — the PET checking key is
+    /// generated via the same `Dkg` implementation as the main ring key, see
+    /// `pet::v0`'s fresh-DKG auto-chain).
+    type PubPoly: PubPoly<PublicKey = Self::PublicKey>;
+
+    fn new() -> Self;
+    fn name() -> String;
+
+    /// `F(owner_id) = hash_to_scalar(FINGERPRINT_DOMAIN || owner_id) * G`.
+    ///
+    /// Deterministic and public. Every verifier recomputes this directly from
+    /// the authenticated audit target id; it is never taken as a caller-supplied
+    /// value.
+    fn owner_fingerprint(owner_id: &[u8]) -> Result<Self::PublicKey>;
+
+    /// Generate the tag-knowledge proof for a tag whose `ephemeral_point = r_tag*G`.
+    ///
+    /// Called once by the tag producer/encryptor, never by a verifier or
+    /// auditor. `tag_transcript_digest` must be
+    /// [`crate::pet_context::tag_proof_digest`] computed over the tag, the
+    /// authoritative PET public key and ring identity, and the complete payload
+    /// envelope — see that function's docs for the exact binding.
+    fn prove_tag_knowledge(
+        r_tag: &Self::ShareValue,
+        tag: &PetTag,
+        tag_transcript_digest: &[u8; 32],
+    ) -> Result<TagKnowledgeProof>;
+
+    /// Verify a [`TagKnowledgeProof`] against `tag` and an independently
+    /// reconstructed `tag_transcript_digest`.
+    ///
+    /// Every PET participant, including the initiator, must call this — after
+    /// rebuilding `tag_transcript_digest` itself from the resolved document and
+    /// authoritative ring state — before joining PET. A coordinator-supplied
+    /// verification flag does not satisfy this requirement.
+    fn verify_tag_knowledge(
+        tag: &PetTag,
+        proof: &TagKnowledgeProof,
+        tag_transcript_digest: &[u8; 32],
+    ) -> Result<()>;
+
+    /// A committee member's contribution to the threshold PET check:
+    /// `share_i * R`, where `share_i` is this node's DKG share of the ring's
+    /// PET secret key and `R = tag.ephemeral_point`, together with a
+    /// Chaum–Pedersen DLEQ proof that the same `share_i` was used here as in
+    /// this node's known public share (verifiable via
+    /// [`Pet::verify_partial_pet_check`] against `pub_poly.eval(i)`, no
+    /// secret needed). Structurally the same "apply my secret share to a
+    /// public group element" shape as
+    /// [`super::pre::ThresholdDealer::reencrypt`]'s `ski * (xG + rG)`, just
+    /// against a single point instead of a sum of two — and, like
+    /// `reencrypt`, always produces a proof rather than a bare value, so a
+    /// caller can never skip verification by construction.
+    ///
+    /// Never reveals `share_i` or the PET secret key: recovering either from
+    /// this output alone requires solving discrete log. Combine
+    /// `threshold`-many verified contributions' `.partial` via
+    /// [`Pet::combine_pet_check_shares`] to recover `pet_sk * R`.
+    ///
+    /// Per-share verification exists because final-equation verification
+    /// alone is insufficient: because [`Pet::combine_pet_check_shares`]
+    /// combines contributions *linearly* (Lagrange interpolation), a
+    /// malicious committee member can submit a fabricated, correctly-signed
+    /// contribution chosen so that combining it with genuinely honest ones
+    /// still satisfies the tag's final equation — a cancellation attack that
+    /// only per-share verification against each node's own public share
+    /// catches.
+    fn partial_pet_check(
+        share_i: &Self::ShareValue,
+        node_id: u32,
+        tag: &PetTag,
+    ) -> Result<PetCheckReply<Self::ShareValue, Self::PublicKey>>;
+
+    /// Verify a [`PetCheckReply`] from committee member `reply.partial.i`
+    /// against `pub_poly.eval(reply.partial.i)` — that node's own public
+    /// share — and `tag`, with no secret needed. The PET analog of
+    /// [`super::pre::ThresholdDealer::verify`].
+    ///
+    /// Callers must ensure `pub_poly` genuinely belongs to this ring's PET
+    /// checking key (e.g. loaded via the PET-key-specific, separately
+    /// namespaced `RingShareBundle::load_by_pet_ring_key(storage, ring_id)`,
+    /// never the main ring key's `RingShareBundle::load(storage, ring_pk)`
+    /// or `load_by_ring_key`) — this method
+    /// has no way to check that itself, since it receives only the
+    /// polynomial, not its provenance. Fails if `reply.partial.i` doesn't
+    /// match the index the caller is checking against.
+    fn verify_partial_pet_check(
+        pub_poly: &Self::PubPoly,
+        tag: &PetTag,
+        reply: &PetCheckReply<Self::ShareValue, Self::PublicKey>,
+    ) -> Result<()>;
+
+    /// Lagrange-combine `shares` (each indexed by its contributor's DKG
+    /// share index, 1-based) into `pet_sk * R`. Requires at least
+    /// `threshold` shares with distinct indices in `[1, n]`; only the first
+    /// `threshold` are used, mirroring the same truncate-to-threshold
+    /// convention as PRE's own share recovery.
+    fn combine_pet_check_shares(
+        shares: &[PubShare<Self::PublicKey>],
+        threshold: usize,
+        n: usize,
+    ) -> Result<Self::PublicKey>;
+
+    /// Verify a combined threshold check (from
+    /// [`Pet::combine_pet_check_shares`]) against `tag` and the
+    /// independently reconstructed fingerprint of the authenticated audit
+    /// target (from [`Pet::owner_fingerprint`]):
+    /// `tag.masked_fingerprint == target_fingerprint + combined_check`,
+    /// i.e. `T == F(target) + pet_sk*R`, the tag's own defining equation
+    /// with `r_tag*pet_pk` recovered as `pet_sk*R = pet_sk*(r_tag*G) =
+    /// r_tag*pet_pk`. Returns `Err` on any mismatch — a non-matching target,
+    /// a forged tag, or a wrong/incomplete threshold combination all fail
+    /// identically here, since the equation only balances for the real
+    /// owner.
+    fn verify_pet_match(
+        tag: &PetTag,
+        combined_check: &Self::PublicKey,
+        target_fingerprint: &Self::PublicKey,
+    ) -> Result<()>;
+
+    /// A blinding participant's contribution to the PET blind equality test:
+    /// `(z_i * R, z_i * D)`, where `R = tag.ephemeral_point` and
+    /// `D = tag.masked_fingerprint - target_fingerprint`, together with a
+    /// Chaum–Pedersen proof that the same fresh secret `z_i` was used for
+    /// both. This is what lets the committee threshold-decrypt `Z*R`
+    /// (`Z = sum(z_i)`) instead of `R` directly, so the raw combined value
+    /// `x*R` — and hence the deterministic owner fingerprint `T - x*R` — is
+    /// never exposed to whoever runs the check; only the blinded difference
+    /// `Z*(F(owner) - F(target))` is, which is the identity element on a
+    /// match and an unpredictable point otherwise, provided `z_i` stays
+    /// secret.
+    ///
+    /// `z_i` must be freshly and independently sampled per attempt: reusing
+    /// it, or substituting a different participant's contribution into an
+    /// already-revealed aggregate, reintroduces the exact fingerprint leak
+    /// this construction exists to close.
+    ///
+    /// Never reveals `z_i`: recovering it from this output alone requires
+    /// solving discrete log. Unlike [`Pet::partial_pet_check`], `D` (and
+    /// hence `blinded_diff`) may legitimately be the identity element (an
+    /// exact pre-blinding match) — implementations must not reject that case
+    /// the way they reject an identity `R`, `T`, or `blinded_r`.
+    fn prove_blinding_correctness(
+        z_i: &Self::ShareValue,
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<BlindingReply<Self::ShareValue, Self::PublicKey>>;
+
+    /// Verify a [`BlindingReply`] against `tag`, the same
+    /// `target_fingerprint` the prover used, and an independently
+    /// reconstructed `blind_transcript_digest` (binding the attempt,
+    /// context, selection, and claimed participant — computed by the
+    /// orbis-node layer). Rejects `blinded_r == O` (equivalently `z_i == 0`,
+    /// since `R` is required nonidentity) but permits `blinded_diff == O`
+    /// when `D` itself is the identity.
+    ///
+    /// Does not check that the aggregate `sum(blinded_r)` across a whole
+    /// blinding certificate is nonidentity — that is a property of the
+    /// *aggregate*, not any single reply, and must be checked separately by
+    /// the caller once every reply in a certificate has been verified.
+    fn verify_blinding_correctness(
+        tag: &PetTag,
+        target_fingerprint: &Self::PublicKey,
+        reply: &BlindingReply<Self::ShareValue, Self::PublicKey>,
+        blind_transcript_digest: &[u8; 32],
+    ) -> Result<()>;
+}

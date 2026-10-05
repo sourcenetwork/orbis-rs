@@ -152,9 +152,14 @@ where
         .dkg_session_state
         .with_attempt_state(attempt, |state| {
             let receiver_node_keys = match &state.kind {
-                SessionKind::Fresh => Vec::new(),
-                SessionKind::Refresh { .. } => state.routing.peer_node_keys.clone(),
+                SessionKind::Fresh | SessionKind::FreshPet { .. } => Vec::new(),
+                SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+                    state.routing.peer_node_keys.clone()
+                }
                 SessionKind::Reshare {
+                    new_peer_node_keys, ..
+                }
+                | SessionKind::ResharePet {
                     new_peer_node_keys, ..
                 } => new_peer_node_keys.clone(),
             };
@@ -169,8 +174,10 @@ where
         .map_err(|error| attempt_state_error(attempt, error))?;
 
     let (origin_protocol, ring_id) = match kind {
-        SessionKind::Fresh => return Ok(None),
-        SessionKind::Refresh { .. } => ("pss_refresh", stored_ring_id),
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => {
+            ("pss_refresh", stored_ring_id)
+        }
         SessionKind::Reshare {
             bulletin_post_id, ..
         } => (
@@ -181,6 +188,10 @@ where
                 stored_ring_id
             },
         ),
+        // No separate bulletin_post_id: `ring_id` alone is PET's identity
+        // anchor, and `stored_ring_id` is already populated from it at
+        // session-init time.
+        SessionKind::ResharePet { .. } => ("pss_reshare", stored_ring_id),
     };
     if ring_id.is_empty() {
         return Err(DkgError::InvalidState(
@@ -242,8 +253,8 @@ where
     D: Dkg + Clone + 'static,
 {
     let (origin_protocol, ring_id, receiver_node_keys) = match &prepare.kind {
-        SessionKind::Fresh => return Ok(None),
-        SessionKind::Refresh { .. } => (
+        SessionKind::Fresh | SessionKind::FreshPet { .. } => return Ok(None),
+        SessionKind::Refresh { .. } | SessionKind::RefreshPet { .. } => (
             "pss_refresh",
             prepare.ring_id.clone(),
             prepare.committees.current.node_keys.clone(),
@@ -259,6 +270,13 @@ where
             } else {
                 prepare.ring_id.clone()
             },
+            new_peer_node_keys.clone(),
+        ),
+        SessionKind::ResharePet {
+            new_peer_node_keys, ..
+        } => (
+            "pss_reshare",
+            prepare.ring_id.clone(),
             new_peer_node_keys.clone(),
         ),
     };

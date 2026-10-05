@@ -204,7 +204,7 @@ fn render_report(
     );
     html.push_str("</section>");
 
-    html.push_str("<section><h2>Ceremony duration by scale</h2><p>Time on the X axis, scale on the Y axis, one line per network profile connecting the median at each size. Range bars show min/max, the filled dot is the median, faint dots are individual measured trials. DKG needs every ring member, so it scales with ring size; PRE and Sign only need a threshold of shares, so they scale with threshold.</p>");
+    html.push_str("<section><h2>Ceremony duration by scale</h2><p>Time on the X axis, scale on the Y axis, one line per network profile connecting the median at each size. Range bars show min/max, the filled dot is the median, faint dots are individual measured trials. DKG needs every ring member, so it scales with ring size; PRE, PET, and Sign only need a threshold of shares, so they scale with threshold.</p>");
     html.push_str("<h3>DKG</h3>");
     html.push_str(&scale_chart(
         trials,
@@ -232,6 +232,15 @@ fn render_report(
         false,
         |row| row.threshold,
     ));
+    html.push_str("<h3>PET</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pet,
+        "Threshold",
+        false,
+        |row| row.threshold,
+    ));
     html.push_str("</section>");
 
     html.push_str("<section><h2>Closed-loop latency by concurrency</h2><p>Same layout, but the range bar spans p50\u{2192}p95 latency (tooltip has p50/p95/p99/throughput) instead of min/max duration, since a load trial measures a fixed window of many requests rather than one ceremony.</p>");
@@ -253,6 +262,15 @@ fn render_report(
         true,
         |row| row.concurrency.unwrap_or(0),
     ));
+    html.push_str("<h3>PET</h3>");
+    html.push_str(&scale_chart(
+        trials,
+        rows,
+        Operation::Pet,
+        "Concurrency",
+        true,
+        |row| row.concurrency.unwrap_or(0),
+    ));
     html.push_str("</section>");
 
     html.push_str("<section><h2>Capacity result</h2><p>The largest ring below is the largest <em>all-pass ring observed</em> under that exact profile and operation.</p><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Operation</th><th>Largest viable ring</th><th>Network</th><th>Threshold</th></tr></thead><tbody>");
@@ -268,7 +286,7 @@ fn render_report(
     html.push_str("</tbody></table></div>");
     html.push_str("</section>");
 
-    html.push_str("<section><h2>PRE and SIGN closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>All pass</th></tr></thead><tbody>");
+    html.push_str("<section><h2>Closed-loop load</h2><div class=\"table-wrap\"><table><thead><tr><th>Profile</th><th>Network</th><th>Ring</th><th>Threshold</th><th>Operation</th><th>Concurrency</th><th>Throughput/s</th><th>p50 (s)</th><th>p95 (s)</th><th>p99 (s)</th><th>All pass</th></tr></thead><tbody>");
     for row in load_rows {
         write!(html, "<tr><td>{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{:?}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>", escape(&row.profile), row.network_size, row.ring_size, row.threshold, row.operation, row.concurrency.unwrap_or(0), fmt(row.throughput_per_sec), fmt_seconds(row.p50_ms), fmt_seconds(row.p95_ms), fmt_seconds(row.p99_ms), pass_badge(row.viable)).ok();
     }

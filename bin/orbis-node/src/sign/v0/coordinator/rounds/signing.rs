@@ -760,6 +760,7 @@ where
             let (_, staged_bundle) = validate_ring_reshare_update_statement(
                 &*self.app_state.bulletin,
                 &self.app_state.dkg_session_state,
+                &self.app_state.local_storage,
                 &ctx.statement,
                 Some(message),
                 false,
