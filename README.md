@@ -210,8 +210,6 @@ cargo build --no-default-features --features=<alternative>
 | `bulletin` | `vera` | `VeraBulletin` | Bulletin board backends | Yes |
 | `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
 
-For Jubjub migration requirements, including the required Vera verifier update,
-see the [crypto migration notes](crates/crypto/README.md#jubjub-migration).
 
 ### Example: Switching Storage Backend
 

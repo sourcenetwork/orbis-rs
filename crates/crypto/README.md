@@ -24,40 +24,6 @@ The node / network layer in the wider repo orchestrates MPC sessions; this crate
 cargo build -p crypto --no-default-features --features jubjub
 ```
 
-## Jubjub migration
-
-The `jubjub` feature replaces the retired `decaf377` backend. BLS12-381 remains the default.
-All participants in a ring must select the same backend. Existing decaf377 keys,
-shares, ciphertexts, PET tags, and signatures cannot be reused as Jubjub material:
-create new rings with fresh Jubjub DKG and re-encrypt any data that must migrate.
-The cross-commit upgrade harness requires both revisions to support the selected
-curve; it does not convert existing rings between curves.
-
-The Vera revision currently pinned in `docker/VERA_REF` does not yet recognize
-`jubjub_frost`. Chain-backed reports and reshare finalization require a Vera
-release with matching Jubjub signature verification and ring-key validation,
-followed by updating that pin. Local crypto and in-process node tests can run
-independently of this chain update.
-An independently generated [FROST verification vector](src/jubjub/test_vectors/frost.json)
-pins the generator, encoding, challenge transcript, and signature for external verifiers.
-
-Jubjub points and scalars each use exactly 32 canonical bytes; FROST signatures
-use 64 bytes. Point decoding rejects points outside the prime-order subgroup,
-including torsion and mixed-order points. Identity points remain representable
-for zero polynomial coefficients and refresh commitments; protocol entry points
-reject identities where required. Arithmetic delegates to zkcrypto's constant-time
-implementation. Local wrappers preserve Orbis serialization and secret-zeroization
-interfaces. The signing scheme identifier is `jubjub_frost`, with Jubjub-specific
-proof, derivation, signing, and KDF domains.
-
-The three Jubjub DLEQ proofs (PRE re-encryption shares, PET partial checks, and
-PET blinding correctness) use unkeyed **BLAKE2b-512** for their Fiat–Shamir
-challenges. The full 64-byte digest is interpreted as a little-endian integer
-and reduced modulo the Jubjub scalar order; the challenge remains a 32-byte
-canonical scalar. Each proof retains its domain separator and transcript
-ordering. FROST, single-base Schnorr knowledge proofs, fingerprint/key
-derivation, and HKDF retain their existing hashes.
-
 ## Core traits (summary)
 
 Full definitions: [`src/trait.rs`](src/trait.rs).

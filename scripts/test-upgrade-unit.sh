@@ -57,7 +57,6 @@ expect_failure baseline-worktree --from WORKTREE --to HEAD --dry-run
 expect_failure invalid-crypto --from HEAD --to HEAD --crypto invalid --dry-run
 
 # Exercise curve preflight independently of the feature set in this checkout's
-# HEAD, including after the Jubjub migration has been committed.
 FIXTURE_ROOT="$TEST_ROOT/curve-fixture"
 mkdir -p "$FIXTURE_ROOT/scripts" "$FIXTURE_ROOT/crates/crypto"
 cp "$SCRIPT_DIR/test-upgrade.sh" "$FIXTURE_ROOT/scripts/test-upgrade.sh"
