@@ -45,8 +45,9 @@ that would also require capability materialization or client-side evaluation.
 Native mode verifies finality against its configured consensus key and checks the
 configured deployment root before serving requests. Authorization evaluates ACP
 locally from authenticated policy and relationship evidence at one revision.
-Current relation identities are part of the proven policy: removing and recreating
-a relation cannot make its previous grants valid again. Invalid, oversized,
+Current relation identities and target-object incarnations are authenticated with
+the policy. Removing and recreating a relation, or archiving and unarchiving an
+object, cannot make its previous grants valid again. Invalid, oversized,
 unavailable or stale evidence produces an error, never an allow decision.
 
 Current reads enforce a configured maximum age and a nondecreasing observed
@@ -59,8 +60,12 @@ chosen window remain operational considerations. Protect the provisioned
 consensus key and deployment root.
 
 Native validators, clients and verifiers must use the same ACP storage/proof
-format. The current native dependency set uses relation-generation keys under
-`relationship/v4/`; there is no fallback to older relationship namespaces.
+format. Native relationship keys use `relationship/v5/` with `v3` suffixes and
+mandatory incarnation stamps; owner records always use incarnation zero.
+Specialized relationship proofs require an `objects` witness array for every
+non-owner target. A certified absent state point means initial incarnation zero;
+a missing witness is an error. This cutover requires fresh state, with no fallback
+to older namespaces or proof shapes.
 
 ### The signing coordinator is trusted for liveness
 

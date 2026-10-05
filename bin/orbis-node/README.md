@@ -199,11 +199,16 @@ signing and replication, permission revocation, PRE, graceful restart, and
 committee replacement. Deployment qualification still requires sustained load,
 multi-host networks, crash/power-loss recovery, and operational security review.
 
-Native ACP uses the pinned `relationship/v4/` format. Deploy the matching Vera
-validator and proof consumers together. Policy catalogs and current relation
-identities are authenticated at the same revision; old namespace prefixes are not
-accepted as a compatibility fallback. See [security assumptions](../../SECURITY.md)
-for native proof freshness and consensus-key provisioning.
+Native ACP uses `relationship/v5/` keys with `v3` incarnation-qualified suffixes.
+Deploy the matching Vera validator and proof consumers together. Policy catalogs,
+relation identities and target-object incarnations are authenticated at the same
+revision. Archiving retires existing non-owner grants; unarchiving does not revive
+them. Owners retain incarnation zero. Specialized relationship proofs require
+same-root object-state witnesses for non-owner rows: certified absence means
+initial incarnation zero, while missing evidence is an error. This is a fresh-state
+cutover without older namespace or proof-shape fallback. See
+[security assumptions](../../SECURITY.md) for native proof freshness and
+consensus-key provisioning.
 
 Build a native-only node with:
 
