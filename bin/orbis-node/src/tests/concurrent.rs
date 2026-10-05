@@ -934,52 +934,47 @@ async fn test_concurrent_pre_requests() {
     .expect("set relationship on chain");
 
     // Step 4: Generate a reader keypair
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
     let reader_sk_hex =
         hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-    let reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
 
     // Step 5: Three concurrent PRE decryptions
     let (r1, r2, r3) = tokio::join!(
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
+            Some(reader_sk_hex.clone()),
         ),
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
+            Some(reader_sk_hex.clone()),
         ),
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
+            Some(reader_sk_hex.clone()),
         ),
     );
 

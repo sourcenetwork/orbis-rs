@@ -21,34 +21,62 @@ pub(crate) fn sample_nonzero<F: Zero>(mut sample: impl FnMut() -> F) -> F {
         }
     }
 }
+/// Compute `pk = sk * G` where `G` is the generator of the selected curve.
+///
+/// Exposed so a caller holding a secret scalar from elsewhere (e.g. a
+/// `--reader-sk-override` debug flag) can derive its matching public key
+/// without duplicating curve-specific generator-multiplication code; also
+/// used internally by [`generate_keypair`].
+#[cfg(feature = "bls12-381")]
+pub fn public_key_from_secret(sk: &crate::ScalarField) -> Result<crate::GroupAffine> {
+    use ark_bls12_381::G1Projective;
+    use ark_ec::Group;
+
+    Ok((G1Projective::generator() * sk).into())
+}
+
+/// Compute `pk = sk * G` where `G` is the generator of the selected curve.
+#[cfg(feature = "jubjub")]
+pub fn public_key_from_secret(sk: &crate::ScalarField) -> Result<crate::GroupAffine> {
+    Ok(crate::jubjub::common::Element::generator() * sk)
+}
+
 /// Generate a random keypair (secret key scalar, public key point).
 ///
-/// Uses OsRng for cryptographic randomness.
+/// Uses OsRng for cryptographic randomness. The secret scalar is resampled
+/// until nonzero — a zero secret key is a degenerate, unusable keypair (its
+/// public key is the identity), and this is the helper ephemeral PRE-recipient
+/// key generation relies on being safe to call directly, with no separate
+/// reject-zero wrapper needed at the call site.
 /// pk = sk * G where G is the generator of the selected curve.
 #[cfg(feature = "bls12-381")]
 pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
-    use ark_bls12_381::G1Projective;
-    use ark_ec::Group;
     use ark_std::UniformRand;
     use rand_core::OsRng;
 
     let mut rng = OsRng;
-    let sk = crate::ScalarField::rand(&mut rng);
-    let pk: crate::GroupAffine = (G1Projective::generator() * sk).into();
+    let sk = sample_nonzero(|| crate::ScalarField::rand(&mut rng));
+    let pk = public_key_from_secret(&sk)?;
     Ok((sk, pk))
 }
 
 /// Generate a random keypair (secret key scalar, public key point).
 ///
-/// Uses OsRng for cryptographic randomness.
+/// Uses OsRng for cryptographic randomness. The secret scalar is resampled
+/// until nonzero — see the `bls12-381` variant's doc comment for why.
 /// pk = sk * G where G is the generator of the selected curve.
 #[cfg(feature = "jubjub")]
 pub fn generate_keypair() -> Result<(crate::ScalarField, crate::GroupAffine)> {
     use rand_core::OsRng;
 
     let mut rng = OsRng;
-    let sk = crate::jubjub::common::Fr::rand(&mut rng);
-    let pk = crate::jubjub::common::Element::generator() * sk;
+    let sk = loop {
+        let candidate = crate::jubjub::common::Fr::rand(&mut rng);
+        if !candidate.is_zero() {
+            break candidate;
+        }
+    };
+    let pk = public_key_from_secret(&sk)?;
     Ok((sk, pk))
 }
 

@@ -51,13 +51,18 @@ message InlineDocument {
   optional PetTagAttachment pet_tag = 11;
 }
 
-// Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
-// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G). Required so
-// that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in rdr_pk, cannot be
-// redirected toward an unrelated ciphertext by submitting a difference of two
-// published commitments as rdr_pk. Verified independently by every responder,
-// not only the ingress node.
-message ReaderKeyProof {
+// Schnorr signature of knowledge of the discrete log of a StartPreRequest.rdr_pk
+// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G), over a
+// request-bound transcript (chain id, authenticated JWT claims, object_id,
+// rdr_pk, derivation, salt, valid window — never the ciphertext itself).
+// Required so that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in
+// rdr_pk, cannot be redirected toward an unrelated ciphertext by submitting a
+// difference of two published commitments as rdr_pk, and so a valid
+// signature from one request cannot be replayed into a different request.
+// Verified independently by every responder, not only the ingress node;
+// never carried on the wire itself (every responder rebuilds it from
+// already-authenticated/resolved data).
+message ReaderAuthorizationSignature {
   bytes challenge = 1;
   bytes response = 2;
 }
@@ -76,8 +81,8 @@ message StartPreRequest {
   optional TimestampRange valid_window = 5;
   // When set, the document is taken from here instead of read from the bulletin by object_id.
   optional InlineDocument document = 6;
-  // Proof of knowledge of rdr_pk's discrete log.
-  ReaderKeyProof rdr_pk_proof = 7;
+  // Signature of knowledge of rdr_pk's discrete log, bound to this request.
+  ReaderAuthorizationSignature rdr_pk_signature = 7;
   // The ACP object being audited, required on a ring that requires PET. Not yet
   // enforced: no PET ring can exist yet, and this field is not checked against
   // ACP or bound in authorization. Distinct from object_id, which keeps its

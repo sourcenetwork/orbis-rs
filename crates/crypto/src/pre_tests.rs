@@ -19,11 +19,14 @@
 //! * `make_pub_poly` — constructs `PP` from a `Vec<PK>`.
 //! * `run_dkg` — runs a full DKG ceremony with `(n, t)`, returning `(agg_pk, shares, pub_poly)`.
 
-use crate::context::{context_digest, CiphertextContext, PetTagBinding};
+use crate::context::{
+    context_digest, CiphertextContext, PetTagBinding, ReaderAuthorizationContext,
+    ValidWindowBinding,
+};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
-    CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare, ReaderKeyProof,
-    ReencryptReply, Secret, ThresholdDealer,
+    CryptoDeserialize, DistKeyShare, PriShare, PubPoly as PubPolyTrait, PubShare,
+    ReaderAuthorizationSignature, ReencryptReply, Secret, ThresholdDealer,
 };
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
@@ -60,6 +63,51 @@ fn other_ctx() -> CiphertextContext {
         tier: Some("gold".to_string()),
         timestamp: Some(42),
         salt: Some("s".to_string()),
+    }
+}
+
+/// Fixed [`ReaderAuthorizationContext`] for the generic PRE tests, with
+/// `derivation` set to the given value (mirrors `reencrypt` reading
+/// derivation from the context rather than a separate parameter).
+fn test_reader_auth_context(derivation: Option<&[u8]>) -> ReaderAuthorizationContext {
+    ReaderAuthorizationContext {
+        chain_id: "pre-tests-chain".to_string(),
+        ring_pk: b"pre-tests-ring-pk".to_vec(),
+        jwt_issuer: "did:key:issuer".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:issuer".to_string(),
+        jwt_id: "pre-tests-jti".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: None,
+        object_id: "pre-tests-object".to_string(),
+        recipient_pk: b"pre-tests-recipient-pk".to_vec(),
+        derivation: derivation.map(|d| d.to_vec()),
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    }
+}
+
+/// A [`ReaderAuthorizationContext`] with every field distinct from
+/// [`test_reader_auth_context`], for "wrong context" negative tests.
+fn other_reader_auth_context() -> ReaderAuthorizationContext {
+    ReaderAuthorizationContext {
+        chain_id: "other-chain".to_string(),
+        ring_pk: b"a-different-ring-pk".to_vec(),
+        jwt_issuer: "did:key:other-issuer".to_string(),
+        jwt_subject: Some("did:key:other-subject".to_string()),
+        resolved_actor: "did:key:other-subject".to_string(),
+        jwt_id: "other-jti".to_string(),
+        jwt_issued_time: 1_800_000_000,
+        jwt_expiration_time: 1_800_003_600,
+        jwt_not_before: Some(1_800_000_000),
+        object_id: "other-object".to_string(),
+        recipient_pk: b"other-recipient-pk".to_vec(),
+        derivation: Some(b"other-derivation".to_vec()),
+        salt: Some("other-salt".to_string()),
+        valid_window: Some(ValidWindowBinding { start: 1, end: 2 }),
+        audit_target_object_id: Some("other-audit-target".to_string()),
     }
 }
 
@@ -134,7 +182,16 @@ where
         make_keypair.clone(),
         run_dkg,
     )?;
-    test_reencrypt_rejects_identity_rdr_pk::<T, SV, PK, PP, _, _>(make_keypair, make_identity_pk)?;
+    test_reencrypt_rejects_identity_rdr_pk::<T, SV, PK, PP, _, _>(
+        make_keypair.clone(),
+        make_identity_pk,
+    )?;
+    test_reader_authorization_rejects_wrong_object_id::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_reader_authorization_rejects_wrong_derivation::<T, SV, PK, PP, _>(make_keypair.clone())?;
+    test_reader_authorization_fails_against_other_context::<T, SV, PK, PP, _>(
+        make_keypair.clone(),
+    )?;
+    test_reader_authorization_context_tampering_fails::<T, SV, PK, PP, _>(make_keypair)?;
     Ok(())
 }
 
@@ -171,18 +228,303 @@ where
     let dealer = T::new();
     let identity = make_identity_pk();
 
-    // No valid PoP can exist for the identity element (see `ReaderKeyProof`'s
-    // docs), so any proof value — including this empty placeholder — must be
-    // rejected together with the identity check itself.
-    let bogus_proof = ReaderKeyProof {
+    // No valid signature can exist for the identity element (see
+    // `ReaderAuthorizationSignature`'s docs), so any signature value —
+    // including this empty placeholder — must be rejected together with the
+    // identity check itself.
+    let bogus_signature = ReaderAuthorizationSignature {
         challenge: Vec::new(),
         response: Vec::new(),
     };
-    let result = dealer.reencrypt(&share, &encrypted_secret, &identity, &bogus_proof, None);
+    let ctx = test_reader_auth_context(None);
+    let result = dealer.reencrypt(&share, &encrypted_secret, &identity, &ctx, &bogus_signature);
     assert!(
         result.is_err(),
         "reencrypt must reject the identity element as rdr_pk"
     );
+    Ok(())
+}
+
+// ============================================================================
+// Reader-authorization signature binding — request-bound, not request-free
+// ============================================================================
+
+/// A signature bound to one `object_id` must not verify against a context
+/// naming a different one — the core fix for cross-request replay (see
+/// [`ReaderAuthorizationSignature`]'s docs).
+pub fn test_reader_authorization_rejects_wrong_object_id<T, SV, PK, PP, MK>(
+    make_keypair: MK,
+) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+{
+    let (dkg_sk, dkg_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
+
+    let share = DistKeyShare {
+        pri_share: PriShare { i: 1, v: dkg_sk },
+    };
+    let dealer = T::new();
+
+    let mut signed_ctx = test_reader_auth_context(None);
+    signed_ctx.object_id = "object-A".to_string();
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &signed_ctx)?;
+
+    let mut actual_ctx = signed_ctx;
+    actual_ctx.object_id = "object-B".to_string();
+
+    let result = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &actual_ctx, &signature);
+    assert!(
+        result.is_err(),
+        "a signature bound to one object_id must not verify for a different one"
+    );
+    Ok(())
+}
+
+/// A signature whose signed context names one `derivation` must not verify
+/// when `reencrypt` is asked to apply a different derivation — fully
+/// crypto-layer enforceable now that `derivation` lives inside the context.
+pub fn test_reader_authorization_rejects_wrong_derivation<T, SV, PK, PP, MK>(
+    make_keypair: MK,
+) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+{
+    let (dkg_sk, dkg_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
+
+    let share = DistKeyShare {
+        pri_share: PriShare { i: 1, v: dkg_sk },
+    };
+    let dealer = T::new();
+
+    let signed_ctx = test_reader_auth_context(Some(b"capability-A"));
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &signed_ctx)?;
+
+    let mut actual_ctx = signed_ctx;
+    actual_ctx.derivation = Some(b"capability-B".to_vec());
+
+    let result = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &actual_ctx, &signature);
+    assert!(
+        result.is_err(),
+        "a signature bound to one derivation must not verify for a different one"
+    );
+    Ok(())
+}
+
+/// A valid signature for [`test_reader_auth_context`] must not verify against
+/// a wholly different [`other_reader_auth_context`].
+pub fn test_reader_authorization_fails_against_other_context<T, SV, PK, PP, MK>(
+    make_keypair: MK,
+) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+{
+    let (dkg_sk, dkg_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
+
+    let share = DistKeyShare {
+        pri_share: PriShare { i: 1, v: dkg_sk },
+    };
+    let dealer = T::new();
+
+    let signed_ctx = test_reader_auth_context(None);
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &signed_ctx)?;
+
+    let result = dealer.reencrypt(
+        &share,
+        &encrypted_secret,
+        &rdr_pk,
+        &other_reader_auth_context(),
+        &signature,
+    );
+    assert!(
+        result.is_err(),
+        "signature should fail against a wholly different context"
+    );
+    Ok(())
+}
+
+/// Every field of a signed [`ReaderAuthorizationContext`] is bound: mutating
+/// any single field after signing (without re-signing) must fail
+/// verification. Ciphertext binding is deliberately absent from this
+/// context (see its doc comment), so this matrix covers every field that
+/// actually exists rather than the ciphertext.
+pub fn test_reader_authorization_context_tampering_fails<T, SV, PK, PP, MK>(
+    make_keypair: MK,
+) -> Result<()>
+where
+    T: ThresholdDealer<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        Secret = Secret,
+        DistKeyShare = DistKeyShare<SV>,
+        ReencryptReply = ReencryptReply<SV, PK>,
+    >,
+    SV: Clone + zeroize::Zeroize,
+    PK: PartialEq + std::fmt::Debug + Clone,
+    PP: PubPolyTrait<PublicKey = PK>,
+    MK: Fn() -> (SV, PK),
+{
+    let (dkg_sk, dkg_pk) = make_keypair();
+    let (rdr_sk, rdr_pk) = make_keypair();
+    let (_, encrypted_secret, _) = T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
+
+    let correct = ReaderAuthorizationContext {
+        chain_id: "vera-mainnet".to_string(),
+        ring_pk: b"ring-pk-1".to_vec(),
+        jwt_issuer: "did:key:issuer-1".to_string(),
+        jwt_subject: Some("did:key:subject-1".to_string()),
+        resolved_actor: "did:key:subject-1".to_string(),
+        jwt_id: "jti-1".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: Some(1_700_000_000),
+        object_id: "object-1".to_string(),
+        recipient_pk: b"recipient-pk-1".to_vec(),
+        derivation: Some(b"derivation-1".to_vec()),
+        salt: Some("salt-1".to_string()),
+        valid_window: Some(ValidWindowBinding {
+            start: 1_700_000_000,
+            end: 1_700_100_000,
+        }),
+        audit_target_object_id: Some("audit-1".to_string()),
+    };
+
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &correct)?;
+    let dealer = T::new();
+
+    let control_share = DistKeyShare {
+        pri_share: PriShare {
+            i: 1,
+            v: dkg_sk.clone(),
+        },
+    };
+    assert!(
+        dealer
+            .reencrypt(
+                &control_share,
+                &encrypted_secret,
+                &rdr_pk,
+                &correct,
+                &signature
+            )
+            .is_ok(),
+        "the untampered context must verify"
+    );
+
+    let mut tampered: Vec<ReaderAuthorizationContext> = Vec::new();
+    let mut c = correct.clone();
+    c.chain_id = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.ring_pk = b"TAMPERED".to_vec();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_issuer = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_subject = Some("TAMPERED".to_string());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_subject = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.resolved_actor = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_id = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_issued_time = 0;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_expiration_time = 0;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.jwt_not_before = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.object_id = "TAMPERED".to_string();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.recipient_pk = b"TAMPERED".to_vec();
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.derivation = Some(b"TAMPERED".to_vec());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.derivation = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.salt = Some("TAMPERED".to_string());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.salt = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.valid_window = Some(ValidWindowBinding { start: 0, end: 0 });
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.valid_window = None;
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.audit_target_object_id = Some("TAMPERED".to_string());
+    tampered.push(c);
+    let mut c = correct.clone();
+    c.audit_target_object_id = None;
+    tampered.push(c);
+
+    for variant in &tampered {
+        let share = DistKeyShare {
+            pri_share: PriShare {
+                i: 1,
+                v: dkg_sk.clone(),
+            },
+        };
+        let result = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, variant, &signature);
+        assert!(
+            result.is_err(),
+            "reencrypt should reject a tampered reader-authorization context field"
+        );
+    }
     Ok(())
 }
 
@@ -216,8 +558,9 @@ where
         pri_share: PriShare { i: 1, v: dkg_sk },
     };
     let dealer = T::new();
-    let rdr_proof = T::prove_reader_key(rdr_sk, rdr_pk)?;
-    let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, &rdr_proof, derivation)?;
+    let ctx = test_reader_auth_context(derivation);
+    let signature = T::sign_reader_authorization(rdr_sk, rdr_pk, &ctx)?;
+    let reply = dealer.reencrypt(&share, encrypted_secret, rdr_pk, &ctx, &signature)?;
     let xnc_cmt = dealer
         .recover(std::slice::from_ref(&reply.share), 1, 1)?
         .expect("recover with 1 share at t=1 must succeed");
@@ -501,8 +844,9 @@ where
         T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
-    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
-    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &rdr_proof, None)?;
+    let ctx = test_reader_auth_context(None);
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &ctx)?;
+    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &ctx, &signature)?;
     dealer.verify(&rdr_pk, &commitment, &enc_cmt, &reply, None)?;
     Ok(())
 }
@@ -538,8 +882,9 @@ where
         T::encrypt_secret(&dkg_pk, b"test data", None, &test_ctx())?;
 
     let dealer = T::new();
-    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
-    let mut reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &rdr_proof, None)?;
+    let ctx = test_reader_auth_context(None);
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &ctx)?;
+    let mut reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &ctx, &signature)?;
 
     // Replace the proof scalar with a different one from a fresh keypair
     reply.proof = make_keypair().0;
@@ -942,14 +1287,9 @@ where
     )?;
 
     let dealer = T::new();
-    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
-    let reply = dealer.reencrypt(
-        &share,
-        &encrypted_secret,
-        &rdr_pk,
-        &rdr_proof,
-        Some(derivation),
-    )?;
+    let ctx = test_reader_auth_context(Some(derivation));
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &ctx)?;
+    let reply = dealer.reencrypt(&share, &encrypted_secret, &rdr_pk, &ctx, &signature)?;
     dealer.verify(&rdr_pk, &commitment, &enc_cmt, &reply, Some(derivation))?;
     Ok(())
 }
@@ -1538,7 +1878,8 @@ where
     assert_eq!(encrypted_secret.nonce.len(), 12);
 
     let (rdr_sk, rdr_pk) = make_keypair();
-    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
+    let ctx = test_reader_auth_context(None);
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &ctx)?;
 
     let dealer = T::new();
     let mut reencrypt_replies = Vec::new();
@@ -1551,8 +1892,8 @@ where
             &dist_key_share,
             &encrypted_secret,
             &rdr_pk,
-            &rdr_proof,
-            None,
+            &ctx,
+            &signature,
         )?;
         dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, None)?;
         reencrypt_replies.push(reply);
@@ -1606,7 +1947,8 @@ where
     let derived_pk = T::derive_public_key(&aggregate_pk, derivation)?;
 
     let (rdr_sk, rdr_pk) = make_keypair();
-    let rdr_proof = T::prove_reader_key(&rdr_sk, &rdr_pk)?;
+    let ctx = test_reader_auth_context(Some(derivation));
+    let signature = T::sign_reader_authorization(&rdr_sk, &rdr_pk, &ctx)?;
 
     let dealer = T::new();
     let mut reencrypt_replies = Vec::new();
@@ -1619,8 +1961,8 @@ where
             &dist_key_share,
             &encrypted_secret,
             &rdr_pk,
-            &rdr_proof,
-            Some(derivation),
+            &ctx,
+            &signature,
         )?;
         dealer.verify(&rdr_pk, &pub_poly, &enc_cmt, &reply, Some(derivation))?;
         reencrypt_replies.push(reply);

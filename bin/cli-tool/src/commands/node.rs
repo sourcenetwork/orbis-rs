@@ -272,29 +272,27 @@ pub async fn do_store_secret(
 #[allow(clippy::too_many_arguments)]
 pub async fn do_pre(
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
-    reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    xnc_only: bool,
+    reader_sk_override: Option<String>,
 ) -> Result<Vec<u8>> {
     do_pre_impl(
         endpoint,
+        chain_id,
         ring_pk,
-        reader_pk,
-        reader_sk,
         object_id,
         reader_did_pk,
         derivation,
         salt,
         valid_window_start,
         valid_window_end,
-        xnc_only,
+        reader_sk_override,
         None,
         None,
     )
@@ -315,31 +313,29 @@ pub async fn do_pre(
 #[allow(clippy::too_many_arguments)]
 pub async fn do_pre_with_inline_document(
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
-    reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    xnc_only: bool,
+    reader_sk_override: Option<String>,
     document: proto::v0::pre::InlineDocument,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
     do_pre_impl(
         endpoint,
+        chain_id,
         ring_pk,
-        reader_pk,
-        reader_sk,
         object_id,
         reader_did_pk,
         derivation,
         salt,
         valid_window_start,
         valid_window_end,
-        xnc_only,
+        reader_sk_override,
         Some(document),
         audit_target_object_id,
     )
@@ -349,50 +345,102 @@ pub async fn do_pre_with_inline_document(
 #[allow(clippy::too_many_arguments)]
 async fn do_pre_impl(
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
-    reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    xnc_only: bool,
+    reader_sk_override: Option<String>,
     document: Option<proto::v0::pre::InlineDocument>,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
-    println!("  Reader PK: {}...", &reader_pk[..reader_pk.len().min(20)]);
 
-    // Parse the reader public key
-    let reader_pk_bytes =
-        hex::decode(&reader_pk).map_err(|e| anyhow!("Failed to decode reader_pk hex: {}", e))?;
-    let reader_pk_point = G1Affine::from_bytes(&reader_pk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize reader_pk: {}", e))?;
+    // Step 1: the reader keypair. A fresh ephemeral one by default — no
+    // --reader-pk/--reader-sk input needed, and no separate "generate a
+    // reader key" step before this command either — or a caller-supplied
+    // scalar via --reader-sk-override, for test/debug determinism only; its
+    // matching public key is simply derived (pk = sk*G).
+    let (reader_sk_scalar, reader_pk_point) = match reader_sk_override.as_deref() {
+        Some(hex_sk) => {
+            let reader_sk_bytes = hex::decode(hex_sk)
+                .map_err(|e| anyhow!("Failed to decode reader_sk_override hex: {}", e))?;
+            let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
+                .map_err(|e| anyhow!("Failed to deserialize reader_sk_override: {}", e))?;
+            let reader_pk_point = crypto::helpers::public_key_from_secret(&reader_sk_scalar)
+                .map_err(|e| anyhow!("Failed to derive reader public key: {}", e))?;
+            (reader_sk_scalar, reader_pk_point)
+        }
+        None => crypto::helpers::generate_keypair()
+            .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?,
+    };
+    let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk_point)
+        .map_err(|e| anyhow!("Failed to serialize reader public key: {}", e))?;
+    let reader_pk_hex = hex::encode(&reader_pk_bytes);
+    println!(
+        "  Reader PK: {}...",
+        &reader_pk_hex[..reader_pk_hex.len().min(20)]
+    );
 
-    // Parse reader secret key. Always required — not merely for the final
-    // decrypt step, but because the node now requires a proof of knowledge of
-    // reader_pk's discrete log before it will re-encrypt to it at all.
-    let reader_sk_hex = reader_sk
-        .as_deref()
-        .ok_or_else(|| anyhow!("--reader-sk is required"))?;
-    let reader_sk_bytes =
-        hex::decode(reader_sk_hex).map_err(|e| anyhow!("Failed to decode reader_sk hex: {}", e))?;
-    let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
-        .map_err(|e| anyhow!("Failed to deserialize reader_sk: {}", e))?;
+    // Step 2: mint the JWT, carrying its jti/timestamps forward to the
+    // reader-authorization transcript below instead of discarding them.
+    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
+    let seed = did_seed(&reader_did_pk);
+    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
+    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let (token, token_metadata) = jwt_signer
+        .create_pre_jwt(
+            reader_pk_bytes.clone(),
+            &object_id,
+            derivation.clone(),
+            salt.clone(),
+        )
+        .expect("Failed to create JWT");
 
-    // Prove knowledge of reader_sk for reader_pk; every responder verifies
-    // this before computing anything with reader_pk.
-    let rdr_pk_proof = ThresholdDealerNode::prove_reader_key(&reader_sk_scalar, &reader_pk_point)
-        .map_err(|e| anyhow!("Failed to prove reader key: {}", e))?;
+    // Step 3: build the request-bound transcript and sign it with the reader
+    // key. Zero new round trips: every field is already in hand (the
+    // --ring-pk arg, the token just minted, and this request's own
+    // parameters) — the node independently rebuilds the identical context
+    // server-side and verifies this signature before touching any share.
+    let ring_pk_bytes =
+        hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
+    let valid_window_binding = match (valid_window_start, valid_window_end) {
+        (Some(start), Some(end)) => Some(crypto::context::ValidWindowBinding { start, end }),
+        _ => None,
+    };
+    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        chain_id,
+        ring_pk: ring_pk_bytes.clone(),
+        jwt_issuer: jwt_signer.did_uri.clone(),
+        jwt_subject: None,
+        resolved_actor: jwt_signer.did_uri.clone(),
+        jwt_id: token_metadata.jwt_id,
+        jwt_issued_time: token_metadata.issued_time,
+        jwt_expiration_time: token_metadata.expiration_time,
+        jwt_not_before: token_metadata.not_before,
+        object_id: object_id.clone(),
+        recipient_pk: reader_pk_bytes.clone(),
+        derivation: derivation.clone(),
+        salt: salt.clone(),
+        valid_window: valid_window_binding,
+        audit_target_object_id: audit_target_object_id.clone(),
+    };
+    let rdr_pk_signature = ThresholdDealerNode::sign_reader_authorization(
+        &reader_sk_scalar,
+        &reader_pk_point,
+        &reader_auth_context,
+    )
+    .map_err(|e| anyhow!("Failed to sign reader authorization: {}", e))?;
 
     println!("  Encrypted secret created");
     println!();
 
-    // Step 2: Send to PRE service for re-encryption
-    println!("Step 2: Sending to PRE service for re-encryption...");
+    // Step 4: Send to PRE service for re-encryption
+    println!("Step 4: Sending to PRE service for re-encryption...");
     let mut client = PreServiceClient::connect(endpoint.clone())
         .await
         .map_err(|e| anyhow!("Failed to connect to {}: {}", endpoint, e))?;
@@ -409,26 +457,13 @@ async fn do_pre_impl(
         salt: salt.clone(),
         valid_window,
         document,
-        rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
-            challenge: rdr_pk_proof.challenge,
-            response: rdr_pk_proof.response,
+        rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
+            challenge: rdr_pk_signature.challenge,
+            response: rdr_pk_signature.response,
         }),
         audit_target_object_id,
     };
 
-    // JWT work use determinitic key_pair for now
-    let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
-    let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let jwt_signer = JwtSigner::from_key_pair(key_pair);
-    let token = jwt_signer
-        .create_pre_jwt(
-            reader_pk_bytes.clone(),
-            &object_id,
-            derivation.clone(),
-            salt.clone(),
-        )
-        .expect("Failed to create JWT");
     let tonic_request = create_authenticated_request(request, &token)
         .map_err(|e| anyhow!("Failed to create_authenticated_request: {}", e))?;
 
@@ -444,7 +479,7 @@ async fn do_pre_impl(
     println!("  Status: {}", response.status);
     println!("  Message: {}", response.message);
 
-    // Step 3: If we got a re-encrypted commitment back, decrypt it
+    // Step 5: If we got a re-encrypted commitment back, decrypt it
     if !response.encrypted_secret.is_empty() {
         // Parse the response from server
         let pre_response: PreResponse = serde_json::from_slice(&response.encrypted_secret)
@@ -456,23 +491,10 @@ async fn do_pre_impl(
         let xnc_cmt = G1Affine::from_bytes(&xnc_cmt_bytes)
             .map_err(|e| anyhow!("Failed to deserialize xnc_cmt: {}", e))?;
 
-        // --xnc-only: print xnc_cmt and return without decrypting
-        if xnc_only {
-            let xnc_hex = hex::encode(
-                xnc_cmt
-                    .to_bytes()
-                    .map_err(|e| anyhow!("Failed to serialize xnc_cmt: {}", e))?,
-            );
-            println!("Re-encrypted commitment (xnc_cmt): {}", xnc_hex);
-            return Ok(xnc_cmt_bytes);
-        }
-
         println!();
-        println!("Step 3: Decrypting with reader secret key...");
+        println!("Step 5: Decrypting with reader secret key...");
 
         // Parse the ring public key
-        let ring_pk_bytes =
-            hex::decode(&ring_pk).map_err(|e| anyhow!("Failed to decode ring_pk hex: {}", e))?;
         let ring_pk_point = G1Affine::from_bytes(&ring_pk_bytes)
             .map_err(|e| anyhow!("Failed to deserialize ring_pk: {}", e))?;
 

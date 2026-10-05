@@ -1,7 +1,28 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
-use crypto::context::CiphertextContext;
-use crypto::r#trait::{EncryptionProof, PubShare, ReaderKeyProof, ThresholdDealer};
+use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
+use crypto::r#trait::{EncryptionProof, PubShare, ReaderAuthorizationSignature, ThresholdDealer};
+
+/// Fixed reader-authorization context for the PRE benchmarks.
+pub fn bench_reader_auth_context() -> ReaderAuthorizationContext {
+    ReaderAuthorizationContext {
+        chain_id: "bench-chain".to_string(),
+        ring_pk: b"bench-ring-pk".to_vec(),
+        jwt_issuer: "did:key:bench-issuer".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:bench-issuer".to_string(),
+        jwt_id: "bench-jti".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: None,
+        object_id: "bench-object".to_string(),
+        recipient_pk: b"bench-recipient-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    }
+}
 
 /// Fixed ciphertext-binding context for the PRE benchmarks.
 pub fn bench_ctx() -> CiphertextContext {
@@ -37,7 +58,8 @@ pub struct BenchFixture<D: ThresholdDealer> {
     pub dist_key_shares: Vec<D::DistKeyShare>,
     pub rdr_sk: D::ShareValue,
     pub rdr_pk: D::PublicKey,
-    pub rdr_pk_proof: ReaderKeyProof,
+    pub reader_auth_context: ReaderAuthorizationContext,
+    pub rdr_pk_signature: ReaderAuthorizationSignature,
     pub enc_cmt: D::PublicKey,
     pub secret: D::Secret,
     pub proof: EncryptionProof,
@@ -159,14 +181,24 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                         black_box(&fixture.dist_key_shares[0]),
                         black_box(&fixture.secret),
                         black_box(&fixture.rdr_pk),
-                        black_box(&fixture.rdr_pk_proof),
-                        None,
+                        black_box(&fixture.reader_auth_context),
+                        black_box(&fixture.rdr_pk_signature),
                     )
                     .unwrap()
             })
         });
 
         let derivation: &[u8] = b"capability/resource/read";
+        let derived_ctx = ReaderAuthorizationContext {
+            derivation: Some(derivation.to_vec()),
+            ..bench_reader_auth_context()
+        };
+        let derived_signature = <S::Dealer as ThresholdDealer>::sign_reader_authorization(
+            &fixture.rdr_sk,
+            &fixture.rdr_pk,
+            &derived_ctx,
+        )
+        .unwrap();
         group.bench_function("with_derivation", |b| {
             b.iter(|| {
                 fixture
@@ -175,8 +207,8 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                         black_box(&fixture.dist_key_shares[0]),
                         black_box(&fixture.secret),
                         black_box(&fixture.rdr_pk),
-                        black_box(&fixture.rdr_pk_proof),
-                        Some(black_box(derivation)),
+                        black_box(&derived_ctx),
+                        black_box(&derived_signature),
                     )
                     .unwrap()
             })
@@ -244,7 +276,13 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
                 for dks in fixture.dist_key_shares.iter().take(fixture.t) {
                     let reply = fixture
                         .dealer
-                        .reencrypt(dks, &secret, &fixture.rdr_pk, &fixture.rdr_pk_proof, None)
+                        .reencrypt(
+                            dks,
+                            &secret,
+                            &fixture.rdr_pk,
+                            &fixture.reader_auth_context,
+                            &fixture.rdr_pk_signature,
+                        )
                         .unwrap();
                     pub_shares.push(S::extract_pub_share(&reply));
                 }

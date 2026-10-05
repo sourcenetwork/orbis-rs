@@ -602,9 +602,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
     let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
 
     let prepared = cli_tool::prepare_secret(
         b"report-test-secret",
@@ -663,8 +662,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     println!("Triggering PRE (expects success with node3 offline)...");
     let _plaintext = pre_with_retry(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
         reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),
@@ -957,7 +956,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     let pre_reader_pk_bytes =
         CryptoSerialize::to_bytes(&pre_reader_pk).expect("serialize PRE reader public key");
     let pre_jwt_signer = JwtSigner::new();
-    let pre_token = pre_jwt_signer
+    let (pre_token, _) = pre_jwt_signer
         .create_pre_jwt(pre_reader_pk_bytes.clone(), &pre_object_id, None, None)
         .expect("create PRE JWT");
     let pre_actor_is_reader = controller_client
@@ -1285,7 +1284,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let bulletin_reader_pk_bytes =
         CryptoSerialize::to_bytes(&bulletin_reader_pk).expect("serialize PRE reader public key");
     let bulletin_jwt_signer = JwtSigner::new();
-    let bulletin_token = bulletin_jwt_signer
+    let (bulletin_token, _) = bulletin_jwt_signer
         .create_pre_jwt(
             bulletin_reader_pk_bytes.clone(),
             &bulletin_object_id,
@@ -1389,7 +1388,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let inline_reader_pk_bytes =
         CryptoSerialize::to_bytes(&inline_reader_pk).expect("serialize PRE reader public key");
     let inline_jwt_signer = JwtSigner::new();
-    let inline_token = inline_jwt_signer
+    let (inline_token, _) = inline_jwt_signer
         .create_pre_jwt(
             inline_reader_pk_bytes.clone(),
             &inline_object_id,
@@ -1606,9 +1605,8 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
     let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
 
     let prepared = cli_tool::prepare_secret(
         b"invalid-proof-report-test-secret",
@@ -1719,8 +1717,8 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
             .expect("connect invalid-proof report event subscription");
         let _plaintext = pre_with_retry(
             endpoint.clone(),
+            chain_config.chain_id.clone(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
             reader_sk_hex.clone(),
             object_id.clone(),
             did_pk_string.clone(),
@@ -2083,12 +2081,10 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, pet_reader_pk) =
+    let (pet_reader_sk, _pet_reader_pk) =
         generate_keypair().expect("generate PET-test reader keypair");
     let pet_reader_sk_hex =
         hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-    let pet_reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
 
     println!("Preparing a genuinely PET-tagged document...");
     let secret_message = b"PET decrypt-share report test secret";
@@ -2251,16 +2247,15 @@ resources:
             .expect("connect PET invalid-decrypt report event subscription");
         let decrypted = cli_tool::do_pre_with_inline_document(
             endpoint.clone(),
+            chain_config.chain_id.clone(),
             ring_pk_hex.clone(),
-            pet_reader_pk_hex.clone(),
-            Some(pet_reader_sk_hex.clone()),
             pet_object_id.clone(),
             None,
             None,
             None,
             None,
             None,
-            false,
+            Some(pet_reader_sk_hex.clone()),
             inline_document.clone(),
             Some(audit_target_object_id.clone()),
         )
@@ -2832,8 +2827,8 @@ async fn store_secret_with_retry(
 
 async fn pre_with_retry(
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
     reader_sk: String,
     object_id: String,
     reader_did_pk: String,
@@ -2843,16 +2838,15 @@ async fn pre_with_retry(
     loop {
         match cli_tool::do_pre(
             endpoint.clone(),
+            chain_id.clone(),
             ring_pk.clone(),
-            reader_pk.clone(),
-            Some(reader_sk.clone()),
             object_id.clone(),
             Some(reader_did_pk.clone()),
             None,
             None,
             None,
             None,
-            false,
+            Some(reader_sk.clone()),
         )
         .await
         {
@@ -4819,9 +4813,8 @@ async fn test_report_kick_promotes_backup_node() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
+    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
     let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
 
     let prepared = cli_tool::prepare_secret(
         b"backup-kick-test-secret",
@@ -4880,8 +4873,8 @@ async fn test_report_kick_promotes_backup_node() {
     println!("Triggering PRE (expects success with node3 offline)...");
     let _plaintext = pre_with_retry(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
         reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),

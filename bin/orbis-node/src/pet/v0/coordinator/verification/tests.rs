@@ -818,7 +818,7 @@ async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
 #[tokio::test]
 async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_id() {
     let (signer, document, object_id) = audit_authz_fixture();
-    let token = signer
+    let (token, _) = signer
         .create_pre_jwt(b"unused".to_vec(), "a-different-object-id", None, None)
         .expect("sign token");
     let ctx = PetCheckContext {
@@ -842,7 +842,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_i
 #[tokio::test]
 async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
     let (signer, document, object_id) = audit_authz_fixture();
-    let token = signer
+    let (token, _) = signer
         .create_pre_jwt(
             b"unused".to_vec(),
             &object_id,
@@ -871,7 +871,7 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
 #[tokio::test]
 async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
     let (signer, document, object_id) = audit_authz_fixture();
-    let token = signer
+    let (token, _) = signer
         .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
         .expect("sign token");
     let ctx = PetCheckContext {
@@ -949,7 +949,7 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
     let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode test peer id"));
 
     let object_id = object_id_for(&fixture);
-    let token = TestKeyPair::new()
+    let (token, _) = TestKeyPair::new()
         .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
         .expect("sign token");
     let request = CommitRequest {

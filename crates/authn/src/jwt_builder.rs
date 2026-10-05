@@ -21,6 +21,18 @@ use tonic::Request;
 const TOKEN_TTL: Duration = Duration::from_secs(60 * 60);
 const ED25519_OID: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.101.112");
 
+/// The claims-independent fields of a just-minted JWT, returned alongside the
+/// signed token string so a caller can rebuild a request-bound transcript
+/// (e.g. `crypto::context::ReaderAuthorizationContext`) from the exact same
+/// `jti`/timestamps without re-parsing the token it just created.
+#[derive(Clone, Debug)]
+pub struct TokenMetadata {
+    pub jwt_id: String,
+    pub issued_time: u64,
+    pub expiration_time: u64,
+    pub not_before: Option<u64>,
+}
+
 /// A DID-based key pair for signing JWTs.
 ///
 /// This struct wraps a DID key pair and provides methods for creating
@@ -207,21 +219,32 @@ impl JwtSigner {
     /// * `salt` - Optional salt for proof
     ///
     /// # Returns
-    /// The signed JWT string valid for 1 hour
+    /// The signed JWT string valid for 1 hour, and the token's
+    /// claims-independent metadata (`jti`/timestamps) — needed by the caller
+    /// to build a `ReaderAuthorizationContext` over the exact same values
+    /// without re-parsing the token it just signed.
     pub fn create_pre_jwt(
         &self,
         rdr_pk: Vec<u8>,
         object_id: &str,
         derivation: Option<Vec<u8>>,
         salt: Option<String>,
-    ) -> Result<String> {
+    ) -> Result<(String, TokenMetadata)> {
         let claims = PreClaims {
             rdr_pk,
             object_id: object_id.to_string(),
             derivation,
             salt,
         };
-        self.sign(claims, TOKEN_TTL)
+        let token = self.build_token(None, claims, TOKEN_TTL)?;
+        let metadata = TokenMetadata {
+            jwt_id: token.jwt_id.clone(),
+            issued_time: token.issued_time,
+            expiration_time: token.expiration_time,
+            not_before: token.not_before,
+        };
+        let signed = self.sign_bearer_token(&token)?;
+        Ok((signed, metadata))
     }
 
     /// Create a JWT with Sign (threshold signing) claims.
@@ -391,8 +414,12 @@ mod tests {
     #[test]
     fn test_create_pre_jwt() {
         let signer = JwtSigner::new();
-        let token = signer.create_pre_jwt(b"rdr_pk_value".to_vec(), "object_id", None, None);
-        assert!(token.is_ok());
+        let result = signer.create_pre_jwt(b"rdr_pk_value".to_vec(), "object_id", None, None);
+        assert!(result.is_ok());
+        let (token, metadata) = result.unwrap();
+        assert_eq!(token.split('.').count(), 3);
+        assert!(!metadata.jwt_id.is_empty());
+        assert!(metadata.expiration_time > metadata.issued_time);
     }
 
     #[test]

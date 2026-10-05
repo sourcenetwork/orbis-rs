@@ -338,7 +338,25 @@ mod tests {
         .unwrap();
         let enc_cmt = <DkgImpl as Dkg>::PublicKey::from_bytes(&encrypted_secret.enc_cmt).unwrap();
         let (rdr_sk, rdr_pk) = PreImpl::generate_keypair();
-        let rdr_pk_proof = PreImpl::prove_reader_key(&rdr_sk, &rdr_pk).unwrap();
+        let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+            chain_id: "test-chain".to_string(),
+            ring_pk: Vec::new(),
+            jwt_issuer: "did:key:test".to_string(),
+            jwt_subject: None,
+            resolved_actor: "did:key:test".to_string(),
+            jwt_id: "test-jti".to_string(),
+            jwt_issued_time: 0,
+            jwt_expiration_time: u64::MAX,
+            jwt_not_before: None,
+            object_id: "verifier-report-fixture".to_string(),
+            recipient_pk: CryptoSerialize::to_bytes(&rdr_pk).unwrap(),
+            derivation: None,
+            salt: None,
+            valid_window: None,
+            audit_target_object_id: None,
+        };
+        let rdr_pk_signature =
+            PreImpl::sign_reader_authorization(&rdr_sk, &rdr_pk, &reader_auth_context).unwrap();
         let responder_share = shares
             .into_iter()
             .find(|share| share.i == 2)
@@ -351,8 +369,8 @@ mod tests {
                 },
                 &encrypted_secret,
                 &rdr_pk,
-                &rdr_pk_proof,
-                None,
+                &reader_auth_context,
+                &rdr_pk_signature,
             )
             .unwrap();
         let signing_key_hex =

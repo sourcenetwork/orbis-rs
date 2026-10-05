@@ -1161,6 +1161,7 @@ async fn prepare_online_fixtures(
     chain_config: ChainConfig,
     ring_size: usize,
 ) -> Result<OnlineFixtures> {
+    let chain_id = chain_config.chain_id.clone();
     let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone()).await?;
     let reader_identity = format!("orbis-bench-reader-{ring_size}");
     let (reader_sk, reader_pk) = generate_keypair()?;
@@ -1235,6 +1236,7 @@ async fn prepare_online_fixtures(
 
     Ok(OnlineFixtures {
         pre: PreFixture {
+            chain_id,
             ring_pk: ring_pk.to_string(),
             reader_pk: reader_pk_bytes,
             reader_sk,

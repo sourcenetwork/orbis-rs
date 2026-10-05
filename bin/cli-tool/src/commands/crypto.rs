@@ -261,30 +261,6 @@ pub async fn do_encrypt_secret(
     Ok(())
 }
 
-pub fn do_generate_reader_key() -> Result<()> {
-    let (sk, pk) = crypto::helpers::generate_keypair()
-        .map_err(|e| anyhow!("Failed to generate keypair: {}", e))?;
-
-    // Serialize to bytes then hex (use trait method explicitly to avoid inherent method shadowing)
-    let sk_bytes = CryptoSerialize::to_bytes(&sk)
-        .map_err(|e| anyhow!("Failed to serialize secret key: {}", e))?;
-    let pk_bytes = CryptoSerialize::to_bytes(&pk)
-        .map_err(|e| anyhow!("Failed to serialize public key: {}", e))?;
-
-    let sk_hex = hex::encode(&sk_bytes);
-    let pk_hex = hex::encode(&pk_bytes);
-
-    println!("Generated Reader Keypair:");
-    println!("{}", "=".repeat(60));
-    println!("Reader Secret Key (--reader-sk):");
-    println!("{}", sk_hex);
-    println!();
-    println!("Reader Public Key (--reader-pk):");
-    println!("{}", pk_hex);
-
-    Ok(())
-}
-
 /// Derive a 32-byte Ed25519 seed from an arbitrary string via SHA-256.
 ///
 /// `did_key::generate` only uses the seed deterministically when it is exactly

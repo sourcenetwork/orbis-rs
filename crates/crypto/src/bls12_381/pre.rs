@@ -1,10 +1,10 @@
 use super::common::{PubPoly, FR_COMPRESSED_SIZE, G1_COMPRESSED_SIZE};
 use crate::{
-    context::{self, CiphertextContext},
+    context::{self, CiphertextContext, ReaderAuthorizationContext},
     error::{CryptoError, Result},
     r#trait::{
         CryptoDeserialize, DistKeyShare, EncryptionProof, PubPoly as PubPolyTrait, PubShare,
-        ReaderKeyProof, ReencryptReply, Secret, ThresholdDealer,
+        ReaderAuthorizationSignature, ReencryptReply, Secret, ThresholdDealer,
     },
 };
 use aes_gcm::{
@@ -27,8 +27,10 @@ const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
 const DERIVATION_DOMAIN: &[u8; 23] = b"elgamal-derivation-v1\0\0";
 /// Domain separator for the encryption proof's Fiat-Shamir challenge.
 const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-policy-binding-proof-v1";
-/// Domain separator for the reader-key proof-of-possession's Fiat-Shamir challenge.
-const READER_POP_DOMAIN: &[u8] = b"orbis-reader-pop-proof-v1";
+/// Domain separator for the reader-authorization signature's Fiat-Shamir
+/// challenge. Distinct from the retired `READER_POP_DOMAIN` ("...-pop-proof-v1")
+/// so a legacy, request-unbound proof can never be mistaken for one of these.
+const READER_AUTHORIZATION_DOMAIN: &[u8] = b"orbis-bls12-381-reader-authorization-v1";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -54,8 +56,8 @@ impl ThresholdDealer for ThresholdDealerNode {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
-        rdr_proof: &ReaderKeyProof,
-        derivation: Option<&[u8]>,
+        context: &ReaderAuthorizationContext,
+        signature: &ReaderAuthorizationSignature,
     ) -> Result<Self::ReencryptReply> {
         // Input validation
         if scrt.enc_cmt.is_empty() {
@@ -75,20 +77,31 @@ impl ThresholdDealer for ThresholdDealerNode {
             )));
         }
 
-        // Reject any rdr_pk the caller cannot prove knowledge of, before doing
-        // anything with it. Without this, xnc_ski = ski*(rdr_pk + enc_cmt) is
-        // linear in rdr_pk: a caller authorized for ciphertext A can submit
-        // rdr_pk = U_B - U_A (a difference of two published commitments, no
-        // discrete log required) to redirect the recovered commitment to
-        // s*U_B — ciphertext B's own KEM shared point.
-        Self::verify_reader_key(rdr_pk, rdr_proof)?;
+        // Reject any rdr_pk the caller cannot prove knowledge of, or any
+        // signature not bound to this exact request, before doing anything
+        // with it. Without the proof-of-knowledge component,
+        // xnc_ski = ski*(rdr_pk + enc_cmt) is linear in rdr_pk: a caller
+        // authorized for ciphertext A can submit rdr_pk = U_B - U_A (a
+        // difference of two published commitments, no discrete log required)
+        // to redirect the recovered commitment to s*U_B — ciphertext B's own
+        // KEM shared point. Without the request-binding component (context),
+        // a party that observes a valid (rdr_pk, signature) pair from one
+        // authorized request could replay it into a different request it
+        // controls.
+        Self::verify_reader_authorization(rdr_pk, context, signature)?;
 
         // Unmarshal the commitment
         let enc_cmt = Self::decompress_point(&scrt.enc_cmt)?;
 
-        // Compute derivation scalar if provided
+        // Compute derivation scalar if provided — read from the signed
+        // context, not a separate parameter, so "context says derivation X
+        // but the share is computed under derivation Y" is structurally
+        // impossible rather than merely checked.
         // d = H(DERIVATION_DOMAIN || derivation)
-        let derivation_scalar = derivation.map(Self::derive_capability_scalar);
+        let derivation_scalar = context
+            .derivation
+            .as_deref()
+            .map(Self::derive_capability_scalar);
 
         // Reject zero derivation scalar (same as encrypt_secret)
         if let Some(ref d) = derivation_scalar {
@@ -446,26 +459,32 @@ impl ThresholdDealer for ThresholdDealerNode {
         ThresholdDealerNode::derive_key_from_point(point)
     }
 
-    fn prove_reader_key(
+    fn sign_reader_authorization(
         rdr_sk: &Self::ShareValue,
         rdr_pk: &Self::PublicKey,
-    ) -> Result<ReaderKeyProof> {
-        let (challenge, response) = Self::generate_reader_key_proof(rdr_sk, rdr_pk)?;
+        context: &ReaderAuthorizationContext,
+    ) -> Result<ReaderAuthorizationSignature> {
+        let (challenge, response) =
+            Self::generate_reader_authorization_signature(rdr_sk, rdr_pk, context)?;
 
         let mut challenge_bytes = Vec::new();
         challenge.serialize_compressed(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
         response.serialize_compressed(&mut response_bytes)?;
 
-        Ok(ReaderKeyProof {
+        Ok(ReaderAuthorizationSignature {
             challenge: challenge_bytes,
             response: response_bytes,
         })
     }
 
-    fn verify_reader_key(rdr_pk: &Self::PublicKey, proof: &ReaderKeyProof) -> Result<()> {
+    fn verify_reader_authorization(
+        rdr_pk: &Self::PublicKey,
+        context: &ReaderAuthorizationContext,
+        signature: &ReaderAuthorizationSignature,
+    ) -> Result<()> {
         // A rdr_pk of the identity element makes the discrete-log statement
-        // vacuous (0 = 0*G): any (c, z) with c = H(rdr_pk, z*G) trivially
+        // vacuous (0 = 0*G): any (c, z) with c = H(rdr_pk, z*G, ...) trivially
         // verifies without the prover knowing anything, so identity/non-subgroup
         // points must be rejected here independent of whatever `reencrypt`'s own
         // checks do.
@@ -480,29 +499,29 @@ impl ThresholdDealer for ThresholdDealerNode {
             ));
         }
 
-        if proof.challenge.len() != FR_COMPRESSED_SIZE {
+        if signature.challenge.len() != FR_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
-                "Invalid reader-key-proof challenge length: expected {}, got {}",
+                "Invalid reader-authorization-signature challenge length: expected {}, got {}",
                 FR_COMPRESSED_SIZE,
-                proof.challenge.len()
+                signature.challenge.len()
             )));
         }
-        let challenge = Fr::from_bytes(&proof.challenge[..]).map_err(|e| {
+        let challenge = Fr::from_bytes(&signature.challenge[..]).map_err(|e| {
             CryptoError::ElGamalError(format!(
-                "Failed to deserialize reader-key-proof challenge: {:?}",
+                "Failed to deserialize reader-authorization-signature challenge: {:?}",
                 e
             ))
         })?;
-        if proof.response.len() != FR_COMPRESSED_SIZE {
+        if signature.response.len() != FR_COMPRESSED_SIZE {
             return Err(CryptoError::ElGamalError(format!(
-                "Invalid reader-key-proof response length: expected {}, got {}",
+                "Invalid reader-authorization-signature response length: expected {}, got {}",
                 FR_COMPRESSED_SIZE,
-                proof.response.len()
+                signature.response.len()
             )));
         }
-        let response = Fr::from_bytes(&proof.response[..]).map_err(|e| {
+        let response = Fr::from_bytes(&signature.response[..]).map_err(|e| {
             CryptoError::ElGamalError(format!(
-                "Failed to deserialize reader-key-proof response: {:?}",
+                "Failed to deserialize reader-authorization-signature response: {:?}",
                 e
             ))
         })?;
@@ -511,7 +530,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         let r1_prime: G1Affine =
             (G1Projective::generator() * response - G1Projective::from(*rdr_pk) * challenge).into();
 
-        let recomputed_challenge = Self::reader_key_proof_challenge(rdr_pk, &r1_prime)?;
+        let context_digest = context::reader_authorization_context_digest(context);
+        let recomputed_challenge =
+            Self::reader_authorization_challenge(rdr_pk, &r1_prime, &context_digest)?;
 
         // Constant-time compare. Fr serializes to exactly 32 bytes for BLS12-381.
         let mut challenge_bytes = [0u8; 32];
@@ -525,7 +546,7 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         if challenge_bytes.ct_ne(&recomputed_bytes).into() {
             return Err(CryptoError::ElGamalError(
-                "Reader key proof verification failed".to_string(),
+                "Reader authorization signature verification failed".to_string(),
             ));
         }
 
@@ -892,12 +913,17 @@ impl ThresholdDealerNode {
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }
 
-    /// Generate the Schnorr PoK of `rdr_sk` for `rdr_pk = rdr_sk*G`.
+    /// Generate the Schnorr signature of `rdr_sk` for `rdr_pk = rdr_sk*G`,
+    /// over `context`.
     ///
     /// `k <- random nonzero Fr`, `R1 = k*G`,
-    /// `c = reader_key_proof_challenge(rdr_pk, R1)`, `z = k + c*rdr_sk`.
-    /// Returns `(c, z)`.
-    fn generate_reader_key_proof(rdr_sk: &Fr, rdr_pk: &G1Affine) -> Result<(Fr, Fr)> {
+    /// `c = reader_authorization_challenge(rdr_pk, R1, reader_authorization_context_digest(context))`,
+    /// `z = k + c*rdr_sk`. Returns `(c, z)`.
+    fn generate_reader_authorization_signature(
+        rdr_sk: &Fr,
+        rdr_pk: &G1Affine,
+        context: &ReaderAuthorizationContext,
+    ) -> Result<(Fr, Fr)> {
         let mut rng = OsRng;
         let k = loop {
             let candidate = Fr::rand(&mut rng);
@@ -909,16 +935,22 @@ impl ThresholdDealerNode {
         let r1: G1Affine =
             crate::bls12_381::ct::ct_mul_g1(&G1Affine::from(G1Projective::generator()), &k)?;
 
-        let c = Self::reader_key_proof_challenge(rdr_pk, &r1)?;
+        let context_digest = context::reader_authorization_context_digest(context);
+        let c = Self::reader_authorization_challenge(rdr_pk, &r1, &context_digest)?;
         let z = k + (c * rdr_sk);
         Ok((c, z))
     }
 
     /// Fiat-Shamir challenge:
-    /// `Fr::from_le_bytes_mod_order(SHA512(READER_POP_DOMAIN || compress(rdr_pk) || compress(R1)))`.
-    fn reader_key_proof_challenge(rdr_pk: &G1Affine, r1: &G1Affine) -> Result<Fr> {
+    /// `Fr::from_le_bytes_mod_order(SHA512(READER_AUTHORIZATION_DOMAIN || compress(rdr_pk)
+    ///   || compress(R1) || reader_authorization_context_digest))`.
+    fn reader_authorization_challenge(
+        rdr_pk: &G1Affine,
+        r1: &G1Affine,
+        reader_authorization_context_digest: &[u8; 32],
+    ) -> Result<Fr> {
         let mut hasher = Sha512::new();
-        hasher.update(READER_POP_DOMAIN);
+        hasher.update(READER_AUTHORIZATION_DOMAIN);
 
         let mut bytes = Vec::with_capacity(G1_COMPRESSED_SIZE);
         for point in [rdr_pk, r1] {
@@ -926,6 +958,7 @@ impl ThresholdDealerNode {
             point.serialize_compressed(&mut bytes)?;
             hasher.update(&bytes);
         }
+        hasher.update(reader_authorization_context_digest);
 
         Ok(Fr::from_le_bytes_mod_order(&hasher.finalize()))
     }

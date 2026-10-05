@@ -10,7 +10,7 @@ use std::fmt::Debug;
 
 // Re-export commonly used items from jwt_builder
 pub use jwt_builder::{
-    add_auth_header, create_authenticated_request, extract_bearer_token, JwtSigner,
+    add_auth_header, create_authenticated_request, extract_bearer_token, JwtSigner, TokenMetadata,
 };
 
 #[cfg(test)]

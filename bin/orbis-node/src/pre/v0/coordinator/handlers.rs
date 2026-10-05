@@ -3,8 +3,9 @@ use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFE
 use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
-    build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
-    resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
+    build_ciphertext_context, build_reader_authorization_context, check_policy_access,
+    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads, validate_pre_claims,
+    verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::{
@@ -194,6 +195,23 @@ where
             ring_payload.pet_pk.as_deref(),
         )?;
 
+        // Rebuild the request-bound transcript the client's `sign_reader_authorization`
+        // call signed, independently of whatever the leader/relay claims — this node
+        // verifies the reader's signature against its own resolution, never trusting a
+        // coordinator-supplied context.
+        let reader_auth_context = build_reader_authorization_context(
+            self.app_state.bulletin.chain_id(),
+            &ring_payload.ring_pk,
+            &token,
+            &actor_id,
+            &ctx.object_id,
+            &ctx.rdr_pk_bytes,
+            ctx.derivation.clone(),
+            ctx.salt.clone(),
+            ctx.valid_window.clone(),
+            ctx.audit_target_object_id.clone(),
+        )?;
+
         // Both the ACP re-check below and the PET admission check further down reject on the
         // same request, so a relayer's signed statement binds identically to either failure —
         // built once and reused by `report_relay_if_bound` from whichever branch rejects.
@@ -352,8 +370,8 @@ where
                 &dist_key_share,
                 &secret,
                 &rdr_pk,
-                &ctx.rdr_pk_proof,
-                ctx.derivation.as_deref(),
+                &reader_auth_context,
+                &ctx.rdr_pk_signature,
             )
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 

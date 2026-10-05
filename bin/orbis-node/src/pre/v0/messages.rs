@@ -5,7 +5,7 @@
 
 use crate::pet::v0::attestation::PetBlindEvidence;
 use authz::vera::ValidWindow;
-use crypto::r#trait::ReaderKeyProof;
+use crypto::r#trait::ReaderAuthorizationSignature;
 use serde::{Deserialize, Serialize};
 
 /// All parameters specific to a reencryption request.
@@ -18,12 +18,16 @@ use serde::{Deserialize, Serialize};
 pub struct PreRequestContext {
     /// Serialized reader public key (G1Affine)
     pub rdr_pk_bytes: Vec<u8>,
-    /// Proof of knowledge of `rdr_pk_bytes`'s discrete log. Verified by every
-    /// responder inside `ThresholdDealer::reencrypt`, not only the ingress
-    /// node — without it, a caller authorized for one ciphertext can redirect
-    /// PRE toward an unrelated one under the same ring key by submitting a
-    /// difference of two published commitments as `rdr_pk`.
-    pub rdr_pk_proof: ReaderKeyProof,
+    /// Signature of knowledge of `rdr_pk_bytes`'s discrete log, bound to this
+    /// request's [`crypto::context::ReaderAuthorizationContext`]. Verified by
+    /// every responder inside `ThresholdDealer::reencrypt` against its own
+    /// independently rebuilt context, not only the ingress node — without it,
+    /// a caller authorized for one ciphertext can redirect PRE toward an
+    /// unrelated one under the same ring key by submitting a difference of
+    /// two published commitments as `rdr_pk`, and without the request-binding
+    /// half, a valid signature from one request could be replayed into a
+    /// different one.
+    pub rdr_pk_signature: ReaderAuthorizationSignature,
     /// Object ID of the encrypted document on the bulletin
     pub object_id: String,
     /// Raw JWT string issued by the caller

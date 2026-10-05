@@ -33,8 +33,9 @@ use crate::helpers::node_routes::resolve_and_validate_peer_ids;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::coordinator::{PreCoordinator, PreReportBinding};
 use crate::pre::v0::helpers::{
-    build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
-    resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
+    build_ciphertext_context, build_reader_authorization_context, check_policy_access,
+    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads, validate_pre_claims,
+    verify_encryption_binding,
 };
 use crate::pre::v0::messages::PreRequestContext;
 use crate::reporting::v0::types::ReportedDocumentEvidence;
@@ -43,8 +44,8 @@ use crate::ring_state::RingPolyState;
 use authn::{BearerToken, PreClaims};
 use authz::vera::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::context::CiphertextContext;
-use crypto::r#trait::ReaderKeyProof;
+use crypto::context::{CiphertextContext, ReaderAuthorizationContext};
+use crypto::r#trait::ReaderAuthorizationSignature;
 
 /// Output of stage 1. The parsed inline document (if any) is returned alongside rather
 /// than folded into this type, since only stage 2 consumes it.
@@ -53,7 +54,7 @@ pub(super) struct AuthenticatedPreRequest {
     pub(super) token: BearerToken<PreClaims>,
     pub(super) object_id: String,
     rdr_pk: Vec<u8>,
-    rdr_pk_proof: ReaderKeyProof,
+    rdr_pk_signature: ReaderAuthorizationSignature,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window: Option<ValidWindow>,
@@ -81,7 +82,7 @@ pub(super) struct AuthorizedPreRequest {
     token: BearerToken<PreClaims>,
     object_id: String,
     rdr_pk: Vec<u8>,
-    rdr_pk_proof: ReaderKeyProof,
+    rdr_pk_signature: ReaderAuthorizationSignature,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window: Option<ValidWindow>,
@@ -92,6 +93,7 @@ pub(super) struct AuthorizedPreRequest {
     actor_id: String,
     pub(super) ciphertext_context: CiphertextContext,
     audit_target_object_id: Option<String>,
+    reader_auth_context: ReaderAuthorizationContext,
 }
 
 /// Output of stage 4: everything the coordination stage needs to run the threshold
@@ -102,6 +104,12 @@ pub(super) struct PreRelaySetup {
     secret_bytes: Vec<u8>,
     ctx: PreRequestContext,
     report_binding: PreReportBinding,
+    /// This node's own reader-authorization context, built once in stage 3 for
+    /// ingress acceptance — reused by the local-share path in
+    /// `PreCoordinator::initiate_reencryption` instead of being independently
+    /// re-derived a second time for the same request. Never serialized onto
+    /// `PreRequestContext`/the wire; every other node rebuilds its own.
+    reader_auth_context: ReaderAuthorizationContext,
 }
 
 /// Rejects an oversized inline document before any JWT or crypto work — mirrors Sign's
@@ -172,14 +180,12 @@ where
         + Sync
         + 'static,
 {
-    /// Stage 1 (authentication): extracts and validates the JWT, checks its claims
-    /// against the request, and verifies the reader's proof of knowledge of `rdr_pk`'s
-    /// discrete log.
-    ///
-    /// The reader-key proof is re-verified independently by every committee member
-    /// inside `ThresholdDealer::reencrypt` (the actual security boundary — see
-    /// `ReaderKeyProof`'s docs); checking it here too just fails fast, before a
-    /// threshold round trip, on a missing or malformed proof.
+    /// Stage 1 (authentication): extracts and validates the JWT and checks its claims
+    /// against the request. The reader-authorization signature is only deserialized
+    /// here, not yet verified — it cannot be checked until stage 3, once the ring key
+    /// and document are resolved and the full
+    /// [`crypto::context::ReaderAuthorizationContext`] transcript can be rebuilt (see
+    /// `authorize_pre_request`).
     pub(super) fn authenticate_pre_request(
         request: Request<StartPreRequest>,
         current_time: u64,
@@ -199,22 +205,14 @@ where
             &req.salt,
         )?;
 
-        let rdr_pk_proof = req
-            .rdr_pk_proof
+        let rdr_pk_signature = req
+            .rdr_pk_signature
             .take()
-            .map(|p| ReaderKeyProof {
+            .map(|p| ReaderAuthorizationSignature {
                 challenge: p.challenge,
                 response: p.response,
             })
-            .ok_or_else(|| PreError::InvalidInput("Missing rdr_pk_proof".to_string()))?;
-        let rdr_pk_point = <T::PublicKey as crypto::r#trait::CryptoDeserialize>::from_bytes(
-            &req.rdr_pk,
-        )
-        .map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
-        })?;
-        T::verify_reader_key(&rdr_pk_point, &rdr_pk_proof)
-            .map_err(|e| PreError::Unauthorized(format!("Invalid reader key proof: {}", e)))?;
+            .ok_or_else(|| PreError::InvalidInput("Missing rdr_pk_signature".to_string()))?;
 
         let inline_document = req
             .document
@@ -228,7 +226,7 @@ where
                 token,
                 object_id: req.object_id,
                 rdr_pk: req.rdr_pk,
-                rdr_pk_proof,
+                rdr_pk_signature,
                 derivation: req.derivation,
                 salt: req.salt,
                 valid_window,
@@ -329,6 +327,40 @@ where
             bulletin_state.document_payload.proof.clone(),
         )?;
 
+        // Rebuild the request-bound transcript the client's `sign_reader_authorization`
+        // call signed, now that the ring key and the id-checked `object_id` are both
+        // resolved, and verify the reader's signature against it — this is the actual
+        // security boundary (re-verified independently by every ring committee member
+        // inside `ThresholdDealer::reencrypt`); checking it here too just fails fast,
+        // before a threshold round trip, on a missing, malformed, or request-mismatched
+        // signature.
+        let reader_auth_context = build_reader_authorization_context(
+            self.state.bulletin.chain_id(),
+            &bulletin_state.ring_payload.ring_pk,
+            &authenticated.token,
+            &bulletin_state.actor_id,
+            &authenticated.object_id,
+            &authenticated.rdr_pk,
+            authenticated.derivation.clone(),
+            authenticated.salt.clone(),
+            authenticated.valid_window.clone(),
+            authenticated.audit_target_object_id.clone(),
+        )?;
+        let rdr_pk_point =
+            <T::PublicKey as crypto::r#trait::CryptoDeserialize>::from_bytes(&authenticated.rdr_pk)
+                .map_err(|e| {
+                    PreError::Deserialization(format!(
+                        "Failed to deserialize reader public key: {}",
+                        e
+                    ))
+                })?;
+        T::verify_reader_authorization(
+            &rdr_pk_point,
+            &reader_auth_context,
+            &authenticated.rdr_pk_signature,
+        )
+        .map_err(|e| PreError::Unauthorized(format!("Invalid reader authorization: {}", e)))?;
+
         tracing::info!(
             ring_id = %bulletin_state.document_payload.ring_id,
             ring_pk = %bulletin_state.ring_payload.ring_pk,
@@ -344,7 +376,7 @@ where
             token: authenticated.token,
             object_id: authenticated.object_id,
             rdr_pk: authenticated.rdr_pk,
-            rdr_pk_proof: authenticated.rdr_pk_proof,
+            rdr_pk_signature: authenticated.rdr_pk_signature,
             derivation: authenticated.derivation,
             salt: authenticated.salt,
             valid_window: authenticated.valid_window,
@@ -355,6 +387,7 @@ where
             actor_id: bulletin_state.actor_id,
             ciphertext_context,
             audit_target_object_id: authenticated.audit_target_object_id,
+            reader_auth_context,
         })
     }
 
@@ -493,7 +526,7 @@ where
         };
         let ctx = PreRequestContext {
             rdr_pk_bytes: authorized.rdr_pk,
-            rdr_pk_proof: authorized.rdr_pk_proof,
+            rdr_pk_signature: authorized.rdr_pk_signature,
             object_id: authorized.object_id,
             token_string: authorized.token_str,
             derivation: authorized.derivation,
@@ -512,6 +545,7 @@ where
             secret_bytes,
             ctx,
             report_binding,
+            reader_auth_context: authorized.reader_auth_context,
         })
     }
 
@@ -529,6 +563,7 @@ where
                 setup.secret_bytes,
                 setup.ctx,
                 setup.report_binding,
+                setup.reader_auth_context,
             )
             .await
     }
