@@ -24,7 +24,7 @@ const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-jubjub-challenge";
 /// production one.
 const TEST_NONCE_DOMAIN: &[u8] = b"jubjub-wasm-test-nonce-v1";
 
-fn compute_challenge(r_bytes: &[u8; 32], pk_bytes: &[u8; 32], msg: &[u8]) -> Fr {
+fn compute_challenge(r_bytes: &[u8], pk_bytes: &[u8], msg: &[u8]) -> Fr {
     let mut hasher = Sha512::new();
     hasher.update(FROST_CHALLENGE_DOMAIN);
     hasher.update(r_bytes);
@@ -68,9 +68,7 @@ pub fn verify_core(pk_bytes: &[u8], msg: &[u8], sig_bytes: &[u8]) -> bool {
         return false;
     }
 
-    let r_arr: [u8; 32] = r_bytes.try_into().unwrap();
-    let pk_arr: [u8; 32] = pk_bytes.try_into().unwrap();
-    let c = compute_challenge(&r_arr, &pk_arr, msg);
+    let c = compute_challenge(r_bytes, pk_bytes, msg);
 
     SubgroupPoint::generator() * z == r_point + pk * c
 }
@@ -221,20 +219,22 @@ pub extern "C" fn derive_public_key() -> i32 {
 /// Test-only. `BUF[0..64]` = arbitrary seed bytes (wide reduction input, the
 /// same operation `Fr::from_bytes_wide` performs throughout production
 /// code). On success writes the canonical 32-byte reduced scalar to
-/// `BUF[0..32]` and returns `32`. Exists so Go test helpers can turn an
-/// arbitrary test seed into a valid secret scalar without this crate
-/// exposing the raw scalar-order constant to Go at all.
+/// `BUF[0..32]` and returns `32`; returns `0` for malformed input, `-1` on a
+/// caught panic. Exists so Go test helpers can turn an arbitrary test seed
+/// into a valid secret scalar without this crate exposing the raw
+/// scalar-order constant to Go at all.
 #[no_mangle]
 pub extern "C" fn reduce_scalar_wide() -> i32 {
     let result = with_buf(|buf| {
-        let arr: [u8; 64] = buf[0..64].try_into().unwrap();
-        Fr::from_bytes_wide(&arr).to_bytes()
+        let arr: [u8; 64] = buf[0..64].try_into().ok()?;
+        Some(Fr::from_bytes_wide(&arr).to_bytes())
     });
     match result {
-        Ok(reduced) => {
+        Ok(Some(reduced)) => {
             unsafe { BUF[..32].copy_from_slice(&reduced) };
             32
         }
+        Ok(None) => 0,
         Err(_) => -1,
     }
 }
