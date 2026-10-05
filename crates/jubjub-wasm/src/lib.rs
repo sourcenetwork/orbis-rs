@@ -172,11 +172,18 @@ fn with_buf<T>(f: impl FnOnce(&[u8]) -> T + std::panic::UnwindSafe) -> std::thre
 #[no_mangle]
 pub extern "C" fn verify(msg_len: u32) -> i32 {
     let msg_len = msg_len as usize;
+    // `usize` is 32 bits on wasm32-unknown-unknown: compute the end index
+    // via checked_add so a msg_len near u32::MAX can't wrap the addition
+    // and slip past the length check below (release builds don't panic on
+    // overflow) — reject it the same as any other malformed input instead.
+    let Some(msg_end) = 96usize.checked_add(msg_len) else {
+        return 0;
+    };
     match with_buf(move |buf| {
-        if 96 + msg_len > buf.len() {
+        if msg_end > buf.len() {
             return false;
         }
-        verify_core(&buf[0..32], &buf[96..96 + msg_len], &buf[32..96])
+        verify_core(&buf[0..32], &buf[96..msg_end], &buf[32..96])
     }) {
         Ok(true) => 1,
         Ok(false) => 0,
@@ -239,11 +246,16 @@ pub extern "C" fn reduce_scalar_wide() -> i32 {
 #[no_mangle]
 pub extern "C" fn test_sign(msg_len: u32) -> i32 {
     let msg_len = msg_len as usize;
+    // See verify()'s matching comment: checked_add avoids wrapping the end
+    // index on wasm32's 32-bit usize for a near-u32::MAX msg_len.
+    let Some(msg_end) = 64usize.checked_add(msg_len) else {
+        return 0;
+    };
     let result = with_buf(move |buf| {
-        if 64 + msg_len > buf.len() {
+        if msg_end > buf.len() {
             return None;
         }
-        test_sign_core(&buf[0..32], &buf[32..64], &buf[64..64 + msg_len])
+        test_sign_core(&buf[0..32], &buf[32..64], &buf[64..msg_end])
     });
     match result {
         Ok(Some(sig)) => {
@@ -283,6 +295,21 @@ mod tests {
     fn verify_core_rejects_malformed_lengths() {
         assert!(!verify_core(&[0u8; 31], b"m", &[0u8; 64]));
         assert!(!verify_core(&[0u8; 32], b"m", &[0u8; 63]));
+    }
+
+    #[test]
+    fn verify_and_test_sign_reject_an_out_of_range_msg_len_without_panicking() {
+        // A msg_len that alone already exceeds BUF_LEN must be rejected by
+        // the length check, not just by (coincidentally) panicking on a
+        // malformed slice range.
+        assert_eq!(verify(BUF_LEN as u32), 0);
+        assert_eq!(test_sign(BUF_LEN as u32), 0);
+
+        // msg_len near u32::MAX: offset + msg_len must not wrap back into
+        // range on a 32-bit usize target and slip past the check.
+        assert_eq!(verify(u32::MAX), 0);
+        assert_eq!(test_sign(u32::MAX), 0);
+        assert_eq!(verify(u32::MAX - 50), 0); // would wrap to a tiny, in-range value if unchecked
     }
 
     #[test]
