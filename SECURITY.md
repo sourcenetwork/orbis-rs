@@ -11,9 +11,9 @@ component, and a reproduction if you have one.
 Orbis is a threshold system, but operating a node safely depends on the trust
 assumptions below. This section describes the current implementation.
 
-### The Vera chain RPC/REST endpoints are authorization anchors
+### Cosmos service endpoints require trust in the operator
 
-Each node reads authorization decisions (`x/acp` `VerifyAccessRequest`), ring
+In Cosmos mode, each node reads authorization decisions (`x/acp` `VerifyAccessRequest`), ring
 configuration, key-derivation records, bulletin documents, and block height/time
 from Vera RPC/REST endpoints (`--chain-rpc` / `--chain-rest`). These responses
 are **trusted as returned** — the node does not currently verify them against a
@@ -39,6 +39,28 @@ Removing the "trust the endpoint's honesty" part of this assumption would
 require authenticated chain-state reads. The ACP verdict itself is computed Go
 logic with no Merkle proof, so a light client alone would not make it verifiable;
 that would also require capability materialization or client-side evaluation.
+
+### Native Vera reads require independently configured consensus trust
+
+Native mode verifies finality against its configured consensus key and checks the
+configured deployment root before serving requests. Authorization evaluates ACP
+locally from authenticated policy and relationship evidence at one revision.
+Current relation identities are part of the proven policy: removing and recreating
+a relation cannot make its previous grants valid again. Invalid, oversized,
+unavailable or stale evidence produces an error, never an allow decision.
+
+Current reads enforce a configured maximum age and a nondecreasing observed
+revision. A valid proof describes that revision; it cannot prove that no newer
+revocation exists. Exact revision anchors authenticate historical state without
+applying the current-read maximum age; callers must decide whether that revision
+is suitable for their operation. An endpoint can withhold evidence or serve older
+certified state within the current-read freshness window. Availability and the
+chosen window remain operational considerations. Protect the provisioned
+consensus key and deployment root.
+
+Native validators, clients and verifiers must use the same ACP storage/proof
+format. The current native dependency set uses relation-generation keys under
+`relationship/v4/`; there is no fallback to older relationship namespaces.
 
 ### The signing coordinator is trusted for liveness
 

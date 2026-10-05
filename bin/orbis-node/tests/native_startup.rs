@@ -1,4 +1,8 @@
 #[cfg(feature = "bls12-381")]
+#[path = "support/policy_generations.rs"]
+mod policy_generations;
+
+#[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
 
@@ -349,9 +353,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         infos.push(nodes[index].ready(&addresses[index], &logs[index]).await);
     }
     let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
-    let policy_schema = b"name: native_threshold\nresources:\n  - name: ring_policy\n    relations:\n      - name: creator\n    permissions:\n      - name: create_ring\n        expr: creator\n  - name: ring\n    relations:\n      - name: operator\n    permissions:\n      - name: update_ring\n        expr: operator\n  - name: key\n    relations:\n      - name: signer\n    permissions:\n      - name: sign\n        expr: signer\n  - name: document\n    relations:\n      - name: reader\n    permissions:\n      - name: read\n        expr: reader\n";
+    let policy_schema = policy_generations::definition(true, true);
     let created = client
-        .native_create_policy(&worker, policy_schema, 1)
+        .native_create_policy(&worker, policy_schema.as_bytes(), 1)
         .await
         .unwrap();
     confirmed(&client, created.transaction_hash, &trusted).await;
@@ -679,6 +683,68 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     documents.verify(&created, defra.signer_did()).await;
     assert_eq!(documents.count().await, 1);
 
+    policy_generations::replace(
+        &client,
+        &worker,
+        &trusted,
+        policy_bytes,
+        policy_generations::definition(false, true),
+    )
+    .await;
+    assert_eq!(
+        signing.start_sign(sign_request()).await.unwrap_err().code(),
+        tonic::Code::Unauthenticated
+    );
+    assert!(defra_sign().await.unwrap().is_err());
+    assert!(documents.create("policy-revoked").await.is_err());
+    assert_eq!(documents.count().await, 1);
+
+    nodes[1].stop().await;
+    let directory = base.path().join("node-1");
+    let log = directory.join("policy-edit-restart.log");
+    let bind = infos[1].p2p_address.split_once('@').unwrap().1;
+    nodes[1] = Node::start_bound(&directory, &addresses[1], &controller_key, &log, bind);
+    let recovered = nodes[1].ready(&addresses[1], &log).await;
+    assert_eq!(recovered.node_key, infos[1].node_key);
+    signing = SignServiceClient::connect(
+        tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[1]))
+            .unwrap()
+            .timeout(Duration::from_secs(30)),
+    )
+    .await
+    .unwrap();
+    policy_generations::replace(
+        &client,
+        &worker,
+        &trusted,
+        policy_bytes,
+        policy_generations::definition(true, true),
+    )
+    .await;
+    assert_eq!(
+        signing.start_sign(sign_request()).await.unwrap_err().code(),
+        tonic::Code::Unauthenticated
+    );
+    assert!(defra_sign().await.unwrap().is_err());
+    assert!(documents.create("policy-recreated").await.is_err());
+    assert_eq!(documents.count().await, 1);
+    let regranted = client
+        .native_set_relationship(
+            &worker,
+            policy_bytes,
+            "key",
+            &derivation_id,
+            "signer",
+            &reader.did_uri,
+        )
+        .await
+        .unwrap();
+    confirmed(&client, regranted.transaction_hash, &trusted).await;
+    assert_eq!(
+        defra_sign().await.unwrap().unwrap(),
+        signature.to_bytes().unwrap()
+    );
+
     let revoked = client
         .native_delete_relationship(
             &worker,
@@ -827,6 +893,44 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             .unwrap(),
         plaintext
     );
+    for reader_relation in [false, true] {
+        policy_generations::replace(
+            &client,
+            &worker,
+            &trusted,
+            policy_bytes,
+            policy_generations::definition(true, reader_relation),
+        )
+        .await;
+        assert_eq!(
+            pre.start_pre(pre_request()).await.unwrap_err().code(),
+            tonic::Code::Unauthenticated
+        );
+    }
+    let regranted = client
+        .native_set_relationship(
+            &worker,
+            policy_bytes,
+            "document",
+            &stored.object_id,
+            "reader",
+            &reader.did_uri,
+        )
+        .await
+        .unwrap();
+    confirmed(&client, regranted.transaction_hash, &trusted).await;
+    let reencrypted = pre.start_pre(pre_request()).await.unwrap().into_inner();
+    let response: serde_json::Value =
+        serde_json::from_slice(&reencrypted.encrypted_secret).unwrap();
+    let point = crypto::GroupAffine::from_bytes(
+        &hex::decode(response["xnc_cmt"].as_str().unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        crypto::PreImpl::decrypt_secret(&public_key, &point, &reader_secret, &secret, &context)
+            .unwrap(),
+        plaintext
+    );
     let revoked = client
         .native_delete_relationship(
             &worker,
@@ -927,15 +1031,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let id = vera_domain::NativeTx::decode_wire(&wire).unwrap().tx_id().0;
     assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
     confirmed(&client, id, &trusted).await;
-    let relationships = client
-        .read_relationship_page(policy_bytes, None, 100, 1, &trusted)
-        .await
-        .unwrap();
-    assert!(relationships.continuation.is_none());
-    assert!(relationships
-        .records
-        .iter()
-        .any(|record| !record.archived && record.relationship == grant));
+    policy_generations::assert_relationship(&client, policy_bytes, &trusted, &grant).await;
     let previous = client
         .read_threshold_ring(&derivation.ring_id, 1, &trusted)
         .await

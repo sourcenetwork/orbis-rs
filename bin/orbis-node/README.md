@@ -88,9 +88,9 @@ storage and the node network identity key. Treat both as production secrets.
   node identity change must be reflected in bulletin committee metadata before
   peers will treat it as the same operational participant.
 
-## Chain endpoint trust (hard requirement)
+## Cosmos endpoint trust
 
-The node **fully trusts** the Vera endpoints it is configured with
+In Cosmos mode, the node **fully trusts** the Vera endpoints it is configured with
 (`--chain-rpc`, `--chain-rest`, `--bulletin-grpc`, `--authz-grpc`). Bulletin
 reads are plain RPC responses — there is **no light-client or Merkle-proof
 verification**. Everything security-critical flows from those reads: ring
@@ -199,6 +199,12 @@ signing and replication, permission revocation, PRE, graceful restart, and
 committee replacement. Deployment qualification still requires sustained load,
 multi-host networks, crash/power-loss recovery, and operational security review.
 
+Native ACP uses the pinned `relationship/v4/` format. Deploy the matching Vera
+validator and proof consumers together. Policy catalogs and current relation
+identities are authenticated at the same revision; old namespace prefixes are not
+accepted as a compatibility fallback. See [security assumptions](../../SECURITY.md)
+for native proof freshness and consensus-key provisioning.
+
 Build a native-only node with:
 
 ```sh
@@ -284,7 +290,12 @@ BLS ring. It completes DKG through native Vera, gracefully restarts every node
 with the same encrypted store and peer binding, and checks the recovered public
 polynomials and identities. It then verifies a threshold signature, stores an
 encrypted document, and decrypts it through PRE. Signing and decryption are denied
-before their respective ACP grants and after revocation. The fixture then admits
+before their respective ACP grants and after revocation. Removing and recreating
+the signer or reader relation must keep access denied until a fresh grant. The
+signing path also restarts an Orbis process between policy edits and checks that
+Defra cannot create a new signed document while authorization is revoked. Verified
+relationship enumeration follows every continuation, including an empty page
+while retired records await cleanup. The fixture then admits
 a new participant through authenticated controller and policy updates. Scheduled
 resharing replaces a member while retaining the ring public key. With only two
 members online, the incoming share must participate in signing and decrypting the
