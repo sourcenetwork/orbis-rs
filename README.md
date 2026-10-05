@@ -120,7 +120,7 @@ flowchart TB
   ct --> proto
 ```
 
-**`common`** is the Vera / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs decaf377) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
+**`common`** is the Vera / Cosmos client shared by **`authz`** and **`bulletin`**. **`crypto`** is swappable (e.g. BLS12-381 vs jubjub) via Cargo features; **`network`** provides QUIC; **`local-storage`** holds encrypted key material on disk.
 
 ## Crates
 
@@ -204,11 +204,12 @@ cargo build --no-default-features --features=<alternative>
 | `local-storage` | `memory` | `MemoryStorage` | In-memory HashMap (testing only) | No |
 | `network` | `iroh` | `IrohNetwork` | QUIC-based P2P (iroh) | Yes |
 | `crypto` | `bls12-381` | `DKG, PRE, SIGN` | BLS12-381 curve | Yes |
-| `crypto` | `decaf377` | `DKG, PRE, SIGN` |  Decaf377 curve | No |
+| `crypto` | `jubjub` | `DKG, PSS, PRE, SIGN, PET` | zkcrypto Jubjub subgroup | No |
 | `authz` | `vera` | `VeraAuth` | Vera authorization | Yes |
 | `authz` | `dummy` | `DummyAuthZ` | Permissive (testing only) | No |
 | `bulletin` | `vera` | `VeraBulletin` | Bulletin board backends | Yes |
 | `bulletin` | `dummy` | `DummyBulletin` | Permissive (testing only) | No |
+
 
 ### Example: Switching Storage Backend
 
@@ -382,7 +383,7 @@ cargo test -p local-storage
 cargo test -p authz
 
 # Run tests for a different impl
-cargo test --no-default-features --features=decaf377,redb
+cargo test --no-default-features --features=jubjub,redb
 
 # Check compilation
 cargo check
@@ -397,7 +398,7 @@ docker compose -f docker/docker-compose.3-node.yml up
 docker compose -f docker/docker-compose-integration-test.yml build
 
 # Docker for integration test with different impl
-ORBIS_INTEGRATION_CRYPTO=decaf377 docker compose -f docker/docker-compose-integration-test.yml build
+ORBIS_INTEGRATION_CRYPTO=jubjub docker compose -f docker/docker-compose-integration-test.yml build
 
 # Metrics network test (3 nodes + Prometheus + Grafana)
 docker compose -f docker/docker-compose-metrics-network-test.yml up --build
@@ -441,9 +442,11 @@ the target chain with `--to-vera-ref <git-ref>`.
 
 The **Upgrade Compatibility** GitHub Actions workflow runs automatically for
 pull requests targeting `develop`, comparing the immutable PR base SHA with
-the immutable PR head SHA. BLS12-381 and Decaf377 run as independent jobs.
+the immutable PR head SHA. BLS12-381 and Jubjub run as independent jobs.
 The workflow also supports manual dispatch with explicit baseline and target
-refs.
+refs. Both revisions must support the selected curve. When a PR baseline predates
+Jubjub, that upgrade job is marked not applicable / not tested; changing curves
+requires fresh DKG rather than upgrading the existing ring state.
 
 ### Metrics & Monitoring
 

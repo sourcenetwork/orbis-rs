@@ -3,97 +3,21 @@ use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, PolynomialCommitment as PolynomialCommitmentTrait,
     PubPoly as PubPolyTrait,
 };
-use ark_serialize_05::{CanonicalDeserialize, CanonicalSerialize};
-use decaf377::{Element, Fr};
 use subtle::ConstantTimeEq;
 
-// ============================================================================
-// Constants for serialized sizes
-// ============================================================================
+pub use super::types::{Element, Fr};
 
-/// Size of a compressed Element in bytes (decaf377)
+/// Size of a canonically compressed Jubjub subgroup point in bytes.
 pub const ELEMENT_COMPRESSED_SIZE: usize = 32;
 
-/// Size of a compressed Fr scalar in bytes (decaf377)
+/// Size of a canonical little-endian Jubjub scalar in bytes.
 pub const FR_COMPRESSED_SIZE: usize = 32;
-
-/// Rejects non-canonical encodings by round-tripping through serialization.
-///
-/// Local twin of `crate::helpers::reject_non_canonical`, bound to arkworks
-/// 0.5 (`ark_serialize_05`) rather than the crate-wide 0.4 the bls12-381
-/// path uses — see `Cargo.toml` for why decaf377 pulls a separate arkworks
-/// generation.
-pub(crate) fn reject_non_canonical<T: CanonicalSerialize>(value: &T, bytes: &[u8]) -> Result<()> {
-    let mut canonical = Vec::with_capacity(bytes.len());
-    value.serialize_compressed(&mut canonical)?;
-    if canonical == bytes {
-        Ok(())
-    } else {
-        Err(CryptoError::SerializationError05(
-            ark_serialize_05::SerializationError::InvalidData,
-        ))
-    }
-}
-
-// ============================================================================
-// CryptoSerialize/CryptoDeserialize implementations for decaf377 types
-// ============================================================================
-
-impl CryptoSerialize for Fr {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(FR_COMPRESSED_SIZE);
-        self.serialize_compressed(&mut bytes)?;
-        Ok(bytes)
-    }
-
-    fn min_serialized_size() -> usize {
-        FR_COMPRESSED_SIZE
-    }
-}
-
-impl CryptoDeserialize for Fr {
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != FR_COMPRESSED_SIZE {
-            return Err(CryptoError::SerializationError05(
-                ark_serialize_05::SerializationError::InvalidData,
-            ));
-        }
-        let scalar = Fr::deserialize_compressed(bytes)?;
-        reject_non_canonical(&scalar, bytes)?;
-        Ok(scalar)
-    }
-}
-
-impl CryptoSerialize for Element {
-    fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
-        self.serialize_compressed(&mut bytes)?;
-        Ok(bytes)
-    }
-
-    fn min_serialized_size() -> usize {
-        ELEMENT_COMPRESSED_SIZE
-    }
-}
-
-impl CryptoDeserialize for Element {
-    fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != ELEMENT_COMPRESSED_SIZE {
-            return Err(CryptoError::SerializationError05(
-                ark_serialize_05::SerializationError::InvalidData,
-            ));
-        }
-        let element = Element::deserialize_compressed(bytes)?;
-        reject_non_canonical(&element, bytes)?;
-        Ok(element)
-    }
-}
 
 // ============================================================================
 // Public polynomial and polynomial commitment types
 // ============================================================================
 
-/// Public polynomial for commitments (decaf377)
+/// Public polynomial for commitments (Jubjub).
 #[derive(Clone, Debug)]
 pub struct PubPoly {
     pub commits: Vec<Element>,
@@ -111,7 +35,7 @@ impl PubPolyTrait for PubPoly {
     }
 }
 
-/// A polynomial commitment (decaf377)
+/// A polynomial commitment (Jubjub).
 #[derive(Clone, Debug)]
 pub struct PolynomialCommitment {
     pub coefficients: Vec<Element>,
@@ -130,28 +54,10 @@ impl PolynomialCommitmentTrait for PolynomialCommitment {
 
     fn verify_share(&self, share_id: u32, share_value: &Fr) -> bool {
         let expected = self.eval(share_id);
-        let actual = Element::GENERATOR * share_value;
+        let actual = Element::generator() * share_value;
 
-        // Use constant-time comparison to prevent timing side-channels
-        let mut expected_bytes = Vec::new();
-        let mut actual_bytes = Vec::new();
-
-        if expected.serialize_compressed(&mut expected_bytes).is_err() {
-            return false;
-        }
-        if actual.serialize_compressed(&mut actual_bytes).is_err() {
-            return false;
-        }
-
-        // Pad to same length for constant-time comparison
-        let max_len = expected_bytes.len().max(actual_bytes.len());
-        let mut expected_padded = vec![0u8; max_len];
-        let mut actual_padded = vec![0u8; max_len];
-        expected_padded[..expected_bytes.len()].copy_from_slice(&expected_bytes);
-        actual_padded[..actual_bytes.len()].copy_from_slice(&actual_bytes);
-
-        // Constant-time comparison
-        expected_padded.ct_eq(&actual_padded).into()
+        // Compare the group elements directly in constant time.
+        expected.ct_eq(&actual).into()
     }
 
     fn constant_term_is_identity(&self) -> bool {
@@ -171,7 +77,7 @@ impl CryptoSerialize for PubPoly {
         let mut bytes = Vec::with_capacity(4 + self.commits.len() * ELEMENT_COMPRESSED_SIZE);
         bytes.extend_from_slice(&(self.commits.len() as u32).to_le_bytes());
         for commit in &self.commits {
-            commit.serialize_compressed(&mut bytes)?;
+            commit.write_bytes(&mut bytes)?;
         }
         Ok(bytes)
     }
@@ -193,7 +99,10 @@ impl CryptoDeserialize for PubPoly {
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid num_commits bytes".to_string()))?,
         ) as usize;
-        let expected_len = 4 + num_commits * ELEMENT_COMPRESSED_SIZE;
+        let expected_len = num_commits
+            .checked_mul(ELEMENT_COMPRESSED_SIZE)
+            .and_then(|size| size.checked_add(4))
+            .ok_or_else(|| CryptoError::DKGError("PubPoly length overflow".into()))?;
 
         if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(format!(
@@ -228,7 +137,7 @@ impl CryptoSerialize for PolynomialCommitment {
         let mut bytes = Vec::with_capacity(4 + self.coefficients.len() * ELEMENT_COMPRESSED_SIZE);
         bytes.extend_from_slice(&(self.coefficients.len() as u32).to_le_bytes());
         for coeff in &self.coefficients {
-            coeff.serialize_compressed(&mut bytes)?;
+            coeff.write_bytes(&mut bytes)?;
         }
         Ok(bytes)
     }
@@ -252,7 +161,10 @@ impl CryptoDeserialize for PolynomialCommitment {
                 .try_into()
                 .map_err(|_| CryptoError::DKGError("Invalid num_coefficients bytes".to_string()))?,
         ) as usize;
-        let expected_len = 4 + num_coefficients * ELEMENT_COMPRESSED_SIZE;
+        let expected_len = num_coefficients
+            .checked_mul(ELEMENT_COMPRESSED_SIZE)
+            .and_then(|size| size.checked_add(4))
+            .ok_or_else(|| CryptoError::DKGError("PolynomialCommitment length overflow".into()))?;
 
         if bytes.len() < expected_len {
             return Err(CryptoError::DKGError(format!(

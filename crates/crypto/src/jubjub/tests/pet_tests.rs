@@ -1,10 +1,9 @@
-use crate::decaf377::pet::PetNode;
+use crate::jubjub::common::{Element, Fr};
+use crate::jubjub::pet::PetNode;
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, Dkg, Pet, PetCheckReply, PetTag, PubShare,
 };
 use crate::test_helper::DKGCoordinator;
-use ark_ff_05::{One, Zero};
-use decaf377::{Element, Fr};
 use rand_core::OsRng;
 
 #[test]
@@ -16,7 +15,7 @@ fn test_all_pet() {
 fn test_all_tag_knowledge() {
     crate::pet_tests::run_all_tag_knowledge_tests::<PetNode, _>(|| {
         let r_tag = Fr::rand(&mut OsRng);
-        let ephemeral_point = Element::GENERATOR * r_tag;
+        let ephemeral_point = Element::generator() * r_tag;
         (r_tag, ephemeral_point)
     })
     .unwrap();
@@ -28,7 +27,7 @@ fn test_all_tag_knowledge() {
 /// checking against arbitrary bytes.
 fn make_valid_tag(owner_id: &[u8], pet_sk: Fr) -> (PetTag, Element) {
     let r_tag = Fr::rand(&mut OsRng);
-    let r_point = Element::GENERATOR * r_tag;
+    let r_point = Element::generator() * r_tag;
     let fingerprint = PetNode::owner_fingerprint(owner_id).unwrap();
     let masked = fingerprint + r_point * pet_sk;
     (
@@ -142,17 +141,11 @@ fn threshold_check_rejects_out_of_range_share_index() {
 fn run_pet_key_dkg() -> (
     Element,
     Vec<crate::r#trait::PriShare<Fr>>,
-    crate::decaf377::common::PubPoly,
+    crate::jubjub::common::PubPoly,
 ) {
     let mut coordinator = DKGCoordinator::new(
         |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
-            <crate::decaf377::dkg::DKGNode as Dkg>::new(
-                id,
-                threshold,
-                total_nodes,
-                session_id,
-                role,
-            )
+            <crate::jubjub::dkg::DKGNode as Dkg>::new(id, threshold, total_nodes, session_id, role)
         },
         3,
         3,
@@ -171,7 +164,7 @@ fn share_for(shares: &[crate::r#trait::PriShare<Fr>], i: u32) -> Fr {
 /// (only `verify_pet_match` does).
 fn sample_ephemeral_tag() -> PetTag {
     let r_tag = Fr::rand(&mut OsRng);
-    let r_point = Element::GENERATOR * r_tag;
+    let r_point = Element::generator() * r_tag;
     PetTag {
         ephemeral_point: r_point.to_bytes().unwrap(),
         masked_fingerprint: vec![1, 2, 3],
@@ -193,7 +186,7 @@ fn partial_pet_check_rejects_tampered_partial() {
     let (_pet_pk, shares, pub_poly) = run_pet_key_dkg();
     let tag = sample_ephemeral_tag();
     let mut reply = PetNode::partial_pet_check(&share_for(&shares, 1), 1, &tag).unwrap();
-    reply.partial.v += Element::GENERATOR;
+    reply.partial.v += Element::generator();
 
     assert!(
         PetNode::verify_partial_pet_check(&pub_poly, &tag, &reply).is_err(),
@@ -259,7 +252,7 @@ fn per_share_verification_rejects_a_cancellation_attack_that_would_otherwise_fra
 
     // A genuine tag, actually issued for "alice" — never for "mallory".
     let r_tag = Fr::rand(&mut OsRng);
-    let r_point = Element::GENERATOR * r_tag;
+    let r_point = Element::generator() * r_tag;
     let alice_fingerprint = PetNode::owner_fingerprint(b"alice").unwrap();
     let masked = alice_fingerprint + pet_pk * r_tag;
     let tag = PetTag {
@@ -350,9 +343,9 @@ fn per_share_verification_rejects_a_cancellation_attack_that_would_otherwise_fra
 /// the tag's own defining equation (see `make_valid_tag` for that).
 fn sample_blind_inputs() -> (PetTag, Element, Fr) {
     let r_tag = Fr::rand(&mut OsRng);
-    let r_point = Element::GENERATOR * r_tag;
-    let masked = Element::GENERATOR * Fr::rand(&mut OsRng);
-    let target = Element::GENERATOR * Fr::rand(&mut OsRng);
+    let r_point = Element::generator() * r_tag;
+    let masked = Element::generator() * Fr::rand(&mut OsRng);
+    let target = Element::generator() * Fr::rand(&mut OsRng);
     let tag = PetTag {
         ephemeral_point: r_point.to_bytes().unwrap(),
         masked_fingerprint: masked.to_bytes().unwrap(),
@@ -364,7 +357,7 @@ fn sample_blind_inputs() -> (PetTag, Element, Fr) {
 fn test_all_blinding_proof() {
     crate::pet_tests::run_all_blinding_proof_tests::<PetNode, _>(|| {
         let s = Fr::rand(&mut OsRng);
-        let p = Element::GENERATOR * s;
+        let p = Element::generator() * s;
         (s, p)
     })
     .unwrap();
@@ -385,7 +378,7 @@ fn blinding_proof_rejects_tampered_blinded_r() {
     let (tag, target, z_i) = sample_blind_inputs();
     let digest = [7u8; 32];
     let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
-    reply.blinded_r += Element::GENERATOR;
+    reply.blinded_r += Element::generator();
 
     assert!(
         PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),
@@ -398,7 +391,7 @@ fn blinding_proof_rejects_tampered_blinded_diff() {
     let (tag, target, z_i) = sample_blind_inputs();
     let digest = [7u8; 32];
     let mut reply = PetNode::prove_blinding_correctness(&z_i, &tag, &target, &digest).unwrap();
-    reply.blinded_diff += Element::GENERATOR;
+    reply.blinded_diff += Element::generator();
 
     assert!(
         PetNode::verify_blinding_correctness(&tag, &target, &reply, &digest).is_err(),

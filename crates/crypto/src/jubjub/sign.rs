@@ -1,9 +1,7 @@
-//! FROST Threshold Signing implementation for decaf377
+//! FROST threshold signing over the prime-order subgroup of Jubjub.
 //!
-//! decaf377 is a prime-order group without pairings, so BLS threshold
-//! signatures are impossible. Instead we implement FROST (Flexible
-//! Round-Optimized Schnorr Threshold signatures), which requires two
-//! interactive rounds:
+//! This implements FROST (Flexible Round-Optimized Schnorr Threshold
+//! signatures) using a Jubjub-specific transcript and two interactive rounds:
 //!
 //! **Round 1 (Nonce Commitment):** Each signer generates random nonces
 //! (d_i, e_i), computes commitments (D_i = d_i*G, E_i = e_i*G), and
@@ -13,15 +11,12 @@
 //! a partial signature z_i. The coordinator aggregates these into the
 //! final Schnorr signature (R, z).
 
-use super::common::PubPoly;
+use super::common::{Element, Fr, PubPoly};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, PubPoly as PubPolyTrait, PubShare,
     ThresholdSigner,
 };
-use ark_ff_05::{One, Zero};
-use ark_serialize_05::CanonicalSerialize;
-use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashSet;
@@ -30,14 +25,14 @@ use zeroize::Zeroize;
 use super::common::{ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 
 /// Domain separation tag for signing key derivation (distinct from PRE derivation domain).
-const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-derivation-v1";
+const SIGN_DERIVATION_DOMAIN: &[u8] = b"sign-jubjub-derivation-v1";
 
 /// Domain separation tag for signing metadata encoding.
-const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-metadata-v1";
+const SIGN_METADATA_DOMAIN: &[u8] = b"orbis-sign-jubjub-metadata-v1";
 
 /// Domain separation tags for RFC 9591 §4.1 hedged FROST nonce derivation.
-const FROST_HIDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-decaf377-hiding-nonce-v1";
-const FROST_BINDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-decaf377-binding-nonce-v1";
+const FROST_HIDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-jubjub-hiding-nonce-v1";
+const FROST_BINDING_NONCE_DOMAIN: &[u8] = b"orbis-frost-jubjub-binding-nonce-v1";
 
 // ============================================================================
 // FROST Types
@@ -59,8 +54,8 @@ impl PartialEq for SchnorrSignature {
 impl CryptoSerialize for SchnorrSignature {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE + FR_COMPRESSED_SIZE);
-        self.r_point.serialize_compressed(&mut bytes)?;
-        self.z.serialize_compressed(&mut bytes)?;
+        self.r_point.write_bytes(&mut bytes)?;
+        self.z.write_bytes(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -91,8 +86,8 @@ pub struct FrostNonceCommitment {
 impl CryptoSerialize for FrostNonceCommitment {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(2 * ELEMENT_COMPRESSED_SIZE);
-        self.hiding.serialize_compressed(&mut bytes)?;
-        self.binding.serialize_compressed(&mut bytes)?;
+        self.hiding.write_bytes(&mut bytes)?;
+        self.binding.write_bytes(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -144,8 +139,8 @@ impl CryptoSerialize for FrostSigningState {
     fn to_bytes(&self) -> Result<Vec<u8>> {
         let mut bytes = Vec::with_capacity(4 + 2 * FR_COMPRESSED_SIZE);
         bytes.extend_from_slice(&self.participant_index.to_le_bytes());
-        self.hiding_nonce.serialize_compressed(&mut bytes)?;
-        self.binding_nonce.serialize_compressed(&mut bytes)?;
+        self.hiding_nonce.write_bytes(&mut bytes)?;
+        self.binding_nonce.write_bytes(&mut bytes)?;
         Ok(bytes)
     }
 
@@ -180,8 +175,8 @@ impl CryptoDeserialize for FrostSigningState {
 // ============================================================================
 
 /// Domain separation tags
-const FROST_BINDING_DOMAIN: &[u8] = b"FROST-decaf377-binding";
-const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-decaf377-challenge";
+const FROST_BINDING_DOMAIN: &[u8] = b"FROST-jubjub-binding";
+const FROST_CHALLENGE_DOMAIN: &[u8] = b"FROST-jubjub-challenge";
 
 /// Compute binding factor for participant j:
 ///   rho_j = H(BINDING_DOMAIN || j || group_public_key || msg || encoded_commitments)
@@ -199,7 +194,7 @@ fn compute_binding_factor(
     hasher.update(FROST_BINDING_DOMAIN);
     hasher.update(participant_id.to_le_bytes());
     let mut public_key_bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
-    group_public_key.serialize_compressed(&mut public_key_bytes)?;
+    group_public_key.write_bytes(&mut public_key_bytes)?;
     hasher.update(&public_key_bytes);
     hasher.update((msg.len() as u64).to_le_bytes());
     hasher.update(msg);
@@ -249,12 +244,12 @@ fn compute_challenge(r_point: &Element, aggregate_pk: &Element, msg: &[u8]) -> R
     hasher.update(FROST_CHALLENGE_DOMAIN);
     let mut r_bytes = Vec::new();
     r_point
-        .serialize_compressed(&mut r_bytes)
+        .write_bytes(&mut r_bytes)
         .map_err(|_| CryptoError::InvalidSignature)?;
     hasher.update(&r_bytes);
     let mut pk_bytes = Vec::new();
     aggregate_pk
-        .serialize_compressed(&mut pk_bytes)
+        .write_bytes(&mut pk_bytes)
         .map_err(|_| CryptoError::InvalidSignature)?;
     hasher.update(&pk_bytes);
     hasher.update(msg);
@@ -264,8 +259,8 @@ fn compute_challenge(r_point: &Element, aggregate_pk: &Element, msg: &[u8]) -> R
 
 /// Convert a SHA-512 digest to an Fr element (reduce mod p).
 ///
-/// 512 bits of input gives bias < 2^-261 for decaf377 Fr (251-bit modulus),
-/// which is negligible. Using SHA-256 (256 bits) would give ~1.5% bias.
+/// 512 bits of input gives bias < 2^-260 for Jubjub Fr (252-bit modulus),
+/// which is negligible.
 fn fr_from_hash(hash: &[u8]) -> Fr {
     Fr::from_le_bytes_mod_order(hash)
 }
@@ -301,11 +296,11 @@ fn aggregate_pk_from_pub_poly(pub_poly: &PubPoly) -> Element {
 /// folding in the signer's secret share hedges against RNG disclosure or
 /// predictability. Exact repetition of the random input still repeats a nonce,
 /// so freshness continues to rely on `OsRng`. Non-zero is enforced by
-/// re-drawing (probability of a hit is ~2^-251).
+/// re-drawing (probability of a hit is approximately 2^-252).
 fn hedged_nonce(domain: &[u8], secret: &Fr) -> Result<Fr> {
     let mut secret_bytes = Vec::with_capacity(FR_COMPRESSED_SIZE);
     secret
-        .serialize_compressed(&mut secret_bytes)
+        .write_bytes(&mut secret_bytes)
         .map_err(|_| CryptoError::SigningError("failed to serialize signing share".to_string()))?;
 
     let nonce = loop {
@@ -332,10 +327,10 @@ fn hedged_nonce(domain: &[u8], secret: &Fr) -> Result<Fr> {
 // ThresholdSigner implementation
 // ============================================================================
 
-/// Threshold FROST signer for decaf377
-pub struct ThresholdDecafSigner;
+/// Threshold FROST signer for the prime-order subgroup of Jubjub
+pub struct ThresholdJubjubSigner;
 
-impl ThresholdSigner for ThresholdDecafSigner {
+impl ThresholdSigner for ThresholdJubjubSigner {
     const INTERACTIVE: bool = true;
 
     type ShareValue = Fr;
@@ -348,11 +343,11 @@ impl ThresholdSigner for ThresholdDecafSigner {
     type SigningState = FrostSigningState;
 
     fn new() -> Self {
-        ThresholdDecafSigner
+        ThresholdJubjubSigner
     }
 
     fn name() -> String {
-        "threshold-frost-decaf377".to_string()
+        "threshold-frost-jubjub".to_string()
     }
 
     fn hash_message(&self, _pk: &Self::PublicKey, _msg: &[u8]) -> Result<Self::Signature> {
@@ -371,8 +366,8 @@ impl ThresholdSigner for ThresholdDecafSigner {
         let e = hedged_nonce(FROST_BINDING_NONCE_DOMAIN, &secret)?;
 
         let commitment = FrostNonceCommitment {
-            hiding: Element::GENERATOR * d,
-            binding: Element::GENERATOR * e,
+            hiding: Element::generator() * d,
+            binding: Element::generator() * e,
         };
 
         let state = FrostSigningState {
@@ -411,8 +406,8 @@ impl ThresholdSigner for ThresholdDecafSigner {
             .map(|(_, c)| c)
             .ok_or(CryptoError::InvalidSignatureShare)?;
 
-        let expected_hiding = Element::GENERATOR * signing_state.hiding_nonce;
-        let expected_binding = Element::GENERATOR * signing_state.binding_nonce;
+        let expected_hiding = Element::generator() * signing_state.hiding_nonce;
+        let expected_binding = Element::generator() * signing_state.binding_nonce;
         if our_commitment.hiding != expected_hiding || our_commitment.binding != expected_binding {
             return Err(CryptoError::SigningError(
                 "Commitment mismatch: coordinator may have tampered with our nonce commitment"
@@ -526,7 +521,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
         };
 
         // Verify: z_i * G == D_i + rho_i * E_i + lambda_i * c * pk_i'
-        let lhs = Element::GENERATOR * z_i;
+        let lhs = Element::generator() * z_i;
         let rhs = commitment.hiding + commitment.binding * rho_i + pk_i_eff * (lambda_i * c);
 
         if lhs != rhs {
@@ -590,7 +585,7 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
         // Verify: z * G == R + c * Y
         let c = compute_challenge(&sig.r_point, pk, msg)?;
-        let lhs = Element::GENERATOR * sig.z;
+        let lhs = Element::generator() * sig.z;
         let rhs = sig.r_point + *pk * c;
 
         if lhs != rhs {
@@ -636,20 +631,88 @@ impl ThresholdSigner for ThresholdDecafSigner {
 
 /// Derive a scalar for multiplicative key tweaking.
 ///
-/// Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
-/// With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
-///
-/// The null-byte separator guarantees no collision between derivation-only and
-/// derivation+metadata inputs. Backward compatible: passing `None` for metadata
-/// yields the same hash as the previous single-argument form.
+/// The derivation is length-prefixed, then a one-byte presence tag distinguishes
+/// absent metadata from present (including empty) metadata. Present metadata is
+/// also length-prefixed, so variable-length inputs cannot share a transcript.
 fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
     let mut hasher = Sha512::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
+    hasher.update((derivation.len() as u64).to_le_bytes());
     hasher.update(derivation);
-    if let Some(meta) = metadata {
-        hasher.update(b"\x00"); // separator — prevents collision with derivation-only path
-        hasher.update((meta.len() as u64).to_le_bytes());
-        hasher.update(meta);
+    match metadata {
+        None => hasher.update([0]),
+        Some(meta) => {
+            hasher.update([1]);
+            hasher.update((meta.len() as u64).to_le_bytes());
+            hasher.update(meta);
+        }
     }
     Fr::from_le_bytes_mod_order(&hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verifies_independent_jubjub_signature_vector() {
+        let vector: serde_json::Value =
+            serde_json::from_str(include_str!("test_vectors/frost.json")).unwrap();
+        let decode = |field: &str| -> Vec<u8> {
+            vector[field]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        };
+        assert_eq!(vector["scheme"], crate::THRESHOLD_SIGNATURE_SCHEME);
+        assert_eq!(
+            Element::generator().to_bytes().unwrap(),
+            decode("generator")
+        );
+        let pk = Element::from_bytes(&decode("public_key")).unwrap();
+        let msg = decode("message");
+        let encoded_sig = decode("signature");
+        let sig = SchnorrSignature::from_bytes(&encoded_sig).unwrap();
+        assert_eq!(sig.to_bytes().unwrap(), encoded_sig);
+        assert_eq!(
+            compute_challenge(&sig.r_point, &pk, &msg)
+                .unwrap()
+                .to_bytes()
+                .unwrap(),
+            decode("challenge"),
+        );
+        let signer = ThresholdJubjubSigner::new();
+        signer.verify(&pk, &msg, &sig).unwrap();
+        assert!(signer.verify(&pk, b"different message", &sig).is_err());
+    }
+
+    #[test]
+    fn signing_derivation_frames_metadata_separately() {
+        let derivation = b"resource";
+        let metadata = b"policy";
+
+        // This derivation-only input matched the old transcript for
+        // (derivation, Some(metadata)), which appended metadata after a null byte.
+        let mut formerly_ambiguous_derivation = derivation.to_vec();
+        formerly_ambiguous_derivation.push(0);
+        formerly_ambiguous_derivation.extend_from_slice(&(metadata.len() as u64).to_le_bytes());
+        formerly_ambiguous_derivation.extend_from_slice(metadata);
+        assert_ne!(
+            derive_sign_scalar(derivation, Some(metadata)),
+            derive_sign_scalar(&formerly_ambiguous_derivation, None),
+        );
+    }
+
+    #[test]
+    fn signing_derivation_distinguishes_absent_and_empty_metadata() {
+        assert_ne!(
+            derive_sign_scalar(b"resource", None),
+            derive_sign_scalar(b"resource", Some(b"")),
+        );
+    }
 }
