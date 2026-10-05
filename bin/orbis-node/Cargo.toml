@@ -72,6 +72,9 @@ defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/d
 alloy-primitives = "1"
 vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a4d3fe4ba9ff7d07ed5cb01dc2fdbb57b1551a58" }
 vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a4d3fe4ba9ff7d07ed5cb01dc2fdbb57b1551a58" }
+vera-acp = { package = "acp", git = "https://github.com/sourcenetwork/vera.rs", rev = "a4d3fe4ba9ff7d07ed5cb01dc2fdbb57b1551a58" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a4d3fe4ba9ff7d07ed5cb01dc2fdbb57b1551a58" }
+alloy-sol-types = "1"
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
 bulletin = { path = "../../crates/bulletin", features = ["dummy-type"] }
 bs58 = "0.5"

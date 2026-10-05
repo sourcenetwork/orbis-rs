@@ -7892,8 +7892,10 @@ dependencies = [
 name = "orbis-node"
 version = "0.0.1"
 dependencies = [
+ "acp 0.5.0 (git+https://github.com/sourcenetwork/vera.rs?rev=a4d3fe4ba9ff7d07ed5cb01dc2fdbb57b1551a58)",
  "acp-light-client",
  "alloy-primitives",
+ "alloy-sol-types",
  "anyhow",
  "ark-bls12-381 0.4.0",
  "ark-ec 0.4.2",
@@ -7964,6 +7966,7 @@ dependencies = [
  "vera-crypto",
  "vera-domain",
  "vera-harness",
+ "vera-modules",
  "zeroize",
 ]
 

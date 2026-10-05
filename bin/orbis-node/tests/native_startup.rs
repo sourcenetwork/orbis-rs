@@ -247,6 +247,7 @@ async fn native_defra_signing() {
 #[cfg(feature = "bls12-381")]
 async fn distributed_threshold_workflows(signing_only: bool) {
     use alloy_primitives::B256;
+    use alloy_sol_types::SolCall;
     use authn::jwt_builder::{create_authenticated_request, JwtSigner};
     use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
     use proto::{
@@ -880,18 +881,50 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     infos.push(info);
     addresses.push(addr);
     logs.push(log);
-    let granted = client
-        .native_set_relationship(
-            &worker,
-            policy_bytes,
-            "ring",
-            &derivation.ring_id,
-            "operator",
-            &actor,
-        )
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = create_scoped_bearer_token(
+        &controller,
+        worker.did(),
+        deployment,
+        now,
+        now + 300,
+        DelegationScope::PolicyCommands,
+    )
+    .unwrap();
+    let grant = vera_acp::Relationship::with_entity(
+        "ring",
+        &derivation.ring_id,
+        "operator",
+        actor.parse().unwrap(),
+    );
+    let call = vera_modules::acp::abi::IAcp::bearerPolicyCmdCall {
+        bearerToken: token,
+        policyId: policy_bytes,
+        cmd: serde_json::to_vec(&vera_modules::acp::types::PolicyCmd::SetRelationship(
+            grant.clone(),
+        ))
+        .unwrap()
+        .into(),
+    }
+    .abi_encode();
+    let wire = worker
+        .sign_native_tx(vera_client::ACP_ADDRESS, call.into())
+        .unwrap();
+    let id = vera_domain::NativeTx::decode_wire(&wire).unwrap().tx_id().0;
+    assert_eq!(client.send_native_tx(&wire).await.unwrap(), id);
+    confirmed(&client, id, &trusted).await;
+    let relationships = client
+        .read_relationship_page(policy_bytes, None, 100, 1, &trusted)
         .await
         .unwrap();
-    confirmed(&client, granted.transaction_hash, &trusted).await;
+    assert!(relationships.continuation.is_none());
+    assert!(relationships
+        .records
+        .iter()
+        .any(|record| !record.archived && record.relationship == grant));
     let previous = client
         .read_threshold_ring(&derivation.ring_id, 1, &trusted)
         .await
