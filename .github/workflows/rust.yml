@@ -68,6 +68,15 @@ jobs:
         tool: cargo-deny
     - name: Check licences
       run: cargo deny check
+    # jubjub-wasm is consumed only as a compiled wasm32-unknown-unknown binary
+    # (vendored into the separate vera repo, see crates/jubjub-wasm/README.md)
+    # — nothing else in this workflow builds for that target, so a dependency
+    # bump that silently breaks it (e.g. pulling in `getrandom` unconditionally)
+    # would otherwise go unnoticed until someone manually rebuilds to ship.
+    - name: Install wasm32 target
+      run: rustup target add wasm32-unknown-unknown
+    - name: Build jubjub-wasm for wasm32-unknown-unknown
+      run: cargo build --release --target wasm32-unknown-unknown -p jubjub-wasm
 
   clippy:
     runs-on: ubuntu-latest
