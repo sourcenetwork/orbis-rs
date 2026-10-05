@@ -130,7 +130,11 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
-        .genesis(GenesisBuilder::devnet().simplex(Default::default()))
+        .genesis(
+            GenesisBuilder::devnet()
+                .blocks_per_epoch(192)
+                .simplex(Default::default()),
+        )
         .preset(ConsensusPreset::Normal)
         .build()
         .await
@@ -279,7 +283,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .nodes(4)
         .seed(deployment)
         .chain_id(deployment)
-        .genesis(GenesisBuilder::devnet().simplex(Default::default()))
+        .genesis(
+            GenesisBuilder::devnet()
+                .blocks_per_epoch(192)
+                .simplex(Default::default()),
+        )
         .preset(ConsensusPreset::Normal)
         .build()
         .await
