@@ -5,6 +5,13 @@ on:
     branches: [ "main", "develop" ]
   pull_request:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Qualification scope
+        type: choice
+        options: [full, common]
+        default: full
+        required: true
 
 permissions:
   contents: read
@@ -48,7 +55,28 @@ env:
     | test(/^unsafe_testing::tests::/)))
 
 jobs:
+  common:
+    name: Common backend boundary
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'common'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: common-backend-boundary
+      - name: Qualify both Common feature modes
+        run: bash scripts/test-common-backend.sh
+
   lint:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -79,6 +107,7 @@ jobs:
       run: cargo build --release --target wasm32-unknown-unknown -p jubjub-wasm
 
   clippy:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
@@ -106,6 +135,7 @@ jobs:
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
   native:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     name: Native backend (${{ matrix.crypto }})
     runs-on: ubuntu-latest
     env:
@@ -150,6 +180,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -212,6 +243,7 @@ jobs:
   # Compile every test binary once per crypto and save the shared cache the
   # `unit` / `integration` jobs restore.
   compile:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
@@ -244,6 +276,7 @@ jobs:
       run: cargo nextest run --no-run --profile ci ${{ matrix.cargo_flags }}
 
   unit:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     needs: compile
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
@@ -278,6 +311,7 @@ jobs:
       run: cargo nextest run --profile ci ${{ matrix.cargo_flags }} -E "not (${{ env.DOCKER_TESTS }})"
 
   integration:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     needs: [compile, image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
@@ -328,6 +362,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -355,6 +390,7 @@ jobs:
           cache-to: type=gha,scope=native-vera,mode=max
 
   native-lifecycle:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     name: Native lifecycle (${{ matrix.crypto }})
     needs: [image, native-vera-image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
