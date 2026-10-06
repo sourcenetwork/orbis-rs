@@ -317,6 +317,22 @@ VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
   --test native_startup native_distributed_threshold_workflows -- --ignored
 ```
 
+The ignored `native_pet_scheduled_refresh_after_restart` scenario uses normal
+native binaries and the ring's unchanged 86,400-second refresh interval. With all
+three nodes stopped, it backdates only the persisted PET completion timestamp,
+then restarts the same identities and lets their background schedulers rotate the
+PET shares. It checks the persisted ring index, main bundles, certified key pair,
+and document tags remain unchanged, and both stored and inline PRE still return
+the exact plaintext. The fixture polls every second; this is synthetic overdue
+state coverage, not a 24-hour soak or the production one-hour polling cadence.
+
+```sh
+VERAD_BINARY=/path/to/verad ORBIS_NODE_BINARY=/path/to/orbis-node \
+  cargo test -p orbis-node --no-default-features \
+  --features native,redb,iroh,bls12-381 --test native_startup \
+  native_pet_scheduled_refresh_after_restart -- --ignored --exact
+```
+
 The ignored `native_pet_fault_reports` scenario uses a separate diagnostic binary
 built with `native,redb,iroh,unsafe-testing` and either `bls12-381` or `jubjub`.
 It enables the existing testing service only on that scenario's child processes,

@@ -25,8 +25,12 @@ use document::{Delivery, Document, PreChecks, Reader};
 #[path = "native_pet/report_fault.rs"]
 mod report_fault;
 
+#[path = "native_pet/scheduled_refresh.rs"]
+mod scheduled_refresh;
+
 pub enum Scenario {
     Lifecycle,
+    ScheduledRefresh,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
 }
@@ -34,6 +38,7 @@ pub enum Scenario {
 pub async fn run(scenario: Scenario) {
     let (deployment, report_fault) = match scenario {
         Scenario::Lifecycle => (9075, false),
+        Scenario::ScheduledRefresh => (9077, false),
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
@@ -164,6 +169,21 @@ pub async fn run(scenario: Scenario) {
         wrong_target
             .denied(document, delivery, tonic::Code::Unauthenticated)
             .await;
+    }
+    if matches!(scenario, Scenario::ScheduledRefresh) {
+        scheduled_refresh::ScheduledRefresh {
+            client: &client,
+            trusted: &trusted,
+            ring_id: &ring_id,
+            keys: &keys,
+            base: base.path(),
+            addresses: &addresses,
+            infos: &infos,
+            controller: &controller_key,
+        }
+        .run(&mut nodes, &checks, documents)
+        .await;
+        return;
     }
     #[cfg(feature = "unsafe-testing")]
     if matches!(scenario, Scenario::ReportFault) {
