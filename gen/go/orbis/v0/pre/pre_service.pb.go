@@ -284,13 +284,18 @@ func (x *InlineDocument) GetPetTag() *PetTagAttachment {
 	return nil
 }
 
-// Schnorr proof of knowledge of the discrete log of a StartPreRequest.rdr_pk
-// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G). Required so
-// that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in rdr_pk, cannot be
-// redirected toward an unrelated ciphertext by submitting a difference of two
-// published commitments as rdr_pk. Verified independently by every responder,
-// not only the ingress node.
-type ReaderKeyProof struct {
+// Schnorr signature of knowledge of the discrete log of a StartPreRequest.rdr_pk
+// (i.e. that the caller knows rdr_sk such that rdr_pk = rdr_sk*G), over a
+// request-bound transcript (chain id, authenticated JWT claims, object_id,
+// rdr_pk, derivation, salt, valid window — never the ciphertext itself).
+// Required so that xnc_ski = ski*(rdr_pk + enc_cmt), which is linear in
+// rdr_pk, cannot be redirected toward an unrelated ciphertext by submitting a
+// difference of two published commitments as rdr_pk, and so a valid
+// signature from one request cannot be replayed into a different request.
+// Verified independently by every responder, not only the ingress node;
+// never carried on the wire itself (every responder rebuilds it from
+// already-authenticated/resolved data).
+type ReaderAuthorizationSignature struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Challenge     []byte                 `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
 	Response      []byte                 `protobuf:"bytes,2,opt,name=response,proto3" json:"response,omitempty"`
@@ -298,20 +303,20 @@ type ReaderKeyProof struct {
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ReaderKeyProof) Reset() {
-	*x = ReaderKeyProof{}
+func (x *ReaderAuthorizationSignature) Reset() {
+	*x = ReaderAuthorizationSignature{}
 	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ReaderKeyProof) String() string {
+func (x *ReaderAuthorizationSignature) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ReaderKeyProof) ProtoMessage() {}
+func (*ReaderAuthorizationSignature) ProtoMessage() {}
 
-func (x *ReaderKeyProof) ProtoReflect() protoreflect.Message {
+func (x *ReaderAuthorizationSignature) ProtoReflect() protoreflect.Message {
 	mi := &file_orbis_v0_pre_pre_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -323,19 +328,19 @@ func (x *ReaderKeyProof) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ReaderKeyProof.ProtoReflect.Descriptor instead.
-func (*ReaderKeyProof) Descriptor() ([]byte, []int) {
+// Deprecated: Use ReaderAuthorizationSignature.ProtoReflect.Descriptor instead.
+func (*ReaderAuthorizationSignature) Descriptor() ([]byte, []int) {
 	return file_orbis_v0_pre_pre_service_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *ReaderKeyProof) GetChallenge() []byte {
+func (x *ReaderAuthorizationSignature) GetChallenge() []byte {
 	if x != nil {
 		return x.Challenge
 	}
 	return nil
 }
 
-func (x *ReaderKeyProof) GetResponse() []byte {
+func (x *ReaderAuthorizationSignature) GetResponse() []byte {
 	if x != nil {
 		return x.Response
 	}
@@ -357,8 +362,8 @@ type StartPreRequest struct {
 	ValidWindow *TimestampRange `protobuf:"bytes,5,opt,name=valid_window,json=validWindow,proto3,oneof" json:"valid_window,omitempty"`
 	// When set, the document is taken from here instead of read from the bulletin by object_id.
 	Document *InlineDocument `protobuf:"bytes,6,opt,name=document,proto3,oneof" json:"document,omitempty"`
-	// Proof of knowledge of rdr_pk's discrete log.
-	RdrPkProof *ReaderKeyProof `protobuf:"bytes,7,opt,name=rdr_pk_proof,json=rdrPkProof,proto3" json:"rdr_pk_proof,omitempty"`
+	// Signature of knowledge of rdr_pk's discrete log, bound to this request.
+	RdrPkSignature *ReaderAuthorizationSignature `protobuf:"bytes,7,opt,name=rdr_pk_signature,json=rdrPkSignature,proto3" json:"rdr_pk_signature,omitempty"`
 	// The ACP object being audited, required on a ring that requires PET. Not yet
 	// enforced: no PET ring can exist yet, and this field is not checked against
 	// ACP or bound in authorization. Distinct from object_id, which keeps its
@@ -440,9 +445,9 @@ func (x *StartPreRequest) GetDocument() *InlineDocument {
 	return nil
 }
 
-func (x *StartPreRequest) GetRdrPkProof() *ReaderKeyProof {
+func (x *StartPreRequest) GetRdrPkSignature() *ReaderAuthorizationSignature {
 	if x != nil {
-		return x.RdrPkProof
+		return x.RdrPkSignature
 	}
 	return nil
 }
@@ -554,10 +559,10 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"\n" +
 	"_timestampB\n" +
 	"\n" +
-	"\b_pet_tag\"J\n" +
-	"\x0eReaderKeyProof\x12\x1c\n" +
+	"\b_pet_tag\"X\n" +
+	"\x1cReaderAuthorizationSignature\x12\x1c\n" +
 	"\tchallenge\x18\x01 \x01(\fR\tchallenge\x12\x1a\n" +
-	"\bresponse\x18\x02 \x01(\fR\bresponse\"\xd3\x03\n" +
+	"\bresponse\x18\x02 \x01(\fR\bresponse\"\xe9\x03\n" +
 	"\x0fStartPreRequest\x12\x15\n" +
 	"\x06rdr_pk\x18\x01 \x01(\fR\x05rdrPk\x12\x1b\n" +
 	"\tobject_id\x18\x02 \x01(\tR\bobjectId\x12#\n" +
@@ -566,9 +571,8 @@ const file_orbis_v0_pre_pre_service_proto_rawDesc = "" +
 	"derivation\x88\x01\x01\x12\x17\n" +
 	"\x04salt\x18\x04 \x01(\tH\x01R\x04salt\x88\x01\x01\x12D\n" +
 	"\fvalid_window\x18\x05 \x01(\v2\x1c.orbis.v0.pre.TimestampRangeH\x02R\vvalidWindow\x88\x01\x01\x12=\n" +
-	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01\x12>\n" +
-	"\frdr_pk_proof\x18\a \x01(\v2\x1c.orbis.v0.pre.ReaderKeyProofR\n" +
-	"rdrPkProof\x128\n" +
+	"\bdocument\x18\x06 \x01(\v2\x1c.orbis.v0.pre.InlineDocumentH\x03R\bdocument\x88\x01\x01\x12T\n" +
+	"\x10rdr_pk_signature\x18\a \x01(\v2*.orbis.v0.pre.ReaderAuthorizationSignatureR\x0erdrPkSignature\x128\n" +
 	"\x16audit_target_object_id\x18\b \x01(\tH\x04R\x13auditTargetObjectId\x88\x01\x01B\r\n" +
 	"\v_derivationB\a\n" +
 	"\x05_saltB\x0f\n" +
@@ -600,18 +604,18 @@ func file_orbis_v0_pre_pre_service_proto_rawDescGZIP() []byte {
 
 var file_orbis_v0_pre_pre_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_orbis_v0_pre_pre_service_proto_goTypes = []any{
-	(*TimestampRange)(nil),   // 0: orbis.v0.pre.TimestampRange
-	(*PetTagAttachment)(nil), // 1: orbis.v0.pre.PetTagAttachment
-	(*InlineDocument)(nil),   // 2: orbis.v0.pre.InlineDocument
-	(*ReaderKeyProof)(nil),   // 3: orbis.v0.pre.ReaderKeyProof
-	(*StartPreRequest)(nil),  // 4: orbis.v0.pre.StartPreRequest
-	(*StartPreResponse)(nil), // 5: orbis.v0.pre.StartPreResponse
+	(*TimestampRange)(nil),               // 0: orbis.v0.pre.TimestampRange
+	(*PetTagAttachment)(nil),             // 1: orbis.v0.pre.PetTagAttachment
+	(*InlineDocument)(nil),               // 2: orbis.v0.pre.InlineDocument
+	(*ReaderAuthorizationSignature)(nil), // 3: orbis.v0.pre.ReaderAuthorizationSignature
+	(*StartPreRequest)(nil),              // 4: orbis.v0.pre.StartPreRequest
+	(*StartPreResponse)(nil),             // 5: orbis.v0.pre.StartPreResponse
 }
 var file_orbis_v0_pre_pre_service_proto_depIdxs = []int32{
 	1, // 0: orbis.v0.pre.InlineDocument.pet_tag:type_name -> orbis.v0.pre.PetTagAttachment
 	0, // 1: orbis.v0.pre.StartPreRequest.valid_window:type_name -> orbis.v0.pre.TimestampRange
 	2, // 2: orbis.v0.pre.StartPreRequest.document:type_name -> orbis.v0.pre.InlineDocument
-	3, // 3: orbis.v0.pre.StartPreRequest.rdr_pk_proof:type_name -> orbis.v0.pre.ReaderKeyProof
+	3, // 3: orbis.v0.pre.StartPreRequest.rdr_pk_signature:type_name -> orbis.v0.pre.ReaderAuthorizationSignature
 	4, // 4: orbis.v0.pre.PreService.StartPre:input_type -> orbis.v0.pre.StartPreRequest
 	5, // 5: orbis.v0.pre.PreService.StartPre:output_type -> orbis.v0.pre.StartPreResponse
 	5, // [5:6] is the sub-list for method output_type
