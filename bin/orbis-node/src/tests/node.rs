@@ -591,6 +591,7 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
         None,
     )
     .await;
+    let expected_identity = config.identity.clone();
     let node = init_node(config).await.expect("initialize test node");
     let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
 
@@ -606,20 +607,16 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
     let mut info_client = InfoServiceClient::connect(endpoint)
         .await
         .expect("connect native gRPC client with CORS disabled");
-    let status = info_client
+    let info = info_client
         .get_node_info(GetNodeInfoRequest {})
         .await
-        .expect_err("test storage intentionally has no node signing key");
-    assert_eq!(
-        status.code(),
-        Code::Internal,
-        "native gRPC request should reach the service with CORS disabled"
-    );
-    assert!(status.message().contains("No signing key found"));
+        .expect("native gRPC request should reach the service with CORS disabled")
+        .into_inner();
+    assert_eq!(info.node_key, expected_identity.node_key);
+    assert_eq!(info.public_address, expected_identity.public_address);
+    assert_eq!(info.status(), NodeStatus::Ready);
 
-    // Dashboard content doesn't depend on the node's signing key, so it
-    // should succeed via the full (non-bootstrap) InfoServiceImpl even
-    // though get_node_info fails above.
+    // The full info service also exposes the dashboard through native gRPC.
     let dashboard = info_client
         .get_dashboard(GetDashboardRequest {})
         .await
