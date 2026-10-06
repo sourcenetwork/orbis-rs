@@ -12,20 +12,17 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
-CURVES = ("bls12-381", "jubjub")
-SCENARIOS = ("native_pet_threshold_workflows", "native_distributed_threshold_workflows")
+# Helper imports must not create untracked bytecode in the source snapshot.
+sys.dont_write_bytecode = True
+from native_lifecycle_summary import CURVES, SCENARIOS, PET_PHASES, failure_summary
+
 CARGO = ["cargo", "+1.98.0"]
 MANIFESTS = ("bin/cli-tool/Cargo.toml", "bin/orbis-node/Cargo.toml",
              "crates/authz/Cargo.toml", "crates/bulletin/Cargo.toml")
-PET_PHASES = (
-    "native PET phase=paired-dkg members=3 threshold=2",
-    "native PET phase=stored-inline-permissions-revocation-regrant",
-    "native PET phase=reshared-pre members=2 threshold=2 both-polynomials-changed=true",
-    "native PET phase=restart-pre preserved-main-and-pet-shares=true",
-)
 
 
 def require(condition, message):
@@ -155,11 +152,11 @@ def qualify(root, curve, private_root):
         run("vera-checkout", ["git", "-C", str(vera), "checkout", "--quiet", "--detach", "FETCH_HEAD"])
         sources["vera"] = {"path": str(vera), **snapshot(vera)}
         require(sources["vera"]["head"] == revision and not sources["vera"]["changed_files"], "Vera checkout mismatch")
-        run("build-verad", CARGO + ["build", "--release", "--locked", "-j2", "-p", "verad", "--bin", "verad"], vera)
+        run("build-verad", CARGO + ["build", "--release", "--locked", "-j2", "-p", "verad", "--bin", "verad", "--message-format=json"], vera)
         stage("verad", target / "release/verad", work / "bin/verad", "vera", "repository defaults")
         env["VERAD_BINARY"] = str(work / "bin/verad")
         native = ["--release", "--locked", "-j2", "-p", "orbis-node", "--no-default-features", "--features", features]
-        run("build-orbis", CARGO + ["build"] + native + ["--bin", "orbis-node"])
+        run("build-orbis", CARGO + ["build"] + native + ["--bin", "orbis-node", "--message-format=json"])
         stage("orbis", target / "release/orbis-node", work / "bin/orbis-node", "orbis", features)
         env["ORBIS_NODE_BINARY"] = str(work / "bin/orbis-node")
         graph, step = run("native-dependencies", CARGO + ["tree", "--locked", "-p", "orbis-node",
@@ -168,7 +165,7 @@ def qualify(root, curve, private_root):
         step["native_dependency_boundary_passed"] = not bool(forbidden)
         save()
         require(not forbidden, "Native dependency boundary failed")
-        compiled, _ = run("compile-native-tests", CARGO + ["test"] + native + ["--test", "native_startup", "--no-run", "--message-format=json-render-diagnostics"])
+        compiled, _ = run("compile-native-tests", CARGO + ["test"] + native + ["--test", "native_startup", "--no-run", "--message-format=json"])
         executables = set()
         for line in compiled.read_text().splitlines():
             try:
@@ -202,6 +199,23 @@ def qualify(root, curve, private_root):
     except BaseException as error:
         manifest["status"] = "failed"
         manifest["error"] = type(error).__name__ + ": " + str(error)
+        last = manifest["steps"][-1] if manifest["steps"] else {}
+        try:
+            log = Path(last["log"]) if "log" in last else None
+            if log is not None and log.is_file():
+                with log.open(errors="replace") as lines:
+                    summary = failure_summary(curve, last.get("name"), last.get("exit_code"),
+                                              last.get("elapsed_seconds"), lines, root)
+            else:
+                summary = failure_summary(curve, last.get("name"), last.get("exit_code"),
+                                          last.get("elapsed_seconds"), (), root)
+            manifest["failure_summary"] = summary
+            # This object contains only fixed enums, bounded numbers and known E-codes.
+            # The private manifest and its error/environment fields are never emitted.
+            print("Native lifecycle failure summary: " + json.dumps(summary, sort_keys=True), flush=True)
+        except Exception:
+            # Diagnostic collection must not replace the qualification failure.
+            pass
         raise
     finally:
         manifest["retained_log_sha256"] = {str(path.relative_to(work)): sha(path)

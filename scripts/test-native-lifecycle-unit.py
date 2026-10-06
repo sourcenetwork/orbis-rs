@@ -37,6 +37,7 @@ class NativeLifecycleTests(unittest.TestCase):
         self.missing_phase = False
         self.mutate_source = False
         self.nonzero = False
+        self.compiler_failure = False
 
     def snapshot(self, source):
         return {"head": "a" * 40 if source.name == "vera" else "b" * 40,
@@ -55,12 +56,18 @@ class NativeLifecycleTests(unittest.TestCase):
         elif command[0] == "git" and "checkout" in command:
             (Path(command[2]) / "Cargo.lock").write_text("Vera lock")
         elif "build" in command:
-            binary = command[-1]
+            binary = command[command.index("--bin") + 1]
+            self.assertIn("--message-format=json", command)
             (release / binary).write_text("normal " + binary)
             (release / binary).chmod(0o700)
+            if self.compiler_failure:
+                output = json.dumps({"reason": "compiler-message", "message": {
+                    "level": "error", "code": {"code": "E0308"},
+                    "message": "sensitive runtime data", "rendered": "/private/secret/password"}}) + "\n"
         elif "tree" in command:
             output = "cosmos-sdk-proto v0.1.0\n" if self.boundary_failure else "orbis-node v0.0.1\n"
         elif command[:3] == ["cargo", "+1.98.0", "test"]:
+            self.assertIn("--message-format=json", command)
             # Test feature unification can overwrite Cargo's ordinary node path.
             # The executable used by the live fixture must already be staged.
             (release / "orbis-node").write_text("dev feature node")
@@ -84,7 +91,8 @@ class NativeLifecycleTests(unittest.TestCase):
             if self.mutate_source:
                 (self.root / "Cargo.lock").write_text("changed lock")
         stdout.write(output)
-        return subprocess.CompletedProcess(command, 101 if self.nonzero and command[0].endswith("native_startup") else 0)
+        failed = (self.nonzero and command[0].endswith("native_startup")) or (self.compiler_failure and "build" in command)
+        return subprocess.CompletedProcess(command, 101 if failed else 0)
 
     def qualify(self, curve="bls12-381"):
         with patch.object(driver, "snapshot", side_effect=self.snapshot), patch.object(driver.subprocess, "run", side_effect=self.command):
@@ -107,6 +115,31 @@ class NativeLifecycleTests(unittest.TestCase):
             self.assertTrue(result["retained_log_sha256"])
             self.assertEqual(result["kdf"], {"m_cost_kib": 262144, "t_cost": 3})
             self.assertFalse(result["deadline_overrides"])
+
+    def test_compiler_failure_prints_only_structured_allowlisted_facts(self):
+        self.compiler_failure = True
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), self.assertRaisesRegex(ValueError, "command failed"):
+            self.qualify()
+        text = captured.getvalue()
+        self.assertNotIn("sensitive runtime data", text)
+        self.assertNotIn("/private/secret", text)
+        line = next(line for line in text.splitlines() if line.startswith("Native lifecycle failure summary: "))
+        summary = json.loads(line.split(": ", 1)[1])
+        self.assertEqual(summary["stage"], "build-verad")
+        self.assertEqual(summary["compiler_errors"], 1)
+        self.assertEqual(summary["compiler_error_codes"], {"E0308": 1})
+        self.assertIsNone(summary["tests"])
+        self.assertFalse(self.live)
+        # Parser or log-read failures must preserve the original qualification
+        # exception and must never print the diagnostic collection error.
+        for error in (ValueError("sensitive parser failure"), OSError("/private/secret/log")):
+            with self.subTest(error=type(error).__name__), contextlib.redirect_stdout(captured):
+                with patch.object(driver, "failure_summary", side_effect=error):
+                    with self.assertRaisesRegex(ValueError, "Qualification command failed"):
+                        self.qualify()
+        self.assertNotIn("sensitive parser failure", captured.getvalue())
+        self.assertNotIn("/private/secret", captured.getvalue())
 
     def test_native_dependency_leak_stops_before_test_compilation(self):
         self.boundary_failure = True
@@ -167,6 +200,85 @@ class NativeLifecycleTests(unittest.TestCase):
         for key in overrides:
             self.assertNotIn(key, env)
         self.assertEqual(env["VERA_E2E_KEEP"], "1")
+
+
+class FailureSummaryTests(unittest.TestCase):
+    def summarize(self, text, **kwargs):
+        arguments = dict(curve="jubjub", step="scenarios/native_pet_threshold_workflows/attempt-1/command",
+                         exit_code=101, elapsed_seconds=1.234, lines=text.splitlines(), source_root=Path("/checkout"))
+        arguments.update(kwargs)
+        return driver.failure_summary(**arguments)
+
+    def test_failed_footer_phases_and_known_location_with_ansi(self):
+        text = "\x1b[31mthread 'secret actor' panicked at /checkout/bin/orbis-node/tests/support/native_pet.rs:123:45:\x1b[0m\n"
+        text += "assertion `secret key == private state` failed\nElapsed(())\n"
+        text += "\n".join(driver.PET_PHASES[:2]) + "\n"
+        text += "test result: FAILED. 0 passed; 1 failed; 0 ignored; private trailer\n"
+        result = self.summarize(text)
+        self.assertEqual(result["tests"], {"passed": 0, "failed": 1, "ignored": 0})
+        self.assertEqual(result["pet_phase_bits"], 3)
+        self.assertEqual(result["panic_headers"], 1)
+        self.assertEqual(result["assertion_markers"], 1)
+        self.assertEqual(result["elapsed_markers"], 1)
+        self.assertEqual(result["fixture_locations"], [{"file_id": "pet", "line": 123, "column": 45}])
+        for private in ("secret", "private", "/checkout", "native_pet.rs", "\x1b"):
+            self.assertNotIn(private, json.dumps(result))
+
+    def test_json_diagnostic_fields_cannot_smuggle_messages_paths_or_codes(self):
+        events = []
+        for code in ("E0308", "E0308/private-secret", "\x1b[31mE9999", "clippy::secret", ["E0100"]):
+            events.append(json.dumps({"reason": "compiler-message", "message": {
+                "level": "error", "code": {"code": code}, "message": "private secret",
+                "rendered": "thread 'secret' panicked at /private/file:1:2: Elapsed(())",
+                "spans": [{"file_name": "/private/secret", "text": ["key material"]}]}}))
+        events.append(json.dumps({"reason": "compiler-message", "message": {"level": "warning", "code": None}}))
+        result = self.summarize("\n".join(events), step="build-orbis")
+        self.assertEqual(result["compiler_errors"], 5)
+        self.assertEqual(result["compiler_warnings"], 1)
+        self.assertEqual(result["compiler_error_codes"], {"E0308": 1})
+        self.assertEqual(result["panic_headers"], 0)
+        self.assertEqual(result["elapsed_markers"], 0)
+        for private in ("secret", "private", "material", "file_name", "rendered", "\x1b"):
+            self.assertNotIn(private, json.dumps(result))
+
+    def test_absent_ambiguous_and_oversized_counts_remain_unavailable(self):
+        footer = "test result: ok. 1 passed; 0 failed; 0 ignored;\n"
+        for text in ("", footer * 2, footer.replace("1 passed", "1000000 passed")):
+            self.assertIsNone(self.summarize(text)["tests"])
+        self.assertEqual(self.summarize(footer * 2)["libtest_result_count"], 2)
+        zero = self.summarize(footer.replace("1 passed", "0 passed"))
+        self.assertEqual(zero["tests"]["passed"], 0)
+
+    def test_malformed_or_nonobject_json_is_ignored_without_echo(self):
+        lines = ['{"private secret":', '{"reason":"compiler-message","message":[]}',
+                 '{"reason":"compiler-message","message":{"level":[],"code":{}}}',
+                 'thread x panicked at /private/secret:19:20:']
+        result = self.summarize("\n".join(lines))
+        self.assertEqual(result["malformed_json_lines"], 1)
+        self.assertEqual(result["compiler_errors"], 0)
+        self.assertEqual(result["fixture_locations"], [])
+        self.assertNotIn("private", json.dumps(result))
+        self.assertNotIn("secret", json.dumps(result))
+
+    def test_unknown_stage_is_fixed_driver_enum_and_numeric_context_is_bounded(self):
+        result = self.summarize("", step="/private/secret", exit_code=None, elapsed_seconds=None)
+        self.assertEqual(result["stage"], "driver")
+        self.assertIsNone(result["scenario"])
+        self.assertIsNone(result["exit_code"])
+        self.assertNotIn("private", json.dumps(result))
+        for changes in ({"curve": "secret"}, {"exit_code": True}, {"exit_code": 999999},
+                        {"elapsed_seconds": float("nan")}, {"elapsed_seconds": float("inf")},
+                        {"elapsed_seconds": -1}, {"elapsed_seconds": "secret"}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.summarize("", **changes)
+
+    def test_unknown_path_and_ansi_hyperlink_are_not_published(self):
+        text = "\x1b]8;;https://private-secret/path\x07thread 'private actor' panicked at /other/bin/orbis-node/tests/support/native_pet.rs:3:4:\x1b]8;;\x07"
+        result = self.summarize(text)
+        self.assertEqual(result["panic_headers"], 1)
+        self.assertEqual(result["fixture_locations"], [])
+        self.assertNotIn("private", json.dumps(result))
+        self.assertNotIn("https", json.dumps(result))
 
 
 if __name__ == "__main__":

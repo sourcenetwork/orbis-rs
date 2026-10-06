@@ -364,6 +364,13 @@ one local compiler/cluster slot and run them sequentially. Command logs, source
 and binary hashes, and retained Vera/Orbis state stay under a unique private
 `RUNNER_TEMP` directory (the system temporary directory locally). CI prints fixed
 phase names, exit codes and timings; it does not upload runtime evidence.
+Failures also emit an allowlisted summary: curve/stage/scenario, test counts (or
+`null` without a unique libtest footer), PET phase bits, compiler error/warning
+counts and `E####` codes, and panic/assertion/`Elapsed(())` marker counts. Known
+fixture locations use fixed file IDs with numeric line/column values. Raw
+messages, source snippets, filesystem paths and environment values stay private.
+Marker counts are observations, not a root-cause diagnosis. PET phase bits 0–3
+mean paired DKG, permissions/revoke/regrant, reshare and restart respectively.
 
 The PET scenario checks paired DKG, stored and inline PRE, document/audit denial
 and revoke/regrant, committee shrink with both share polynomials rotated, and
