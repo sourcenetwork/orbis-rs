@@ -49,8 +49,8 @@ hyper = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe", optional = true }
 commonware-codec = { version = "2026.9.0", optional = true }
 k256 = { workspace = true, optional = true }
 
@@ -70,10 +70,10 @@ defra-identity = { package = "identity", git = "https://github.com/sourcenetwork
 defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "ddd0ddef03492f231de4ea6c8232a126c65993fb" }
 defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "ddd0ddef03492f231de4ea6c8232a126c65993fb" }
 alloy-primitives = "1"
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d" }
-vera-acp = { package = "acp", git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5afda06a12cc77ecfcd846db362eb492063a9d" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe" }
+vera-acp = { package = "acp", git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1413a5d90c3ed687c21524baa63287db7cbf7fe" }
 alloy-sol-types = "1"
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
 bulletin = { path = "../../crates/bulletin", features = ["dummy-type"] }
