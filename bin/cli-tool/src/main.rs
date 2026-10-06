@@ -187,13 +187,6 @@ pub enum SubCommands {
         /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
         #[clap(long)]
         valid_window_end: Option<u64>,
-
-        /// Low-level: use this exact reader secret key (hex) instead of
-        /// generating a fresh ephemeral one. Its matching public key is
-        /// simply derived (pk = sk*G) — no separate --reader-pk is needed.
-        /// For test/debug determinism only.
-        #[clap(long, env = "ORBIS_READER_SK_OVERRIDE", hide_env_values = true)]
-        reader_sk_override: Option<String>,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -640,7 +633,6 @@ async fn main() -> Result<()> {
             salt,
             valid_window_start,
             valid_window_end,
-            reader_sk_override,
         } => {
             require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
@@ -655,7 +647,6 @@ async fn main() -> Result<()> {
                 salt,
                 valid_window_start,
                 valid_window_end,
-                reader_sk_override,
             )
             .await?;
         }

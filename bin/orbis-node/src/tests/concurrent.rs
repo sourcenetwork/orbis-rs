@@ -49,7 +49,6 @@ use common::blockchain::{
     VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::{
-    helpers::generate_keypair,
     r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole},
     CryptoSerialize, DkgImpl, PreImpl, ScalarField, SignImpl,
 };
@@ -933,12 +932,8 @@ async fn test_concurrent_pre_requests() {
     .await
     .expect("set relationship on chain");
 
-    // Step 4: Generate a reader keypair
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-
-    // Step 5: Three concurrent PRE decryptions
+    // Step 4: Three concurrent PRE decryptions — each generates its own fresh
+    // ephemeral reader keypair internally.
     let (r1, r2, r3) = tokio::join!(
         cli_tool::do_pre(
             endpoint.clone(),
@@ -950,7 +945,6 @@ async fn test_concurrent_pre_requests() {
             None,
             None,
             None,
-            Some(reader_sk_hex.clone()),
         ),
         cli_tool::do_pre(
             endpoint.clone(),
@@ -962,7 +956,6 @@ async fn test_concurrent_pre_requests() {
             None,
             None,
             None,
-            Some(reader_sk_hex.clone()),
         ),
         cli_tool::do_pre(
             endpoint.clone(),
@@ -974,7 +967,6 @@ async fn test_concurrent_pre_requests() {
             None,
             None,
             None,
-            Some(reader_sk_hex.clone()),
         ),
     );
 

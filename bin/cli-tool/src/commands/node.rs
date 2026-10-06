@@ -6,7 +6,7 @@ use authn::{create_authenticated_request, JwtSigner};
 use crypto::context::CiphertextContext;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
-use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode, ScalarField as Fr};
+use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair};
 use serde::Deserialize;
 use tonic::{Code, Request, Status};
@@ -280,7 +280,6 @@ pub async fn do_pre(
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    reader_sk_override: Option<String>,
 ) -> Result<Vec<u8>> {
     do_pre_impl(
         endpoint,
@@ -292,7 +291,6 @@ pub async fn do_pre(
         salt,
         valid_window_start,
         valid_window_end,
-        reader_sk_override,
         None,
         None,
     )
@@ -321,7 +319,6 @@ pub async fn do_pre_with_inline_document(
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    reader_sk_override: Option<String>,
     document: proto::v0::pre::InlineDocument,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
@@ -335,7 +332,6 @@ pub async fn do_pre_with_inline_document(
         salt,
         valid_window_start,
         valid_window_end,
-        reader_sk_override,
         Some(document),
         audit_target_object_id,
     )
@@ -353,31 +349,19 @@ async fn do_pre_impl(
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    reader_sk_override: Option<String>,
     document: Option<proto::v0::pre::InlineDocument>,
     audit_target_object_id: Option<String>,
 ) -> Result<Vec<u8>> {
     println!("Starting PRE session:");
     println!("  Endpoint: {}", endpoint);
 
-    // Step 1: the reader keypair. A fresh ephemeral one by default — no
-    // --reader-pk/--reader-sk input needed, and no separate "generate a
-    // reader key" step before this command either — or a caller-supplied
-    // scalar via --reader-sk-override, for test/debug determinism only; its
-    // matching public key is simply derived (pk = sk*G).
-    let (reader_sk_scalar, reader_pk_point) = match reader_sk_override.as_deref() {
-        Some(hex_sk) => {
-            let reader_sk_bytes = hex::decode(hex_sk)
-                .map_err(|e| anyhow!("Failed to decode reader_sk_override hex: {}", e))?;
-            let reader_sk_scalar = Fr::from_bytes(&reader_sk_bytes)
-                .map_err(|e| anyhow!("Failed to deserialize reader_sk_override: {}", e))?;
-            let reader_pk_point = crypto::helpers::public_key_from_secret(&reader_sk_scalar)
-                .map_err(|e| anyhow!("Failed to derive reader public key: {}", e))?;
-            (reader_sk_scalar, reader_pk_point)
-        }
-        None => crypto::helpers::generate_keypair()
-            .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?,
-    };
+    // Step 1: always a fresh ephemeral reader keypair — no --reader-pk/
+    // --reader-sk input, and no override knob. Reusing a recipient key across
+    // requests lets an attacker who authored one ciphertext and observes two
+    // PRE responses recover sR from one and peel it off the other to decrypt
+    // it; a fresh key per request closes that off structurally.
+    let (reader_sk_scalar, reader_pk_point) = crypto::helpers::generate_keypair()
+        .map_err(|e| anyhow!("Failed to generate reader keypair: {}", e))?;
     let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk_point)
         .map_err(|e| anyhow!("Failed to serialize reader public key: {}", e))?;
     let reader_pk_hex = hex::encode(&reader_pk_bytes);

@@ -602,9 +602,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-
     let prepared = cli_tool::prepare_secret(
         b"report-test-secret",
         &ring_pk_hex,
@@ -664,7 +661,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         endpoint.clone(),
         chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),
     )
@@ -1605,9 +1601,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-
     let prepared = cli_tool::prepare_secret(
         b"invalid-proof-report-test-secret",
         &ring_pk_hex,
@@ -1719,7 +1712,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
             endpoint.clone(),
             chain_config.chain_id.clone(),
             ring_pk_hex.clone(),
-            reader_sk_hex.clone(),
             object_id.clone(),
             did_pk_string.clone(),
         )
@@ -2081,11 +2073,6 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, _pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-
     println!("Preparing a genuinely PET-tagged document...");
     let secret_message = b"PET decrypt-share report test secret";
     let (generated_tag, tag_r_tag) =
@@ -2255,7 +2242,6 @@ resources:
             None,
             None,
             None,
-            Some(pet_reader_sk_hex.clone()),
             inline_document.clone(),
             Some(audit_target_object_id.clone()),
         )
@@ -2829,7 +2815,6 @@ async fn pre_with_retry(
     endpoint: String,
     chain_id: String,
     ring_pk: String,
-    reader_sk: String,
     object_id: String,
     reader_did_pk: String,
 ) -> Vec<u8> {
@@ -2846,7 +2831,6 @@ async fn pre_with_retry(
             None,
             None,
             None,
-            Some(reader_sk.clone()),
         )
         .await
         {
@@ -4813,9 +4797,6 @@ async fn test_report_kick_promotes_backup_node() {
         .await
         .expect("add policy");
 
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-
     let prepared = cli_tool::prepare_secret(
         b"backup-kick-test-secret",
         &ring_pk_hex,
@@ -4875,7 +4856,6 @@ async fn test_report_kick_promotes_backup_node() {
         endpoint.clone(),
         chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),
     )

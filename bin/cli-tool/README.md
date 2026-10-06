@@ -57,7 +57,6 @@ That hex value is the well-known Vera localnet devnet key (mnemonic `abandon aba
 Passing secrets as plain CLI arguments leaves them visible in shell history and to other processes on the same machine (e.g. via `ps`). To avoid that:
 
 - `--secret` (on `encrypt-secret`, `prepare-secret`, `store-secret`) is optional. If omitted, you're prompted for it interactively with hidden input. Keep passing `--secret` directly for scripted/CI use.
-- `--reader-sk` (on `pre`) falls back to `ORBIS_READER_SK` if the flag isn't given.
 - `--reader-did-pk` (on `pre`, `set-relationship-on-chain`, `store-prepared-secret`, `store-secret`, `sign`) is **required** — pass it directly or set `ORBIS_READER_DID_PK` (same env var across all of them, so you can `export` it once per session). There is no shared default: each user needs their own value, since reusing one would collapse everyone onto the same on-chain DID identity. On `set-relationship-on-chain` only, `--actor-pubkey` is an alternative to `--reader-did-pk` (mutually exclusive) — see `derive-signer-did` below.
 
 ## Commands
@@ -70,7 +69,6 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 | `create-ring` | Create a blank ring on-chain, to be targeted by a subsequent `dkg` session. Requires `--signing-key`/`ORBIS_SIGNING_KEY`. Options: `--peer-node-keys` (comma-separated), `--threshold`, `--policy-id`, optional `--pss-interval` (default `86400`, the chain-enforced minimum), `--nonce`, `--current-version` (default `0`), `--trusted-auth-relay-dids` (comma-separated). Prints `RING_ID=`. |
 | `dkg` | Start a Distributed Key Generation session. Requires `--ring-id` for a pre-created blank ring entry (create one with `create-ring`). |
 | `ring-state` | Query the local ring state (public polynomial + last PSS refresh timestamp). Requires `--ring-pk-hex`. |
-| `generate-reader-key` | Generate a reader keypair (hex). Use the output as `--reader-pk` / `--reader-sk` for PRE. |
 | `derive-signer-did` | Derive the secp256k1 public key and `did:key` for `--signing-key`/`ORBIS_SIGNING_KEY`. Pure local computation, no network calls. This is the identity Vera resolves for ACP checks on signed transactions (e.g. `create-ring`'s `create_ring` permission) — use it to find out, ahead of time, which DID needs a relation granted (via `set-relationship-on-chain --actor-pubkey`) before such a transaction will be authorized. Prints `PUBLIC_KEY=` and `DID=`. |
 | `get-latest-ring` | Fetch a ring from the orbis module by `--ring-id`. Prints `RING_ID=` and `RING_PK=`. |
 
@@ -82,7 +80,7 @@ Passing secrets as plain CLI arguments leaves them visible in shell history and 
 | `prepare-secret` | Encrypt a secret locally and print a **prepared secret** JSON. Use with `store-prepared-secret` for idempotent storage (same input → same object ID on retries). Same options as `encrypt-secret` plus `--ring-pk-hex`. |
 | `store-prepared-secret` | Send a prepared secret (from `prepare-secret`) to the node. Options: `--prepared-json`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--with-proof`, `--tier`, `--timestamp`. |
 | `store-secret` | One-shot: encrypt locally and store on the node. Options: `--secret` (omit to be prompted), `--ring-pk-hex`, `--ring-id`, `--policy-id`, `--resource`, `--permission`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--with-proof`, `--tier`, `--timestamp`, `--salt`. |
-| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret for a reader and decrypt with reader keys. Options: `--ring-pk`, `--reader-pk`, `--object-id`, `--reader-sk` (or `ORBIS_READER_SK`; required unless `--xnc-only`), `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together), `--xnc-only`. |
+| `pre` | Run Proxy Re-Encryption: re-encrypt a stored secret and decrypt it. Always generates a fresh ephemeral reader keypair for the request itself — there's no reader key to generate or pass in, and no way to override it. Options: `--ring-pk`, `--object-id`, `--reader-did-pk` (or `ORBIS_READER_DID_PK`; required), `--derivation`, `--salt`, `--valid-window-start`/`--valid-window-end` (must be given together). |
 
 ### Signing (derivation + threshold sign)
 
@@ -145,9 +143,6 @@ cargo run -p cli-tool -- --endpoint http://localhost:50051 info
 cargo run -p cli-tool -- --signing-key $KEY create-ring --peer-node-keys <NODE_KEY_1>,<NODE_KEY_2> --threshold 2 --policy-id <POLICY_ID>
 cargo run -p cli-tool -- dkg --ring-id <RING_ID>
 
-# Reader keypair for PRE
-cargo run -p cli-tool -- generate-reader-key
-
 # Encrypt secret locally (no node)
 cargo run -p cli-tool -- encrypt-secret --secret "my secret" --ring-pk <HEX> --policy-id <ID> --resource document --permission read
 
@@ -158,8 +153,9 @@ cargo run -p cli-tool -- store-prepared-secret --prepared-json '<JSON>' --ring-i
 # One-shot store
 cargo run -p cli-tool -- store-secret --secret "data" --ring-pk-hex <HEX> --ring-id <ID> --policy-id <ID> --resource document --permission read --reader-did-pk <YOUR_ID>
 
-# PRE (after storing a secret and setting relationship)
-cargo run -p cli-tool -- pre --ring-pk <HEX> --reader-pk <HEX> --reader-sk <HEX> --object-id <ID> --reader-did-pk <YOUR_ID>
+# PRE (after storing a secret and setting relationship) — generates its own
+# ephemeral reader keypair, so no reader key flags are needed
+cargo run -p cli-tool -- pre --ring-pk <HEX> --object-id <ID> --reader-did-pk <YOUR_ID>
 
 # Chain / bulletin (requires a signing key)
 cargo run -p cli-tool -- --signing-key $KEY fund --address <ADDRESS>

@@ -13,9 +13,8 @@ use bulletin::r#trait::{
 use common::blockchain::{
     orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::helpers::generate_keypair;
 use crypto::r#trait::{EncryptionProof, ThresholdDealer, ThresholdSigner};
-use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
+use crypto::{CryptoDeserialize, GroupAffine, PreImpl, SignImpl};
 use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
@@ -276,12 +275,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         &ring_pk_hex[..40.min(ring_pk_hex.len())],
         &ring_id[..16.min(ring_id.len())],
     );
-
-    // Step 2: Generate reader keypair (uses selected curve impl from crypto crate)
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-
-    let reader_sk_bytes = CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk");
-    let reader_sk_hex = hex::encode(&reader_sk_bytes);
 
     let resource = "document".to_string();
     let relation = "reader".to_string();
@@ -557,7 +550,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
         None,
-        Some(reader_sk_hex.clone()),
     )
     .await;
 
@@ -579,7 +571,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         salt.clone(),
         valid_window_start,
         valid_window_end,
-        Some(reader_sk_hex.clone()),
     )
     .await;
 
@@ -599,7 +590,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         salt.clone(),
         valid_window_start,
         valid_window_end,
-        Some(reader_sk_hex.clone()),
     )
     .await;
 
@@ -617,7 +607,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         salt.clone(),
         valid_window_start,
         valid_window_start,
-        Some(reader_sk_hex.clone()),
     )
     .await;
 
@@ -1057,7 +1046,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         None,
         None,
         None,
-        Some(reader_sk_hex.clone()),
     )
     .await;
 
@@ -1397,11 +1385,6 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, _pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
     // Required noncircular construction order: generate the tag *before*
@@ -1516,7 +1499,6 @@ resources:
         None,
         None,
         None,
-        Some(pet_reader_sk_hex.clone()),
         inline_document,
         Some(audit_target_object_id.clone()),
     )
@@ -1613,7 +1595,6 @@ resources:
         None,
         None,
         None,
-        Some(pet_reader_sk_hex.clone()),
         inline_document_no_tag,
         Some(audit_target_object_id.clone()),
     )
@@ -2088,11 +2069,6 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, _pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-
     // Required noncircular construction order: generate the tag before
     // encrypting the payload, then prove tag knowledge over the
     // now-completed payload.
@@ -2200,7 +2176,6 @@ resources:
         None,
         None,
         None,
-        Some(pet_reader_sk_hex.clone()),
         inline_document,
         Some(audit_target_object_id.clone()),
     )
@@ -2535,7 +2510,6 @@ async fn do_pre_expect_success(
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    reader_sk_override: Option<String>,
 ) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut attempt = 1usize;
@@ -2551,7 +2525,6 @@ async fn do_pre_expect_success(
             salt.clone(),
             valid_window_start,
             valid_window_end,
-            reader_sk_override.clone(),
         )
         .await
         {

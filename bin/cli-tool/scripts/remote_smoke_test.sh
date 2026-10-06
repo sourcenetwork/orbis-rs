@@ -41,8 +41,6 @@ SIGNING_KEY_PUBKEY=""
 SIGNING_KEY_DID=""
 OBJECT_POLICY_ID=""
 RING_PK=""
-READER_SK=""
-READER_PK=""
 OBJECT_ID=""
 DERIVATION_ID=""
 DERIVED_PK=""
@@ -292,20 +290,11 @@ wait_for_dkg_finalization() {
   done
 }
 
-step_generate_reader_key() {
-  local out
-  if ! out="$("$CLI_BIN" generate-reader-key 2>&1)"; then
-    printf '%s\n' "$out"
-    return 1
-  fi
-  printf '%s\n' "$out"
-  READER_SK="$(printf '%s\n' "$out" | grep -A1 'Reader Secret Key' | tail -1 | tr -d '[:space:]')" || true
-  READER_PK="$(printf '%s\n' "$out" | grep -A1 'Reader Public Key' | tail -1 | tr -d '[:space:]')" || true
-  if [ -z "$READER_SK" ] || [ -z "$READER_PK" ]; then
-    echo "failed to parse reader keypair from generate-reader-key output"
-    return 1
-  fi
-  export ORBIS_READER_SK="$READER_SK"
+step_set_reader_identity() {
+  # The `pre` CLI command generates its own fresh ephemeral reader keypair
+  # per request now -- there is no reader keypair to generate or export here.
+  # This only fixes the reader's DID signing key (the JWT issuer identity),
+  # used below to grant it the "reader" ACP relation.
   export ORBIS_READER_DID_PK="${ORBIS_READER_DID_PK:-orbis-remote-smoke-test-reader}"
   return 0
 }
@@ -340,7 +329,7 @@ step_register_secret_object() {
 }
 
 step_grant_secret_creator_access() {
-  # ORBIS_READER_DID_PK may already be exported (from generate_reader_key) by
+  # ORBIS_READER_DID_PK may already be exported (from set_reader_identity) by
   # the time this runs -- clap's --actor-pubkey/--reader-did-pk conflict fires
   # on any *sourced* value, env included, so it must be unset for this call
   # even though we never pass --reader-did-pk on the command line. Scoped to
@@ -364,15 +353,11 @@ step_grant_secret_reader_access() {
 
 step_run_pre_and_verify_plaintext() {
   local out decrypted
-  # --reader-sk is required now: the node needs a proof of knowledge of
-  # reader_pk's discrete log before it will re-encrypt to it at all, not just
-  # for the local decrypt step below. Passed explicitly even though
-  # ORBIS_READER_SK is already exported (step_generate_reader_key) so the
-  # requirement is visible at the call site.
+  # The CLI generates a fresh ephemeral reader keypair for this request
+  # itself and signs a proof of knowledge of its discrete log before the node
+  # will re-encrypt to it -- there's no --reader-pk/--reader-sk to pass.
   if ! out="$("$CLI_BIN" pre \
     --ring-pk "$RING_PK" \
-    --reader-pk "$READER_PK" \
-    --reader-sk "$READER_SK" \
     --object-id "$OBJECT_ID" 2>&1)"; then
     printf '%s\n' "$out"
     return 1
@@ -505,7 +490,7 @@ main() {
     printf '==> start_dkg... skipped\n'
   fi
   wait_for_dkg_finalization || exit 1
-  run_step "generate_reader_key" step_generate_reader_key
+  run_step "set_reader_identity" step_set_reader_identity
   run_step "store_secret" step_store_secret
   run_step "register_secret_object" step_register_secret_object
   run_step "grant_secret_creator_access" step_grant_secret_creator_access

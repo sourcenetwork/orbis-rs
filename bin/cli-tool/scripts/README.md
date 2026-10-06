@@ -16,7 +16,7 @@ The object/secret-access ACP policy is **not** pre-provisioned — the script cr
 
 On every object it registers (the stored secret, the key derivation), the script grants **both**:
 - the `--creator-relation`/`ORBIS_SMOKE_CREATOR_RELATION` relation (default `creator`, giving full read+write per the schema above) to `ORBIS_SIGNING_KEY`'s own identity — derived via `derive-signer-did` and granted with `set-relationship-on-chain --actor-pubkey`, so the signing key can always read/manage what it creates without a separate reader identity.
-- the `--relation`/`ORBIS_SMOKE_RELATION` relation (default `reader`, read-only) to the generated reader key — this is the identity `pre`/`sign` actually authenticate as (a JWT-claimed Ed25519 `did:key`, unrelated to the signing key's own secp256k1 `did:key`), so it's the one that must hold `reader` for those RPCs to succeed.
+- the `--relation`/`ORBIS_SMOKE_RELATION` relation (default `reader`, read-only) to the reader identity (`ORBIS_READER_DID_PK`) — this is the identity `pre`/`sign` actually authenticate as (a JWT-claimed Ed25519 `did:key`, unrelated to the signing key's own secp256k1 `did:key`, and unrelated to the ephemeral PRE keypair `pre` generates for each request), so it's the one that must hold `reader` for those RPCs to succeed.
 
 ## Usage
 
@@ -74,7 +74,7 @@ Exit code 0 = pass, non-zero = first step that failed. Output is one `==> step..
 | `--resource`/`--permission`/`--relation`/`--creator-relation` | `ORBIS_SMOKE_RESOURCE`/`_PERMISSION`/`_RELATION`/`_CREATOR_RELATION` | `document`/`read`/`reader`/`creator` | no — must match the script's built-in `add-policy-to-chain` schema |
 | `--ring-nonce <string>` | `ORBIS_SMOKE_RING_NONCE` | generated | no — collision insurance on rapid repeated runs |
 
-Plus all of `cli-tool`'s own network/signing env vars, used as-is (never re-invented as script-specific flags): `ORBIS_ENDPOINT`, `ORBIS_CHAIN_ID`, `ORBIS_RPC_URL`, `ORBIS_REST_URL`, `ORBIS_CHAIN_GRPC_URL`, `ORBIS_ACCOUNT_PREFIX`, `ORBIS_SIGNING_KEY` (required). The script also exports `ORBIS_READER_SK`/`ORBIS_READER_DID_PK` itself partway through (after `generate-reader-key`), so later steps don't need to repeat those flags.
+Plus all of `cli-tool`'s own network/signing env vars, used as-is (never re-invented as script-specific flags): `ORBIS_ENDPOINT`, `ORBIS_CHAIN_ID`, `ORBIS_RPC_URL`, `ORBIS_REST_URL`, `ORBIS_CHAIN_GRPC_URL`, `ORBIS_ACCOUNT_PREFIX`, `ORBIS_SIGNING_KEY` (required). The script also exports `ORBIS_READER_DID_PK` itself partway through (`set_reader_identity`), so later steps don't need to repeat that flag. `pre` generates its own fresh ephemeral reader keypair per request — there's no reader key for the script to generate or export.
 
 ## Known limitation
 
@@ -82,8 +82,8 @@ The final `sign` step only confirms the RPC succeeded and returned a plausible-l
 
 ## Follow-up idea (not done here)
 
-`generate-reader-key`, `store-secret`, `pre`, and `sign` are the only `cli-tool` commands that don't print a grep-able `KEY=value` line (unlike `create-ring`/`add-policy-to-chain`/`get-latest-ring`/`post-key-derivation`), so this script has to `grep`+`sed` their indented human-readable output instead. Adding `OBJECT_ID=`/`DECRYPTED_SECRET=`/`SIGNATURE=`/`READER_SK=`/`READER_PK=` lines to those commands would make this more robust. Not done as part of this script — left for a separate `cli-tool` change.
+`store-secret`, `pre`, and `sign` are the only `cli-tool` commands that don't print a grep-able `KEY=value` line (unlike `create-ring`/`add-policy-to-chain`/`get-latest-ring`/`post-key-derivation`), so this script has to `grep`+`sed` their indented human-readable output instead. Adding `OBJECT_ID=`/`DECRYPTED_SECRET=`/`SIGNATURE=` lines to those commands would make this more robust. Not done as part of this script — left for a separate `cli-tool` change.
 
 ## Prior art
 
-An older `bin/cli-tool/scripts/` directory (numbered per-step scripts + `run_integration.sh`) existed on `main` and was removed on this branch. It targeted a self-managed local Docker Compose network and predates `create-ring`/the current `dkg --ring-id` flow (it used `dkg --threshold ... --peer-ids ...` directly), so it wasn't a usable template structurally — only its output-parsing idioms (`grep -A1 ... | tail -1` for `generate-reader-key`) carried over here.
+An older `bin/cli-tool/scripts/` directory (numbered per-step scripts + `run_integration.sh`) existed on `main` and was removed on this branch. It targeted a self-managed local Docker Compose network and predates `create-ring`/the current `dkg --ring-id` flow (it used `dkg --threshold ... --peer-ids ...` directly), so it wasn't a usable template structurally — only its output-parsing idioms (`grep -A1 ... | tail -1`) carried over here.

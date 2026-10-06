@@ -38,7 +38,7 @@ use bulletin::BulletinImpl;
 use common::blockchain::{
     events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
+use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
 use proto::{
@@ -609,10 +609,6 @@ async fn test_pre_one_node_down_succeeds() {
     .await
     .expect("set relationship on chain");
 
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-
     // Step 4: Crash charlie (abort its task)
     net.charlie.task.abort();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -628,7 +624,6 @@ async fn test_pre_one_node_down_succeeds() {
         None,
         None,
         None,
-        Some(reader_sk_hex.clone()),
     )
     .await
     .expect("PRE should succeed with one node down (threshold=2)");
@@ -722,10 +717,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
     .await
     .expect("set relationship on chain");
 
-    let (reader_sk, _reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-
     // Step 4: Block bob AND charlie on alice's fault controller (network partition)
     net.alice.fault_ctrl.block_peer(&net.bob.peer_hex).await;
     net.alice.fault_ctrl.block_peer(&net.charlie.peer_hex).await;
@@ -745,7 +736,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
             None,
             None,
             None,
-            Some(reader_sk_hex.clone()),
         ),
     )
     .await;
