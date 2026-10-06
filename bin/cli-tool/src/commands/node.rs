@@ -383,7 +383,7 @@ async fn do_pre_impl(
             derivation.clone(),
             salt.clone(),
         )
-        .expect("Failed to create JWT");
+        .map_err(|e| anyhow!("Failed to create JWT: {}", e))?;
 
     // Step 3: build the request-bound transcript and sign it with the reader
     // key. Zero new round trips: every field is already in hand (the

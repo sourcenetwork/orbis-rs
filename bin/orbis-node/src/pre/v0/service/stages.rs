@@ -6,8 +6,8 @@
 //!  2. [`PreServiceImpl::resolve_pre_bulletin_state`] (**bulletin reads**) — resolves the
 //!     document/ring payloads live from the bulletin.
 //!  3. [`PreServiceImpl::authorize_pre_request`] (**policy checks**) — on-chain ACP
-//!     check, then single-use JWT enforcement, then Schnorr ciphertext-binding
-//!     verification.
+//!     check, then reader-authorization signature verification, then single-use JWT
+//!     enforcement, then Schnorr ciphertext-binding verification.
 //!  4. [`PreServiceImpl::check_pet_if_required`] (**PET check**) — a no-op unless
 //!     the ring requires PET, in which case it runs the threshold ownership-tag
 //!     check (see `pet::v0`) and rejects the request on a mismatch.
@@ -19,9 +19,10 @@
 //!     result into the wire response.
 //!
 //! Security-sensitive ordering preserved from the original monolithic handler: stage 3
-//! enforces single-use JWT consumption strictly *after* the ACP policy check succeeds
-//! (see `record_client_jti_after_acp`'s docs) — swapping that order would let a request
-//! ACP was going to reject still burn the caller's one-time JWT.
+//! enforces single-use JWT consumption strictly *after* the ACP policy check and the
+//! reader-authorization signature check both succeed (see `record_client_jti_after_acp`'s
+//! docs) — swapping that order would let a request ACP was going to reject, or one
+//! carrying an invalid signature, still burn the caller's one-time JWT.
 //!
 //! `start_pre` itself (the thin orchestrator that calls these in order) lives in
 //! `super`, alongside `PreServiceImpl`.
@@ -298,6 +299,44 @@ where
         )
         .await?;
 
+        // Rebuild the request-bound transcript the client's `sign_reader_authorization`
+        // call signed, now that the ring key and the id-checked `object_id` are both
+        // resolved, and verify the reader's signature against it before the JTI guard
+        // below records this token as used. This is the actual security boundary
+        // (re-verified independently by every ring committee member inside
+        // `ThresholdDealer::reencrypt`); checking it here too fails fast, before a
+        // threshold round trip, on a missing, malformed, or request-mismatched
+        // signature — and doing so *before* single-use JWT enforcement means a
+        // tampered or malformed signature can't burn the caller's one-time JWT on a
+        // request that was never going to succeed (same reasoning as ACP running
+        // before `record_client_jti_after_acp` below).
+        let reader_auth_context = build_reader_authorization_context(
+            self.state.bulletin.chain_id(),
+            &bulletin_state.ring_payload.ring_pk,
+            &authenticated.token,
+            &bulletin_state.actor_id,
+            &authenticated.object_id,
+            &authenticated.rdr_pk,
+            authenticated.derivation.clone(),
+            authenticated.salt.clone(),
+            authenticated.valid_window.clone(),
+            authenticated.audit_target_object_id.clone(),
+        )?;
+        let rdr_pk_point =
+            <T::PublicKey as crypto::r#trait::CryptoDeserialize>::from_bytes(&authenticated.rdr_pk)
+                .map_err(|e| {
+                    PreError::Deserialization(format!(
+                        "Failed to deserialize reader public key: {}",
+                        e
+                    ))
+                })?;
+        T::verify_reader_authorization(
+            &rdr_pk_point,
+            &reader_auth_context,
+            &authenticated.rdr_pk_signature,
+        )
+        .map_err(|e| PreError::Unauthorized(format!("Invalid reader authorization: {}", e)))?;
+
         // Single-use JWT enforcement — see `record_client_jti_after_acp`'s docs for why
         // this must come after the ACP check above.
         record_client_jti_after_acp(
@@ -326,40 +365,6 @@ where
             &secret,
             bulletin_state.document_payload.proof.clone(),
         )?;
-
-        // Rebuild the request-bound transcript the client's `sign_reader_authorization`
-        // call signed, now that the ring key and the id-checked `object_id` are both
-        // resolved, and verify the reader's signature against it — this is the actual
-        // security boundary (re-verified independently by every ring committee member
-        // inside `ThresholdDealer::reencrypt`); checking it here too just fails fast,
-        // before a threshold round trip, on a missing, malformed, or request-mismatched
-        // signature.
-        let reader_auth_context = build_reader_authorization_context(
-            self.state.bulletin.chain_id(),
-            &bulletin_state.ring_payload.ring_pk,
-            &authenticated.token,
-            &bulletin_state.actor_id,
-            &authenticated.object_id,
-            &authenticated.rdr_pk,
-            authenticated.derivation.clone(),
-            authenticated.salt.clone(),
-            authenticated.valid_window.clone(),
-            authenticated.audit_target_object_id.clone(),
-        )?;
-        let rdr_pk_point =
-            <T::PublicKey as crypto::r#trait::CryptoDeserialize>::from_bytes(&authenticated.rdr_pk)
-                .map_err(|e| {
-                    PreError::Deserialization(format!(
-                        "Failed to deserialize reader public key: {}",
-                        e
-                    ))
-                })?;
-        T::verify_reader_authorization(
-            &rdr_pk_point,
-            &reader_auth_context,
-            &authenticated.rdr_pk_signature,
-        )
-        .map_err(|e| PreError::Unauthorized(format!("Invalid reader authorization: {}", e)))?;
 
         tracing::info!(
             ring_id = %bulletin_state.document_payload.ring_id,
