@@ -2,7 +2,7 @@
 mod native_confirmation;
 use native_confirmation::{confirmed, submit};
 
-#[cfg(feature = "bls12-381")]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[path = "support/policy_generations.rs"]
 mod policy_generations;
 
@@ -211,7 +211,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 
 #[tokio::test]
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
-#[cfg(feature = "bls12-381")]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
     distributed_threshold_workflows(false).await;
@@ -225,7 +225,7 @@ async fn native_defra_signing() {
     distributed_threshold_workflows(true).await;
 }
 
-#[cfg(feature = "bls12-381")]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn distributed_threshold_workflows(signing_only: bool) {
     use alloy_primitives::B256;
     use alloy_sol_types::SolCall;
@@ -556,33 +556,38 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         Some(&metadata),
     )
     .unwrap();
-    let service_identity = std::sync::Arc::new(
-        defra_identity::RawIdentity::from_ed25519(
-            defra_crypto::Ed25519PrivateKey::from_bytes(
-                &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
+    #[cfg(feature = "bls12-381")]
+    let defra = {
+        let service_identity = std::sync::Arc::new(
+            defra_identity::RawIdentity::from_ed25519(
+                defra_crypto::Ed25519PrivateKey::from_bytes(
+                    &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
+                )
+                .unwrap(),
             )
             .unwrap(),
+        );
+        assert_eq!(
+            defra_identity::Identity::did(service_identity.as_ref())
+                .unwrap()
+                .to_string(),
+            reader.did_uri
+        );
+        std::sync::Arc::new(
+            defra_orbis::OrbisClient::new(
+                format!("http://{}", addresses[1]),
+                derivation_id.clone(),
+                derived_key.to_bytes().unwrap(),
+                service_identity,
+            )
+            .await
+            .unwrap(),
         )
-        .unwrap(),
-    );
-    assert_eq!(
-        defra_identity::Identity::did(service_identity.as_ref())
-            .unwrap()
-            .to_string(),
-        reader.did_uri
-    );
-    let defra = std::sync::Arc::new(
-        defra_orbis::OrbisClient::new(
-            format!("http://{}", addresses[1]),
-            derivation_id.clone(),
-            derived_key.to_bytes().unwrap(),
-            service_identity,
-        )
-        .await
-        .unwrap(),
-    );
+    };
+    #[cfg(feature = "bls12-381")]
     let documents =
         defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
+    #[cfg(feature = "bls12-381")]
     let defra_sign = || {
         let defra = std::sync::Arc::clone(&defra);
         tokio::task::spawn_blocking(move || {
@@ -617,9 +622,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
-    assert!(defra_sign().await.unwrap().is_err());
-    assert!(documents.create("denied").await.is_err());
-    assert_eq!(documents.count().await, 0);
+    #[cfg(feature = "bls12-381")]
+    {
+        assert!(defra_sign().await.unwrap().is_err());
+        assert!(documents.create("denied").await.is_err());
+        assert_eq!(documents.count().await, 0);
+    }
     let granted = client
         .native_set_relationship(
             &worker,
@@ -642,28 +650,32 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     crypto::SignImpl::new()
         .verify(&derived_key, &message, &signature)
         .unwrap();
-    let defra_signature = defra_sign()
-        .await
-        .unwrap()
-        .expect("Defra threshold signature");
-    assert_eq!(defra_signature, signature.to_bytes().unwrap());
-    let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
-    peers.verify_replication().await;
-    let peers = peers.verify_restart().await;
-    let created = documents.create("signed").await.expect("signed document");
-    documents.verify(&created, defra.signer_did()).await;
-    assert_eq!(documents.count().await, 1);
-    documents.verify_contents().await;
-    let replica =
-        defra_documents::Documents::new(&base.path().join("replica"), defra.clone()).await;
-    documents.replicate_to(&replica, &created).await;
-    replica.verify(&created, defra.signer_did()).await;
-    let replica = replica.reopen().await;
-    replica.verify_contents().await;
-    replica.verify(&created, defra.signer_did()).await;
-    let documents = documents.reopen().await;
-    documents.verify(&created, defra.signer_did()).await;
-    assert_eq!(documents.count().await, 1);
+    #[cfg(feature = "bls12-381")]
+    let (documents, peers, created) = {
+        let defra_signature = defra_sign()
+            .await
+            .unwrap()
+            .expect("Defra threshold signature");
+        assert_eq!(defra_signature, signature.to_bytes().unwrap());
+        let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
+        peers.verify_replication().await;
+        let peers = peers.verify_restart().await;
+        let created = documents.create("signed").await.expect("signed document");
+        documents.verify(&created, defra.signer_did()).await;
+        assert_eq!(documents.count().await, 1);
+        documents.verify_contents().await;
+        let replica =
+            defra_documents::Documents::new(&base.path().join("replica"), defra.clone()).await;
+        documents.replicate_to(&replica, &created).await;
+        replica.verify(&created, defra.signer_did()).await;
+        let replica = replica.reopen().await;
+        replica.verify_contents().await;
+        replica.verify(&created, defra.signer_did()).await;
+        let documents = documents.reopen().await;
+        documents.verify(&created, defra.signer_did()).await;
+        assert_eq!(documents.count().await, 1);
+        (documents, peers, created)
+    };
 
     policy_generations::replace(
         &client,
@@ -677,10 +689,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
-    assert!(defra_sign().await.unwrap().is_err());
-    assert!(documents.create("policy-revoked").await.is_err());
-    assert_eq!(documents.count().await, 1);
-
+    #[cfg(feature = "bls12-381")]
+    {
+        assert!(defra_sign().await.unwrap().is_err());
+        assert!(documents.create("policy-revoked").await.is_err());
+        assert_eq!(documents.count().await, 1);
+    }
     nodes[1].stop().await;
     let directory = base.path().join("node-1");
     let log = directory.join("policy-edit-restart.log");
@@ -707,9 +721,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
-    assert!(defra_sign().await.unwrap().is_err());
-    assert!(documents.create("policy-recreated").await.is_err());
-    assert_eq!(documents.count().await, 1);
+    #[cfg(feature = "bls12-381")]
+    {
+        assert!(defra_sign().await.unwrap().is_err());
+        assert!(documents.create("policy-recreated").await.is_err());
+        assert_eq!(documents.count().await, 1);
+    }
     let regranted = client
         .native_set_relationship(
             &worker,
@@ -722,10 +739,24 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .await
         .unwrap();
     confirmed(&client, regranted.transaction_hash, &trusted).await;
+    #[cfg(feature = "bls12-381")]
     assert_eq!(
         defra_sign().await.unwrap().unwrap(),
         signature.to_bytes().unwrap()
     );
+    #[cfg(feature = "jubjub")]
+    {
+        let signed = signing
+            .start_sign(sign_request())
+            .await
+            .unwrap()
+            .into_inner();
+        let signature =
+            crypto::SignaturePoint::from_bytes(&hex::decode(signed.signature).unwrap()).unwrap();
+        crypto::SignImpl::new()
+            .verify(&derived_key, &message, &signature)
+            .unwrap();
+    }
 
     let revoked = client
         .native_delete_relationship(
@@ -743,15 +774,19 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         signing.start_sign(sign_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
-    assert!(defra_sign().await.unwrap().is_err());
-    assert!(documents.create("revoked").await.is_err());
-    assert_eq!(documents.count().await, 1);
-    documents.verify(&created, defra.signer_did()).await;
-    peers.verify_revocation().await;
-    peers.shutdown().await;
+    #[cfg(feature = "bls12-381")]
+    {
+        assert!(defra_sign().await.unwrap().is_err());
+        assert!(documents.create("revoked").await.is_err());
+        assert_eq!(documents.count().await, 1);
+        documents.verify(&created, defra.signer_did()).await;
+        peers.verify_revocation().await;
+        peers.shutdown().await;
+    }
     if signing_only {
         return;
     }
+    #[cfg(feature = "bls12-381")]
     use ark_ec::{AffineRepr, CurveGroup};
     use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
     use proto::v0::{
@@ -822,7 +857,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     confirmed(&client, registered.transaction_hash, &trusted).await;
     let reader_secret = crypto::ScalarField::from(47u64);
+    #[cfg(feature = "bls12-381")]
     let reader_public = (crypto::GroupAffine::generator() * reader_secret).into_affine();
+    #[cfg(feature = "jubjub")]
+    let reader_public = crypto::GroupAffine::generator() * reader_secret;
     let reader_proof = crypto::PreImpl::prove_reader_key(&reader_secret, &reader_public).unwrap();
     let reader_bytes = reader_public.to_bytes().unwrap();
     let pre_request = || {
