@@ -504,3 +504,6 @@ The opt-in [hosted gateway scope](docs/native-trust-hosted.md) reuses
 `NativeWorkflow`, `NativeTestNetwork` and `ContainerNode` to launch Docker Vera
 and Orbis for that exact fixture. Existing Cosmos `integration.rs` test bodies
 are not ported or invoked by this scope.
+
+[Backend boundaries and Docker E2E tests](docs/e2e-backends.md) describes the
+shared paired-DKG assertions and native fixture setup.
