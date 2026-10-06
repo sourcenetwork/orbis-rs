@@ -423,6 +423,7 @@ async fn native_admin_provisions_ring_and_recovers_exact_results() {
         threshold: 1,
         pss_interval: 86400,
         current_version: 0,
+        requires_pet: false,
         nonce: [1; 32],
         trusted_auth_relay_dids: None,
         reporting: ReportingConfig::default(),

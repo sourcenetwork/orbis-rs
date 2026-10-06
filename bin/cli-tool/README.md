@@ -34,6 +34,7 @@ Participant nodes must already be registered. `create.json` contains the SDK's
     "threshold": 1,
     "pss_interval": 86400,
     "current_version": 0,
+    "requires_pet": false,
     "nonce": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
               0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     "trusted_auth_relay_dids": null,

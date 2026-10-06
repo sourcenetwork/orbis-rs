@@ -20,9 +20,9 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "24ba1b2a049d3705c8f771c57b1b46ca8ba56d75", optional = true }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "24ba1b2a049d3705c8f771c57b1b46ca8ba56d75", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "24ba1b2a049d3705c8f771c57b1b46ca8ba56d75", optional = true }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
 local-storage = { path = "../local-storage", optional = true }
@@ -50,7 +50,7 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "24ba1b2a049d3705c8f771c57b1b46ca8ba56d75" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true
