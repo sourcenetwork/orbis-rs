@@ -2,8 +2,8 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-#[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 // Variant order is persisted by bincode. Append new variants; never reorder.
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub enum LocalStorageKeys {
     /// Encrypted `RingShareBundle` for one ring, keyed by `aggregate_pk.to_string()`.
     /// Contains the node's threshold secret share, the current public polynomial,
