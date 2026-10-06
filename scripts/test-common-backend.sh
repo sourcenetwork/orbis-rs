@@ -14,7 +14,8 @@ for backend in cosmos shared; do
     exit 1
   fi
   python3 scripts/common-backend-summary.py "$work/$backend-tests.log" "$backend" "$expected"
-  if ! cargo +1.98.0 clippy --locked --jobs 2 -p common --all-targets "${flags[@]}" -- -D warnings > "$work/$backend-clippy.log" 2>&1; then
+  if ! cargo +1.98.0 clippy --message-format=json --locked --jobs 2 -p common --all-targets "${flags[@]}" -- -D warnings > "$work/$backend-clippy.log" 2>&1; then
+    python3 scripts/common-backend-summary.py --diagnostics "$work/$backend-clippy.log" "$backend"
     echo "common backend=$backend clippy=failed; diagnostics remain private" >&2
     exit 1
   fi
