@@ -9,6 +9,7 @@ use proto::info_service::{
     GetPetRingStateRequest, GetRingStateRequest,
 };
 use std::{fs, net::TcpListener, path::Path, time::Duration};
+use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{
     create_scoped_bearer_token,
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
@@ -17,7 +18,6 @@ use vera_client::{
     BlsSigner, DelegationScope, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
-use vera_harness::cluster::TestCluster;
 
 pub(super) struct MemberReplacement<'a> {
     pub cluster: &'a TestCluster,

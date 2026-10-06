@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main", "develop", "iverc/**" ]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -151,10 +151,21 @@ jobs:
   # of `docker compose up --build`.
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         crypto: [bls12-381, jubjub]
+        backend: [cosmos, native]
+        include:
+          - backend: cosmos
+            image_suffix: ""
+            integration_features: "true"
+            rust_image: rust:latest
+          - backend: native
+            image_suffix: "-native"
+            integration_features: "false"
+            rust_image: rust:1.98.0-bookworm
     steps:
     - uses: actions/checkout@v4
       with:
@@ -171,12 +182,32 @@ jobs:
         context: .
         file: docker/Dockerfile
         push: true
-        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-${{ matrix.crypto }}
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}${{ matrix.image_suffix }}-${{ matrix.crypto }}
         build-args: |
-          ENABLE_INTEGRATION_TEST=true
+          ENABLE_INTEGRATION_TEST=${{ matrix.integration_features }}
+          BACKEND=${{ matrix.backend }}
+          RUST_IMAGE=${{ matrix.rust_image }}
           CRYPTO_FEATURE=${{ matrix.crypto }}
-        cache-from: type=gha,scope=integ-${{ matrix.crypto }}
-        cache-to: type=gha,scope=integ-${{ matrix.crypto }},mode=max
+        cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
+    - name: Build + push native fault-report image (${{ matrix.crypto }})
+      if: matrix.backend == 'native'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        target: native-diagnostic
+        push: true
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
+        build-args: |
+          ENABLE_INTEGRATION_TEST=false
+          BACKEND=native
+          RUST_IMAGE=${{ matrix.rust_image }}
+          CRYPTO_FEATURE=${{ matrix.crypto }}
+        cache-from: |
+          type=gha,scope=integ-native-${{ matrix.crypto }}
+          type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }},mode=max
 
   # Compile every test binary once per crypto and save the shared cache the
   # `unit` / `integration` jobs restore.
@@ -295,3 +326,80 @@ jobs:
         cargo nextest run --profile ci ${{ matrix.cargo_flags }}
         -E "${{ env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
+
+  native-vera-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read matching native SDK revision
+        id: vera
+        run: echo "revision=$(python3 scripts/native-vera-ref.py)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native Vera image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.native-vera-integration
+          push: true
+          tags: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+          build-args: VERA_REF=${{ steps.vera.outputs.revision }}
+          cache-from: type=gha,scope=native-vera
+          cache-to: type=gha,scope=native-vera,mode=max
+
+  native-lifecycle:
+    name: Native lifecycle (${{ matrix.crypto }})
+    needs: [image, native-vera-image]
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      ORBIS_NATIVE_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-${{ matrix.crypto }}
+      ORBIS_NATIVE_DIAGNOSTIC_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
+      ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+      - name: Install qualified toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull exact native runtime images
+        run: |
+          docker pull "$ORBIS_NATIVE_IMAGE"
+          docker pull "$ORBIS_NATIVE_VERA_IMAGE"
+          docker pull "$ORBIS_NATIVE_DIAGNOSTIC_IMAGE"
+      - name: Validate bounded diagnostic parser
+        run: python3 scripts/test-native-lifecycle-unit.py
+      - name: Native integration suite (${{ matrix.crypto }})
+        run: bash scripts/test-native-integration.sh "${{ matrix.crypto }}"

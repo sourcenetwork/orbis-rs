@@ -96,7 +96,7 @@ name = "native_startup"
 required-features = ["native"]
 
 [features]
-native = ["authz/native", "bulletin/native", "local-storage/redb", "dep:vera-client", "dep:vera-domain", "dep:commonware-codec", "dep:k256"]
+native = ["test-support/native", "authz/native", "bulletin/native", "local-storage/redb", "dep:vera-client", "dep:vera-domain", "dep:commonware-codec", "dep:k256"]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "common/jubjub", "bulletin/jubjub"]

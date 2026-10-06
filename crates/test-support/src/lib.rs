@@ -10,7 +10,9 @@
 //! - [`compose`] — Docker Compose subprocess helpers shared by the two below.
 //! - [`vera_container`] — [`VeraTestContainer`], a standalone Vera chain.
 //! - [`network`] — [`IntegrationTestNetwork`]/[`IntegrationTestNetworkBuilder`],
-//!   Vera plus orbis-node instances.
+//!   Cosmos Vera plus orbis-node instances.
+//! - `container` / `native_network` — native containers with explicit stop, crash
+//!   and restart control, enabled with the `native` feature.
 
 mod compose;
 mod network;
@@ -18,3 +20,13 @@ mod vera_container;
 
 pub use network::{IntegrationTestNetwork, IntegrationTestNetworkBuilder, NodeInfo};
 pub use vera_container::VeraTestContainer;
+
+#[cfg(unix)]
+mod container;
+#[cfg(unix)]
+pub use container::{ContainerError, ContainerExit, ContainerNode, NativeImage};
+
+#[cfg(all(unix, feature = "native"))]
+mod native_network;
+#[cfg(all(unix, feature = "native"))]
+pub use native_network::{NativeTestNetwork, NativeTestNode};

@@ -11385,12 +11385,19 @@ name = "test-support"
 version = "0.0.1"
 dependencies = [
  "common",
+ "commonware-codec",
  "cosmrs",
+ "hex",
  "prost 0.14.3",
+ "serde",
  "serde_json",
  "serial_test",
  "tempfile",
+ "thiserror 1.0.69",
  "tokio",
+ "vera-client",
+ "vera-harness",
+ "vera-node",
 ]
 
 [[package]]

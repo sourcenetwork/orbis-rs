@@ -211,6 +211,20 @@ pub async fn run(scenario: Scenario) {
         for node in &mut nodes {
             node.stop().await;
         }
+        for index in 0..nodes.len() {
+            let directory = base.path().join(format!("node-{index}"));
+            let storage = stored_bundle::open(&directory);
+            assert_eq!(
+                storage.stored_kdf_params().unwrap(),
+                local_storage::common::StoredKdfParams {
+                    m_cost_kib: 262_144,
+                    t_cost: 3,
+                    p_cost: 1,
+                    version: 0x13,
+                },
+                "native fault-report stores must retain production KDF parameters"
+            );
+        }
         return;
     }
     permission.set(&audit, false).await;
