@@ -48,11 +48,11 @@ bls12-381 = [
     "common/bls12-381",
     "crypto/bls12-381",
 ]
-decaf377 = [
-    "bulletin/decaf377",
-    "cli-tool/decaf377",
-    "common/decaf377",
-    "crypto/decaf377",
+jubjub = [
+    "bulletin/jubjub",
+    "cli-tool/jubjub",
+    "common/jubjub",
+    "crypto/jubjub",
 ]
 
 [lints]

@@ -1,9 +1,9 @@
-use crate::decaf377::dkg::DKGNode;
-use crate::decaf377::sign::{FrostNonceCommitment, SchnorrSignature, ThresholdDecafSigner};
+use crate::jubjub::dkg::DKGNode;
+use crate::jubjub::sign::{FrostNonceCommitment, SchnorrSignature, ThresholdJubjubSigner};
 
+use crate::jubjub::common::{Element, Fr};
 use crate::r#trait::{DistKeyShare, Dkg, PriShare, PubShare, ThresholdSigner};
 use crate::test_helper::DKGCoordinator;
-use decaf377::{Element, Fr};
 use rand_core::OsRng;
 
 // ============================================================================
@@ -12,15 +12,15 @@ use rand_core::OsRng;
 
 #[test]
 fn test_all_sign() {
-    crate::sign_tests::run_all_tests::<ThresholdDecafSigner, _, _, _, _, _, _, _>(
+    crate::sign_tests::run_all_tests::<ThresholdJubjubSigner, _, _, _, _, _, _, _>(
         // make_keypair: random (scalar, group element) pair
         || {
             let sk = Fr::rand(&mut OsRng);
-            let pk = Element::GENERATOR * sk;
+            let pk = Element::generator() * sk;
             (sk, pk)
         },
         // make_pub_poly: construct PubPoly from commits
-        |commits| crate::decaf377::common::PubPoly { commits },
+        |commits| crate::jubjub::common::PubPoly { commits },
         // run_dkg: full DKG ceremony
         |n, t| {
             let mut coordinator = DKGCoordinator::new(
@@ -47,19 +47,19 @@ fn test_all_sign() {
 #[test]
 fn test_signer_creation() {
     assert_eq!(
-        ThresholdDecafSigner::name(),
-        "threshold-frost-decaf377".to_string()
+        ThresholdJubjubSigner::name(),
+        "threshold-frost-jubjub".to_string()
     );
 }
 
 #[test]
 fn test_identity_public_key_cannot_verify_forged_signature() {
-    let signer = ThresholdDecafSigner::new();
+    let signer = ThresholdJubjubSigner::new();
     let z = Fr::from(42u64);
     let forged = SchnorrSignature {
         // For Y = identity, choosing R = z*G makes zG = R + cY for every
         // message without knowledge of a secret key.
-        r_point: Element::GENERATOR * z,
+        r_point: Element::generator() * z,
         z,
     };
 
@@ -67,13 +67,14 @@ fn test_identity_public_key_cannot_verify_forged_signature() {
         .verify(&Element::default(), b"identity-key forgery", &forged)
         .is_err());
     assert!(
-        ThresholdDecafSigner::derive_public_key(&Element::default(), b"derivation", None,).is_err()
+        ThresholdJubjubSigner::derive_public_key(&Element::default(), b"derivation", None,)
+            .is_err()
     );
 }
 
 #[test]
 fn test_frost_group_commitment_is_bound_to_public_key() {
-    let signer = ThresholdDecafSigner::new();
+    let signer = ThresholdJubjubSigner::new();
     let share = PriShare {
         i: 1,
         v: Fr::from(9u64),
@@ -87,8 +88,8 @@ fn test_frost_group_commitment_is_bound_to_public_key() {
         i: share.i,
         v: Fr::from(1u64),
     }];
-    let pk_a = Element::GENERATOR * Fr::from(3u64);
-    let pk_b = Element::GENERATOR * Fr::from(5u64);
+    let pk_a = Element::generator() * Fr::from(3u64);
+    let pk_b = Element::generator() * Fr::from(5u64);
 
     let sig_a = signer
         .recover(&shares, 1, 1, &pk_a, b"same message", &commitments)
@@ -111,7 +112,7 @@ fn test_hedged_nonces_are_fresh_each_call() {
     // that reused (d, e) — and therefore its commitment — across two FROST
     // sessions with different messages would leak its share. Two calls with the
     // same secret share must yield different nonces.
-    let signer = ThresholdDecafSigner::new();
+    let signer = ThresholdJubjubSigner::new();
     let dks = DistKeyShare {
         pri_share: PriShare {
             i: 1,
@@ -150,7 +151,7 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
 
     let (_aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
 
-    let signer = ThresholdDecafSigner::new();
+    let signer = ThresholdJubjubSigner::new();
     let msg = b"tampered commitment test";
 
     let participants: Vec<_> = secret_shares.iter().take(t).collect();
@@ -170,8 +171,8 @@ fn test_frost_rejects_tampered_commitment_from_coordinator() {
     // Coordinator tampers with signer 0's commitment before relaying
     let mut tampered_commitments = commitments.clone();
     tampered_commitments[0].1 = FrostNonceCommitment {
-        hiding: Element::GENERATOR * Fr::rand(&mut OsRng),
-        binding: Element::GENERATOR * Fr::rand(&mut OsRng),
+        hiding: Element::generator() * Fr::rand(&mut OsRng),
+        binding: Element::generator() * Fr::rand(&mut OsRng),
     };
 
     // Signer 0 should reject because its commitment doesn't match its nonces
@@ -232,7 +233,7 @@ fn test_frost_recover_rejects_share_outside_commitment_set() {
     .unwrap();
 
     let (aggregate_pk, secret_shares, pub_poly) = coordinator.run_dkg().unwrap();
-    let signer = ThresholdDecafSigner::new();
+    let signer = ThresholdJubjubSigner::new();
     let msg = b"share outside commitment set";
 
     // Signers 1 and 2 run a complete FROST round.

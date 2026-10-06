@@ -6,7 +6,7 @@ Cryptographic abstractions and implementations for Orbis: **distributed key gene
 
 - **Traits** (`crypto::trait`): serialization, polynomial commitments, DKG (including refresh and resharing), PRE (`ThresholdDealer`), and threshold signing (`ThresholdSigner`). Shared value types (`DistributedShare`, `PriShare`, `PubShare`, `Secret`, `ReencryptReply`, `EncryptionProof`, etc.) live here.
 - **BLS12-381** (default feature `bls12-381`): DKG on G1, PRE on G1, **threshold BLS** with G1 public keys and G2 signatures (“swapped” BLS so DKG output matches PRE).
-- **Decaf377** (feature `decaf377`): DKG and PRE on the decaf377 group; **FROST** threshold Schnorr signing (two-round interactive), since BLS pairings are unavailable on this curve.
+- **Jubjub** (feature `jubjub`): DKG, PSS (refresh and resharing), PRE, and PET on the prime-order Jubjub subgroup; **FROST** threshold Schnorr signing (two-round interactive), since BLS pairings are unavailable on this curve.
 
 The node / network layer in the wider repo orchestrates MPC sessions; this crate is the curve-specific math and protocol steps.
 
@@ -15,13 +15,13 @@ The node / network layer in the wider repo orchestrates MPC sessions; this crate
 | Feature | Effect |
 |--------|--------|
 | `bls12-381` | Default. Enables `crypto::bls12_381` (`ark-bls12-381`). |
-| `decaf377` | Enables `crypto::decaf377` (`decaf377` group operations). |
+| `jubjub` | Enables `crypto::jubjub` (`jubjub` group operations). |
 | `test-helpers` | Test utilities and Criterion benches (see below). |
 
-**`bls12-381` and `decaf377` are mutually exclusive.** To use decaf377:
+**`bls12-381` and `jubjub` are mutually exclusive.** To use Jubjub:
 
 ```bash
-cargo build -p crypto --no-default-features --features decaf377
+cargo build -p crypto --no-default-features --features jubjub
 ```
 
 ## Core traits (summary)
@@ -46,9 +46,9 @@ Full definitions: [`src/trait.rs`](src/trait.rs).
 | `bls12_381::dkg::DKGNode` | ✓ | | |
 | `bls12_381::pre::ThresholdDealerNode` | | ✓ | |
 | `bls12_381::sign::ThresholdBlsSigner` | | | Threshold BLS (G1 pk, G2 sig) |
-| `decaf377::dkg::DKGNode` | ✓ | | |
-| `decaf377::pre::ThresholdDealerNode` | | ✓ | |
-| `decaf377::sign::ThresholdDecafSigner` | | | FROST Schnorr |
+| `jubjub::dkg::DKGNode` | ✓ | | |
+| `jubjub::pre::ThresholdDealerNode` | | ✓ | |
+| `jubjub::sign::ThresholdJubjubSigner` | | | FROST Schnorr |
 
 Re-exports from the crate root (when the matching feature is on) include `DkgImpl`, `PreImpl`, `SignImpl`, scalar/group types, and sizes such as `SCALAR_SIZE` / `GROUP_POINT_SIZE` for protocol framing.
 
@@ -83,10 +83,10 @@ cargo bench --package crypto --features test-helpers --bench dkg_benchmarks
 
 Use `pre_benchmarks` or `sign_benchmarks` instead of `dkg_benchmarks` as needed.
 
-Decaf377:
+Jubjub:
 
 ```bash
-cargo bench --package crypto --no-default-features --features "test-helpers,decaf377" --bench dkg_benchmarks
+cargo bench --package crypto --no-default-features --features "test-helpers,jubjub" --bench dkg_benchmarks
 ```
 
 Save/compare baselines (e.g. with [`critcmp`](https://github.com/BurntSushi/critcmp)):
@@ -100,7 +100,7 @@ critcmp main feature-branch
 ## Dependencies (high level)
 
 - **BLS12-381 path**: `ark-bls12-381`, `ark-ec`, `ark-ff`, `ark-serialize`, `sha2`, `aes-gcm`, `hkdf`, `subtle`, `zeroize`, `serde`, etc.
-- **Decaf377 path**: `decaf377`, plus shared `ark-*` / crypto crates (`sha2`, `aes-gcm`, `hkdf`, `subtle`, …) as used by the implementation.
+- **Jubjub path**: [`zkcrypto/jubjub`](https://github.com/zkcrypto/jubjub) 0.11.1 with native `zeroize` support, `ff` / `group` 0.14, and shared crypto crates (`sha2`, `aes-gcm`, `hkdf`, `subtle`, …).
 
 ## Virtual machines and entropy
 

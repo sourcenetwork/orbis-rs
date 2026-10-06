@@ -231,9 +231,7 @@ async fn test_scale_dkg_pre_sign() {
     // ---- PRE round-trip ----
     let reader_identity = "orbis-node-scale-test-reader".to_string();
     let (reader_sk, reader_pk) = generate_keypair().expect("generate PRE reader keypair");
-    // Fully-qualified: decaf377's underlying scalar/point types have inherent
-    // `to_bytes` methods that shadow `CryptoSerialize::to_bytes` (see
-    // `cli_tool::do_generate_reader_key` for the same workaround).
+    // Use the shared wire serialization interface for either backend.
     let reader_pk_hex =
         hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
     let reader_sk_hex =
