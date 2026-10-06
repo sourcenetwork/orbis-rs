@@ -1,3 +1,7 @@
+#[path = "support/native_confirmation.rs"]
+mod native_confirmation;
+use native_confirmation::{confirmed, submit};
+
 #[cfg(feature = "bls12-381")]
 #[path = "support/policy_generations.rs"]
 mod policy_generations;
@@ -205,37 +209,6 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
     assert_eq!(before, fs::read(&journal).unwrap());
 }
 
-async fn confirmed(
-    client: &VeraClient,
-    id: alloy_primitives::B256,
-    trusted: &vera_domain::ConsensusPublicKey,
-) {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if let Some(proof) = client.read_receipt(id, trusted).await.unwrap() {
-                assert!(proof.verify(id, trusted).unwrap().success());
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-async fn submit(
-    client: &VeraClient,
-    worker: &vera_client::BlsSigner,
-    trusted: &vera_domain::ConsensusPublicKey,
-    call: alloy_primitives::Bytes,
-) {
-    let wire = worker
-        .sign_native_tx(vera_client::VERA_ADDRESS, call)
-        .unwrap();
-    let id = client.send_native_tx(&wire).await.unwrap();
-    confirmed(client, id, trusted).await;
-}
-
 #[tokio::test]
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
 #[cfg(feature = "bls12-381")]
@@ -382,10 +355,13 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    for info in &infos {
-        for command in [
-            NodeCommand::SetPeer(info.p2p_address.clone()),
-            NodeCommand::Allow(NodeTarget::Policy(policy.clone())),
+    for (index, info) in infos.iter().enumerate() {
+        for (command_name, command) in [
+            ("set peer", NodeCommand::SetPeer(info.p2p_address.clone())),
+            (
+                "allow policy",
+                NodeCommand::Allow(NodeTarget::Policy(policy.clone())),
+            ),
         ] {
             let current = client
                 .read_threshold_node(&info.node_key, 1, &trusted)
@@ -410,6 +386,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 &worker,
                 &trusted,
                 encode_node_request(&signed).unwrap(),
+                &format!("authorize node {index}: {command_name}"),
+                &cluster,
             )
             .await;
         }
@@ -441,6 +419,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         &worker,
         &trusted,
         encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
+        "create ring",
+        &cluster,
     )
     .await;
     let response = DkgServiceClient::connect(
@@ -555,6 +535,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         &worker,
         &trusted,
         encode_threshold_object(&object, &token).unwrap(),
+        "store threshold object",
+        &cluster,
     )
     .await;
     let registered = client
@@ -962,9 +944,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let mut incoming = Node::start(&directory, &addr, &controller_key, &log);
     let info = incoming.ready(&addr, &log).await;
     assert_eq!(info.managed_ring_count, 0);
-    for command in [
-        NodeCommand::SetPeer(info.p2p_address.clone()),
-        NodeCommand::Allow(NodeTarget::Policy(policy.clone())),
+    for (command_name, command) in [
+        ("set peer", NodeCommand::SetPeer(info.p2p_address.clone())),
+        (
+            "allow policy",
+            NodeCommand::Allow(NodeTarget::Policy(policy.clone())),
+        ),
     ] {
         let current = client
             .read_threshold_node(&info.node_key, 1, &trusted)
@@ -989,6 +974,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             &worker,
             &trusted,
             encode_node_request(&signed).unwrap(),
+            &format!("authorize incoming node: {command_name}"),
+            &cluster,
         )
         .await;
     }
@@ -1083,6 +1070,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             &token,
         )
         .unwrap(),
+        "start reshare",
+        &cluster,
     )
     .await;
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
