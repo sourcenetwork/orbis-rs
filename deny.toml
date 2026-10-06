@@ -100,5 +100,6 @@ allow-git = [
     "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
     "https://github.com/sourcenetwork/orbis-rs",
+    "https://github.com/sourcenetwork/regolith.git",
     "https://github.com/sourcenetwork/vera.rs",
 ]
