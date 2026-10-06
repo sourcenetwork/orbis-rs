@@ -7,9 +7,9 @@ use crypto::r#trait::ThresholdSigner;
 #[path = "bls12_381/sign.rs"]
 mod bls12_381_sign;
 
-#[cfg(feature = "decaf377")]
-#[path = "decaf377/sign.rs"]
-mod decaf377_sign;
+#[cfg(feature = "jubjub")]
+#[path = "jubjub/sign.rs"]
+mod jubjub_sign;
 
 // ---------------------------------------------------------------------------
 // Message shared between the benchmark runner and each implementation's fixture
@@ -270,8 +270,8 @@ fn run_sign_benchmarks<S: SignBenchSetup>(c: &mut Criterion, prefix: &str) {
 fn run_all_sign_benchmarks(c: &mut Criterion) {
     #[cfg(feature = "bls12-381")]
     run_sign_benchmarks::<bls12_381_sign::Bls12381SignBench>(c, "bls12_381");
-    #[cfg(feature = "decaf377")]
-    run_sign_benchmarks::<decaf377_sign::Decaf377SignBench>(c, "decaf377");
+    #[cfg(feature = "jubjub")]
+    run_sign_benchmarks::<jubjub_sign::JubjubSignBench>(c, "jubjub");
 }
 
 criterion_group!(benches, run_all_sign_benchmarks);

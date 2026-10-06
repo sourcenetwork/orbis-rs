@@ -132,7 +132,7 @@ where
         .unwrap_or_else(|| aggregate_pk.to_string());
 
     // Fresh DKG and reshare produce a usable ring key. The identity is never a
-    // valid signing/PRE key: accepting it would make Decaf Schnorr signatures
+    // valid signing/PRE key: accepting it would make Jubjub Schnorr signatures
     // forgeable. Refresh/RefreshPet are excluded because their delta polynomial
     // intentionally has an identity constant term; the combined key is checked
     // below (Refresh: against the staged key; RefreshPet: no equivalent check

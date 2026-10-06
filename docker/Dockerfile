@@ -29,7 +29,7 @@ FROM chef AS builder
 
 # false ⇒ production feature set; true ⇒ integration-test feature set.
 ARG ENABLE_INTEGRATION_TEST=false
-# bls12-381 (default) | decaf377
+# bls12-381 (default) | jubjub
 ARG CRYPTO_FEATURE=bls12-381
 # The two branches must use identical feature flags in `cook` and `build` or the
 # cooked dependency artifacts don't match and get rebuilt.

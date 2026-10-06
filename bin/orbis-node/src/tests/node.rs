@@ -1128,17 +1128,17 @@ async fn test_init_multiple_nodes() {
     cleanup_db(&db_path2);
 }
 
-/// ThresholdDealer::name() reflects the compiled crypto backend (elgamal/decaf377 vs elgamal/bls12_381).
+/// ThresholdDealer::name() reflects the compiled crypto backend (elgamal/jubjub vs elgamal/bls12_381).
 #[test]
 fn test_pre_impl_name_matches_backend() {
     use crypto::r#trait::ThresholdDealer;
     use crypto::PreImpl;
 
-    #[cfg(feature = "decaf377")]
+    #[cfg(feature = "jubjub")]
     assert_eq!(
         PreImpl::name(),
-        "elgamal/decaf377",
-        "decaf377 build should report elgamal/decaf377"
+        "elgamal/jubjub",
+        "jubjub build should report elgamal/jubjub"
     );
     #[cfg(feature = "bls12-381")]
     assert_eq!(

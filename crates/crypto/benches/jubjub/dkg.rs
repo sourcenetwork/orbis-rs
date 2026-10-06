@@ -1,11 +1,11 @@
-use crypto::decaf377::dkg::DKGNode;
+use crypto::jubjub::dkg::DKGNode;
 use crypto::r#trait::{Dkg, DkgRole};
 
 use crate::DkgBenchSetup;
 
-pub struct Decaf377DkgBench;
+pub struct JubjubDkgBench;
 
-impl DkgBenchSetup for Decaf377DkgBench {
+impl DkgBenchSetup for JubjubDkgBench {
     type Node = DKGNode;
 
     fn create_node(

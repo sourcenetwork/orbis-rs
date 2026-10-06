@@ -7,9 +7,9 @@ use crypto::r#trait::{DistributedShare, Dkg, DkgMode};
 #[path = "bls12_381/dkg.rs"]
 mod bls12_381_dkg;
 
-#[cfg(feature = "decaf377")]
-#[path = "decaf377/dkg.rs"]
-mod decaf377_dkg;
+#[cfg(feature = "jubjub")]
+#[path = "jubjub/dkg.rs"]
+mod jubjub_dkg;
 
 // ---------------------------------------------------------------------------
 // Generic benchmark infrastructure
@@ -299,8 +299,8 @@ fn run_dkg_benchmarks<S: DkgBenchSetup>(c: &mut Criterion, prefix: &str) {
 fn run_all_dkg_benchmarks(c: &mut Criterion) {
     #[cfg(feature = "bls12-381")]
     run_dkg_benchmarks::<bls12_381_dkg::Bls12381DkgBench>(c, "bls12_381");
-    #[cfg(feature = "decaf377")]
-    run_dkg_benchmarks::<decaf377_dkg::Decaf377DkgBench>(c, "decaf377");
+    #[cfg(feature = "jubjub")]
+    run_dkg_benchmarks::<jubjub_dkg::JubjubDkgBench>(c, "jubjub");
 }
 
 criterion_group!(benches, run_all_dkg_benchmarks);
