@@ -66,7 +66,7 @@ fn other_ctx() -> CiphertextContext {
 /// Run all generic PRE tests for a given [`ThresholdDealer`] implementation.
 ///
 /// The `make_identity_pk` closure must return the group identity element for `PK`
-/// (e.g. `G1Affine::identity()` for BLS12-381, `Element::default()` for decaf377).
+/// (e.g. `G1Affine::identity()` for BLS12-381, `Element::default()` for jubjub).
 pub fn run_all_tests<T, SV, PK, PP, MK, MP, RD, MI>(
     make_keypair: MK,
     make_pub_poly: MP,

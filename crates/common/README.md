@@ -22,7 +22,7 @@ Typical wiring: build a **`ChainConfig`** (often via **`ChainConfigBuilder::defa
 [`src/lib.rs`](src/lib.rs) also defines:
 
 - **`VeraTestContainer`** — Starts `docker/docker-compose-vera-test.yml` under a unique Compose project, discovers Docker-assigned RPC/REST/gRPC host ports, waits for health, and tears down only its own project. Use `chain_config()` or the URL accessors for connections.
-- **`IntegrationTestNetwork`** — Starts `docker/docker-compose-integration-test.yml` (Vera + three orbis nodes) under a unique Compose project and exposes the dynamically assigned Vera and node endpoints. **`ORBIS_INTEGRATION_CRYPTO`** remains synchronized with compile-time `bls12-381` / `decaf377` features.
+- **`IntegrationTestNetwork`** — Starts `docker/docker-compose-integration-test.yml` (Vera + three orbis nodes) under a unique Compose project and exposes the dynamically assigned Vera and node endpoints. **`ORBIS_INTEGRATION_CRYPTO`** remains synchronized with compile-time `bls12-381` / `jubjub` features.
 
 Both require **Docker** and **`curl`** on the host. Independent Cargo test processes may run their Docker stacks concurrently because project names and published host ports are isolated.
 
@@ -31,7 +31,7 @@ Both require **Docker** and **`curl`** on the host. Independent Cargo test proce
 | Feature | Purpose |
 |---------|---------|
 | `bls12-381` | Compile-time marker for crypto alignment in tests (e.g. integration test env defaults). |
-| `decaf377` | Same for decaf377 builds. |
+| `jubjub` | Same for jubjub builds. |
 
 These flags do not change `blockchain` APIs by themselves; they coordinate with **`orbis-node`** / **`cli-tool`** feature sets.
 

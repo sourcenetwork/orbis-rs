@@ -21,9 +21,9 @@ pub fn bench_ctx() -> CiphertextContext {
 #[path = "bls12_381/pre.rs"]
 mod bls12_381_pre;
 
-#[cfg(feature = "decaf377")]
-#[path = "decaf377/pre.rs"]
-mod decaf377_pre;
+#[cfg(feature = "jubjub")]
+#[path = "jubjub/pre.rs"]
+mod jubjub_pre;
 
 // ---------------------------------------------------------------------------
 // Generic benchmark infrastructure
@@ -277,8 +277,8 @@ fn run_pre_benchmarks<S: BenchSetup>(c: &mut Criterion, prefix: &str) {
 fn run_all_pre_benchmarks(c: &mut Criterion) {
     #[cfg(feature = "bls12-381")]
     run_pre_benchmarks::<bls12_381_pre::Bls12381Bench>(c, "bls12_381");
-    #[cfg(feature = "decaf377")]
-    run_pre_benchmarks::<decaf377_pre::Decaf377Bench>(c, "decaf377");
+    #[cfg(feature = "jubjub")]
+    run_pre_benchmarks::<jubjub_pre::JubjubBench>(c, "jubjub");
 }
 
 criterion_group!(benches, run_all_pre_benchmarks);

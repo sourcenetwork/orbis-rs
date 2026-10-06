@@ -12,7 +12,7 @@ Build the host tool with the same crypto implementation as the node image:
 
 ```console
 cargo build -p orbis-bench --release
-cargo build -p orbis-bench --release --no-default-features --features decaf377
+cargo build -p orbis-bench --release --no-default-features --features jubjub
 ```
 
 Inspect a suite without starting Docker:

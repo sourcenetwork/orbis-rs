@@ -1,15 +1,15 @@
-use decaf377::{Element, Fr};
+use crypto::jubjub::common::{Element, Fr};
 use rand_core::OsRng;
 
-use crypto::decaf377::pre::ThresholdDealerNode;
+use crypto::jubjub::pre::ThresholdDealerNode;
 use crypto::r#trait::{DistKeyShare, PubShare, ThresholdDealer};
 use crypto::test_helper::DKGCoordinator;
 
 use crate::{BenchFixture, BenchSetup};
 
-pub struct Decaf377Bench;
+pub struct JubjubBench;
 
-impl BenchSetup for Decaf377Bench {
+impl BenchSetup for JubjubBench {
     type Dealer = ThresholdDealerNode;
 
     fn create_fixture(t: usize, n: usize) -> BenchFixture<ThresholdDealerNode> {
@@ -19,7 +19,7 @@ impl BenchSetup for Decaf377Bench {
              total_nodes: usize,
              session_id: u128,
              role: crypto::r#trait::DkgRole| {
-                <crypto::decaf377::dkg::DKGNode as crypto::r#trait::Dkg>::new(
+                <crypto::jubjub::dkg::DKGNode as crypto::r#trait::Dkg>::new(
                     id,
                     threshold,
                     total_nodes,
@@ -35,7 +35,7 @@ impl BenchSetup for Decaf377Bench {
 
         let mut rng = OsRng;
         let rdr_sk = Fr::rand(&mut rng);
-        let rdr_pk = Element::GENERATOR * rdr_sk;
+        let rdr_pk = Element::generator() * rdr_sk;
         let rdr_pk_proof = ThresholdDealerNode::prove_reader_key(&rdr_sk, &rdr_pk).unwrap();
 
         let data = b"benchmark secret payload - 36 bytes!";

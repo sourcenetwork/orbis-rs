@@ -30,7 +30,7 @@ usage() {
 Usage: scripts/test-upgrade.sh --from <git-ref> --to <git-ref|WORKTREE> [options]
 
 Options:
-  --crypto <bls12-381|decaf377|both>  Crypto implementation(s), default: both
+  --crypto <bls12-381|jubjub|both>  Crypto implementation(s), default: both
   --output <directory>                Evidence directory
   --keep-on-failure                   Leave the failed Compose project running
   --dry-run                           Resolve inputs without building or starting Docker
@@ -45,6 +45,8 @@ Options:
 
 Both committed revisions must contain the upgrade-driver v1 contract. WORKTREE
 is accepted only for --to and includes committed, modified, and untracked files.
+Both revisions must support the selected curve. A curve change requires fresh
+DKG and cannot be tested as an upgrade of an existing ring.
 
 By default the shared SourceHub container is never recreated during the
 cutover, so the target Orbis nodes are exercised against the baseline chain.
@@ -123,8 +125,8 @@ done
 [[ -n "$TO_REF" ]] || die "--to is required"
 [[ "$FROM_REF" != WORKTREE ]] || die "WORKTREE is supported only for --to"
 case "$CRYPTO" in
-  bls12-381|decaf377|both) ;;
-  *) die "--crypto must be bls12-381, decaf377, or both" ;;
+  bls12-381|jubjub|both) ;;
+  *) die "--crypto must be bls12-381, jubjub, or both" ;;
 esac
 
 require_command git
@@ -158,6 +160,28 @@ else
   TO_FINGERPRINT=$TO_SHA
   TO_DESCRIPTION=$TO_SHA
 fi
+
+if [[ "$CRYPTO" == both ]]; then
+  CRYPTO_RUNS=(bls12-381 jubjub)
+else
+  CRYPTO_RUNS=("$CRYPTO")
+fi
+
+# Check before Docker builds and before reporting a successful dry run.
+for crypto in "${CRYPTO_RUNS[@]}"; do
+  if ! git -C "$REPOSITORY_ROOT" show "$FROM_SHA:crates/crypto/Cargo.toml" \
+    | grep -Eq "^${crypto}[[:space:]]*="; then
+    die "baseline $FROM_SHA does not support $crypto; select a baseline with this curve. Changing curves requires a fresh ring and DKG, not a state upgrade"
+  fi
+  if [[ "$TO_REF" == WORKTREE ]]; then
+    target_manifest=$(cat "$REPOSITORY_ROOT/crates/crypto/Cargo.toml")
+  else
+    target_manifest=$(git -C "$REPOSITORY_ROOT" show "$TO_SHA:crates/crypto/Cargo.toml")
+  fi
+  if ! grep -Eq "^${crypto}[[:space:]]*=" <<<"$target_manifest"; then
+    die "target $TO_DESCRIPTION does not support $crypto; changing curves requires a fresh ring and DKG, not a state upgrade"
+  fi
+done
 
 if [[ -z "$OUTPUT" ]]; then
   RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -350,12 +374,6 @@ if [[ "$FRESH_TARGET_CHAIN" -eq 1 && "$TO_VERA_IMAGE" != "$VERA_IMAGE" ]]; then
     >"$VERA_BUILD_OUTPUT/target-image-id.txt"
 fi
 CURRENT_OUTPUT=
-
-if [[ "$CRYPTO" == both ]]; then
-  CRYPTO_RUNS=(bls12-381 decaf377)
-else
-  CRYPTO_RUNS=("$CRYPTO")
-fi
 
 run_crypto_upgrade() {
   local crypto=$1

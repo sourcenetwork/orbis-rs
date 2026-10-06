@@ -1,18 +1,18 @@
-use decaf377::Fr;
+use crypto::jubjub::common::Fr;
 
-use crypto::decaf377::dkg::DKGNode;
-use crypto::decaf377::sign::ThresholdDecafSigner;
+use crypto::jubjub::dkg::DKGNode;
+use crypto::jubjub::sign::ThresholdJubjubSigner;
 use crypto::r#trait::{DistKeyShare, Dkg, ThresholdSigner};
 use crypto::test_helper::DKGCoordinator;
 
 use crate::{SignBenchFixture, SignBenchSetup, MSG};
 
-pub struct Decaf377SignBench;
+pub struct JubjubSignBench;
 
-impl SignBenchSetup for Decaf377SignBench {
-    type Signer = ThresholdDecafSigner;
+impl SignBenchSetup for JubjubSignBench {
+    type Signer = ThresholdJubjubSigner;
 
-    fn create_fixture(t: usize, n: usize) -> SignBenchFixture<ThresholdDecafSigner> {
+    fn create_fixture(t: usize, n: usize) -> SignBenchFixture<ThresholdJubjubSigner> {
         let mut coordinator = DKGCoordinator::new(
             |id: u32,
              threshold: usize,
@@ -37,14 +37,14 @@ impl SignBenchSetup for Decaf377SignBench {
 
         let participant_ids: Vec<u32> = secret_shares.iter().take(t).map(|s| s.i).collect();
 
-        let signer = ThresholdDecafSigner::new();
+        let signer = ThresholdJubjubSigner::new();
 
         // FROST is interactive: Round 1 generates nonce commitments and secret state.
         let mut commitments: Vec<(
             u32,
-            <ThresholdDecafSigner as ThresholdSigner>::NonceCommitment,
+            <ThresholdJubjubSigner as ThresholdSigner>::NonceCommitment,
         )> = Vec::with_capacity(t);
-        let mut signing_states: Vec<<ThresholdDecafSigner as ThresholdSigner>::SigningState> =
+        let mut signing_states: Vec<<ThresholdJubjubSigner as ThresholdSigner>::SigningState> =
             Vec::with_capacity(t);
 
         for (i, dks) in dist_key_shares.iter().enumerate() {
