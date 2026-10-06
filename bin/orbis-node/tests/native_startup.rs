@@ -1245,13 +1245,20 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let score = client
+            match client
                 .read_threshold_node_demerits(&derivation.ring_id, &infos[1].node_key, 1, &trusted)
                 .await
-                .unwrap();
-            if let Some(score) = score.record {
-                assert!(score.points > 0);
-                break;
+            {
+                Ok(score) => {
+                    if let Some(score) = score.record {
+                        assert!(score.points > 0);
+                        break;
+                    }
+                }
+                Err(error) if error.is_throttled() => {
+                    eprintln!("waiting for certified offline report: {error}");
+                }
+                Err(error) => panic!("offline report evidence failed: {error}"),
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
