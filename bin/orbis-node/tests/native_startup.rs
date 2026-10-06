@@ -49,12 +49,24 @@ impl Node {
     }
 
     fn start_bound(base: &Path, addr: &str, controller: &str, log: &Path, bind: &str) -> Self {
+        Self::start_configured(base, addr, controller, log, bind, false)
+    }
+
+    fn start_configured(
+        base: &Path,
+        addr: &str,
+        controller: &str,
+        log: &Path,
+        bind: &str,
+        report_fault: bool,
+    ) -> Self {
+        assert!(!report_fault || cfg!(feature = "unsafe-testing"));
         let output = fs::File::create(log).unwrap();
-        Self(
-            Command::new(
-                std::env::var_os("ORBIS_NODE_BINARY")
-                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_orbis-node").into()),
-            )
+        let mut command = Command::new(
+            std::env::var_os("ORBIS_NODE_BINARY")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_orbis-node").into()),
+        );
+        command
             .arg("--vera-config")
             .arg(base.join("vera.json"))
             .args([
@@ -71,12 +83,14 @@ impl Node {
             .arg("--runtime-base-path")
             .arg(base)
             .env("ORBIS_PASSWORD_FILE", base.join("password"))
+            .env_remove("ORBIS_ENABLE_INTEGRATION_TEST")
             .stdin(Stdio::null())
             .stdout(output.try_clone().unwrap())
-            .stderr(output)
-            .spawn()
-            .unwrap(),
-        )
+            .stderr(output);
+        if report_fault {
+            command.env("ORBIS_ENABLE_INTEGRATION_TEST", "true");
+        }
+        Self(command.spawn().unwrap())
     }
     async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
         tokio::time::timeout(Duration::from_secs(40), async {
@@ -237,7 +251,17 @@ async fn native_defra_signing() {
 #[ignore = "requires built native verad and orbis-node binaries"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
-    native_pet::run().await;
+    native_pet::run(native_pet::Scenario::Lifecycle).await;
+}
+
+#[tokio::test]
+#[ignore = "requires native verad and an unsafe-testing orbis-node diagnostic binary"]
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+async fn native_pet_fault_reports() {
+    native_pet::run(native_pet::Scenario::ReportFault).await;
 }
 
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
@@ -279,7 +303,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         ring_id,
         now,
         headers: _headers,
-    } = native_workflow::NativeWorkflow::start(deployment, false).await;
+    } = native_workflow::NativeWorkflow::start(deployment, false, false).await;
     let response = DkgServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[0]))
             .unwrap()

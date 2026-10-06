@@ -317,6 +317,22 @@ VERAD_BINARY=/path/to/verad cargo test -p orbis-node --features native \
   --test native_startup native_distributed_threshold_workflows -- --ignored
 ```
 
+The ignored `native_pet_fault_reports` scenario uses a separate diagnostic binary
+built with `native,redb,iroh,unsafe-testing` and either `bls12-381` or `jubjub`.
+It enables the existing testing service only on that scenario's child processes,
+injects one ring-scoped signed PET decrypt-proof fault, and requires successful
+PRE plus certified report retention and exactly one accused-member demerit.
+The retained signed transaction and verified receipt must bind that report ID to
+v2 PET decrypt evidence. Encrypted main/PET bundles must remain unchanged. This feature-enabled scenario
+is separate from normal-release qualification; it does not run reshare phases.
+
+```sh
+VERAD_BINARY=/path/to/verad ORBIS_NODE_BINARY=/path/to/diagnostic-orbis-node \
+  cargo test -p orbis-node --no-default-features \
+  --features native,redb,iroh,bls12-381,unsafe-testing \
+  --test native_startup native_pet_fault_reports -- --ignored --exact
+```
+
 Signing and PRE apply their 10-second peer deadline to connection setup, sending
 and receiving together. This keeps unresponsive peers within the background
 collection window so timeout observations reach reporting.

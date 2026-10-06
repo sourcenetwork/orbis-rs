@@ -21,12 +21,27 @@ use vera_domain::ConsensusPublicKey;
 mod document;
 use document::{Delivery, Document, PreChecks, Reader};
 
-pub async fn run() {
-    let deployment = 9075;
+#[cfg(feature = "unsafe-testing")]
+#[path = "native_pet/report_fault.rs"]
+mod report_fault;
+
+pub enum Scenario {
+    Lifecycle,
+    #[cfg(feature = "unsafe-testing")]
+    ReportFault,
+}
+
+pub async fn run(scenario: Scenario) {
+    let (deployment, report_fault) = match scenario {
+        Scenario::Lifecycle => (9075, false),
+        #[cfg(feature = "unsafe-testing")]
+        Scenario::ReportFault => (9076, true),
+    };
     let super::native_workflow::NativeWorkflow {
         cluster,
         client,
         trusted,
+        root: _root,
         controller,
         controller_key,
         actor,
@@ -40,7 +55,7 @@ pub async fn run() {
         ring_id,
         headers: _headers,
         ..
-    } = super::native_workflow::NativeWorkflow::start(deployment, true).await;
+    } = super::native_workflow::NativeWorkflow::start(deployment, true, report_fault).await;
     let response = DkgServiceClient::connect(endpoint(&addresses[0]))
         .await
         .unwrap()
@@ -149,6 +164,26 @@ pub async fn run() {
         wrong_target
             .denied(document, delivery, tonic::Code::Unauthenticated)
             .await;
+    }
+    #[cfg(feature = "unsafe-testing")]
+    if matches!(scenario, Scenario::ReportFault) {
+        report_fault::Reports {
+            cluster: &cluster,
+            client: &client,
+            trusted: &trusted,
+            addresses: &addresses,
+            infos: &infos,
+            ring_id: &ring_id,
+            keys: &keys,
+            base: base.path(),
+            deployment_root: &_root.0,
+        }
+        .run(&checks, &inline)
+        .await;
+        for node in &mut nodes {
+            node.stop().await;
+        }
+        return;
     }
     permission.set(&audit, false).await;
     for (document, delivery) in documents {

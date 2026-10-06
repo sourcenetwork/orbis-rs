@@ -34,7 +34,7 @@ pub(super) struct NativeWorkflow {
 }
 
 impl NativeWorkflow {
-    pub async fn start(deployment: u64, requires_pet: bool) -> Self {
+    pub async fn start(deployment: u64, requires_pet: bool, report_fault: bool) -> Self {
         let trusted = *KeySet::builder()
             .seed(deployment)
             .build()
@@ -108,7 +108,14 @@ impl NativeWorkflow {
             let addr = listener.local_addr().unwrap().to_string();
             drop(listener);
             let log = directory.join("node.log");
-            nodes.push(Node::start(&directory, &addr, &controller_key, &log));
+            nodes.push(Node::start_configured(
+                &directory,
+                &addr,
+                &controller_key,
+                &log,
+                "127.0.0.1:0",
+                report_fault,
+            ));
             addresses.push(addr);
             logs.push(log);
         }
