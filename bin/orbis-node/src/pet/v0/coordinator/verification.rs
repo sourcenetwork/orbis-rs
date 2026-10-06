@@ -218,7 +218,7 @@ fn build_ciphertext_context(
 /// need this distinction to decide `Rejected` vs `InvalidProof`, and a
 /// string-matched proxy for it is exactly the kind of check a future,
 /// unrelated wording change could silently break.
-enum ContributionCheckOutcome<T> {
+pub(crate) enum ContributionCheckOutcome<T> {
     Verified(T),
     /// Never reached the point of being this node's own authenticated,
     /// signed claim — an unresolvable identity, a bad signature, or content
@@ -357,11 +357,32 @@ pub(crate) fn build_and_verify_pet_blind_certificate<D, P>(
     ring_payload: &bulletin::r#trait::RingPayload,
     tag: &PetTag,
     target_fingerprint: &P::PublicKey,
+    blind_context: &PetBlindContext,
 ) -> Result<(G1Affine, G1Affine)>
 where
     D: Dkg<PublicKey = G1Affine>,
     P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
 {
+    crate::pet::v0::generation::decode::<P::PubPoly>(
+        &certificate.public_polynomial,
+        ring_payload.threshold,
+        &blind_context.pet_pk,
+    )?;
+    if blind_context.public_polynomial_digest
+        != crate::reporting::v0::types::pet_public_polynomial_digest(&certificate.public_polynomial)
+        || certificate.context_digest != blind_context.context_digest()
+        || certificate.attempt_id != blind_context.attempt_id
+        || blind_context.ring_pk != ring_payload.ring_pk
+        || blind_context.ring_state_sha256
+            != crate::reporting::v0::types::ring_state_sha256(ring_payload)
+        || ring_payload.pet_pk.as_deref() != Some(blind_context.pet_pk.as_str())
+        || !ring_payload.requires_pet
+        || blind_context.crypto_backend != P::name()
+    {
+        return Err(PetError::ProtocolError(
+            "PET certificate generation or context mismatch".into(),
+        ));
+    }
     let threshold = ring_payload.threshold as usize;
     if certificate.all_commitments.len() != threshold {
         return Err(PetError::Crypto(format!(
@@ -403,6 +424,17 @@ where
 
     for signed_reveal in &certificate.reveals {
         let statement = &signed_reveal.statement;
+        if statement.domain != crate::reporting::v0::types::PET_BLIND_REVEAL_RESPONSE_DOMAIN
+            || statement.chain_id != blind_context.chain_id
+            || statement.ring_id != blind_context.ring_id
+            || statement.ring_pk != blind_context.ring_pk
+            || statement.ring_state_sha256 != blind_context.ring_state_sha256
+            || statement.protocol_version != blind_context.protocol_version
+        {
+            return Err(PetError::ProtocolError(
+                "PET reveal certificate binding mismatch".into(),
+            ));
+        }
         if statement.attempt_id != certificate.attempt_id {
             return Err(PetError::Crypto(
                 "reveal attempt_id does not match the certificate".to_string(),
@@ -472,7 +504,7 @@ where
 /// One decrypt-phase share, verified against the certificate's own
 /// reconstructed aggregate points. Shared by the live decrypt-phase
 /// collector and PRE admission — both need the exact same checks.
-fn verify_one_decrypt<P>(
+pub(crate) fn verify_one_decrypt<P>(
     statement: &PetBlindDecryptStatement,
     response_signature: &[u8],
     ring_payload: &bulletin::r#trait::RingPayload,
@@ -482,12 +514,24 @@ fn verify_one_decrypt<P>(
     expected_attempt_id: &str,
     expected_aggregate_r: &[u8],
     expected_aggregate_diff: &[u8],
+    blind_context: &PetBlindContext,
 ) -> ContributionCheckOutcome<PubShare<G1Affine>>
 where
     P: Pet<ShareValue = Fr, PublicKey = G1Affine>,
 {
     use ContributionCheckOutcome::{Invalid, NotAttributable, Verified};
 
+    if statement.domain != crate::reporting::v0::types::PET_BLIND_DECRYPT_RESPONSE_DOMAIN
+        || statement.chain_id != blind_context.chain_id
+        || statement.ring_id != blind_context.ring_id
+        || statement.ring_pk != blind_context.ring_pk
+        || statement.ring_state_sha256 != blind_context.ring_state_sha256
+        || statement.protocol_version != blind_context.protocol_version
+    {
+        return NotAttributable(PetError::ProtocolError(
+            "PET decrypt statement binding mismatch".into(),
+        ));
+    }
     if statement.attempt_id != expected_attempt_id {
         return NotAttributable(PetError::Crypto(
             "decrypt statement attempt_id does not match the certificate".to_string(),
@@ -530,6 +574,13 @@ where
             "invalid decrypt signature from node {}: {e}",
             statement.from_node_id
         )));
+    }
+    if crate::reporting::v0::types::pet_public_polynomial_digest(&statement.public_polynomial)
+        != blind_context.public_polynomial_digest
+    {
+        return Invalid(PetError::Crypto(
+            "signed PET reply substitutes the certified polynomial".into(),
+        ));
     }
     // Everything from here on is this node's own authenticated, signed
     // claim — any failure below is genuinely attributable to it.
@@ -602,6 +653,24 @@ where
         .await
         .map_err(PetError::ProtocolError)?;
 
+        if ring_payload.threshold == 0
+            || ring_payload.threshold as usize > ring_payload.peer_node_keys.len()
+        {
+            return Err(PetError::InvalidState("invalid PET ring threshold".into()));
+        }
+        if ctx.ring_state_sha256.len() != 64
+            || !ctx
+                .ring_state_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(PetError::InvalidInput(
+                "invalid PET ring-state digest".into(),
+            ));
+        }
+        if ctx.ring_state_sha256 != crate::reporting::v0::types::ring_state_sha256(&ring_payload) {
+            return Err(PetError::GenerationMismatch);
+        }
         if !ring_payload.requires_pet {
             return Err(PetError::ProtocolError(format!(
                 "ring {} does not require a PET check",
@@ -706,7 +775,18 @@ where
         )
         .await?;
 
+        let expected_ring_state = evidence
+            .certificate
+            .reveals
+            .first()
+            .map(|reveal| reveal.statement.ring_state_sha256.clone())
+            .ok_or_else(|| PetError::InvalidInput("PET certificate has no reveals".into()))?;
+        if expected_ring_state != crate::reporting::v0::types::ring_state_sha256(ring_payload) {
+            return Err(PetError::GenerationMismatch);
+        }
         let ctx = PetCheckContext {
+            ring_state_sha256: expected_ring_state,
+            public_polynomial: evidence.certificate.public_polynomial.clone(),
             document: document.clone(),
             salt: salt.map(str::to_string),
             object_id: object_id.to_string(),
@@ -744,6 +824,7 @@ where
             ring_payload,
             &tag,
             &target_fingerprint,
+            &blind_context,
         )
         .map_err(|_| PetError::Mismatch)?;
 
@@ -761,15 +842,12 @@ where
                 .map_err(|e| {
                     PetError::Storage(format!("Failed to load PET share bundle: {}", e))
                 })?;
-        let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
-            PetError::Deserialization(format!("Failed to decode PET public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            PetError::Deserialization(format!(
-                "Failed to deserialize PET public polynomial: {}",
-                e
-            ))
-        })?;
+        let pub_poly = crate::pet::v0::generation::match_bundle::<D::PubPoly>(
+            &bundle,
+            &evidence.certificate.public_polynomial,
+            ring_payload.threshold,
+            &pet_pk_hex,
+        )?;
 
         let aggregate_r_bytes = crypto::r#trait::CryptoSerialize::to_bytes(&aggregate_r)
             .map_err(|e| PetError::Serialization(e.to_string()))?;
@@ -790,6 +868,7 @@ where
                 &evidence.certificate.attempt_id,
                 &aggregate_r_bytes,
                 &aggregate_diff_bytes,
+                &blind_context,
             )
             .into_result()
             .map_err(|_| PetError::Mismatch)?;
@@ -1011,6 +1090,7 @@ pub(crate) fn verify_decrypt_response<P>(
     expected_aggregate_r: &[u8],
     expected_aggregate_diff: &[u8],
     blind_context: &PetBlindContext,
+    certificate: &PetBlindCertificate,
     document_evidence: &Option<ReportedDocumentEvidence>,
     seen_node_ids: &mut HashSet<u32>,
 ) -> PetDecryptResponseVerification
@@ -1075,6 +1155,7 @@ where
         expected_attempt_id,
         expected_aggregate_r,
         expected_aggregate_diff,
+        blind_context,
     ) {
         ContributionCheckOutcome::Verified(share) => {
             if !seen_node_ids.insert(from_node_id) {
@@ -1095,6 +1176,7 @@ where
                 statement,
                 response_signature,
                 document_evidence.clone(),
+                certificate.clone(),
             );
             PetDecryptResponseVerification::InvalidProof(Box::new(observation))
         }

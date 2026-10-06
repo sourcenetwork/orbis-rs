@@ -64,9 +64,9 @@ pub enum PreError {
     #[error("Protocol error: {0}")]
     ProtocolError(String),
 
-    /// Ring reshare is in progress or just completed; shares from different
+    /// Ring refresh or reshare is in progress or just completed; shares from different
     /// generations were mixed.  The client should retry shortly.
-    #[error("Ring reshare in progress, try again shortly")]
+    #[error("Ring generation changed, try again shortly")]
     ReshareInProgress,
 
     /// Generic PRE error

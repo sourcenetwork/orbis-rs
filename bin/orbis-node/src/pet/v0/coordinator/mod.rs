@@ -12,7 +12,7 @@
 mod handlers;
 mod initiator;
 mod network;
-mod verification;
+pub(crate) mod verification;
 
 use crate::app_state::AppState;
 use crypto::r#trait::{Dkg, Pet};

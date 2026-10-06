@@ -49,6 +49,7 @@ impl ReportHandler for UnauthorizedRequestHandler {
             ring_config,
             inline_document: observation.inline_document,
             pet_blind_context: None,
+            pet_blind_certificate: None,
         })
     }
 

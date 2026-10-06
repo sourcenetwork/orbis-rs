@@ -16,7 +16,6 @@
 //! travels via `inline_document`.
 
 use super::*;
-use crypto::r#trait::PubPoly;
 
 impl InvalidCryptoResponseHandler {
     pub async fn validate_pet_blind_reveal_evidence(
@@ -160,7 +159,14 @@ impl InvalidCryptoResponseHandler {
             ))
         })?;
 
-        require_pet_blind_decrypt_verification_failure(blind_context, statement, context).await
+        require_pet_blind_decrypt_verification_failure(
+            blind_context,
+            statement,
+            response_signature,
+            ring,
+            context,
+        )
+        .await
     }
 }
 
@@ -342,64 +348,63 @@ async fn require_pet_blind_reveal_verification_failure(
 pub(crate) async fn require_pet_blind_decrypt_verification_failure(
     blind_context: &PetBlindContext,
     statement: &PetBlindDecryptStatement,
-    _context: &ReportValidationContext,
+    response_signature: &[u8],
+    ring: &RingPayload,
+    context: &ReportValidationContext,
 ) -> Result<()> {
-    // The share/challenge/proof/polynomial are the responder's own signed
-    // crypto output; a decode failure on any of them is itself an
-    // attributable verification failure — confirm the report rather than
-    // rejecting it.
-    let Ok(partial) = GroupAffine::from_bytes(&statement.partial) else {
-        return Ok(());
+    use crate::pet::v0::coordinator::verification::{
+        build_and_verify_pet_blind_certificate, verify_one_decrypt, ContributionCheckOutcome,
     };
-    let Ok(challenge) = ScalarField::from_bytes(&statement.challenge) else {
-        return Ok(());
-    };
-    let Ok(proof) = ScalarField::from_bytes(&statement.proof) else {
-        return Ok(());
-    };
-    let Ok(claimed_poly) = PubPolyImpl::from_bytes(&statement.public_polynomial) else {
-        return Ok(());
-    };
+    use crypto::r#trait::CryptoSerialize;
 
-    // Authenticate the responder's own claimed polynomial against the
-    // ring's known, generation-invariant `pet_pk` — every genuine
-    // generation of this ring's PET key, whatever `RefreshPet`/`ResharePet`
-    // it came from, evaluates to the same `pet_pk` at x=0. This lets a
-    // verifier accept a genuine response from a generation it hasn't
-    // personally caught up to yet (a candidate-list approach checking only
-    // the verifier's own current/recently-retired polynomials has no way to
-    // recognize a generation *ahead* of it), while still rejecting a fabricated claim:
-    // forging a polynomial that authenticates here requires genuinely
-    // holding a real share of this ring's actual `pet_sk`.
-    let pet_pk_bytes = hex::decode(&blind_context.pet_pk)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-    let pet_pk = GroupAffine::from_bytes(&pet_pk_bytes)
-        .map_err(|error| ReportingError::InvalidReport(error.to_string()))?;
-
-    let reply = PetCheckReply {
-        partial: PubShare {
-            i: statement.from_node_id,
-            v: partial,
-        },
-        challenge,
-        proof,
-    };
-    // Reused unchanged, against this statement's own claimed `aggregate_r`
-    // in place of the old protocol's bare `R` — `masked_fingerprint` is
-    // never read by `verify_partial_pet_check`.
-    let synthetic_tag = PetTag {
-        ephemeral_point: statement.aggregate_r.clone(),
-        masked_fingerprint: Vec::new(),
-    };
-
-    let verifies = claimed_poly.eval(0) == pet_pk
-        && PetImpl::verify_partial_pet_check(&claimed_poly, &synthetic_tag, &reply).is_ok();
-    if verifies {
-        return Err(ReportingError::Unauthorized(
-            "reported PET blind-decrypt share verifies successfully against its own claimed, \
-             authenticated public polynomial"
-                .to_string(),
+    let certificate = context.pet_blind_certificate.as_ref().ok_or_else(|| {
+        ReportingError::InvalidReport("missing PET generation certificate".into())
+    })?;
+    if certificate.certificate_digest() != statement.certificate_digest {
+        return Err(ReportingError::InvalidReport(
+            "PET certificate does not match the signed response".into(),
         ));
     }
-    Ok(())
+    let (tag, target) = resolve_pet_blind_tag_and_target(blind_context, context).await?;
+    let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<
+        crypto::DkgImpl,
+        PetImpl,
+    >(certificate, ring, &tag, &target, blind_context)
+    .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
+    let polynomial = crate::pet::v0::generation::decode::<PubPolyImpl>(
+        &certificate.public_polynomial,
+        ring.threshold,
+        &blind_context.pet_pk,
+    )
+    .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
+    let aggregate_r = aggregate_r
+        .to_bytes()
+        .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
+    let aggregate_diff = aggregate_diff
+        .to_bytes()
+        .map_err(|e| ReportingError::InvalidReport(e.to_string()))?;
+
+    // The request's polynomial is endorsed by threshold distinct current members,
+    // not authenticated by its constant term or by the accused's own claim.
+    // No local-generation lookup: an honest reply remains valid after refresh.
+    match verify_one_decrypt::<PetImpl>(
+        statement,
+        response_signature,
+        ring,
+        &polynomial,
+        blind_context.context_digest(),
+        certificate.certificate_digest(),
+        &certificate.attempt_id,
+        &aggregate_r,
+        &aggregate_diff,
+        blind_context,
+    ) {
+        ContributionCheckOutcome::Invalid(_) => Ok(()),
+        ContributionCheckOutcome::NotAttributable(error) => {
+            Err(ReportingError::InvalidReport(error.to_string()))
+        }
+        ContributionCheckOutcome::Verified(_) => Err(ReportingError::Unauthorized(
+            "reported PET decrypt share verifies under its certified request generation".into(),
+        )),
+    }
 }

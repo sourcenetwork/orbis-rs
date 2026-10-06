@@ -51,9 +51,8 @@ use bulletin::r#trait::{
     Bulletin, BulletinKind, DocumentPayload, KeyDerivation, NodeInfo, RingPayload,
 };
 use crypto::r#trait::{
-    CryptoDeserialize, Dkg, Pet, PetCheckReply, PetTag,
-    PolynomialCommitment as PolynomialCommitmentTrait, PubShare, ReencryptReply, ThresholdDealer,
-    ThresholdSigner,
+    CryptoDeserialize, Dkg, Pet, PetTag, PolynomialCommitment as PolynomialCommitmentTrait,
+    PubShare, ReencryptReply, ThresholdDealer, ThresholdSigner,
 };
 use crypto::{
     DkgImpl, GroupAffine, PetImpl, PreImpl, PubPolyImpl, ScalarField, SigShareInner, SignImpl,
@@ -98,6 +97,7 @@ pub struct ReportValidationContext {
     /// `inline_document` exactly, and for the same reason: the audit target
     /// (and every other context field) must never be published on chain.
     pub pet_blind_context: Option<PetBlindContext>,
+    pub pet_blind_certificate: Option<crate::reporting::v0::types::PetBlindCertificate>,
 }
 
 pub struct ReportPreparationContext {
@@ -118,6 +118,7 @@ pub struct PreparedReport {
     /// own local validation). `None` for every report except a PET blind-equality-test
     /// `invalid_crypto_response`. Mirrors `inline_document` exactly.
     pub pet_blind_context: Option<PetBlindContext>,
+    pub pet_blind_certificate: Option<crate::reporting::v0::types::PetBlindCertificate>,
 }
 
 #[async_trait]
@@ -207,3 +208,6 @@ use self::{common::*, invalid_crypto::*, node_offline::*, unauthorized_request::
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use invalid_crypto::require_pet_blind_decrypt_verification_failure;

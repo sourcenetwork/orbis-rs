@@ -648,6 +648,7 @@ fn signed_bad_refresh_dkg_share_observation(
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature,

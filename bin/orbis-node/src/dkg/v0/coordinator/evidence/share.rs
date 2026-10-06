@@ -277,6 +277,7 @@ where
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(evidence.statement),
             response_signature: evidence.signature,

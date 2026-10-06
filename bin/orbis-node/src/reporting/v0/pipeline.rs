@@ -171,6 +171,7 @@ where
                 mode: ReportValidationMode::ReporterObservation,
                 inline_document: prepared.inline_document.clone(),
                 pet_blind_context: prepared.pet_blind_context.clone(),
+                pet_blind_certificate: prepared.pet_blind_certificate.clone(),
             },
         )
         .await?;
@@ -208,6 +209,7 @@ where
                 envelope: prepared.envelope.clone(),
                 inline_document: prepared.inline_document.clone(),
                 pet_blind_context: prepared.pet_blind_context.clone(),
+                pet_blind_certificate: prepared.pet_blind_certificate.clone(),
             })),
             prepared.signing_options,
         )
@@ -264,6 +266,7 @@ where
                 },
                 inline_document: context.inline_document.clone(),
                 pet_blind_context: context.pet_blind_context.clone(),
+                pet_blind_certificate: context.pet_blind_certificate.clone(),
             },
         )
         .await?;

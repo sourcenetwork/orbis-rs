@@ -25,9 +25,7 @@ use crate::reporting::v0::types::{
 use crate::ring_state::RingShareBundle;
 use common::blockchain::sign_node_message_with_hex_key;
 use crypto::helpers::sample_scalar;
-use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PetTag, PriShare, ThresholdSigner,
-};
+use crypto::r#trait::{CryptoSerialize, DistKeyShare, Dkg, Pet, PetTag, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{SigShareInner, SignImpl, SignaturePoint};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -63,7 +61,8 @@ where
         message: PetMessage,
         peer_id: &PeerId,
     ) -> Result<Option<PetMessage>> {
-        match message {
+        let request_id = message.request_id().to_owned();
+        let result = match message {
             PetMessage::CommitRequest(req) => self.handle_commit_request(*req, peer_id).await,
             PetMessage::RevealRequest(req) => self.handle_reveal_request(*req, peer_id).await,
             PetMessage::DecryptRequest(req) => self.handle_decrypt_request(*req, peer_id).await,
@@ -73,6 +72,7 @@ where
                 // Responses are collected by the initiator, not here.
                 Ok(None)
             }
+            PetMessage::GenerationMismatch { .. } => Ok(None),
             PetMessage::Error { request_id, error } => {
                 tracing::error!(
                     request_id = %request_id,
@@ -81,6 +81,12 @@ where
                 );
                 Ok(None)
             }
+        };
+        match result {
+            Err(PetError::GenerationMismatch) => {
+                Ok(Some(PetMessage::GenerationMismatch { request_id }))
+            }
+            other => other,
         }
     }
 
@@ -141,9 +147,17 @@ where
             &ctx.document.ring_id,
         )
         .map_err(|e| PetError::Storage(format!("Failed to load share bundle: {}", e)))?;
-        let pri_share: PriShare<Fr> = PriShare::from_bytes(&bundle.share_bytes).map_err(|e| {
-            PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
-        })?;
+        crate::pet::v0::generation::match_bundle::<D::PubPoly>(
+            &bundle,
+            &ctx.public_polynomial,
+            ring_payload.threshold,
+            &pet_pk_hex,
+        )?;
+        let pri_share = crate::pet::v0::generation::member_share::<D>(
+            &bundle,
+            &self.app_state.node_key,
+            &ring_payload,
+        )?;
         let node_id = pri_share.i;
 
         let target_fingerprint = P::owner_fingerprint(ctx.audit_target_object_id.as_bytes())
@@ -252,6 +266,22 @@ where
         let coordinator_node_key =
             resolve_coordinator_node_key(&self.app_state.bulletin, peer_id, &ring_payload).await?;
 
+        let bundle = RingShareBundle::load_by_pet_ring_key(
+            &self.app_state.local_storage,
+            &ctx.document.ring_id,
+        )
+        .map_err(PetError::Storage)?;
+        crate::pet::v0::generation::match_bundle::<D::PubPoly>(
+            &bundle,
+            &ctx.public_polynomial,
+            ring_payload.threshold,
+            &pet_pk_hex,
+        )?;
+        let member = crate::pet::v0::generation::member_share::<D>(
+            &bundle,
+            &self.app_state.node_key,
+            &ring_payload,
+        )?;
         let threshold = ring_payload.threshold as usize;
         if all_commitments.len() != threshold {
             return Err(PetError::ProtocolError(format!(
@@ -298,6 +328,9 @@ where
                 ))
             })?;
 
+        if pending.node_id != member.i {
+            return Err(PetError::GenerationMismatch);
+        }
         if pending.context_digest != context_digest {
             return Err(PetError::ProtocolError(
                 "reveal-phase context does not match the commit-phase context".to_string(),
@@ -449,6 +482,7 @@ where
             &ring_payload,
             &tag,
             &target_fingerprint,
+            &blind_context,
         )?;
         let certificate_digest = certificate.certificate_digest();
 
@@ -457,9 +491,17 @@ where
             &ctx.document.ring_id,
         )
         .map_err(|e| PetError::Storage(format!("Failed to load share bundle: {}", e)))?;
-        let pri_share: PriShare<Fr> = PriShare::from_bytes(&bundle.share_bytes).map_err(|e| {
-            PetError::Deserialization(format!("Failed to deserialize PET share: {}", e))
-        })?;
+        crate::pet::v0::generation::match_bundle::<D::PubPoly>(
+            &bundle,
+            &ctx.public_polynomial,
+            ring_payload.threshold,
+            &pet_pk_hex,
+        )?;
+        let pri_share = crate::pet::v0::generation::member_share::<D>(
+            &bundle,
+            &self.app_state.node_key,
+            &ring_payload,
+        )?;
         let node_id = pri_share.i;
         let public_polynomial_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
             PetError::Deserialization(format!(

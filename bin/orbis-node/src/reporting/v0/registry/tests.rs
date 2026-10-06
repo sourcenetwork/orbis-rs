@@ -82,6 +82,7 @@ fn pre_invalid_observation() -> InvalidCryptoResponseObservation {
         observed_at: 100,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Pre {
             statement: PreReencryptResponseStatement {
                 domain: PRE_REENCRYPT_RESPONSE_DOMAIN.to_string(),
@@ -118,6 +119,7 @@ fn sign_invalid_observation() -> InvalidCryptoResponseObservation {
         observed_at: 100,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Sign {
             statement: SignResponseStatement {
                 domain: SIGN_RESPONSE_DOMAIN.to_string(),
@@ -209,6 +211,7 @@ fn validation_context(
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
     }
 }
 
@@ -282,6 +285,7 @@ fn dkg_invalid_observation() -> InvalidCryptoResponseObservation {
         observed_at: statement.signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature: vec![9; 64],
@@ -962,6 +966,7 @@ async fn dkg_share_shape_rejects_wrong_origin() {
             mode: ReportValidationMode::ReporterObservation,
             inline_document: None,
             pet_blind_context: None,
+            pet_blind_certificate: None,
         },
     )
     .unwrap_err();
@@ -1027,6 +1032,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgEquivocation {
             commitment_a: Box::new(commitment_a.clone()),
             commitment_b: Box::new(commitment_b),
@@ -1051,6 +1057,7 @@ async fn validate_equivocation_commitment_shape_accepts_bound_and_rejects_bad_or
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
     };
 
     // A well-bound commitment passes the shape check.
@@ -1135,6 +1142,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
             statement: Box::new(commitment.statement.clone()),
             response_signature: commitment.signature.clone(),
@@ -1159,6 +1167,7 @@ async fn validate_refresh_commitment_shape_accepts_and_rejects_wrong_origin() {
         mode: ReportValidationMode::ReporterObservation,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
     };
 
     // A well-formed pss_refresh commitment passes the shape check.
@@ -1618,192 +1627,9 @@ mod invalid_crypto_generation_history {
     }
 }
 
-/// PET decrypt report
-/// verification authenticates the *responder's own claimed* public
-/// polynomial (now part of the signed statement) against the ring's known,
-/// generation-invariant `pet_pk`, rather than matching it against the
-/// verifier's own local current/recently-retired candidates. This covers
-/// both directions the old candidate-list approach couldn't: a genuine share
-/// from a generation the verifier's own node has already moved past, *and*
-/// one from a generation the verifier hasn't caught up to yet (the case the
-/// old approach had no way to recognize at all) — while a forged/bogus
-/// claimed polynomial still can't escape confirmation, since it can't
-/// authenticate against `pet_pk` without genuinely holding a real share of
-/// this ring's actual `pet_sk`.
-#[cfg(feature = "bls12-381")]
-mod pet_blind_decrypt_generation_authentication {
-    use super::*;
-    use crypto::r#trait::{CryptoSerialize, PriShare, PubPoly};
-    use crypto::test_helper::DKGCoordinator;
-    use crypto::{DkgImpl, ScalarField};
-
-    /// One "generation" of the ring's PET checking key — a fresh, independent
-    /// DKG run standing in for whatever `RefreshPet`/`ResharePet` produces.
-    fn generation() -> (PriShare<ScalarField>, <DkgImpl as Dkg>::PubPoly) {
-        let mut coordinator = DKGCoordinator::new(
-            |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role: DkgRole| {
-                <DkgImpl as Dkg>::new(id, threshold, total_nodes, session_id, role)
-            },
-            3,
-            2,
-        )
-        .unwrap();
-        let (_, shares, pub_poly) = coordinator.run_dkg().unwrap();
-        let share = shares
-            .into_iter()
-            .find(|share| share.i == 2)
-            .expect("node 2 share");
-        (share, pub_poly)
-    }
-
-    fn hex_pk(pub_poly: &<DkgImpl as Dkg>::PubPoly) -> String {
-        hex::encode(CryptoSerialize::to_bytes(&pub_poly.eval(0)).unwrap())
-    }
-
-    /// A genuine decrypt statement for `share`/`poly` (`ring`'s real, current
-    /// generation) plus its matching `blind_context` (`pet_pk` authoritative
-    /// for `poly`) — but with the statement's own `public_polynomial` claim
-    /// set to whatever `claimed_poly` the caller passes. Almost always
-    /// `poly` itself (the honest case); a test can pass a *different*
-    /// polynomial to prove a forged claim doesn't authenticate.
-    fn statement_and_context(
-        share: &PriShare<ScalarField>,
-        poly: &<DkgImpl as Dkg>::PubPoly,
-        claimed_poly: &<DkgImpl as Dkg>::PubPoly,
-    ) -> (PetBlindDecryptStatement, PetBlindContext) {
-        // A stand-in ephemeral point `R` for the tag being checked — any valid
-        // curve point works; `partial_pet_check`/`verify_partial_pet_check`
-        // never require it to be related to the DKG polynomials themselves.
-        let r_point = poly.eval(99);
-        let r_bytes = CryptoSerialize::to_bytes(&r_point).unwrap();
-        let tag = PetTag {
-            ephemeral_point: r_bytes.clone(),
-            masked_fingerprint: Vec::new(),
-        };
-        let reply =
-            PetImpl::partial_pet_check(&share.v, share.i, &tag).expect("genuine partial PET check");
-        let statement = PetBlindDecryptStatement {
-            domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
-            chain_id: "chain".to_string(),
-            ring_id: "pet-ring-1".to_string(),
-            ring_pk: "ring-pk".to_string(),
-            ring_state_sha256: "00".repeat(32),
-            protocol_version: 0,
-            attempt_id: "attempt-1".to_string(),
-            context_digest: [1u8; 32],
-            certificate_digest: [2u8; 32],
-            responder_node_key: "responder-1".to_string(),
-            from_node_id: reply.partial.i,
-            aggregate_r: r_bytes,
-            aggregate_diff: Vec::new(),
-            partial: CryptoSerialize::to_bytes(&reply.partial.v).unwrap(),
-            challenge: CryptoSerialize::to_bytes(&reply.challenge).unwrap(),
-            proof: CryptoSerialize::to_bytes(&reply.proof).unwrap(),
-            signed_at: 1_050,
-            public_polynomial: CryptoSerialize::to_bytes(claimed_poly).unwrap(),
-        };
-        let blind_context = PetBlindContext {
-            chain_id: "chain".to_string(),
-            protocol_version: 0,
-            crypto_backend: "bls12_381".to_string(),
-            ring_id: "pet-ring-1".to_string(),
-            ring_pk: "ring-pk".to_string(),
-            ring_state_sha256: "00".repeat(32),
-            pet_pk: hex_pk(poly),
-            object_id: "derivation-1".to_string(),
-            salt: None,
-            timestamp: None,
-            document_inline: false,
-            audit_target_object_id: "target-1".to_string(),
-            actor_id: "did:key:z6Mkactor".to_string(),
-            valid_window_start: None,
-            valid_window_end: None,
-            coordinator_node_key: "coordinator".to_string(),
-            attempt_id: "attempt-1".to_string(),
-        };
-        (statement, blind_context)
-    }
-
-    /// `require_pet_blind_decrypt_verification_failure` no longer reads
-    /// `local_storage`/`now` (authentication is entirely a function of
-    /// `blind_context.pet_pk` and the statement's own fields) — any context
-    /// works. Self-uniquified via a random suffix, not a `static AtomicU64`
-    /// counter: `cargo nextest` runs each test in its own fresh process by
-    /// default, so a process-local counter restarts at 0 every time, and
-    /// two tests racing in separate processes would both compute the same
-    /// "first" value and collide on the same db file — confirmed, this
-    /// caused real `UniqueDBError("Database already open")` failures under
-    /// nextest that plain `cargo test`'s single-process model never surfaced.
-    async fn any_context() -> ReportValidationContext {
-        let db_name = format!(
-            "registry_pet_generation_authentication_{}",
-            rand::random::<u64>()
-        );
-        let db_path = crate::helpers::test_helpers::test_db_path(&db_name);
-        crate::helpers::test_helpers::cleanup_db(&db_path);
-        let app_state = crate::helpers::test_helpers::create_test_app_state_default(&db_name).await;
-        validation_context(&app_state, 1_100)
-    }
-
-    #[tokio::test]
-    async fn genuine_share_authenticates_regardless_of_which_generation_it_is() {
-        let context = any_context().await;
-
-        // Whichever generation the ring is "actually" on when verified — an
-        // older one the verifier has already moved past, or a newer one it
-        // hasn't caught up to yet via RefreshPet/ResharePet — a genuinely
-        // valid share, honestly claiming its own real polynomial, must
-        // never be confirmed as misconduct. The old candidate-list approach
-        // could only prove the first of these two.
-        for (label, (share, poly)) in [("older", generation()), ("newer", generation())] {
-            let (statement, blind_context) = statement_and_context(&share, &poly, &poly);
-            require_pet_blind_decrypt_verification_failure(&blind_context, &statement, &context)
-                .await
-                .expect_err(&format!(
-                    "a genuine share honestly claiming its own ({label}) generation must not \
-                     confirm a report"
-                ));
-        }
-    }
-
-    #[tokio::test]
-    async fn forged_claimed_polynomial_cannot_escape_confirmation() {
-        let context = any_context().await;
-
-        // The share and proof are genuinely valid against `real_poly` — but
-        // the statement lies about which polynomial it used, claiming
-        // `other_poly` (a different ring's key entirely) instead. This must
-        // not let a malicious responder escape confirmation just by naming
-        // an unrecognized "generation".
-        let (share, real_poly) = generation();
-        let (_, other_poly) = generation();
-        let (statement, blind_context) = statement_and_context(&share, &real_poly, &other_poly);
-
-        require_pet_blind_decrypt_verification_failure(&blind_context, &statement, &context)
-            .await
-            .expect(
-                "a claimed polynomial that doesn't authenticate against pet_pk must confirm the report",
-            );
-    }
-
-    #[tokio::test]
-    async fn genuinely_invalid_share_still_confirms() {
-        let context = any_context().await;
-
-        let (share, poly) = generation();
-        let (statement, blind_context) = statement_and_context(&share, &poly, &poly);
-        let mut tampered = statement;
-        tampered.proof = vec![0xff; tampered.proof.len()];
-
-        require_pet_blind_decrypt_verification_failure(&blind_context, &tampered, &context)
-            .await
-            .expect("a genuinely tampered proof must confirm the report");
-    }
-}
-
 /// `validate_pet_blind_decrypt_evidence`/`validate_pet_blind_reveal_evidence`
 /// (the full outer validators, not just the inner crypto re-verification
-/// `pet_blind_decrypt_generation_authentication` exercises above) didn't
+/// generation certificate tests exercise) didn't
 /// call the same shared authorization helpers PRE/Sign's own outer
 /// validators do — ring-state authority, reporter/accused committee
 /// membership, reporter/accused transport identity, local-signer
@@ -1888,6 +1714,9 @@ mod pet_blind_outer_validator_authorization_checks {
             ring_id: "pet-ring-1".to_string(),
             ring_pk: ring.ring_pk.clone(),
             ring_state_sha256: ring_state_sha256_hex,
+            public_polynomial_digest: crate::reporting::v0::types::pet_public_polynomial_digest(
+                &CryptoSerialize::to_bytes(&poly).unwrap(),
+            ),
             pet_pk: pet_pk_hex,
             object_id: "derivation-1".to_string(),
             salt: None,
