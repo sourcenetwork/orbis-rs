@@ -1,12 +1,12 @@
-use crate::decaf377::common::PubPoly;
-use crate::decaf377::dkg::DKGNode;
-use crate::decaf377::pre::ThresholdDealerNode;
-use crate::decaf377::sign::ThresholdDecafSigner;
 use crate::dkg_tests::run_all_tests;
+use crate::jubjub::common::PubPoly;
+use crate::jubjub::common::{Element, Fr};
+use crate::jubjub::dkg::DKGNode;
+use crate::jubjub::pre::ThresholdDealerNode;
+use crate::jubjub::sign::ThresholdJubjubSigner;
 use crate::r#trait::{
     DistributedShare, Dkg, DkgMode, DkgRole, PolynomialCommitment as PolynomialCommitmentTrait,
 };
-use decaf377::{Element, Fr};
 use rand_core::{OsRng, RngCore};
 
 #[test]
@@ -16,7 +16,7 @@ fn test_all_dkg_tests() {
             DKGNode::new(id, threshold, total_nodes, session_id, role)
         },
         |pk: &Element| *pk == Element::default(),
-        |share_value: &Fr| Element::GENERATOR * share_value,
+        |share_value: &Fr| Element::generator() * share_value,
         || {
             let mut rng = OsRng;
             Fr::rand(&mut rng)
@@ -55,7 +55,7 @@ fn test_lifecycle() {
     crate::lifecycle_tests::run_lifecycle_test::<
         DKGNode,
         ThresholdDealerNode,
-        ThresholdDecafSigner,
+        ThresholdJubjubSigner,
         _,
         _,
         _,
@@ -69,7 +69,7 @@ fn test_lifecycle() {
         },
         || {
             let sk = Fr::rand(&mut OsRng);
-            let pk = Element::GENERATOR * sk;
+            let pk = Element::generator() * sk;
             (sk, pk)
         },
         |a: &Fr, b: &Fr| *a + *b,

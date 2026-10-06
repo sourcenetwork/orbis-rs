@@ -1,12 +1,12 @@
 use crate::context::{context_digest, CiphertextContext};
-use crate::decaf377::pre::ThresholdDealerNode;
+use crate::jubjub::common::{Element, Fr};
+use crate::jubjub::pre::ThresholdDealerNode;
 use crate::r#trait::{DistKeyShare, ReaderKeyProof, ThresholdDealer};
 use crate::test_helper::DKGCoordinator;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use decaf377::{Element, Fr};
 use rand_core::OsRng;
 
 // ============================================================================
@@ -19,16 +19,16 @@ fn test_all_pre() {
         // make_keypair: random (scalar, group element) pair
         || {
             let sk = Fr::rand(&mut OsRng);
-            let pk = Element::GENERATOR * sk;
+            let pk = Element::generator() * sk;
             (sk, pk)
         },
         // make_pub_poly: construct PubPoly from commits
-        |commits| crate::decaf377::common::PubPoly { commits },
+        |commits| crate::jubjub::common::PubPoly { commits },
         // run_dkg: full DKG ceremony
         |n, t| {
             let mut coordinator = DKGCoordinator::new(
                 |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
-                    <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
+                    <crate::jubjub::dkg::DKGNode as crate::r#trait::Dkg>::new(
                         id,
                         threshold,
                         total_nodes,
@@ -41,7 +41,7 @@ fn test_all_pre() {
             )?;
             coordinator.run_dkg()
         },
-        // make_identity_pk: decaf377 identity element
+        // make_identity_pk: jubjub identity element
         Element::default,
     )
     .unwrap();
@@ -58,7 +58,7 @@ fn test_public_encryption_artifacts_cannot_decrypt() {
         _,
     >(|| {
         let sk = Fr::rand(&mut OsRng);
-        let pk = Element::GENERATOR * sk;
+        let pk = Element::generator() * sk;
         (sk, pk)
     })
     .unwrap();
@@ -70,10 +70,10 @@ fn test_public_encryption_artifacts_cannot_decrypt() {
 
 #[test]
 fn test_threshold_dealer_creation() {
-    assert_eq!(ThresholdDealerNode::name(), "elgamal/decaf377");
+    assert_eq!(ThresholdDealerNode::name(), "elgamal/jubjub");
 }
 
-/// — decaf377's `reencrypt_internal` uses the identical linear
+/// — jubjub's `reencrypt_internal` uses the identical linear
 /// `effective_ski * (rdr_pk + enc_cmt)` structure with no proof of knowledge of
 /// `rdr_pk`'s discrete log, so the forged-reader-key attack applied here too
 /// before the [`ReaderKeyProof`] check was added.
@@ -83,7 +83,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     let t = 3;
     let mut coordinator = DKGCoordinator::new(
         |id: u32, threshold: usize, total_nodes: usize, session_id: u128, role| {
-            <crate::decaf377::dkg::DKGNode as crate::r#trait::Dkg>::new(
+            <crate::jubjub::dkg::DKGNode as crate::r#trait::Dkg>::new(
                 id,
                 threshold,
                 total_nodes,

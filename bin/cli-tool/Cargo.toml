@@ -41,7 +41,7 @@ required-features = ["native"]
 native = ["bulletin/native", "dep:alloy-primitives", "dep:vera-client", "dep:vera-domain", "dep:local-storage", "dep:zeroize"]
 default = ["bls12-381"]
 bls12-381 = ["crypto/bls12-381", "bulletin/bls12-381", "common/bls12-381"]
-decaf377 = ["crypto/decaf377", "bulletin/decaf377", "common/decaf377"]
+jubjub = ["crypto/jubjub", "bulletin/jubjub", "common/jubjub"]
 
 [[test]]
 name = "native_admin"
