@@ -5,7 +5,12 @@ from pathlib import Path
 import re
 
 CURVES = ("bls12-381", "jubjub")
-SCENARIOS = ("native_pet_threshold_workflows", "native_distributed_threshold_workflows")
+SCENARIOS = ("native_pet_threshold_workflows", "native_distributed_threshold_workflows",
+             "native_pet_member_replacement")
+PET_MEMBER_REPLACEMENT_PHASE = (
+    "native PET phase=member-replacement-restart incoming-required=true "
+    "paired-keys-stable=true departed-secrets-absent=true"
+)
 PET_PHASES = (
     "native PET phase=paired-dkg members=3 threshold=2",
     "native PET phase=stored-inline-permissions-revocation-regrant",
@@ -19,6 +24,7 @@ FIXTURES = {
     "bin/orbis-node/tests/support/native_workflow.rs": "workflow",
     "bin/orbis-node/tests/support/native_pet.rs": "pet",
     "bin/orbis-node/tests/support/native_pet/document.rs": "pet_document",
+    "bin/orbis-node/tests/support/native_pet/member_replacement.rs": "pet_replacement",
 }
 ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
 RESULT = re.compile(r"^test result: (?:ok|FAILED)\. ([0-9]{1,6}) passed; ([0-9]{1,6}) failed; ([0-9]{1,6}) ignored;")
@@ -44,6 +50,7 @@ def failure_summary(curve, step, exit_code, elapsed_seconds, lines, source_root)
         "curve": curve, "stage": stage, "scenario": scenario, "exit_code": exit_code,
         "elapsed_seconds": round(elapsed_seconds, 2) if elapsed_seconds is not None else None,
         "libtest_result_count": 0, "tests": None, "pet_phase_bits": 0,
+        "pet_member_replacement_complete": False,
         "compiler_errors": 0, "compiler_warnings": 0, "compiler_error_codes": {},
         "malformed_json_lines": 0, "panic_headers": 0, "assertion_markers": 0,
         "elapsed_markers": 0, "fixture_locations": [],
@@ -79,6 +86,8 @@ def failure_summary(curve, step, exit_code, elapsed_seconds, lines, source_root)
         for index, phase in enumerate(PET_PHASES):
             if line == phase:
                 result["pet_phase_bits"] |= 1 << index
+        if line == PET_MEMBER_REPLACEMENT_PHASE:
+            result["pet_member_replacement_complete"] = True
         result["panic_headers"] += int(line.startswith("thread ") and " panicked at " in line)
         result["assertion_markers"] += int(line.startswith("assertion ") and "failed" in line)
         result["elapsed_markers"] += line.count("Elapsed(())")

@@ -18,7 +18,9 @@ import time
 
 # Helper imports must not create untracked bytecode in the source snapshot.
 sys.dont_write_bytecode = True
-from native_lifecycle_summary import CURVES, SCENARIOS, PET_PHASES, failure_summary
+from native_lifecycle_summary import (
+    CURVES, SCENARIOS, PET_PHASES, PET_MEMBER_REPLACEMENT_PHASE, failure_summary,
+)
 
 CARGO = ["cargo", "+1.98.0"]
 MANIFESTS = ("bin/cli-tool/Cargo.toml", "bin/orbis-node/Cargo.toml",
@@ -193,6 +195,9 @@ def qualify(root, curve, private_root):
             if scenario == SCENARIOS[0]:
                 step["pet_phase_count"] = sum(phase in log.read_text() for phase in PET_PHASES)
                 require(step["pet_phase_count"] == len(PET_PHASES), "PET lifecycle evidence is incomplete")
+            if scenario == "native_pet_member_replacement":
+                step["pet_member_replacement_complete"] = PET_MEMBER_REPLACEMENT_PHASE in log.read_text().splitlines()
+                require(step["pet_member_replacement_complete"], "PET member replacement evidence is incomplete")
             save()
         unchanged()
         manifest["status"] = "passed"
@@ -234,7 +239,7 @@ def main():
     except Exception:
         # Runtime logs may include secrets or application data; never stream or upload them.
         parser.exit(1, "Native lifecycle qualification failed; details remain in the private run directory.\n")
-    print("Native lifecycle scenarios passed: 2", flush=True)
+    print("Native lifecycle scenarios passed: " + str(len(SCENARIOS)), flush=True)
 
 
 if __name__ == "__main__":

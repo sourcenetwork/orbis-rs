@@ -333,6 +333,19 @@ VERAD_BINARY=/path/to/verad ORBIS_NODE_BINARY=/path/to/orbis-node \
   native_pet_scheduled_refresh_after_restart -- --ignored --exact
 ```
 
+The ignored `native_pet_member_replacement` scenario admits a fresh fourth node,
+then replaces one member of a 2-of-3 PET ring without changing either certified
+public key. It requires both new polynomials to converge, keeps the departed node
+running until its scheduler removes the paired material, and checks its stopped
+store has no main/PET secret, pending reshare record or ring-index entry. With
+another current member stopped, the incoming member must participate in stored
+and inline PRE before and after abrupt restart. Reopened current shares must match
+the new committee indices and polynomials. Cleanup means logical record absence;
+it does not erase copied secrets or revoke a previously recovered threshold
+secret. Public RPC coordination is allowed for nonmembers, so this fixture does
+not assert blanket RPC rejection. Use the scheduled-refresh command above with
+`native_pet_member_replacement` as the exact selector.
+
 The ignored `native_pet_fault_reports` scenario uses a separate diagnostic binary
 built with `native,redb,iroh,unsafe-testing` and either `bls12-381` or `jubjub`.
 It enables the existing testing service only on that scenario's child processes,
@@ -361,8 +374,8 @@ Both curve variants cover fresh ordinary rings, abrupt restart, member replaceme
 offline reports and live policy checks. Power-loss recovery and other fault
 evidence types require their own checks.
 
-The **Native lifecycle** CI workflow runs `native_pet_threshold_workflows` and
-`native_distributed_threshold_workflows` once per curve. BLS includes the Defra
+The **Native lifecycle** CI workflow runs `native_pet_threshold_workflows`,
+`native_distributed_threshold_workflows` and `native_pet_member_replacement` once per curve. BLS includes the Defra
 checks below. The driver builds the Vera revision declared by all native SDK
 pins and stages normal release Vera/Orbis executables before compiling the test
 harness. It rejects Cosmos dependencies in the normal native node and uses

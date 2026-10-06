@@ -28,9 +28,16 @@ mod report_fault;
 #[path = "native_pet/scheduled_refresh.rs"]
 mod scheduled_refresh;
 
+#[path = "native_pet/scheduled_store.rs"]
+mod stored_bundle;
+
+#[path = "native_pet/member_replacement.rs"]
+mod member_replacement;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
+    MemberReplacement,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
 }
@@ -39,6 +46,7 @@ pub async fn run(scenario: Scenario) {
     let (deployment, report_fault) = match scenario {
         Scenario::Lifecycle => (9075, false),
         Scenario::ScheduledRefresh => (9077, false),
+        Scenario::MemberReplacement => (9078, false),
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
@@ -248,6 +256,27 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(&client, id, &trusted).await;
+    if matches!(scenario, Scenario::MemberReplacement) {
+        member_replacement::MemberReplacement {
+            cluster: &cluster,
+            client: &client,
+            trusted: &trusted,
+            deployment,
+            deployment_root: &_root.0,
+            controller: &controller,
+            controller_key: &controller_key,
+            worker: &worker,
+            policy: &policy,
+            ring_id: &ring_id,
+            keys: &keys,
+            base: base.path(),
+            addresses: &addresses,
+            infos: &infos,
+        }
+        .run(&mut nodes, &reader, &audit, documents, &baseline)
+        .await;
+        return;
+    }
     let previous = client
         .read_threshold_ring(&ring_id, 1, &trusted)
         .await

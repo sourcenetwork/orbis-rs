@@ -257,6 +257,13 @@ async fn native_pet_threshold_workflows() {
 #[tokio::test]
 #[ignore = "requires built native verad and orbis-node binaries"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_member_replacement() {
+    native_pet::run(native_pet::Scenario::MemberReplacement).await;
+}
+
+#[tokio::test]
+#[ignore = "requires built native verad and orbis-node binaries"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
 }

@@ -35,6 +35,7 @@ class NativeLifecycleTests(unittest.TestCase):
         self.boundary_failure = False
         self.zero_tests = False
         self.missing_phase = False
+        self.replacement_phase = driver.PET_MEMBER_REPLACEMENT_PHASE
         self.mutate_source = False
         self.nonzero = False
         self.compiler_failure = False
@@ -86,6 +87,8 @@ class NativeLifecycleTests(unittest.TestCase):
             output = "sensitive runtime data\n"
             if command[1] == driver.SCENARIOS[0]:
                 output += "\n".join(driver.PET_PHASES[:-1] if self.missing_phase else driver.PET_PHASES) + "\n"
+            if command[1] == "native_pet_member_replacement":
+                output += self.replacement_phase + "\n"
             count = 0 if self.zero_tests else 1
             output += f"test result: ok. {count} passed; 0 failed; 0 ignored; finished in 0.01s\n"
             if self.mutate_source:
@@ -98,13 +101,13 @@ class NativeLifecycleTests(unittest.TestCase):
         with patch.object(driver, "snapshot", side_effect=self.snapshot), patch.object(driver.subprocess, "run", side_effect=self.command):
             return driver.qualify(self.root, curve, self.base)
 
-    def test_both_curves_stage_normal_binaries_and_run_only_two_exact_scenarios(self):
+    def test_both_curves_stage_normal_binaries_and_run_only_three_exact_scenarios(self):
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
             outputs = [self.qualify(curve) for curve in driver.CURVES]
         self.assertEqual([entry[0] for entry in self.live], list(driver.SCENARIOS) * 2)
-        self.assertEqual(len({entry[1] for entry in self.live}), 4)
-        self.assertEqual(len({entry[2] for entry in self.live}), 4)
+        self.assertEqual(len({entry[1] for entry in self.live}), 6)
+        self.assertEqual(len({entry[2] for entry in self.live}), 6)
         self.assertNotIn("sensitive runtime data", captured.getvalue())
         self.assertEqual(sum("test" in command for command in self.commands), 2)
         self.assertFalse(any("clean" in command for command in self.commands))
@@ -115,6 +118,7 @@ class NativeLifecycleTests(unittest.TestCase):
             self.assertTrue(result["retained_log_sha256"])
             self.assertEqual(result["kdf"], {"m_cost_kib": 262144, "t_cost": 3})
             self.assertFalse(result["deadline_overrides"])
+            self.assertTrue(result["steps"][-1]["pet_member_replacement_complete"])
 
     def test_compiler_failure_prints_only_structured_allowlisted_facts(self):
         self.compiler_failure = True
@@ -176,6 +180,24 @@ class NativeLifecycleTests(unittest.TestCase):
             self.qualify()
         self.assertEqual(len(self.live), 1)
 
+    def test_replacement_requires_exact_completion_marker_even_when_test_passes(self):
+        for marker in ("", driver.PET_MEMBER_REPLACEMENT_PHASE + " private suffix",
+                       driver.PET_MEMBER_REPLACEMENT_PHASE.replace("incoming-required=true", "incoming-required=false")):
+            self.replacement_phase = marker
+            before = len(self.live)
+            captured = io.StringIO()
+            with self.subTest(marker=marker), contextlib.redirect_stdout(captured):
+                with self.assertRaisesRegex(ValueError, "member replacement evidence is incomplete"):
+                    self.qualify()
+            self.assertEqual(len(self.live) - before, 3)
+            self.assertEqual(self.live[-1][0], "native_pet_member_replacement")
+            summary_line = next(line for line in captured.getvalue().splitlines()
+                                if line.startswith("Native lifecycle failure summary: "))
+            summary = json.loads(summary_line.split(": ", 1)[1])
+            self.assertEqual(summary["scenario"], "native_pet_member_replacement")
+            self.assertFalse(summary["pet_member_replacement_complete"])
+            self.assertNotIn("private suffix", captured.getvalue())
+
     def test_source_change_stops_the_run(self):
         self.mutate_source = True
         with self.assertRaisesRegex(ValueError, "Source changed"):
@@ -222,6 +244,20 @@ class FailureSummaryTests(unittest.TestCase):
         self.assertEqual(result["elapsed_markers"], 1)
         self.assertEqual(result["fixture_locations"], [{"file_id": "pet", "line": 123, "column": 45}])
         for private in ("secret", "private", "/checkout", "native_pet.rs", "\x1b"):
+            self.assertNotIn(private, json.dumps(result))
+
+    def test_replacement_marker_and_location_preserve_existing_pet_bits(self):
+        text = "\n".join(driver.PET_PHASES) + "\n" + driver.PET_MEMBER_REPLACEMENT_PHASE + "\n"
+        text += "thread 'secret actor' panicked at /checkout/bin/orbis-node/tests/support/native_pet/member_replacement.rs:42:7:\n"
+        result = self.summarize(text, step="scenarios/native_pet_member_replacement/attempt-1/command")
+        self.assertEqual(result["stage"], "live")
+        self.assertEqual(result["scenario"], "native_pet_member_replacement")
+        self.assertEqual(result["pet_phase_bits"], 15)
+        self.assertTrue(result["pet_member_replacement_complete"])
+        self.assertEqual(result["fixture_locations"], [{"file_id": "pet_replacement", "line": 42, "column": 7}])
+        self.assertFalse(self.summarize(driver.PET_MEMBER_REPLACEMENT_PHASE + " private suffix")
+                         ["pet_member_replacement_complete"])
+        for private in ("secret", "/checkout", "member_replacement.rs"):
             self.assertNotIn(private, json.dumps(result))
 
     def test_json_diagnostic_fields_cannot_smuggle_messages_paths_or_codes(self):
