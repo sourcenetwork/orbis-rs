@@ -329,6 +329,9 @@ where
     /// accepted). Checked at `start_pre` / `start_sign` / `store_secret` and at the
     /// PRE / Sign-Round-1 responder handlers.
     pub jti_guard: Arc<JtiReplayGuard>,
+    /// Optional ring whose decrypt proofs are corrupted before signing in test builds.
+    #[cfg(feature = "unsafe-testing")]
+    pub pet_decrypt_fault: Arc<Mutex<Option<String>>>,
 }
 
 impl<D> AppState<D>
@@ -357,6 +360,8 @@ where
             peer_connection_pool: Arc::new(PeerConnectionPool::new()),
             reporting_state: Arc::new(ReportingState::new()),
             jti_guard: Arc::new(JtiReplayGuard::new()),
+            #[cfg(feature = "unsafe-testing")]
+            pet_decrypt_fault: Arc::new(Mutex::new(None)),
         }
     }
 }

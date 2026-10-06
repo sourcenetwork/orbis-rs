@@ -43,8 +43,8 @@ use proto::unsafe_testing::{
     DeleteLocalStorageResponse, GetActivePssSessionRequest, GetActivePssSessionResponse,
     GetLocalStorageRequest, GetLocalStorageResponse, LocalStorageAccessMode, LocalStorageKey,
     LocalStorageKeyType, SetLocalStorageRequest, SetLocalStorageResponse,
-    SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
-    SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
+    SetPetDecryptFaultRequest, SetPetDecryptFaultResponse, SubmitDkgEquivocationEvidenceRequest,
+    SubmitDkgEquivocationEvidenceResponse, SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
     SubmitDkgInvalidShareEvidenceResponse, SubmitOrganicConflictingCommitmentRequest,
     SubmitOrganicConflictingCommitmentResponse, SubmitOrganicConflictingManifestRequest,
@@ -215,6 +215,29 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(|error| storage_error("delete", error))?;
 
         Ok(Response::new(DeleteLocalStorageResponse { existed }))
+    }
+
+    async fn set_pet_decrypt_fault(
+        &self,
+        request: Request<SetPetDecryptFaultRequest>,
+    ) -> Result<Response<SetPetDecryptFaultResponse>, Status> {
+        let request = request.into_inner();
+        if request.ring_id.trim().is_empty() || request.ring_id.len() > 1024 {
+            return Err(Status::invalid_argument(
+                "ring_id must contain 1..=1024 bytes",
+            ));
+        }
+        let state = self
+            .app_state
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("unsafe PET fault requires app state"))?;
+        let mut target = state.pet_decrypt_fault.lock().await;
+        if request.enabled {
+            *target = Some(request.ring_id);
+        } else if target.as_deref() == Some(request.ring_id.as_str()) {
+            *target = None;
+        }
+        Ok(Response::new(SetPetDecryptFaultResponse {}))
     }
 
     async fn get_active_pss_session(

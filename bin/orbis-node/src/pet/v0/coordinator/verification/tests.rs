@@ -1,3 +1,5 @@
+#[cfg(feature = "unsafe-testing")]
+mod decrypt_fault;
 mod generation_reports;
 
 use super::*;
