@@ -292,9 +292,13 @@ func (x *InlineDocument) GetPetTag() *PetTagAttachment {
 // rdr_pk, cannot be redirected toward an unrelated ciphertext by submitting a
 // difference of two published commitments as rdr_pk, and so a valid
 // signature from one request cannot be replayed into a different request.
-// Verified independently by every responder, not only the ingress node;
-// never carried on the wire itself (every responder rebuilds it from
-// already-authenticated/resolved data).
+//
+// This signature itself is the only part carried on the wire, as
+// StartPreRequest.rdr_pk_signature. The transcript it signs is not: every
+// responder (not only the ingress node) independently rebuilds that
+// transcript from its own already-authenticated JWT and already-resolved
+// ring/document state, then verifies this signature against its own
+// rebuilt transcript — never one supplied by another node.
 type ReaderAuthorizationSignature struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Challenge     []byte                 `protobuf:"bytes,1,opt,name=challenge,proto3" json:"challenge,omitempty"`
