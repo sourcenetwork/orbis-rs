@@ -70,6 +70,9 @@ where
     test_metadata_binding::<T, SV, PK, PP, _>(&signer, run_dkg.clone())?;
     test_metadata_wrong_value_fails::<T, SV, PK, PP, _>(&signer, run_dkg.clone())?;
     test_metadata_without_derivation_ignored::<T, SV, PK, PP, _>(&signer, run_dkg.clone())?;
+    test_derivation_metadata_transcript_boundary_is_unambiguous::<T, SV, PK, PP, _>(
+        &signer, run_dkg,
+    )?;
 
     Ok(())
 }
@@ -933,6 +936,56 @@ where
 
     // Must verify under the base aggregate key (no derivation applied)
     signer.verify(&agg_pk, msg, &sig)?;
+
+    Ok(())
+}
+
+/// `(derivation, Some(metadata))` must not collide with any `(derivation', None)`
+/// built by concatenating `derivation` with bytes shaped like the old,
+/// unprefixed `derivation || separator || len(metadata) || metadata` transcript
+/// — the exact construction that let two semantically distinct derivation
+/// requests (one with metadata, one without) hash identically and so produce
+/// the same derived key. The fix length-prefixes `derivation` itself and tags
+/// metadata presence, so the derivation/metadata boundary can never be moved
+/// by attacker-chosen bytes.
+pub fn test_derivation_metadata_transcript_boundary_is_unambiguous<T, SV, PK, PP, RD>(
+    _signer: &T,
+    run_dkg: RD,
+) -> Result<()>
+where
+    T: ThresholdSigner<
+        ShareValue = SV,
+        PublicKey = PK,
+        PubPoly = PP,
+        DistKeyShare = DistKeyShare<SV>,
+    >,
+    T::SigShare: Clone,
+    T::NonceCommitment: Clone,
+    SV: Clone + zeroize::Zeroize,
+    PK: Clone + PartialEq + std::fmt::Debug,
+    PP: PubPolyTrait<PublicKey = PK>,
+    RD: Fn(usize, usize) -> Result<(PK, Vec<PriShare<SV>>, PP)>,
+{
+    let (agg_pk, _shares, _pub_poly) = run_dkg(3, 2)?;
+    let derivation: &[u8] = b"attacker-chosen-derivation";
+    let metadata: &[u8] = &T::encode_metadata("policy-id", "resource", "read");
+
+    // Exactly the bytes the old, unprefixed construction would have hashed
+    // after `derivation` when metadata was present: a single separator byte,
+    // the little-endian length of metadata, then metadata itself.
+    let mut colliding_derivation = derivation.to_vec();
+    colliding_derivation.push(0);
+    colliding_derivation.extend_from_slice(&(metadata.len() as u64).to_le_bytes());
+    colliding_derivation.extend_from_slice(metadata);
+
+    let pk_with_metadata = T::derive_public_key(&agg_pk, derivation, Some(metadata))?;
+    let pk_from_colliding_derivation = T::derive_public_key(&agg_pk, &colliding_derivation, None)?;
+
+    assert_ne!(
+        pk_with_metadata, pk_from_colliding_derivation,
+        "a derivation crafted to mimic the old derivation||separator||len||metadata \
+         transcript must not derive the same key as (derivation, Some(metadata))"
+    );
 
     Ok(())
 }
