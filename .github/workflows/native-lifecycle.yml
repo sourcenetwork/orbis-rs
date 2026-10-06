@@ -1,0 +1,53 @@
+name: Native lifecycle
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop, "iverc/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-lifecycle-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lifecycle:
+    name: Native lifecycle (${{ matrix.crypto }})
+    # Match the existing Rust test runners; each job owns its compiler and cluster.
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate lifecycle driver
+        run: python3 scripts/test-native-lifecycle-unit.py
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+      - name: Install qualified toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          # Workspace artifacts and all run evidence remain outside this cache.
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-
+      - name: Run PET and ordinary native lifecycles
+        run: python3 scripts/test-native-lifecycle.py --curve "${{ matrix.crypto }}"
+      # Raw test output, keys, passwords, database/WAL files and private manifests
+      # remain in RUNNER_TEMP. This workflow never uploads or streams them.

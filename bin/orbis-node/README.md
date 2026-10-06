@@ -192,9 +192,9 @@ Integration tests may require Docker (see **`common`** crate **`IntegrationTestN
 
 ## Native Vera service
 
-The native integration is under qualification. The pinned Vera and Defra
-verifiers use Orbis's augmented BLS signature suite. Legacy basic-BLS signature
-types and verification paths are removed. Local process fixtures cover Defra
+The native integration is under qualification. Vera verifies the selected BLS or
+Jubjub signature scheme; Defra uses Orbis's augmented BLS suite. Legacy basic-BLS
+signature types and verification paths are removed. Local process fixtures cover Defra
 signing and replication, permission revocation, PRE, graceful restart, and
 committee replacement. Deployment qualification still requires sustained load,
 multi-host networks, crash/power-loss recovery, and operational security review.
@@ -216,10 +216,13 @@ Build a native-only node with:
 cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
 ```
 
-The native backend supports signing and PRE on rings without PET. PET document
-attachments and PET ring finalization are rejected. PET remains available with the
-default backend. Encrypting Orbis clients and node verifiers must use matching
-ciphertext-context encoding.
+The native backend supports signing, ordinary PRE and PET-backed PRE on BLS12-381
+and Jubjub rings. PET rings preserve their main/PET key pair and document tag/proof
+attachments through native Vera. `requires_pet` is mandatory and immutable. Deploy
+the pinned Vera validator, SDK consumers and PET v2 participants together on fresh
+state with a new deployment root; old ring state, pending worker journals and
+signed requests cannot be reused. Encrypting clients and node verifiers must use
+matching ciphertext-context encoding.
 
 Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
@@ -291,7 +294,7 @@ authenticated controller update. Binding an interface does not configure NAT
 forwarding or make a private address reachable from other networks.
 
 The distributed threshold fixture uses three separate Orbis processes and a 2-of-3
-BLS ring. It completes DKG through native Vera, gracefully restarts every node
+BLS or Jubjub ring. It completes DKG through native Vera, abruptly restarts every node
 with the same encrypted store and peer binding, and checks the recovered public
 polynomials and identities. It then verifies a threshold signature, stores an
 encrypted document, and decrypts it through PRE. Signing and decryption are denied
@@ -322,9 +325,35 @@ collection window so timeout observations reach reporting.
 absence with its revision and timestamp. Apply the ring's configured reset
 interval with `NodeDemerits::effective_points` when displaying the current score.
 
-This covers fresh BLS rings, graceful restart, member replacement, offline reports
-and live policy checks. Crash/power-loss recovery, other fault evidence types and
-other curves require their own checks.
+Both curve variants cover fresh ordinary rings, abrupt restart, member replacement,
+offline reports and live policy checks. Power-loss recovery and other fault
+evidence types require their own checks.
+
+The **Native lifecycle** CI workflow runs `native_pet_threshold_workflows` and
+`native_distributed_threshold_workflows` once per curve. BLS includes the Defra
+checks below. The driver builds the Vera revision declared by all native SDK
+pins and stages normal release Vera/Orbis executables before compiling the test
+harness. It rejects Cosmos dependencies in the normal native node and uses
+production Argon2 defaults without deadline overrides. Each run has a fresh build
+target; only dependency downloads are cached.
+
+```sh
+python3 scripts/test-native-lifecycle-unit.py
+python3 scripts/test-native-lifecycle.py --curve bls12-381
+python3 scripts/test-native-lifecycle.py --curve jubjub
+```
+
+The live commands require Rust 1.98.0 and the native build dependencies. Reserve
+one local compiler/cluster slot and run them sequentially. Command logs, source
+and binary hashes, and retained Vera/Orbis state stay under a unique private
+`RUNNER_TEMP` directory (the system temporary directory locally). CI prints fixed
+phase names, exit codes and timings; it does not upload runtime evidence.
+
+The PET scenario checks paired DKG, stored and inline PRE, document/audit denial
+and revoke/regrant, committee shrink with both share polynomials rotated, and
+recovery after abrupt restart. These bounded local-process scenarios do not cover
+the 24-hour scheduled refresh, native PET fault-report/demerit lifecycle,
+production capacity or power-loss recovery.
 
 The Defra signing scenario uses the actual Defra client against three Orbis
 processes and native Vera. It checks denial before an ACP grant, signed-document
