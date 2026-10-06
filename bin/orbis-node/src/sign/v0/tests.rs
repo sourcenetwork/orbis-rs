@@ -16,7 +16,7 @@ use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions
 use crate::sign::v0::error::SignError;
 use crate::sign::v0::helpers::{check_policy_access, check_policy_access_at};
 use crate::sign::v0::messages::{PolicyContext, SignContext};
-#[cfg(feature = "decaf377")]
+#[cfg(feature = "jubjub")]
 use crate::sign::v0::messages::{SignMessage, SignRequest};
 use crate::sign::v0::service::SignServiceImpl;
 use authn::{DkgClaims, SignClaims};
@@ -1747,7 +1747,7 @@ async fn test_sign_service_rejects_oversized_message() {
     cleanup_db(&test_db_path(db_name));
 }
 
-#[cfg(feature = "decaf377")]
+#[cfg(feature = "jubjub")]
 #[tokio::test]
 #[serial_test::serial]
 async fn test_failed_round_two_consumes_nonce_state() {

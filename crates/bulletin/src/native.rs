@@ -641,12 +641,13 @@ mod tests {
             .canonical_bytes(),
             session_id: "pre-request-1".into(),
             report_id: expected.into(),
-            signature_scheme: "decaf377_frost".into(),
+            signature_scheme: "jubjub_frost".into(),
             signature: vec![3; 64],
         });
         assert_eq!(report.report.report_id(), expected);
         assert_eq!(report.report_id, expected);
         assert_eq!(report.signature, "03".repeat(64));
+        assert_eq!(report.signature_scheme, "jubjub_frost");
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["report"]["deployment"], "vera-test");
         assert!(json["report"].get("chain_id").is_none());

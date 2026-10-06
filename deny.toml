@@ -96,7 +96,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 allow-git = [
     "https://github.com/iverc/commonware.git",
-    "https://github.com/mizufinance/decaf377",
     "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
     "https://github.com/sourcenetwork/orbis-rs",

@@ -1,4 +1,4 @@
-use super::common::{PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
+use super::common::{Element, Fr, PubPoly, ELEMENT_COMPRESSED_SIZE, FR_COMPRESSED_SIZE};
 use crate::{
     context::{self, CiphertextContext},
     error::{CryptoError, Result},
@@ -11,23 +11,21 @@ use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
     Aes256Gcm, Nonce,
 };
-use ark_ff_05::{One, Zero};
-use ark_serialize_05::CanonicalSerialize;
-use ark_std_05::{collections::HashSet, vec::Vec};
-use decaf377::{Element, Fr};
+use blake2::Blake2b512;
 use hkdf::Hkdf;
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256, Sha512};
+use std::collections::HashSet;
 use subtle::ConstantTimeEq;
 
-const NAME: &str = "elgamal/decaf377";
+const NAME: &str = "elgamal/jubjub";
 
-const PROTOCOL: &[u8; 30] = b"elgamal-reencrypt-challenge-v1";
-const DERIVATION_DOMAIN: &[u8; 23] = b"elgamal-derivation-v1\0\0";
+const PROTOCOL: &[u8] = b"elgamal-jubjub-reencrypt-challenge-v1";
+const DERIVATION_DOMAIN: &[u8] = b"elgamal-jubjub-derivation-v1";
 /// Domain separator for the encryption proof's Fiat-Shamir challenge.
-const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-policy-binding-proof-v1";
+const POLICY_BINDING_PROOF_DOMAIN: &[u8] = b"orbis-jubjub-policy-binding-proof-v1";
 /// Domain separator for the reader-key proof-of-possession's Fiat-Shamir challenge.
-const READER_POP_DOMAIN: &[u8] = b"orbis-reader-pop-proof-v1";
+const READER_POP_DOMAIN: &[u8] = b"orbis-jubjub-reader-pop-proof-v1";
 
 #[derive(Clone, Debug)]
 pub struct ThresholdDealerNode {}
@@ -178,8 +176,8 @@ impl ThresholdDealer for ThresholdDealerNode {
                 "Invalid dkg_pk: cannot be the identity element".to_string(),
             ));
         }
-        // decaf377: No subgroup check needed — the decaf construction guarantees
-        // all deserialized points are in the prime-order group.
+        // `Element` wraps Jubjub's prime-order subgroup; decoding validates
+        // canonical encoding and subgroup membership.
 
         let mut rng = OsRng;
         // Generate random non-zero r to avoid identity commitment and fixed AES key
@@ -189,7 +187,7 @@ impl ThresholdDealer for ThresholdDealerNode {
                 break candidate;
             }
         };
-        let enc_cmt = Element::GENERATOR * r; // U = rG
+        let enc_cmt = Element::generator() * r; // U = rG
 
         // Compute the effective public key if derivation is provided.
         let effective_pk = if let Some(deriv_bytes) = derivation {
@@ -217,7 +215,7 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         // Serialize commitment U.
         let mut enc_cmt_bytes = Vec::new();
-        enc_cmt.serialize_compressed(&mut enc_cmt_bytes)?;
+        enc_cmt.write_bytes(&mut enc_cmt_bytes)?;
 
         // AAD = context_digest(context, U). Encrypt first so the proof can bind
         // the ciphertext digest.
@@ -241,9 +239,9 @@ impl ThresholdDealer for ThresholdDealerNode {
             Self::generate_encryption_proof(&r, &enc_cmt, &context_digest, &ciphertext_digest)?;
 
         let mut challenge_bytes = Vec::new();
-        challenge.serialize_compressed(&mut challenge_bytes)?;
+        challenge.write_bytes(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
-        response.serialize_compressed(&mut response_bytes)?;
+        response.write_bytes(&mut response_bytes)?;
 
         let proof = EncryptionProof {
             challenge: challenge_bytes,
@@ -317,7 +315,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         })?;
 
         // R1' = z*G - c*U
-        let r1_prime = Element::GENERATOR * response - enc_cmt * challenge;
+        let r1_prime = Element::generator() * response - enc_cmt * challenge;
 
         let context_digest = context::context_digest(context, &secret.enc_cmt);
         let ciphertext_digest = context::ciphertext_digest(&secret.nonce, &secret.encrypted_data);
@@ -333,10 +331,10 @@ impl ThresholdDealer for ThresholdDealerNode {
         let mut challenge_bytes = [0u8; 32];
         let mut recomputed_bytes = [0u8; 32];
         challenge
-            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .write_bytes(&mut &mut challenge_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .write_bytes(&mut &mut recomputed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if challenge_bytes.ct_ne(&recomputed_bytes).into() {
@@ -412,9 +410,9 @@ impl ThresholdDealer for ThresholdDealerNode {
         let (challenge, response) = Self::generate_reader_key_proof(rdr_sk, rdr_pk)?;
 
         let mut challenge_bytes = Vec::new();
-        challenge.serialize_compressed(&mut challenge_bytes)?;
+        challenge.write_bytes(&mut challenge_bytes)?;
         let mut response_bytes = Vec::new();
-        response.serialize_compressed(&mut response_bytes)?;
+        response.write_bytes(&mut response_bytes)?;
 
         Ok(ReaderKeyProof {
             challenge: challenge_bytes,
@@ -461,17 +459,17 @@ impl ThresholdDealer for ThresholdDealerNode {
         })?;
 
         // R1' = z*G - c*rdr_pk
-        let r1_prime = Element::GENERATOR * response - *rdr_pk * challenge;
+        let r1_prime = Element::generator() * response - *rdr_pk * challenge;
 
         let recomputed_challenge = Self::reader_key_proof_challenge(rdr_pk, &r1_prime)?;
 
         let mut challenge_bytes = [0u8; 32];
         let mut recomputed_bytes = [0u8; 32];
         challenge
-            .serialize_compressed(&mut &mut challenge_bytes[..])
+            .write_bytes(&mut &mut challenge_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         recomputed_challenge
-            .serialize_compressed(&mut &mut recomputed_bytes[..])
+            .write_bytes(&mut &mut recomputed_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if challenge_bytes.ct_ne(&recomputed_bytes).into() {
@@ -490,7 +488,7 @@ impl ThresholdDealerNode {
     pub fn generate_keypair() -> (Fr, Element) {
         let mut rng = OsRng;
         let sk = Fr::rand(&mut rng);
-        let pk = Element::GENERATOR * sk;
+        let pk = Element::generator() * sk;
         (sk, pk)
     }
 
@@ -522,8 +520,8 @@ impl ThresholdDealerNode {
             ));
         }
 
-        // decaf377: No subgroup check needed — the decaf construction guarantees
-        // all deserialized points are in the prime-order group.
+        // `Element` wraps Jubjub's prime-order subgroup; decoding validates
+        // canonical encoding and subgroup membership.
 
         Ok(point)
     }
@@ -536,10 +534,9 @@ impl ThresholdDealerNode {
         enc_cmt: &Element,
         derivation_scalar: Option<Fr>,
     ) -> Result<(Element, Fr, Fr)> {
-        // Validate inputs are not identity points. decaf377 is a prime-order
-        // group, so every non-identity `Element` is already a valid subgroup
-        // member — there is no cofactor / small-subgroup check to add here, the
-        // way BLS12-381 G1's `reencrypt_internal` needs one for `rdr_pk`.
+        // Validate inputs are not identity points. `Element` only represents
+        // members of Jubjub's prime-order subgroup; its decoder rejects
+        // points with a nontrivial cofactor component.
         if *rdr_pk == Element::default() {
             return Err(CryptoError::ElGamalError(
                 "Invalid reader public key: cannot be zero point".to_string(),
@@ -562,15 +559,14 @@ impl ThresholdDealerNode {
         let xnc_ski = xr_g * effective_ski;
 
         // Compute effective commitment for binding into challenge hash
-        let effective_cmt = Element::GENERATOR * effective_ski;
+        let effective_cmt = Element::generator() * effective_ski;
 
         // Produce random oracle challenge
         // ei = Hash(PROTOCOL, idx, rdr_pk, enc_cmt, effective_cmt, Ui, UiHat, HiHat)
         let mut rng = OsRng;
         // Draw until non-zero: for a Schnorr-style response `f = r + e*x`,
-        // `r = 0` would expose `x`. Inlined rather than
-        // `crate::helpers::sample_nonzero` because that helper is bound to
-        // arkworks 0.4's `Zero`, not the 0.5 this module uses — see Cargo.toml.
+        // `r = 0` would expose `x`. The shared sampling helper is bound to
+        // arkworks field traits, so use the native Jubjub scalar sampler here.
         let ri = loop {
             let candidate = Fr::rand(&mut rng);
             if candidate != Fr::zero() {
@@ -578,7 +574,7 @@ impl ThresholdDealerNode {
             }
         };
         let ui_hat = xr_g * ri;
-        let hi_hat = Element::GENERATOR * ri;
+        let hi_hat = Element::generator() * ri;
 
         let challenge_hash = Self::hash_reencrypt_proof_points(
             idx,
@@ -612,7 +608,7 @@ impl ThresholdDealerNode {
         let ui_hat = fi_xr_g - ei_ui;
 
         // Reconstruct HiHat = fi * G - ei * effective_cmt
-        let fi_g = Element::GENERATOR * proofi;
+        let fi_g = Element::generator() * proofi;
         let ei_ci = *effective_cmt * chlgi;
         let hi_hat = fi_g - ei_ci;
 
@@ -630,10 +626,10 @@ impl ThresholdDealerNode {
         // Verify using constant-time comparison
         let mut chlg_bytes = [0u8; 32];
         let mut chlgi_bytes = [0u8; 32];
-        chlg.serialize_compressed(&mut &mut chlg_bytes[..])
+        chlg.write_bytes(&mut &mut chlg_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
         chlgi
-            .serialize_compressed(&mut &mut chlgi_bytes[..])
+            .write_bytes(&mut &mut chlgi_bytes[..])
             .map_err(|e| CryptoError::ElGamalError(format!("Serialization error: {:?}", e)))?;
 
         if chlg_bytes.ct_ne(&chlgi_bytes).into() {
@@ -703,8 +699,8 @@ impl ThresholdDealerNode {
     /// (xnc_ski, UiHat, HiHat). This prevents proof replay across different
     /// ciphertexts, readers, DKG sessions, or share indices.
     ///
-    /// Re-encryption is entirely off-circuit, so SHA-512 is used here for
-    /// negligible reduction bias (< 2^-261) when converting to Fr.
+    /// Uses unkeyed BLAKE2b-512. The full 64-byte digest is interpreted as a
+    /// little-endian integer and reduced modulo the Jubjub scalar order.
     fn hash_reencrypt_proof_points(
         idx: u32,
         rdr_pk: &Element,
@@ -712,7 +708,7 @@ impl ThresholdDealerNode {
         effective_cmt: &Element,
         proof_points: &[Element],
     ) -> Result<[u8; 64]> {
-        let mut hasher = Sha512::new();
+        let mut hasher = Blake2b512::new();
 
         // Add domain separation to prevent cross-protocol attacks
         hasher.update(PROTOCOL);
@@ -721,16 +717,16 @@ impl ThresholdDealerNode {
         hasher.update(idx.to_le_bytes());
 
         // Serialize and hash all public inputs then proof points
-        // Compressed decaf377 points are 32 bytes
+        // Compressed Jubjub points are 32 bytes
         let mut bytes = Vec::with_capacity(32);
         for point in [rdr_pk, enc_cmt, effective_cmt] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
         for point in proof_points {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
 
@@ -743,11 +739,11 @@ impl ThresholdDealerNode {
     /// Derive AES key from elliptic curve point
     pub fn derive_key_from_point(point: &Element) -> Result<[u8; 32]> {
         let mut point_bytes = Vec::new();
-        point.serialize_compressed(&mut point_bytes)?;
+        point.write_bytes(&mut point_bytes)?;
 
         let hkdf = Hkdf::<Sha256>::new(None, &point_bytes);
         let mut key = [0u8; 32];
-        hkdf.expand(b"elgamal-aes-key-v1", &mut key)
+        hkdf.expand(b"elgamal-jubjub-aes-key-v1", &mut key)
             .map_err(|_| CryptoError::ElGamalError("HKDF expansion failed".to_string()))?;
 
         Ok(key)
@@ -771,7 +767,7 @@ impl ThresholdDealerNode {
                 break candidate;
             }
         };
-        let r1 = Element::GENERATOR * k;
+        let r1 = Element::generator() * k;
 
         let c = Self::encryption_proof_challenge(enc_cmt, &r1, context_digest, ciphertext_digest)?;
         let z = k + (c * r);
@@ -796,7 +792,7 @@ impl ThresholdDealerNode {
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
         for point in [enc_cmt, r1] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
         hasher.update(context_digest);
@@ -818,7 +814,7 @@ impl ThresholdDealerNode {
                 break candidate;
             }
         };
-        let r1 = Element::GENERATOR * k;
+        let r1 = Element::generator() * k;
 
         let c = Self::reader_key_proof_challenge(rdr_pk, &r1)?;
         let z = k + (c * rdr_sk);
@@ -834,7 +830,7 @@ impl ThresholdDealerNode {
         let mut bytes = Vec::with_capacity(ELEMENT_COMPRESSED_SIZE);
         for point in [rdr_pk, r1] {
             bytes.clear();
-            point.serialize_compressed(&mut bytes)?;
+            point.write_bytes(&mut bytes)?;
             hasher.update(&bytes);
         }
 
