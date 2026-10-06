@@ -625,7 +625,11 @@ pub async fn get_account_sequence_with_config(address: &str, config: ChainConfig
     Ok(account_info.sequence)
 }
 
-async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) -> Result<()> {
+async fn fund_impl(
+    address: String,
+    config: ChainConfig,
+    signing_key_hex: &str,
+) -> common::blockchain::Result<()> {
     println!("Funding address: {}", address);
 
     // Transfer a reasonable amount (e.g., 1000000 uopen = 1 OPEN)
@@ -642,7 +646,8 @@ async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) 
     let mut last_error = None;
 
     // Create the client (with signer) once
-    let client = signed_vera_client(config, signing_key_hex).await?;
+    let signer = common::blockchain::TxSigner::from_hex_key(signing_key_hex, config.clone())?;
+    let client = common::blockchain::VeraClient::with_signer(config, signer).await?;
 
     for attempt in 1..=max_retries {
         match client.transfer(&address, amount, denom).await {
@@ -659,7 +664,7 @@ async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) 
                     "Transfer attempt {}/{} failed: {}",
                     attempt, max_retries, err_str
                 );
-                last_error = Some(anyhow!("{}", e));
+                last_error = Some(e);
                 if attempt < max_retries {
                     // Use pseudo-random delay (1-4 seconds) to desynchronize competing nodes
                     // Based on current time nanos to add jitter between nodes
@@ -675,16 +680,12 @@ async fn fund_impl(address: String, config: ChainConfig, signing_key_hex: &str) 
         }
     }
 
-    Err(anyhow!(
-        "Failed to transfer funds after {} attempts: {}",
-        max_retries,
-        last_error.map(|e| e.to_string()).unwrap_or_default()
-    ))
+    Err(last_error.expect("each failed funding attempt records its error"))
 }
 
 // Only called via the `cli-tool` lib target (orbis-node integration tests); unused from the bin target.
 #[allow(dead_code)]
-pub async fn fund(address: String, config: ChainConfig) -> Result<()> {
+pub async fn fund(address: String, config: ChainConfig) -> common::blockchain::Result<()> {
     fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
 }
 
@@ -693,5 +694,5 @@ pub async fn fund_with_signer(
     config: ChainConfig,
     signing_key_hex: &str,
 ) -> Result<()> {
-    fund_impl(address, config, signing_key_hex).await
+    Ok(fund_impl(address, config, signing_key_hex).await?)
 }

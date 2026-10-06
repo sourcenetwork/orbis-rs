@@ -25,13 +25,15 @@ vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace
 vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
-local-storage = { path = "../local-storage", optional = true }
+local-storage = { path = "../local-storage", optional = true, default-features = false }
+getrandom = { version = "0.2", features = ["std"], optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["vera"]
-vera = ["common/cosmos"]
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
+vera = ["cosmos-identity"]
+cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "local-storage/redb", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's
 # what actually compiles the module this re-exports.

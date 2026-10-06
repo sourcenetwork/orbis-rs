@@ -1,7 +1,5 @@
 mod backend;
 mod bootstrap;
-#[cfg(feature = "native")]
-mod native;
 pub(crate) use bootstrap::complete_initialization_or_shutdown;
 #[cfg(test)]
 pub(crate) use bootstrap::{shutdown_bootstrap_after_init, start_bootstrap_info_server};
@@ -20,7 +18,7 @@ use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
-use bulletin::r#trait::Bulletin;
+use bulletin::{r#trait::Bulletin, startup::NodeIdentity};
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
@@ -43,7 +41,8 @@ use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServ
 pub(crate) struct NodeConfig {
     pub(crate) args: Args,
     pub(crate) cors_policy: CorsPolicy,
-    pub(crate) node_key: String,
+    pub(crate) identity: NodeIdentity,
+    pub(crate) backend_names: (String, String),
     pub(crate) network: Arc<dyn Network>,
     pub(crate) local_storage: LocalStorageImpl,
     pub(crate) authz: Arc<dyn Authz>,
@@ -55,7 +54,8 @@ pub(crate) struct NodeConfig {
 
 /// Result of initializing the node (before starting the server)
 pub(crate) struct InitializedNode {
-    native_identity: Option<String>,
+    pub(crate) identity: NodeIdentity,
+    backend_names: (String, String),
     pub(crate) app_state: Arc<AppState<DkgImpl>>,
     pub(crate) router: Box<dyn Router>,
     pub(crate) grpc_addr: SocketAddr,
@@ -71,21 +71,8 @@ pub(crate) struct InitializedNode {
 
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    #[cfg(feature = "native")]
-    let native_config = args
-        .vera_config
-        .as_deref()
-        .map(native::Config::load)
-        .transpose()?;
-    #[cfg(not(feature = "native"))]
-    if args.vera_config.is_some() {
-        return Err("native Vera support requires building with --features native".into());
-    }
-    #[cfg(not(all(feature = "authz-vera", feature = "bulletin-vera")))]
-    if args.vera_config.is_none() {
-        return Err("this build requires --vera-config for the native backend".into());
-    }
-    let (authz_name, bulletin_name) = backend::names(args.vera_config.is_some());
+    let backend = backend::Configuration::load(&args)?;
+    let (authz_name, bulletin_name) = backend.names();
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -187,21 +174,16 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
-        let (node_key, backend) = backend::Backend::prepare(
-            &args,
-            &local_storage,
-            &runtime_base_path,
-            #[cfg(feature = "native")]
-            native_config,
-        )
-        .await?;
-        let native_identity = args.vera_config.as_ref().map(|_| node_key.clone());
+        let backend = backend
+            .prepare(&args, &local_storage, &runtime_base_path)
+            .await?;
+        let identity = backend.identity.clone();
         let bootstrap_info_server = bootstrap::start_bootstrap_info_server_with_identity(
             args.addr.parse()?,
             network.clone(),
             local_storage.clone(),
             cors_policy.clone(),
-            native_identity,
+            identity.clone(),
         )?;
         tracing::info!(
             grpc_addr = %bootstrap_info_server.local_addr(),
@@ -210,21 +192,25 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
-            let backend::Services { authz, bulletin } = backend
-                .connect(&args, &local_storage, &runtime_base_path, &bootstrap_status)
-                .await?;
-            ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
-                .await
-                .map_err(|e| format!("Failed to ensure node info: {e}"))?;
-            #[cfg(not(feature = "integration-test"))]
-            if args.vera_config.is_none() {
-                bootstrap_status.set_status(proto::info_service::NodeStatus::Funded);
-            }
+            let services = backend.connect(&bootstrap_status).await?;
+            ensure_node_info(
+                services.bulletin.as_ref(),
+                &identity.node_key,
+                network.as_ref(),
+                &args,
+            )
+            .await
+            .map_err(|e| format!("Failed to ensure node info: {e}"))?;
+            services.registration_complete(&bootstrap_status);
+            let backend::Services {
+                authz, bulletin, ..
+            } = services;
 
             let config = NodeConfig {
                 args,
                 cors_policy,
-                node_key,
+                identity,
+                backend_names: (authz_name.clone(), bulletin_name.clone()),
                 network,
                 local_storage,
                 authz,
@@ -300,7 +286,7 @@ pub(crate) async fn init_node(
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
-        config.node_key.clone(),
+        config.identity.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,
@@ -320,11 +306,8 @@ pub(crate) async fn init_node(
     );
 
     Ok(InitializedNode {
-        native_identity: config
-            .args
-            .vera_config
-            .as_ref()
-            .map(|_| config.node_key.clone()),
+        identity: config.identity,
+        backend_names: config.backend_names,
         app_state: app_state_arc,
         router,
         grpc_addr,
@@ -346,13 +329,13 @@ async fn run_server(
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
-    let (authz_name, bulletin_name) = backend::names(node.native_identity.is_some());
+    let (authz_name, bulletin_name) = &node.backend_names;
     metrics::record_build_info(
         &PreImpl::name(),
         &SignImpl::name(),
         &LocalStorageImpl::name(),
-        &authz_name,
-        &bulletin_name,
+        authz_name,
+        bulletin_name,
         &NetworkImpl::name(),
     );
 
@@ -412,8 +395,7 @@ async fn run_server(
     }
 
     // The info service is version-independent.
-    let mut info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone());
-    info_service.native_identity = node.native_identity;
+    let info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone(), node.identity);
 
     // Start gRPC server. One set of services is registered per supported protocol version.
     // When v1 is added: add a `1 => { ... }` arm below and the v1 endpoints appear automatically.
