@@ -30,7 +30,7 @@ Defined in [`Cargo.toml`](Cargo.toml):
 | Feature | Default | Meaning |
 |---------|---------|---------|
 | `bls12-381` | yes | BLS12-381 crypto + CLI alignment |
-| `decaf377` | no | Decaf377 / FROST path — mutually exclusive with `bls12-381` |
+| `jubjub` | no | Jubjub / FROST path — mutually exclusive with `bls12-381` |
 | `redb` | yes | Persistent local storage (`local-storage/redb`) |
 | `memory` | no | In-memory local storage (`local-storage/memory`) |
 | `authz-vera` | yes | `authz/vera` |
@@ -180,7 +180,7 @@ authentication and does not prevent native clients from calling the node's
 network-accessible RPCs. Keep endpoint authentication and network controls in
 place even when using a restrictive origin allowlist.
 
-Use matching **`crypto`** features with the rest of the workspace when you switch curves (`--no-default-features --features decaf377,...`).
+Use matching **`crypto`** features with the rest of the workspace when you switch curves (`--no-default-features --features jubjub,...`).
 
 ## Tests
 
@@ -221,7 +221,7 @@ attachments and PET ring finalization are rejected. PET remains available with t
 default backend. Encrypting Orbis clients and node verifiers must use matching
 ciphertext-context encoding.
 
-Select `decaf377` instead of `bls12-381` for the Decaf crypto implementation. Start with
+Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
 The configuration selects native authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap

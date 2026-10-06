@@ -126,7 +126,7 @@ cargo build -p cli-tool
 Optional crypto backends (see `Cargo.toml`):
 
 - `default`: BLS12-381
-- `decaf377`: enable with `--features decaf377`
+- `jubjub`: enable with `--no-default-features --features jubjub`
 
 ## Network & signing configuration
 
