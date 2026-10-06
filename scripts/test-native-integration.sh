@@ -15,7 +15,7 @@ export VERA_E2E_KEEP=1 VERA_E2E_DIR="$work/vera" ORBIS_NATIVE_E2E_DIR="$work/orb
 mkdir -p "$VERA_E2E_DIR" "$ORBIS_NATIVE_E2E_DIR"
 features="native,redb,iroh,$curve"
 expression='binary(native_startup) & (test(=native_pet_threshold_workflows) | test(=native_distributed_threshold_workflows) | test(=native_pet_member_replacement))'
-common=(--release --locked -j2 -p orbis-node --no-default-features --features "$features" --test native_startup --run-ignored only -E "$expression")
+common=(--release --locked --build-jobs 2 -p orbis-node --no-default-features --features "$features" --test native_startup --run-ignored only -E "$expression")
 if ! cargo +1.98.0 nextest list "${common[@]}" --message-format json > "$work/selection.json" 2> "$work/compile.log"; then
   echo 'Native container test compilation failed; diagnostics remain private.' >&2
   exit 1
@@ -29,7 +29,7 @@ python3 scripts/native_lifecycle_summary.py --log "$work/runtime.log" --curve "$
 # the opt-in testing service used by this one attributable-fault regression.
 fault="$work/fault-report"
 mkdir -p "$fault"
-common=(--release --locked -j2 -p orbis-node --no-default-features --features "$features,unsafe-testing" --test native_startup --run-ignored only -E 'binary(native_startup) & test(=native_pet_fault_reports)')
+common=(--release --locked --build-jobs 2 -p orbis-node --no-default-features --features "$features,unsafe-testing" --test native_startup --run-ignored only -E 'binary(native_startup) & test(=native_pet_fault_reports)')
 if ! cargo +1.98.0 nextest list "${common[@]}" --message-format json > "$fault/selection.json" 2> "$fault/compile.log"; then
   echo 'Native fault-report compilation failed; diagnostics remain private.' >&2
   exit 1
