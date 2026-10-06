@@ -24,6 +24,11 @@ pub struct NativeTestNetwork {
 }
 impl NativeTestNetwork {
     pub async fn start(deployment: u64) -> Self {
+        Self::start_with_genesis(deployment, GenesisBuilder::devnet()).await
+    }
+
+    /// Customize only fresh fixture genesis; deployment, validators and normal timers stay shared.
+    pub async fn start_with_genesis(deployment: u64, genesis: GenesisBuilder) -> Self {
         let mut directory = tempfile::Builder::new();
         directory.prefix("orbis-native-vera-");
         let mut root = if let Some(parent) = std::env::var_os("VERA_E2E_DIR") {
@@ -60,7 +65,7 @@ impl NativeTestNetwork {
                 p2p_address: format!("127.0.0.1:{}", ports[i]),
             })
             .collect();
-        let genesis = GenesisBuilder::devnet()
+        let genesis = genesis
             .chain_id(deployment)
             .blocks_per_epoch(192)
             .simplex(Default::default())
