@@ -32,64 +32,158 @@ mod defra_peers;
 #[path = "support/defra_documents.rs"]
 mod defra_documents;
 
-use commonware_codec::Encode;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{fs, net::TcpListener, path::Path, time::Duration};
-use test_support::{ContainerNode, NativeImage};
+use std::{fs, path::Path, time::Duration};
 use vera_client::VeraClient;
 use vera_harness::cluster::KeySet;
 
-struct Node(ContainerNode);
-impl Drop for Node {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+/// Compose-backed Orbis node handle: `node{index+1}` (one of the 3-4
+/// pre-declared services in `docker/docker-compose-native-integration-test.yml`),
+/// driven through `test_support`'s free `compose_*` functions rather than a
+/// legacy per-container `ContainerNode` (which refuses to run outside Linux —
+/// see the harness-unification plan's Phase B/C reports for why this
+/// replacement exists). Unlike `ContainerNode`, "restarting" a node reuses
+/// the same long-lived container (`docker compose start`) instead of creating
+/// a fresh one — these services are shared, named, and torn down as a whole
+/// by the owning `TestCluster`'s `Drop`, not by any individual `Node`.
+struct ComposeNode {
+    project_name: String,
+    service: String,
+    log: std::path::PathBuf,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ComposeExit(i32);
+impl ComposeExit {
+    fn success(self) -> bool {
+        self.0 == 0
     }
 }
+impl std::fmt::Display for ComposeExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "container exit {}", self.0)
+    }
+}
+
+const NATIVE_COMPOSE_FILE: &str = "docker/docker-compose-native-integration-test.yml";
+
+// Every method below returns a trivial `Result<T, ()>`/`Result<Option<T>, ()>`
+// purely so the many existing `.0.<method>().unwrap()` call sites across
+// `native_pet.rs`/`member_replacement.rs`/this file keep compiling unchanged
+// — there's no real fallible-vs-panic distinction left to preserve (the
+// underlying `compose_*` free functions already panic on a Docker-level
+// failure), this is a call-site-compatibility shim, not meaningful error
+// handling.
+impl ComposeNode {
+    fn try_wait(&self) -> Result<Option<ComposeExit>, ()> {
+        Ok(
+            test_support::compose_exit_code(NATIVE_COMPOSE_FILE, &self.project_name, &self.service)
+                .map(ComposeExit),
+        )
+    }
+
+    async fn try_wait_async(&self) -> Result<Option<ComposeExit>, ()> {
+        let project_name = self.project_name.clone();
+        let service = self.service.clone();
+        Ok(tokio::task::spawn_blocking(move || {
+            test_support::compose_exit_code(NATIVE_COMPOSE_FILE, &project_name, &service)
+                .map(ComposeExit)
+        })
+        .await
+        .unwrap())
+    }
+
+    fn kill(&self) -> Result<(), ()> {
+        test_support::compose_kill(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            &self.service,
+            "SIGKILL",
+        );
+        Ok(())
+    }
+
+    fn pause(&self) -> Result<(), ()> {
+        test_support::compose_kill(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            &self.service,
+            "SIGSTOP",
+        );
+        Ok(())
+    }
+
+    fn wait(&self) -> Result<ComposeExit, ()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(exit) = self.try_wait().unwrap() {
+                self.retain_logs().unwrap();
+                return Ok(exit);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node did not exit in time"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    async fn interrupt_async(&self) -> Result<(), ()> {
+        test_support::compose_kill(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            &self.service,
+            "SIGINT",
+        );
+        Ok(())
+    }
+
+    fn retain_logs(&self) -> Result<(), ()> {
+        test_support::compose_save_logs(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            &self.service,
+            &self.log,
+        );
+        Ok(())
+    }
+
+    async fn refresh_logs(&self) -> Result<(), ()> {
+        self.retain_logs()
+    }
+
+    /// Start (or restart) this node's service — unlike `ContainerNode`, no
+    /// per-node config is passed here: the compose file's `command:` already
+    /// bakes everything in, and `node{index}`'s fixture directory (written
+    /// once, before the service first starts) is reused across restarts.
+    fn start_service(&self) {
+        test_support::compose_start(NATIVE_COMPOSE_FILE, &self.project_name, &self.service);
+    }
+}
+
+struct Node(ComposeNode);
 impl Node {
-    fn start(base: &Path, addr: &str, controller: &str, log: &Path) -> Self {
-        Self::start_bound(base, addr, controller, log, "127.0.0.1:0")
+    /// `index` is the node's 0-based position (`node1`..`node4`).
+    fn attach(project_name: &str, index: usize, log: &Path) -> Self {
+        Self(ComposeNode {
+            project_name: project_name.to_string(),
+            service: orbis_service(index),
+            log: log.to_path_buf(),
+        })
     }
 
-    fn start_bound(base: &Path, addr: &str, controller: &str, log: &Path, bind: &str) -> Self {
-        Self::start_configured(base, addr, controller, log, bind, false)
-    }
-
-    fn start_configured(
-        base: &Path,
-        addr: &str,
-        controller: &str,
-        log: &Path,
-        bind: &str,
-        report_fault: bool,
-    ) -> Self {
-        assert!(!report_fault || cfg!(feature = "unsafe-testing"));
-        let base = base.canonicalize().unwrap();
-        let args = [
-            "--vera-config".to_owned(),
-            base.join("vera.json").display().to_string(),
-            "--addr".into(),
-            addr.into(),
-            "--node-controller-key".into(),
-            controller.into(),
-            "--network-private-routes-only".into(),
-            "--network-bind-addr".into(),
-            bind.into(),
-            "--reshare-interval-secs".into(),
-            "1".into(),
-            "--runtime-base-path".into(),
-            base.display().to_string(),
-        ];
-        let mut environment = vec![("ORBIS_PASSWORD_FILE", "password"), ("RUST_LOG", "info")];
-        let image = if report_fault {
-            environment.push(("ORBIS_ENABLE_INTEGRATION_TEST", "true"));
-            NativeImage::OrbisDiagnostic
-        } else {
-            NativeImage::Orbis
-        };
-        Self(ContainerNode::start(image, &base, &base, &args, &environment, log).unwrap())
+    /// Restart a previously-brought-up node in place (same service, same
+    /// fixture directory, same bind address — all already baked into the
+    /// Compose service). Replaces the old `Node::start`/`start_bound` (which
+    /// created a fresh `ContainerNode` each call); callers that used to pass
+    /// `base`/`addr`/`controller`/`bind` now only need the node's index,
+    /// since none of that varies between a node's launches anymore.
+    fn restart(project_name: &str, index: usize, log: &Path) -> Self {
+        let node = Self::attach(project_name, index, log);
+        node.0.start_service();
+        node
     }
 
     async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
@@ -118,7 +212,7 @@ impl Node {
         })
         .await
         .unwrap_or_else(|_| {
-            let _ = self.0.retain_logs();
+            self.0.retain_logs().unwrap();
             panic!("startup timed out; logs retained privately")
         })
     }
@@ -142,6 +236,129 @@ impl Node {
     }
 }
 
+/// `node1`..`node4`, matching `docker/docker-compose-native-integration-test.yml`
+/// and `crates/test-support/src/network/native.rs`'s own `orbis_service` —
+/// not shared with it directly (that one's private to `crates/test-support`)
+/// since this crate can't reach a private fn in another crate's module.
+fn orbis_service(index: usize) -> String {
+    match index {
+        0 => "node1",
+        1 => "node2",
+        2 => "node3",
+        3 => "node4",
+        _ => panic!("native devnet default topology only supports 4 orbis nodes"),
+    }
+    .to_string()
+}
+
+/// Bring up `count` Orbis-node services (`node1..node{count}`) against an
+/// already-running validator cluster: write each node's `vera.json`/`password`
+/// fixture, build the shared node image once (avoiding the build race
+/// `crates/test-support/src/network/native.rs`'s `bring_up_orbis_nodes` doc
+/// comment describes), bring all of them up together, and return each one's
+/// discovered gRPC endpoint. `reshare_interval_secs`/`enable_unsafe_testing`
+/// map to the Compose env vars `docker-compose-native-integration-test.yml`'s
+/// node services read (`ORBIS_NATIVE_RESHARE_INTERVAL`/`ORBIS_NATIVE_ENABLE_UNSAFE_TESTING`).
+fn bring_up_orbis_nodes(
+    cluster: &TestCluster,
+    fixtures: &Path,
+    count: usize,
+    reshare_interval_secs: u32,
+    enable_unsafe_testing: bool,
+) -> Vec<String> {
+    assert!(!enable_unsafe_testing || cfg!(feature = "unsafe-testing"));
+    let chain_endpoint = format!(
+        "http://{}:{}",
+        cluster.validator_service(0),
+        cluster.validator_rpc_port()
+    );
+    let services: Vec<String> = (0..count).map(orbis_service).collect();
+    let service_refs: Vec<&str> = services.iter().map(String::as_str).collect();
+
+    let mut extra_env = vec![
+        (
+            "ORBIS_NATIVE_RESHARE_INTERVAL".to_string(),
+            reshare_interval_secs.to_string(),
+        ),
+        (
+            "ORBIS_NATIVE_ENABLE_UNSAFE_TESTING".to_string(),
+            enable_unsafe_testing.to_string(),
+        ),
+    ];
+    for index in 0..count {
+        let dir = fixtures.join(format!("node-{index}"));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("password"), "native-dkg-test").unwrap();
+        fs::write(
+            dir.join("vera.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "endpoint": chain_endpoint,
+                "deployment_id": cluster.deployment(),
+                "deployment_root": cluster.deployment_root_hex(),
+                "consensus_key": cluster.consensus_key_hex(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        extra_env.push((
+            format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
+            dir.display().to_string(),
+        ));
+    }
+
+    cluster.build_service(&services[0], &extra_env);
+    cluster.bring_up_services(&service_refs, &extra_env);
+
+    // Bare `host:port`, matching every existing `addresses: Vec<String>`
+    // call site's convention (`format!("http://{addr}")`), not a full URL.
+    service_refs
+        .iter()
+        .map(|service| {
+            cluster
+                .discover_endpoint(service, 50051)
+                .trim_start_matches("http://")
+                .to_string()
+        })
+        .collect()
+}
+
+/// Compose service's fixed `--node-controller-key`
+/// (`docker/docker-compose-native-integration-test.yml`), the compressed
+/// secp256k1 public key for the fixed test private key `[34u8; 32]` — the
+/// same convention `bin/orbis-node/tests/support/native_workflow.rs`/`admin.rs`
+/// already use as `controller`/`controller_key`.
+const COMPOSE_NODE_CONTROLLER_KEY: &str =
+    "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";
+
+/// Bring up the dynamic 4th node (`node4`, `profiles: ["node4"]` in
+/// `docker/docker-compose-native-integration-test.yml`) against an
+/// already-running cluster/node1-3, reusing `node-0`'s `vera.json` (same
+/// chain, same deployment). Returns the new node's handle and discovered
+/// `host:port` gRPC endpoint. Replaces the old ad hoc
+/// `TcpListener::bind("127.0.0.1:0")` + `Node::start` dance (that reserved an
+/// arbitrary host port; `node4`'s port is fixed and published like every
+/// other service's).
+fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
+    let directory = base.join("node-3");
+    fs::create_dir(&directory).unwrap();
+    fs::write(directory.join("password"), "native-dkg-test").unwrap();
+    fs::copy(base.join("node-0/vera.json"), directory.join("vera.json")).unwrap();
+    let extra_env = [(
+        "ORBIS_NATIVE_NODE4_DIR".to_string(),
+        directory.display().to_string(),
+    )];
+    cluster.build_service("node4", &extra_env);
+    cluster.bring_up_services(&["node4"], &extra_env);
+    let endpoint = cluster
+        .discover_endpoint("node4", 50051)
+        .trim_start_matches("http://")
+        .to_string();
+    (
+        Node::attach(cluster.project_name(), 3, &directory.join("node.log")),
+        endpoint,
+    )
+}
+
 #[tokio::test]
 #[ignore = "requires native integration Docker images on Linux"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
@@ -160,31 +377,19 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
     let root = first.parent_hash.trim_start_matches("0x");
     let base = tempfile::tempdir().unwrap();
-    fs::write(base.path().join("password"), "native-startup-test").unwrap();
-    fs::write(
-        base.path().join("vera.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "endpoint": url, "deployment_id": deployment, "deployment_root": root,
-            "consensus_key": hex::encode(trusted.encode()),
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let controller = hex::encode(
-        k256::ecdsa::SigningKey::from_slice(&[33; 32])
-            .unwrap()
-            .verifying_key()
-            .to_sec1_bytes(),
-    );
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    drop(listener);
+    // `COMPOSE_NODE_CONTROLLER_KEY`, not a fresh per-test key: `node1`'s
+    // Compose service bakes one fixed `--node-controller-key` (see that
+    // constant's doc comment) — unlike the legacy `ContainerNode` model,
+    // this isn't a parameter a caller can vary per launch.
+    let controller = COMPOSE_NODE_CONTROLLER_KEY;
+    let endpoints = bring_up_orbis_nodes(&cluster, base.path(), 1, 1, false);
+    let addr = &endpoints[0];
     let log = base.path().join("first.log");
-    let mut node = Node::start(base.path(), &addr, &controller, &log);
-    let first_info = node.ready(&addr, &log).await;
+    let mut node = Node::attach(cluster.project_name(), 0, &log);
+    let first_info = node.ready(addr, &log).await;
     assert_eq!(first_info.node_key, first_info.public_address);
     assert_eq!(
-        fs::read_to_string(base.path().join("public_key.txt")).unwrap(),
+        fs::read_to_string(base.path().join("node-0/public_key.txt")).unwrap(),
         first_info.node_key
     );
     let certified = client
@@ -198,13 +403,14 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
     node.stop().await;
     let journal = base
         .path()
+        .join("node-0")
         .join("native-vera")
         .join(root)
         .join("state.json");
     let before = fs::read(&journal).unwrap();
     let log = base.path().join("restart.log");
-    let mut restarted = Node::start(base.path(), &addr, &controller, &log);
-    let second_info = restarted.ready(&addr, &log).await;
+    let mut restarted = Node::restart(cluster.project_name(), 0, &log);
+    let second_info = restarted.ready(addr, &log).await;
     assert_eq!(first_info.node_key, second_info.node_key);
     assert_eq!(first_info.peer_id, second_info.peer_id);
     restarted.stop().await;
@@ -310,7 +516,6 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         trusted,
         root,
         controller,
-        controller_key,
         actor,
         base,
         mut nodes,
@@ -395,9 +600,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     for index in 0..nodes.len() {
         let directory = base.path().join(format!("node-{index}"));
         let log = directory.join("restart.log");
-        let bind = infos[index].p2p_address.split_once('@').unwrap().1;
-        nodes[index] =
-            Node::start_bound(&directory, &addresses[index], &controller_key, &log, bind);
+        nodes[index] = Node::restart(cluster.project_name(), index, &log);
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
@@ -598,10 +801,8 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         assert_eq!(documents.count().await, 1);
     }
     nodes[1].stop().await;
-    let directory = base.path().join("node-1");
-    let log = directory.join("policy-edit-restart.log");
-    let bind = infos[1].p2p_address.split_once('@').unwrap().1;
-    nodes[1] = Node::start_bound(&directory, &addresses[1], &controller_key, &log, bind);
+    let log = base.path().join("node-1/policy-edit-restart.log");
+    nodes[1] = Node::restart(cluster.project_name(), 1, &log);
     let recovered = nodes[1].ready(&addresses[1], &log).await;
     assert_eq!(recovered.node_key, infos[1].node_key);
     signing = SignServiceClient::connect(
@@ -896,20 +1097,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         pre.start_pre(pre_request()).await.unwrap_err().code(),
         tonic::Code::Unauthenticated
     );
-    let directory = base.path().join("node-3");
-    fs::create_dir(&directory).unwrap();
-    fs::write(directory.join("password"), "native-dkg-test").unwrap();
-    fs::copy(
-        base.path().join("node-0/vera.json"),
-        directory.join("vera.json"),
-    )
-    .unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap().to_string();
-    drop(listener);
-    let log = directory.join("node.log");
-    let mut incoming = Node::start(&directory, &addr, &controller_key, &log);
-    let info = incoming.ready(&addr, &log).await;
+    let (mut incoming, addr) = add_orbis_node4(&cluster, base.path());
+    let info = incoming
+        .ready(&addr, &base.path().join("node-3/node.log"))
+        .await;
     assert_eq!(info.managed_ring_count, 0);
     for (command_name, command) in [
         ("set peer", NodeCommand::SetPeer(info.p2p_address.clone())),
@@ -1079,11 +1270,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         assert!(!node.0.wait().unwrap().success());
     }
     for index in 0..nodes.len() {
-        let directory = base.path().join(format!("node-{index}"));
-        let log = directory.join("reshare-restart.log");
-        let bind = infos[index].p2p_address.split_once('@').unwrap().1;
-        nodes[index] =
-            Node::start_bound(&directory, &addresses[index], &controller_key, &log, bind);
+        let log = base
+            .path()
+            .join(format!("node-{index}/reshare-restart.log"));
+        nodes[index] = Node::restart(cluster.project_name(), index, &log);
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
     }

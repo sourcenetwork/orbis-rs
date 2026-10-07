@@ -14,7 +14,9 @@
 # To pin a different native Vera chain revision or crypto feature:
 #   VERA_REF=<40-char sha> ORBIS_INTEGRATION_CRYPTO=jubjub \
 #     docker compose -f docker/docker-compose-native-integration-test.yml up --build -d
-# Defaults match docker/VERA_REF and bls12-381.
+# Defaults match docker/NATIVE_VERA_REF and bls12-381. (`crates/test-support`'s
+# Rust harness always sets VERA_REF explicitly from that file — this fallback
+# is only for a standalone `docker compose` invocation that bypasses it.)
 #
 # `ORBIS_NATIVE_VERA{1..4}_DIR` / `ORBIS_NATIVE_NODE{1..4}_DIR` / `ORBIS_NATIVE_DEPLOYMENT`
 # are set by crates/test-support/src/native_network.rs before bringing the
@@ -37,7 +39,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+        VERA_REF: ${VERA_REF:-1dab0c4562da551b1a7f00fcea643b914769891c}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -61,7 +63,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+        VERA_REF: ${VERA_REF:-1dab0c4562da551b1a7f00fcea643b914769891c}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -85,7 +87,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+        VERA_REF: ${VERA_REF:-1dab0c4562da551b1a7f00fcea643b914769891c}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -109,7 +111,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+        VERA_REF: ${VERA_REF:-1dab0c4562da551b1a7f00fcea643b914769891c}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -136,11 +138,30 @@ services:
         BACKEND: native
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local/native_workflow.rs-driven
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
       - RUST_LOG=info
-    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+      # Compiled in by default (BACKEND=native always adds unsafe-testing when
+      # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
+      # runtime unless a caller opts in — same opt-in gate Cosmos's own
+      # compose file uses, see `production_docker_nodes_do_not_expose_unsafe_testing_service`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_NATIVE_NODE1_DIR:-/dev/null}:/data
     ports:
@@ -172,11 +193,30 @@ services:
         BACKEND: native
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local/native_workflow.rs-driven
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
       - RUST_LOG=info
-    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+      # Compiled in by default (BACKEND=native always adds unsafe-testing when
+      # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
+      # runtime unless a caller opts in — same opt-in gate Cosmos's own
+      # compose file uses, see `production_docker_nodes_do_not_expose_unsafe_testing_service`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_NATIVE_NODE2_DIR:-/dev/null}:/data
     ports:
@@ -208,11 +248,30 @@ services:
         BACKEND: native
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local/native_workflow.rs-driven
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
       - RUST_LOG=info
-    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+      # Compiled in by default (BACKEND=native always adds unsafe-testing when
+      # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
+      # runtime unless a caller opts in — same opt-in gate Cosmos's own
+      # compose file uses, see `production_docker_nodes_do_not_expose_unsafe_testing_service`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_NATIVE_NODE3_DIR:-/dev/null}:/data
     ports:
@@ -245,11 +304,30 @@ services:
         BACKEND: native
         ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
         CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+        # docker/Dockerfile defaults to the floating `rust:latest` tag, whose
+        # glibc can be newer than the `debian:bookworm-slim` runtime stage's —
+        # on at least ARM64 hosts this makes the built orbis-node binary
+        # unable to execute in its own runtime image ("GLIBC_2.38 not
+        # found"). CI's `image` job already pins this exact tag for the
+        # native backend for the same reason (.github/workflows/rust.yml);
+        # this applies the same pin here so local/native_workflow.rs-driven
+        # runs don't hit it too.
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
       - RUST_LOG=info
-    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+      # Compiled in by default (BACKEND=native always adds unsafe-testing when
+      # ENABLE_INTEGRATION_TEST=true at build time, above) but disabled at
+      # runtime unless a caller opts in — same opt-in gate Cosmos's own
+      # compose file uses, see `production_docker_nodes_do_not_expose_unsafe_testing_service`.
+      - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
+    # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
+    # bring-up (no scenario wiring) doesn't care about this value and leaves
+    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it to `1` to match pre-migration behavior (`Node::start_configured`'s
+    # old hardcoded `--reshare-interval-secs 1`).
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
     volumes:
       - ${ORBIS_NATIVE_NODE4_DIR:-/dev/null}:/data
     ports:

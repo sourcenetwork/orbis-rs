@@ -201,6 +201,7 @@ impl NativeTestNetwork {
                 "ORBIS_NATIVE_NETWORK_NAME".to_string(),
                 network_name.clone(),
             ),
+            ("VERA_REF".to_string(), native_vera_ref()),
         ]
         .into_iter()
         .chain(dirs.iter().enumerate().map(|(i, dir)| {
@@ -371,8 +372,11 @@ impl NativeTestNetwork {
     /// (deployment id, network name, per-validator dirs and IPs) — replay
     /// all of it on any later `docker compose` invocation against this same
     /// project, even one scoped to different services. See this struct's
-    /// `env_vars` field doc comment for why.
-    pub(crate) fn compose_env(&self) -> &[(String, String)] {
+    /// `env_vars` field doc comment for why. `pub` (not `pub(crate)`): callers
+    /// outside this crate driving their own Orbis-node bring-up against this
+    /// same Compose project (e.g. `bin/orbis-node/tests/support/native_workflow.rs`)
+    /// need this too — see `build_service`/`bring_up_services` below.
+    pub fn compose_env(&self) -> &[(String, String)] {
         &self.env_vars
     }
 
@@ -380,29 +384,258 @@ impl NativeTestNetwork {
         self.nodes.len()
     }
 
-    pub(crate) fn compose_file(&self) -> &'static str {
+    pub fn compose_file(&self) -> &'static str {
         NATIVE_COMPOSE_FILE
     }
 
-    pub(crate) fn project_name(&self) -> &str {
+    pub fn project_name(&self) -> &str {
         &self.project_name
     }
 
-    pub(crate) fn deployment(&self) -> u64 {
+    pub fn deployment(&self) -> u64 {
         self.deployment
     }
 
     /// Hex-encoded (no `0x` prefix) deployment root, ready to drop straight
     /// into a `vera.json` fixture's `deployment_root` field.
-    pub(crate) fn deployment_root_hex(&self) -> &str {
+    pub fn deployment_root_hex(&self) -> &str {
         &self.root_hex
     }
 
     /// Hex-encoded consensus public key, ready to drop straight into a
     /// `vera.json` fixture's `consensus_key` field.
-    pub(crate) fn consensus_key_hex(&self) -> &str {
+    pub fn consensus_key_hex(&self) -> &str {
         &self.consensus_key_hex
     }
+
+    /// A validator's Compose service name (`vera1`..`vera4`), the endpoint an
+    /// Orbis-node container reaches it at (e.g. a `vera.json` fixture's
+    /// `"endpoint"` field should be `http://{name}:{VERA_RPC_PORT}` — these
+    /// containers share this cluster's bridge network, so the service name
+    /// resolves; a host-published port, by contrast, is only reachable from
+    /// the test process itself, not from another container).
+    pub fn validator_service(&self, index: usize) -> &'static str {
+        vera_service(index)
+    }
+
+    pub fn validator_rpc_port(&self) -> u16 {
+        VERA_RPC_PORT
+    }
+
+    /// Build one Compose service's image, replaying this project's full env
+    /// var set plus `extra_env`. See [`compose_build`]'s doc comment for why
+    /// this must happen once, by name, before `up`-ing a service that shares
+    /// a `build:` block with others.
+    pub fn build_service(&self, service: &str, extra_env: &[(String, String)]) {
+        compose_build(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            service,
+            &self.env_vars,
+            extra_env,
+        );
+    }
+
+    /// Bring up one or more already-built Compose services, replaying this
+    /// project's full env var set plus `extra_env` (e.g. per-node fixture
+    /// directories, a reshare-interval override).
+    pub fn bring_up_services(&self, services: &[&str], extra_env: &[(String, String)]) {
+        compose_up(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            services,
+            &self.env_vars,
+            extra_env,
+        );
+    }
+
+    /// Discover a running service's host-published endpoint for the given
+    /// container-internal port (e.g. `discover_endpoint("node1", 50051)`).
+    pub fn discover_endpoint(&self, service: &str, container_port: u16) -> String {
+        compose_discover_endpoint(
+            NATIVE_COMPOSE_FILE,
+            &self.project_name,
+            service,
+            container_port,
+        )
+    }
+
+    pub fn stop_service(&self, service: &str) {
+        compose_stop(NATIVE_COMPOSE_FILE, &self.project_name, service);
+    }
+
+    /// Start a previously stopped (not removed) service, preserving its
+    /// container and bind-mounted state — unlike the legacy `ContainerNode`
+    /// model, this reuses the same long-lived container rather than creating
+    /// a fresh one, since `node1`..`node4` are pre-declared Compose services.
+    pub fn start_service(&self, service: &str) {
+        compose_start(NATIVE_COMPOSE_FILE, &self.project_name, service);
+    }
+
+    /// Send a signal to a running service's container (e.g. `"SIGKILL"` to
+    /// simulate a crash, matching the legacy `ContainerNode::kill`/`pause`).
+    pub fn kill_service(&self, service: &str, signal: &str) {
+        compose_kill(NATIVE_COMPOSE_FILE, &self.project_name, service, signal);
+    }
+
+    /// `None` while the service's container is running; `Some(exit_code)`
+    /// once it has exited — equivalent to the legacy `ContainerNode::try_wait`.
+    pub fn service_exit_code(&self, service: &str) -> Option<i32> {
+        compose_exit_code(NATIVE_COMPOSE_FILE, &self.project_name, service)
+    }
+}
+
+/// Free-function counterparts of [`NativeTestNetwork`]'s Compose-driving
+/// methods, taking `compose_file`/`project_name` explicitly — for callers
+/// outside this crate that hold a long-lived handle to one named service
+/// (e.g. `bin/orbis-node/tests/native_startup.rs`'s `Node`) without wanting to
+/// borrow or clone the whole [`NativeTestNetwork`]. The methods above are
+/// thin wrappers over these.
+///
+/// Building several services that share one `build:` block (e.g.
+/// `node1`..`node4`, all `${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}`)
+/// must happen once, by name, before `up`-ing any of them: parallel
+/// `up -d --build` across identical `build:` blocks has every service's
+/// build try to tag the same final image simultaneously, and most of them
+/// fail with "already exists".
+pub fn compose_build(
+    compose_file: &str,
+    project_name: &str,
+    service: &str,
+    env: &[(String, String)],
+    extra_env: &[(String, String)],
+) {
+    if std::env::var_os("ORBIS_NATIVE_IMAGE").is_some() {
+        return; // Pre-built image supplied (e.g. by CI); nothing to build.
+    }
+    let mut build = compose_command(compose_file, project_name);
+    if service == "node4" {
+        build.args(["--profile", "node4"]);
+    }
+    build.args(["build", service]);
+    for (key, value) in env.iter().chain(extra_env) {
+        build.env(key, value);
+    }
+    let status = build.status().expect("Failed to build Compose service");
+    if !status.success() {
+        report_compose_failure(compose_file, project_name);
+        panic!("docker compose build failed for service {service} (project {project_name})");
+    }
+}
+
+pub fn compose_up(
+    compose_file: &str,
+    project_name: &str,
+    services: &[&str],
+    env: &[(String, String)],
+    extra_env: &[(String, String)],
+) {
+    let mut command = compose_command(compose_file, project_name);
+    if services.contains(&"node4") {
+        command.args(["--profile", "node4"]);
+    }
+    command.arg("up").arg("-d").arg("--no-build");
+    for (key, value) in env.iter().chain(extra_env) {
+        command.env(key, value);
+    }
+    command.args(services);
+    let status = command.status().expect("Failed to start Compose services");
+    if !status.success() {
+        report_compose_failure(compose_file, project_name);
+        panic!("docker compose up failed for {services:?} (project {project_name})");
+    }
+}
+
+pub fn compose_discover_endpoint(
+    compose_file: &str,
+    project_name: &str,
+    service: &str,
+    container_port: u16,
+) -> String {
+    let port = published_port(compose_file, project_name, service, container_port).unwrap_or_else(
+        |error| {
+            report_compose_failure(compose_file, project_name);
+            panic!("discover {service} endpoint: {error}");
+        },
+    );
+    localhost_url(port)
+}
+
+pub fn compose_stop(compose_file: &str, project_name: &str, service: &str) {
+    let status = compose_command(compose_file, project_name)
+        .args(["stop", service])
+        .status()
+        .expect("docker compose stop failed");
+    if !status.success() {
+        report_compose_failure(compose_file, project_name);
+        panic!("Failed to stop service {service}");
+    }
+}
+
+pub fn compose_start(compose_file: &str, project_name: &str, service: &str) {
+    let status = compose_command(compose_file, project_name)
+        .args(["start", service])
+        .status()
+        .expect("docker compose start failed");
+    if !status.success() {
+        report_compose_failure(compose_file, project_name);
+        panic!("Failed to start service {service}");
+    }
+}
+
+pub fn compose_kill(compose_file: &str, project_name: &str, service: &str, signal: &str) {
+    let status = compose_command(compose_file, project_name)
+        .args(["kill", "--signal", signal, service])
+        .status()
+        .expect("docker compose kill failed");
+    if !status.success() {
+        report_compose_failure(compose_file, project_name);
+        panic!("Failed to signal service {service} with {signal}");
+    }
+}
+
+/// `None` while the service's container is running; `Some(exit_code)` once
+/// it has exited (crashed, been killed, or exited cleanly) — equivalent to
+/// the legacy `ContainerNode::try_wait`'s "did it crash" check, reimplemented
+/// against a named Compose service's container.
+pub fn compose_exit_code(compose_file: &str, project_name: &str, service: &str) -> Option<i32> {
+    let output = compose_command(compose_file, project_name)
+        .args(["ps", "--all", "--quiet", service])
+        .output()
+        .expect("docker compose ps failed");
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if id.is_empty() {
+        return None; // Container doesn't exist yet.
+    }
+    let inspect = std::process::Command::new("docker")
+        .args([
+            "inspect",
+            "--format",
+            "{{.State.Running}} {{.State.ExitCode}}",
+            &id,
+        ])
+        .output()
+        .expect("docker inspect failed");
+    let text = String::from_utf8_lossy(&inspect.stdout);
+    let mut parts = text.split_whitespace();
+    let running: bool = parts.next().unwrap_or("true").parse().unwrap_or(true);
+    let exit_code: i32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
+    (!running).then_some(exit_code)
+}
+
+/// Copy a service's full Compose logs to a local file, overwriting it —
+/// equivalent to the legacy `ContainerNode::retain_logs`/`refresh_logs`.
+pub fn compose_save_logs(
+    compose_file: &str,
+    project_name: &str,
+    service: &str,
+    destination: &Path,
+) {
+    let output = compose_command(compose_file, project_name)
+        .args(["logs", "--no-color", "--no-log-prefix", service])
+        .output()
+        .expect("docker compose logs failed");
+    fs::write(destination, &output.stdout).expect("write service logs");
 }
 
 impl Drop for NativeTestNetwork {
@@ -482,4 +715,26 @@ fn host_ip(subnet_cidr: &str, offset: u32) -> String {
         .parse()
         .expect("Docker-assigned subnet has a valid IPv4 network address");
     Ipv4Addr::from(u32::from(base) + offset).to_string()
+}
+
+/// The native Vera chain revision the validator image builds from, read from
+/// `docker/NATIVE_VERA_REF` — a plain, manually-maintained pin (same
+/// convention as `docker/VERA_REF`, which serves a different purpose: that
+/// one is the upgrade-compatibility baseline `scripts/test-upgrade.sh` reads,
+/// not the revision integration tests build against).
+///
+/// This file must agree with `scripts/native-vera-ref.py`'s output (the
+/// `rev = "..."` pin shared by the `vera-client`/`vera-domain`/`vera-node`
+/// git dependencies across this workspace's Cargo.toml files) — that script
+/// is what CI's `native-vera-image` job actually builds from, so a stale
+/// `docker/NATIVE_VERA_REF` means local integration-test runs build a
+/// different chain revision than CI does. Bump both together when the SDK
+/// pin moves; nothing enforces they match automatically (manually maintained
+/// was the deliberate choice here, not an oversight).
+fn native_vera_ref() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker/NATIVE_VERA_REF");
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+        .trim()
+        .to_string()
 }

@@ -110,6 +110,16 @@ impl IntegrationTestNetwork {
             NetworkInner::Cosmos(network) => network.admin(),
             #[cfg(all(unix, feature = "native"))]
             NetworkInner::Native(network) => network.admin(),
+            // Reachable only when neither backend feature is enabled, in
+            // which case `NetworkInner` has no variants and this crate's
+            // builder can't have produced an `IntegrationTestNetwork` to
+            // call this on in the first place — but the match still needs
+            // an arm for that configuration to typecheck (same rationale as
+            // `.cosmos()`/`.native()`'s fallback arm above).
+            #[allow(unreachable_patterns)]
+            _ => panic!(
+                "test-support built with neither the \"cosmos\" nor \"native\" feature enabled"
+            ),
         }
     }
 

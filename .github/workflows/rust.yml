@@ -120,9 +120,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection,scale-testing
+            cargo_flags: --features=integration-test-cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -253,9 +253,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection,scale-testing
+            cargo_flags: --features=integration-test-cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -287,9 +287,9 @@ jobs:
       matrix:
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection,scale-testing
+            cargo_flags: --features=integration-test-cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:
@@ -326,9 +326,9 @@ jobs:
         shard: ["1", "2", "3"]
         include:
           - crypto: bls12-381
-            cargo_flags: --features=integration-test,fault-injection,scale-testing
+            cargo_flags: --features=integration-test-cosmos,fault-injection,scale-testing
           - crypto: jubjub
-            cargo_flags: --no-default-features --features=jubjub,redb,integration-test,fault-injection,scale-testing
+            cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
     - uses: actions/checkout@v4
       with:

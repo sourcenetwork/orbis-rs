@@ -44,3 +44,12 @@ pub use container::{ContainerError, ContainerExit, ContainerNode, NativeImage};
 mod native_network;
 #[cfg(all(unix, feature = "native"))]
 pub use native_network::{NativeTestNetwork, NativeTestNode};
+// Free-function Compose primitives for callers outside this crate that hold
+// a long-lived handle to one named service (e.g.
+// `bin/orbis-node/tests/native_startup.rs`'s `Node`) — see
+// `native_network::compose_build`'s doc comment.
+#[cfg(all(unix, feature = "native"))]
+pub use native_network::{
+    compose_build, compose_discover_endpoint, compose_exit_code, compose_kill, compose_save_logs,
+    compose_start, compose_stop, compose_up,
+};

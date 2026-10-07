@@ -15,7 +15,7 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // `test_support::admin::cosmos::ORBIS_RING_POLICY_YAML` if ever needed.
 // `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
 // here; see their doc comments below.
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 pub use test_support::admin::cosmos::{
     create_orbis_ring_policy, create_ring_governance_with_ring, wait_for_ring_finalized,
 };
@@ -32,9 +32,9 @@ use bulletin::{
     r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
     BulletinImpl,
 };
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 use cli_tool;
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 use common::blockchain::TEST_ACCOUNT_HEX_KEY;
 use common::blockchain::{ChainConfig, ChainConfigBuilder, TxSigner};
 use hex;
@@ -43,7 +43,7 @@ use local_storage::{
     LocalStorageImpl,
 };
 use network::{NetworkImpl, Router};
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
 use zeroize::Zeroizing;
@@ -789,7 +789,11 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
         .unwrap_or_default()
 }
 
-#[cfg(feature = "integration-test")]
+// No current native caller (every caller today is a Cosmos/Docker test),
+// hence gated the same as the Cosmos-only helpers above rather than left at
+// the backend-neutral `integration-test` base — move back to the weaker gate
+// if/when a native scenario needs this too.
+#[cfg(feature = "integration-test-cosmos")]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
         .await
@@ -829,7 +833,9 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 ///     // Nodes are now ready...
 /// }
 /// ```
-#[cfg(feature = "integration-test")]
+// Same rationale as `check_full_grpc_ready` above: no native caller exists
+// yet, so this stays Cosmos-gated rather than at the shared base.
+#[cfg(feature = "integration-test-cosmos")]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],
     max_attempts: u32,
@@ -879,7 +885,7 @@ pub async fn wait_for_nodes_ready(
 /// hardcodes a default crypto feature (`bls12-381`) that would conflict with a
 /// jubjub build's feature unification if pulled into `test-support` as a
 /// dependency. See `test_support::admin::cosmos`'s doc comment.
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 pub async fn create_ring_on_chain(
     chain_config: &ChainConfig,
     node_keys: &[String],
@@ -899,7 +905,7 @@ pub async fn create_ring_on_chain(
     .await
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 pub async fn create_ring_on_chain_with_trusted_relays(
     chain_config: &ChainConfig,
     node_keys: &[String],

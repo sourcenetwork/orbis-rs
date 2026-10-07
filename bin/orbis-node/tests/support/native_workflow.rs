@@ -1,8 +1,8 @@
-use super::{confirmed, submit, Node};
+use super::{bring_up_orbis_nodes, confirmed, submit, Node};
 use alloy_primitives::B256;
 use commonware_codec::Encode;
 use proto::info_service::GetNodeInfoResponse;
-use std::{fs, net::TcpListener, path::PathBuf, time::Duration};
+use std::{fs, path::PathBuf, time::Duration};
 use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{
     create_scoped_bearer_token,
@@ -23,7 +23,6 @@ pub(super) struct NativeWorkflow {
     pub trusted: ConsensusPublicKey,
     pub root: B256,
     pub controller: k256::ecdsa::SigningKey,
-    pub controller_key: String,
     pub actor: String,
     pub base: tempfile::TempDir,
     pub nodes: Vec<Node>,
@@ -92,7 +91,6 @@ impl NativeWorkflow {
         assert!(headers.fresh_state().unwrap().height > first.height);
         let root: B256 = first.parent_hash.parse().unwrap();
         let controller = k256::ecdsa::SigningKey::from_slice(&[34; 32]).unwrap();
-        let controller_key = hex::encode(controller.verifying_key().to_sec1_bytes());
         let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
             controller.verifying_key().to_sec1_bytes().as_ref(),
         )
@@ -102,36 +100,18 @@ impl NativeWorkflow {
             std::env::var_os("ORBIS_NATIVE_E2E_DIR").map(PathBuf::from),
             std::env::var("VERA_E2E_KEEP").is_ok_and(|value| value == "1"),
         );
+        // Writes each node's `vera.json`/`password` fixture, builds the shared
+        // node image once, and brings `node1..node3` up together — see
+        // `bring_up_orbis_nodes`'s doc comment (native_startup.rs). `1`:
+        // matches this function's pre-migration hardcoded
+        // `--reshare-interval-secs 1`.
+        let addresses = bring_up_orbis_nodes(&cluster, base.path(), 3, 1, report_fault);
         let mut nodes = Vec::new();
-        let mut addresses = Vec::new();
         let mut logs = Vec::new();
         for index in 0..3 {
             let directory = base.path().join(format!("node-{index}"));
-            fs::create_dir(&directory).unwrap();
-            fs::write(directory.join("password"), "native-dkg-test").unwrap();
-            fs::write(
-            directory.join("vera.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "endpoint": url, "deployment_id": deployment, "deployment_root": hex::encode(root),
-                "consensus_key": hex::encode(trusted.encode()),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap().to_string();
-            drop(listener);
-            let log = directory.join("node.log");
-            nodes.push(Node::start_configured(
-                &directory,
-                &addr,
-                &controller_key,
-                &log,
-                "127.0.0.1:0",
-                report_fault,
-            ));
-            addresses.push(addr);
-            logs.push(log);
+            logs.push(directory.join("node.log"));
+            nodes.push(Node::attach(cluster.project_name(), index, &logs[index]));
         }
         let mut infos = Vec::new();
         for index in 0..nodes.len() {
@@ -243,7 +223,6 @@ impl NativeWorkflow {
             trusted,
             root,
             controller,
-            controller_key,
             actor,
             base,
             nodes,

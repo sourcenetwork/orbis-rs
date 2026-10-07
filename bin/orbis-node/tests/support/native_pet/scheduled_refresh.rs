@@ -5,6 +5,7 @@ use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoResponse, GetPetRingStateRequest,
 };
 use std::{path::Path, time::Duration};
+use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{
     rings::{RingPublicKeys, RingState},
     threshold_objects::ObjectKind,
@@ -15,6 +16,7 @@ use vera_domain::ConsensusPublicKey;
 use super::stored_bundle as store;
 
 pub(super) struct ScheduledRefresh<'a> {
+    pub cluster: &'a TestCluster,
     pub client: &'a VeraClient,
     pub trusted: &'a ConsensusPublicKey,
     pub ring_id: &'a str,
@@ -22,7 +24,6 @@ pub(super) struct ScheduledRefresh<'a> {
     pub base: &'a Path,
     pub addresses: &'a [String],
     pub infos: &'a [GetNodeInfoResponse],
-    pub controller: &'a str,
 }
 
 impl ScheduledRefresh<'_> {
@@ -107,16 +108,10 @@ impl ScheduledRefresh<'_> {
         // All store handles have closed before any native process restarts.
         let restarted_at = unix_now();
         for (index, node) in nodes.iter_mut().enumerate() {
-            let directory = self.base.join(format!("node-{index}"));
-            let log = directory.join("scheduled-pet-refresh.log");
-            let bind = self.infos[index].p2p_address.split_once('@').unwrap().1;
-            *node = Node::start_bound(
-                &directory,
-                &self.addresses[index],
-                self.controller,
-                &log,
-                bind,
-            );
+            let log = self
+                .base
+                .join(format!("node-{index}/scheduled-pet-refresh.log"));
+            *node = Node::restart(self.cluster.project_name(), index, &log);
         }
         for (index, node) in nodes.iter_mut().enumerate() {
             let log = self

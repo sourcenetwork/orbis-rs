@@ -1,4 +1,4 @@
-use super::{confirmed, submit, Node};
+use super::{add_orbis_node4, confirmed, submit, Node};
 use alloy_primitives::B256;
 use alloy_sol_types::SolCall;
 use proto::{
@@ -102,7 +102,6 @@ pub async fn run(scenario: Scenario) {
         trusted,
         root,
         controller,
-        controller_key,
         actor,
         base,
         mut nodes,
@@ -190,6 +189,7 @@ pub async fn run(scenario: Scenario) {
     }
     if matches!(scenario, Scenario::ScheduledRefresh) {
         scheduled_refresh::ScheduledRefresh {
+            cluster: &cluster,
             client: &client,
             trusted: &trusted,
             ring_id: &ring_id,
@@ -197,7 +197,6 @@ pub async fn run(scenario: Scenario) {
             base: base.path(),
             addresses: &addresses,
             infos: &infos,
-            controller: &controller_key,
         }
         .run(&mut nodes, &checks, documents)
         .await;
@@ -288,7 +287,6 @@ pub async fn run(scenario: Scenario) {
             deployment,
             deployment_root: &root.0,
             controller: &controller,
-            controller_key: &controller_key,
             worker: &worker,
             policy: &policy,
             ring_id: &ring_id,
@@ -375,11 +373,8 @@ pub async fn run(scenario: Scenario) {
         assert!(!node.0.wait().unwrap().success());
     }
     for index in 0..2 {
-        let directory = base.path().join(format!("node-{index}"));
-        let log = directory.join("pet-restart.log");
-        let bind = infos[index].p2p_address.split_once('@').unwrap().1;
-        nodes[index] =
-            Node::start_bound(&directory, &addresses[index], &controller_key, &log, bind);
+        let log = base.path().join(format!("node-{index}/pet-restart.log"));
+        nodes[index] = Node::restart(cluster.project_name(), index, &log);
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
