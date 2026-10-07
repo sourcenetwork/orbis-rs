@@ -968,6 +968,9 @@ async fn prepare_online_fixtures_in_process(
 
     Ok(OnlineFixtures {
         pre: PreFixture {
+            // The in-process harness's dummy bulletin always reports this
+            // fixed chain id (see `bulletin::dummy`'s `chain_id()` impl).
+            chain_id: "vera-localnet".to_string(),
             ring_pk: ring_pk.to_string(),
             reader_pk: reader_pk_bytes,
             reader_sk,
@@ -1048,6 +1051,7 @@ async fn prepare_pet_fixture_in_process(
     .await?;
 
     Ok(PreFixture {
+        chain_id: "vera-localnet".to_string(),
         ring_pk: ring_pk.to_string(),
         reader_pk: reader_pk_bytes,
         reader_sk,

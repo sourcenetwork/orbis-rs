@@ -10,7 +10,9 @@ use authz::r#trait::Authz;
 use authz::vera::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::{Bulletin, BulletinKind, DocumentPayload, RingPayload};
 use common::blockchain::orbis::generate_document_id;
-use crypto::context::{CiphertextContext, PetTagBinding};
+use crypto::context::{
+    CiphertextContext, PetTagBinding, ReaderAuthorizationContext, ValidWindowBinding,
+};
 use crypto::r#trait::{EncryptionProof, PetTag, Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
 use network::PeerId;
@@ -213,6 +215,57 @@ pub fn build_ciphertext_context(
         timestamp: document.timestamp,
         salt: salt.map(str::to_string),
         pet_tag,
+    })
+}
+
+/// Rebuilds the [`ReaderAuthorizationContext`] the client's
+/// `sign_reader_authorization` call bound its signature to, from
+/// already-authenticated/already-resolved inputs only — this function does no
+/// I/O of its own.
+///
+/// `token.jwt_id` must be non-empty: there is no legacy tolerance for a token
+/// minted before `jti` existed, since a request-unbound signature is exactly
+/// the vulnerability this context exists to close.
+#[allow(clippy::too_many_arguments)]
+pub fn build_reader_authorization_context(
+    chain_id: String,
+    ring_pk_hex: &str,
+    token: &BearerToken<PreClaims>,
+    resolved_actor: &str,
+    object_id: &str,
+    rdr_pk_bytes: &[u8],
+    derivation: Option<Vec<u8>>,
+    salt: Option<String>,
+    valid_window: Option<ValidWindow>,
+    audit_target_object_id: Option<String>,
+) -> Result<ReaderAuthorizationContext> {
+    if token.jwt_id.is_empty() {
+        return Err(PreError::Unauthorized(
+            "JWT carries no jti; cannot bind a reader-authorization signature".to_string(),
+        ));
+    }
+    let ring_pk = hex::decode(ring_pk_hex)
+        .map_err(|e| PreError::InvalidInput(format!("Invalid ring_pk hex encoding: {}", e)))?;
+
+    Ok(ReaderAuthorizationContext {
+        chain_id,
+        ring_pk,
+        jwt_issuer: token.issuer_id.clone(),
+        jwt_subject: token.subject_id.clone(),
+        resolved_actor: resolved_actor.to_string(),
+        jwt_id: token.jwt_id.clone(),
+        jwt_issued_time: token.issued_time,
+        jwt_expiration_time: token.expiration_time,
+        jwt_not_before: token.not_before,
+        object_id: object_id.to_string(),
+        recipient_pk: rdr_pk_bytes.to_vec(),
+        derivation,
+        salt,
+        valid_window: valid_window.map(|w| ValidWindowBinding {
+            start: w.start,
+            end: w.end,
+        }),
+        audit_target_object_id,
     })
 }
 

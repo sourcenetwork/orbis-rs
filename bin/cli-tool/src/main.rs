@@ -6,8 +6,8 @@ use clap::{Args, Parser, Subcommand};
 pub use commands::{
     add_bulletin_collaborator, add_node_to_whitelist, add_policy_to_chain,
     cancel_ring_reshare_by_acp, cancel_ring_upgrade_by_acp, create_bulletin_post, create_ring,
-    derive_signer_did, do_dkg, do_encrypt_secret, do_generate_reader_key, do_pre, do_sign,
-    do_store_secret, fund_with_signer, get_account_sequence, get_latest_ring, list_bulletin_posts,
+    derive_signer_did, do_dkg, do_encrypt_secret, do_pre, do_sign, do_store_secret,
+    fund_with_signer, get_account_sequence, get_latest_ring, list_bulletin_posts,
     post_key_derivation, prepare_secret, query_node_info, query_pet_ring_state, query_ring_state,
     read_bulletin_post_with_config, register_bulletin_namespace, register_object_to_chain,
     remove_node_from_whitelist, schedule_ring_upgrade_by_acp, set_relationship_on_chain,
@@ -165,17 +165,6 @@ pub enum SubCommands {
         #[clap(long)]
         ring_pk: String,
 
-        /// Reader's public key in hex format (from generate-reader-key)
-        #[clap(long)]
-        reader_pk: String,
-
-        /// Reader's secret key in hex format. Always required: the node needs
-        /// a proof of knowledge of this key's discrete log before it will
-        /// re-encrypt to `reader_pk` (including with --xnc-only), and
-        /// decryption after PRE needs it too.
-        #[clap(long, env = "ORBIS_READER_SK", hide_env_values = true)]
-        reader_sk: Option<String>,
-
         /// Id of object
         #[clap(long)]
         object_id: String,
@@ -198,10 +187,6 @@ pub enum SubCommands {
         /// End of the validity window (Unix timestamp, inclusive). Requires --valid-window-start.
         #[clap(long)]
         valid_window_end: Option<u64>,
-
-        /// Print only the re-encrypted commitment (xnc_cmt) without decrypting.
-        #[clap(long)]
-        xnc_only: bool,
     },
     /// Encrypts a secret to the ring public key (from DKG)
     EncryptSecret {
@@ -234,8 +219,6 @@ pub enum SubCommands {
         salt: Option<String>,
     },
 
-    /// Generate a reader keypair for PRE decryption
-    GenerateReaderKey,
     /// Derive the secp256k1 public key and did:key for --signing-key. Pure local
     /// computation, no network calls. Vera resolves ACP actor identity for
     /// signed transactions (e.g. create-ring's `create_ring` permission check)
@@ -644,37 +627,26 @@ async fn main() -> Result<()> {
         }
         SubCommands::Pre {
             ring_pk,
-            reader_pk,
-            reader_sk,
             object_id,
             reader_did_pk,
             derivation,
             salt,
             valid_window_start,
             valid_window_end,
-            xnc_only,
         } => {
-            if reader_sk.is_none() {
-                anyhow::bail!(
-                    "--reader-sk is required: the node needs proof of knowledge of \
-                     reader_pk's discrete log before it will re-encrypt to it"
-                );
-            }
             require_valid_window_pair(valid_window_start, valid_window_end)?;
             let reader_did_pk = require_reader_did_pk(reader_did_pk)?;
             let derivation_bytes = parse_derivation_hex(derivation)?;
             do_pre(
                 network.endpoint.clone(),
+                network.chain_id.clone(),
                 ring_pk,
-                reader_pk,
-                reader_sk,
                 object_id,
                 Some(reader_did_pk),
                 derivation_bytes,
                 salt,
                 valid_window_start,
                 valid_window_end,
-                xnc_only,
             )
             .await?;
         }
@@ -703,9 +675,6 @@ async fn main() -> Result<()> {
                 salt,
             )
             .await?;
-        }
-        SubCommands::GenerateReaderKey => {
-            do_generate_reader_key()?;
         }
         SubCommands::DeriveSignerDid => {
             let signing_key = network.require_signing_key()?;

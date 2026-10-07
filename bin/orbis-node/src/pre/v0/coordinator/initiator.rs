@@ -17,6 +17,7 @@ use crate::reporting::v0::queue_report;
 use crate::reporting::v0::types::{ring_state_sha256, ReportedDocumentEvidence};
 use crate::ring_state::RingShareBundle;
 use bulletin::r#trait::RingPayload;
+use crypto::context::ReaderAuthorizationContext;
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, PriShare, PubShare, ReencryptReply,
     Secret, ThresholdDealer,
@@ -98,6 +99,17 @@ where
     /// provided via `ring`; the chain/ring binding for invalid-proof reports
     /// comes from the same payload fetch via `report_binding`. Request auth
     /// and object identity are in `ctx`.
+    ///
+    /// `local_reader_auth_context` is this node's own reader-authorization
+    /// context, already built once by the service layer's stage 3 for ingress
+    /// acceptance — reused here for the local-share path rather than being
+    /// independently re-derived a second time for the same request (mirrors
+    /// the existing precedent that `ciphertext_context` is likewise built
+    /// once in stage 3 and never rebuilt for the local path; only the remote
+    /// responder path in `handlers.rs` re-derives its own, for *other* nodes'
+    /// requests). `reencrypt` still cryptographically re-verifies the
+    /// signature regardless, so no check is skipped here.
+    #[allow(clippy::too_many_arguments)]
     pub async fn initiate_reencryption(
         &self,
         request_id: String,
@@ -105,6 +117,7 @@ where
         secret_bytes: Vec<u8>,
         ctx: PreRequestContext,
         report_binding: PreReportBinding,
+        local_reader_auth_context: ReaderAuthorizationContext,
     ) -> Result<Vec<u8>> {
         // Determine our node_id (if we're in the ring) - single source of truth
         let node_id_opt = determine_session_node_id(&self.app_state.node_key, &ring.peer_node_keys);
@@ -171,6 +184,7 @@ where
                 actual_peer_count,
                 ctx,
                 report_binding,
+                local_reader_auth_context,
             )
             .await;
 
@@ -204,6 +218,7 @@ where
         actual_peer_count: usize,
         ctx: PreRequestContext,
         report_binding: PreReportBinding,
+        local_reader_auth_context: ReaderAuthorizationContext,
     ) -> Result<Vec<u8>> {
         let material = self
             .resolve_reencryption_material(&ring, self_in_list, actual_peer_count)
@@ -220,6 +235,7 @@ where
             &material,
             &request_material,
             &ctx,
+            &local_reader_auth_context,
         )? {
             seen_node_ids.insert(share.i);
             verified_shares.push(share);
@@ -328,6 +344,7 @@ where
         material: &ReencryptionMaterial<D>,
         request_material: &ReencryptionRequestMaterial<D>,
         ctx: &PreRequestContext,
+        local_reader_auth_context: &ReaderAuthorizationContext,
     ) -> Result<Option<PubShare<D::PublicKey>>> {
         if !self_in_list {
             return Ok(None);
@@ -347,8 +364,8 @@ where
                 &dist_key_share,
                 &request_material.secret,
                 &request_material.rdr_pk,
-                &ctx.rdr_pk_proof,
-                ctx.derivation.as_deref(),
+                local_reader_auth_context,
+                &ctx.rdr_pk_signature,
             )
             .map_err(|error| PreError::Crypto(format!("Local reencryption failed: {}", error)))?;
 

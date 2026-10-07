@@ -650,7 +650,7 @@ async fn test_full_grpc_server_enforces_decode_caps() {
             salt: None,
             valid_window: None,
             document: None,
-            rdr_pk_proof: None,
+            rdr_pk_signature: None,
             audit_target_object_id: None,
         })
         .await

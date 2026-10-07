@@ -1,7 +1,7 @@
-use crate::context::{context_digest, CiphertextContext};
+use crate::context::{context_digest, CiphertextContext, ReaderAuthorizationContext};
 use crate::jubjub::common::{Element, Fr};
 use crate::jubjub::pre::ThresholdDealerNode;
-use crate::r#trait::{DistKeyShare, ReaderKeyProof, ThresholdDealer};
+use crate::r#trait::{DistKeyShare, ThresholdDealer};
 use crate::test_helper::DKGCoordinator;
 use aes_gcm::{
     aead::{Aead, KeyInit, Payload},
@@ -76,7 +76,8 @@ fn test_threshold_dealer_creation() {
 /// — jubjub's `reencrypt_internal` uses the identical linear
 /// `effective_ski * (rdr_pk + enc_cmt)` structure with no proof of knowledge of
 /// `rdr_pk`'s discrete log, so the forged-reader-key attack applied here too
-/// before the [`ReaderKeyProof`] check was added.
+/// before the [`ReaderAuthorizationSignature`](crate::r#trait::ReaderAuthorizationSignature)
+/// check was added.
 #[test]
 fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     let n = 5;
@@ -121,7 +122,7 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     let (enc_cmt_a, secret_a, _proof_a) =
         ThresholdDealerNode::encrypt_secret(&ring_pk, b"plaintext A", None, &ctx_a)
             .expect("encrypt A");
-    let (enc_cmt_b, _secret_b, _proof_b) = ThresholdDealerNode::encrypt_secret(
+    let (enc_cmt_b, secret_b, _proof_b) = ThresholdDealerNode::encrypt_secret(
         &ring_pk,
         b"plaintext B - not authorized",
         None,
@@ -138,54 +139,112 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
         pri_share: secret_shares[0].clone(),
     };
 
-    // Attempt 1: no proof at all (a placeholder). Rejected immediately.
-    let no_proof = ReaderKeyProof {
+    let reader_ctx_a = ReaderAuthorizationContext {
+        chain_id: "test-chain".to_string(),
+        ring_pk: b"ring".to_vec(),
+        jwt_issuer: "did:key:issuer".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:issuer".to_string(),
+        jwt_id: "jti-a".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: None,
+        object_id: "secret-a".to_string(),
+        recipient_pk: b"placeholder-recipient-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    };
+    let reader_ctx_b = ReaderAuthorizationContext {
+        jwt_id: "jti-b".to_string(),
+        object_id: "secret-b".to_string(),
+        ..reader_ctx_a.clone()
+    };
+
+    // Attempt 1: no signature at all (a placeholder). Rejected immediately.
+    let no_signature = crate::r#trait::ReaderAuthorizationSignature {
         challenge: Vec::new(),
         response: Vec::new(),
     };
-    assert!(
-        dealer
-            .reencrypt(&dist_key_share, &secret_a, &forged_rdr_pk, &no_proof, None)
-            .is_err(),
-        "forged rdr_pk with no proof must be rejected"
-    );
-
-    // Attempt 2: a *valid* PoP, but for a different key the attacker
-    // legitimately owns, not for `forged_rdr_pk`. Still rejected.
-    let (attacker_sk, attacker_pk) = ThresholdDealerNode::generate_keypair();
-    let attacker_own_proof =
-        ThresholdDealerNode::prove_reader_key(&attacker_sk, &attacker_pk).expect("prove own key");
     assert!(
         dealer
             .reencrypt(
                 &dist_key_share,
                 &secret_a,
                 &forged_rdr_pk,
-                &attacker_own_proof,
-                None
+                &reader_ctx_a,
+                &no_signature
             )
             .is_err(),
-        "a proof of a different, honestly-owned key must not validate the forged rdr_pk"
+        "forged rdr_pk with no signature must be rejected"
+    );
+
+    // Attempt 2: a *valid* signature, but for a different key the attacker
+    // legitimately owns, not for `forged_rdr_pk`. Still rejected.
+    let (attacker_sk, attacker_pk) = ThresholdDealerNode::generate_keypair();
+    let attacker_own_signature =
+        ThresholdDealerNode::sign_reader_authorization(&attacker_sk, &attacker_pk, &reader_ctx_a)
+            .expect("sign own key");
+    assert!(
+        dealer
+            .reencrypt(
+                &dist_key_share,
+                &secret_a,
+                &forged_rdr_pk,
+                &reader_ctx_a,
+                &attacker_own_signature,
+            )
+            .is_err(),
+        "a signature of a different, honestly-owned key must not validate the forged rdr_pk"
     );
 
     // Control: the same request with a genuinely owned key and its matching
-    // proof still succeeds.
+    // signature still succeeds.
     let (honest_sk, honest_pk) = ThresholdDealerNode::generate_keypair();
-    let honest_proof =
-        ThresholdDealerNode::prove_reader_key(&honest_sk, &honest_pk).expect("prove honest key");
+    let honest_signature =
+        ThresholdDealerNode::sign_reader_authorization(&honest_sk, &honest_pk, &reader_ctx_a)
+            .expect("sign honest key");
     let mut replies = Vec::new();
     for share in secret_shares.iter().take(t) {
         let dist_key_share = DistKeyShare {
             pri_share: share.clone(),
         };
         let reply = dealer
-            .reencrypt(&dist_key_share, &secret_a, &honest_pk, &honest_proof, None)
+            .reencrypt(
+                &dist_key_share,
+                &secret_a,
+                &honest_pk,
+                &reader_ctx_a,
+                &honest_signature,
+            )
             .expect("node accepts a key the caller can prove knowledge of");
         dealer
             .verify(&honest_pk, &pub_poly, &enc_cmt_a, &reply, None)
             .expect("reencryption proof verifies");
         replies.push(reply);
     }
+
+    // The honest signature is valid only for object A's context — replaying
+    // it verbatim against object B's context/ciphertext must fail. This is
+    // the actual request-binding fix: a context-free proof of possession
+    // would have happily validated here before it.
+    let replay_share = DistKeyShare {
+        pri_share: secret_shares[0].clone(),
+    };
+    assert!(
+        dealer
+            .reencrypt(
+                &replay_share,
+                &secret_b,
+                &honest_pk,
+                &reader_ctx_b,
+                &honest_signature,
+            )
+            .is_err(),
+        "a signature valid for object A's context must not verify against object B's context"
+    );
+
     let pub_shares: Vec<_> = replies.iter().map(|r| r.share.clone()).collect();
     let xnc_cmt = dealer
         .recover(&pub_shares, t, n)

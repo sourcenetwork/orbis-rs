@@ -25,13 +25,17 @@ use tokio::time::{sleep, Duration};
 use tonic::Request;
 use zeroize::Zeroizing;
 
+use crate::helpers::auth::request_actor;
 use crate::helpers::ring::RingConfig;
 use crate::pre::v0::error::PreError;
-use crate::pre::v0::helpers::check_policy_access;
+use crate::pre::v0::helpers::{build_reader_authorization_context, check_policy_access};
 use crate::pre::v0::messages::PreRequestContext;
 use crate::reporting::v0::types::ReportedDocumentEvidence;
 use crate::ring_state::{RingPolyState, RingShareBundle};
+use authn::resolve_jwt_did;
 use bulletin::dummy::DummyBulletin;
+use crypto::context::ReaderAuthorizationContext;
+use crypto::r#trait::ReaderAuthorizationSignature;
 
 /// Build the ciphertext-binding context matching the test `DocumentPayload`
 /// fields and the given ring public key bytes (compressed point).
@@ -101,6 +105,92 @@ fn test_report_binding(
         timestamp,
         inline_document,
     )
+}
+
+/// Builds the [`ReaderAuthorizationContext`] a real server independently
+/// reconstructs for this exact request (decoding `pre_token` and resolving
+/// the actor exactly as `authorize_pre_request`/`handle_reencrypt_request`
+/// do), and signs it with the reader's key — used by every test in this
+/// module that drives `PreCoordinator::initiate_reencryption` directly
+/// (bypassing the gRPC service layer's own stage 1-3), so the local-share
+/// path exercises the same signature-verification a real client's request
+/// would need to pass.
+fn sign_pre_request(
+    dummy_bulletin: &DummyBulletin,
+    ring_payload: &RingPayload,
+    pre_token: &str,
+    object_id: &str,
+    reader_sk: &crypto::ScalarField,
+    reader_pk: &crypto::GroupAffine,
+    derivation: Option<Vec<u8>>,
+) -> (ReaderAuthorizationContext, ReaderAuthorizationSignature) {
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let decoded_token: authn::BearerToken<PreClaims> = resolve_jwt_did(
+        pre_token,
+        current_time,
+        crate::constants::MAX_TOKEN_LIFETIME_SECS,
+        crate::constants::MAX_JWT_BYTES,
+        crate::constants::JWT_CLOCK_SKEW_LEEWAY_SECS,
+    )
+    .expect("decode pre_token");
+    let resolved_actor = request_actor(
+        &decoded_token,
+        ring_payload.trusted_auth_relay_dids.as_deref(),
+    )
+    .expect("resolve actor");
+    let reader_pk_bytes = CryptoSerialize::to_bytes(reader_pk).expect("serialize reader pk");
+    let context = build_reader_authorization_context(
+        dummy_bulletin.chain_id(),
+        &ring_payload.ring_pk,
+        &decoded_token,
+        &resolved_actor,
+        object_id,
+        &reader_pk_bytes,
+        derivation,
+        None,
+        None,
+        None,
+    )
+    .expect("build reader auth context");
+    let signature = PreImpl::sign_reader_authorization(reader_sk, reader_pk, &context)
+        .expect("sign reader authorization");
+    (context, signature)
+}
+
+/// Builds an arbitrary, self-consistent [`ReaderAuthorizationContext`] with no
+/// backing JWT at all — for tests whose `token_string` is deliberately
+/// unparseable (so [`sign_pre_request`] can't decode it) and whose point is a
+/// failure mode unrelated to the reader-authorization signature itself (e.g.
+/// the JWT being malformed). The signature returned still genuinely verifies
+/// against the context for whichever node reaches that check.
+fn plain_reader_auth_context_and_signature(
+    object_id: &str,
+    reader_sk: &crypto::ScalarField,
+    reader_pk: &crypto::GroupAffine,
+) -> (ReaderAuthorizationContext, ReaderAuthorizationSignature) {
+    let context = ReaderAuthorizationContext {
+        chain_id: "test-chain".to_string(),
+        ring_pk: Vec::new(),
+        jwt_issuer: "did:key:test".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:test".to_string(),
+        jwt_id: "test-jti".to_string(),
+        jwt_issued_time: 0,
+        jwt_expiration_time: u64::MAX,
+        jwt_not_before: None,
+        object_id: object_id.to_string(),
+        recipient_pk: CryptoSerialize::to_bytes(reader_pk).expect("serialize reader pk"),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    };
+    let signature = PreImpl::sign_reader_authorization(reader_sk, reader_pk, &context)
+        .expect("sign reader authorization");
+    (context, signature)
 }
 
 /// End-to-end test: DKG → Alice encrypts → PRE to Bob → Bob decrypts
@@ -221,8 +311,6 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
     // Serialize Bob's public key using trait method
     let bob_pk_bytes =
         CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
-    let bob_pk_proof =
-        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("Failed to prove Bob's reader key");
 
     // Serialize the ring (DKG) public key using trait method
     let ring_pk_bytes =
@@ -275,6 +363,16 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
         )
         .expect("Failed to create PRE JWT");
 
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
+
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
@@ -296,9 +394,9 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
             secret_bytes.clone(),
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
-                rdr_pk_proof: bob_pk_proof,
-                object_id,
-                token_string: pre_token,
+                rdr_pk_signature: bob_pk_signature.clone(),
+                object_id: object_id.clone(),
+                token_string: pre_token.clone(),
                 derivation: None,
                 salt: None,
                 valid_window: None,
@@ -309,6 +407,7 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context.clone(),
         )
         .await
         .expect("PRE should succeed");
@@ -361,6 +460,102 @@ async fn test_delegated_dkg_then_pre_end_to_end() {
 
     println!("SUCCESS! The decrypted message matches the original!");
     println!("\n=== End-to-End PRE Test Completed Successfully ===");
+
+    // =========================================================================
+    // Step 8: A reader-authorization signature bound to object_id #1 must not
+    // authorize a *different* request — even one Bob is genuinely authorized
+    // for and whose own JWT claims are entirely valid. This is the actual
+    // fix this handoff closes: a context-free proof of possession would have
+    // happily validated here before it.
+    // =========================================================================
+    println!("\nStep 8: Verifying the reader-authorization signature cannot be replayed against a different object_id...");
+
+    let second_secret_message = b"A second, different secret also meant for Bob.";
+    let (_, second_encrypted_secret, second_proof) = PreImpl::encrypt_secret(
+        &aggregate_pk,
+        second_secret_message,
+        None,
+        &ciphertext_context,
+    )
+    .expect("Encryption should succeed");
+    let second_secret_bytes =
+        serde_json::to_vec(&second_encrypted_secret).expect("Failed to serialize secret");
+    let second_object_id =
+        setup_document_in_bulletin(dummy_bulletin, &second_secret_bytes, second_proof).await;
+
+    // A fresh, otherwise entirely valid PRE JWT for the second object — only
+    // the *signature* submitted below is the stale, replayed one.
+    let second_pre_token = relay
+        .sign_for_actor(
+            actor_id.to_string(),
+            PreClaims {
+                rdr_pk: bob_pk_bytes.clone(),
+                object_id: second_object_id.clone(),
+                derivation: None,
+                salt: None,
+            },
+            Duration::from_secs(60),
+        )
+        .expect("Failed to create PRE JWT");
+
+    // The context every honest node (local and remote) independently
+    // resolves for this second request binds the second object_id — but the
+    // signature submitted below is the first request's, bound to the first.
+    let (second_reader_auth_context, _unused_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &second_pre_token,
+        &second_object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
+
+    let replay_result = pre_coordinator
+        .initiate_reencryption(
+            format!("{request_id}-replay"),
+            RingConfig {
+                ring_id: String::new(),
+                ring_pk_bytes: ring_pk_bytes.clone(),
+                peer_ids: pre_peer_ids.clone(),
+                peer_node_keys: ring_payload.peer_node_keys.clone(),
+                threshold: ring_payload.threshold as usize,
+                total_participants: ring_payload.peer_node_keys.len(),
+                public_polynomial_hex: RingPolyState::load_from_ring_pk_hex(
+                    &network.alice.app_state.local_storage,
+                    &ring_payload.ring_pk,
+                )
+                .expect("load RingPolyState")
+                .public_polynomial,
+            },
+            second_secret_bytes,
+            PreRequestContext {
+                rdr_pk_bytes: bob_pk_bytes.clone(),
+                rdr_pk_signature: bob_pk_signature,
+                object_id: second_object_id,
+                token_string: second_pre_token,
+                derivation: None,
+                salt: None,
+                valid_window: None,
+                relay_statement: None,
+                relay_signature: Vec::new(),
+                document: None,
+                audit_target_object_id: None,
+                pet_evidence: None,
+            },
+            test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            second_reader_auth_context,
+        )
+        .await;
+
+    assert!(
+        replay_result.is_err(),
+        "a reader-authorization signature bound to one object_id must not authorize a request for a different object_id"
+    );
+    println!(
+        "Replay attempt correctly rejected: {}",
+        replay_result.unwrap_err()
+    );
 
     // =========================================================================
     // Cleanup
@@ -470,8 +665,6 @@ async fn test_pre_with_inline_document_end_to_end() {
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes =
         CryptoSerialize::to_bytes(&bob_pk).expect("Failed to serialize Bob's public key");
-    let bob_pk_proof =
-        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("Failed to prove Bob's reader key");
     let ring_pk_bytes =
         CryptoSerialize::to_bytes(&aggregate_pk).expect("Failed to serialize ring public key");
 
@@ -555,6 +748,16 @@ async fn test_pre_with_inline_document_end_to_end() {
         )
         .expect("Failed to create PRE JWT");
 
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
+
     let pre_response_bytes = pre_coordinator
         .initiate_reencryption(
             request_id,
@@ -575,7 +778,7 @@ async fn test_pre_with_inline_document_end_to_end() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -593,6 +796,7 @@ async fn test_pre_with_inline_document_end_to_end() {
                 document_timestamp,
                 Some(document_evidence),
             ),
+            reader_auth_context,
         )
         .await
         .expect("PRE should succeed against an inline document");
@@ -675,7 +879,6 @@ async fn test_pre_with_large_secret() {
     // Bob's keys using trait method
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -692,9 +895,19 @@ async fn test_pre_with_large_secret() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
-    let pre_token = test_keys
+    let (pre_token, _) = test_keys
         .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
+
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
@@ -717,7 +930,7 @@ async fn test_pre_with_large_secret() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -730,6 +943,7 @@ async fn test_pre_with_large_secret() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await
         .expect("PRE should succeed");
@@ -821,7 +1035,6 @@ async fn test_pre_fails_with_wrong_key() {
     // Bob's real keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // Wrong private key (Eve trying to decrypt)
     let (eve_sk, _eve_pk) = PreImpl::generate_keypair();
@@ -841,9 +1054,19 @@ async fn test_pre_fails_with_wrong_key() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
-    let pre_token = test_keys
+    let (pre_token, _) = test_keys
         .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
+
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_response_bytes = pre_coordinator
@@ -866,7 +1089,7 @@ async fn test_pre_fails_with_wrong_key() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -879,6 +1102,7 @@ async fn test_pre_fails_with_wrong_key() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await
         .expect("PRE should succeed");
@@ -966,7 +1190,6 @@ async fn test_pre_fails_with_invalid_jwt_token() {
     // Bob's keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with invalid token
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -984,6 +1207,9 @@ async fn test_pre_fails_with_invalid_jwt_token() {
 
     // Use a completely invalid JWT token
     let invalid_token = "not-a-valid-jwt-token".to_string();
+
+    let (reader_auth_context, bob_pk_signature) =
+        plain_reader_auth_context_and_signature(&object_id, &bob_sk, &bob_pk);
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_result = pre_coordinator
@@ -1006,7 +1232,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: invalid_token,
                 derivation: None,
@@ -1019,6 +1245,7 @@ async fn test_pre_fails_with_invalid_jwt_token() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await;
 
@@ -1117,7 +1344,6 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     // Bob's keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with token that has WRONG claims (different rdr_pk)
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1136,7 +1362,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
     // Create a valid JWT but with wrong rdr_pk claim
     let wrong_rdr_pk = vec![0u8; 32]; // Zero bytes - doesn't match bob_pk_bytes
 
-    let mismatched_token = test_keys
+    let (mismatched_token, _) = test_keys
         .create_pre_jwt(
             wrong_rdr_pk, // Wrong rdr_pk - doesn't match bob_pk_bytes
             &object_id,
@@ -1144,6 +1370,16 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             None,
         )
         .expect("Failed to create JWT");
+
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &mismatched_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
 
     // Initiate re-encryption using threshold, total_nodes, and public_polynomial from bulletin
     let pre_result = pre_coordinator
@@ -1166,7 +1402,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes, // Actual rdr_pk doesn't match JWT claim
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: mismatched_token,
                 derivation: None,
@@ -1179,6 +1415,7 @@ async fn test_pre_fails_with_mismatched_jwt_claims() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await;
 
@@ -1238,7 +1475,7 @@ async fn test_start_pre_fails_missing_auth_header() {
         salt: None,
         valid_window: None,
         document: None,
-        rdr_pk_proof: None,
+        rdr_pk_signature: None,
         audit_target_object_id: None,
     };
 
@@ -1282,7 +1519,7 @@ async fn test_start_pre_fails_malformed_jwt() {
         salt: None,
         valid_window: None,
         document: None,
-        rdr_pk_proof: None,
+        rdr_pk_signature: None,
         audit_target_object_id: None,
     };
 
@@ -1317,7 +1554,7 @@ async fn test_start_pre_fails_wrong_signature() {
 
     // Create a valid JWT with key_pair_1
     let key_pair_1 = TestKeyPair::new();
-    let valid_token = key_pair_1
+    let (valid_token, _) = key_pair_1
         .create_pre_jwt(b"def456".to_vec(), &object_id, None, None)
         .expect("Failed to create JWT");
 
@@ -1342,7 +1579,7 @@ async fn test_start_pre_fails_wrong_signature() {
         salt: None,
         valid_window: None,
         document: None,
-        rdr_pk_proof: None,
+        rdr_pk_signature: None,
         audit_target_object_id: None,
     };
 
@@ -1382,7 +1619,7 @@ async fn test_start_pre_does_not_record_jti_before_authorization() {
 
     let rdr_pk = b"reader-pk".to_vec();
     let object_id = "replayed-object".to_string();
-    let token = TestKeyPair::new()
+    let (token, _) = TestKeyPair::new()
         .create_pre_jwt(rdr_pk.clone(), &object_id, None, None)
         .expect("create PRE JWT");
 
@@ -1393,7 +1630,7 @@ async fn test_start_pre_does_not_record_jti_before_authorization() {
         salt: None,
         valid_window: None,
         document: None,
-        rdr_pk_proof: None,
+        rdr_pk_signature: None,
         audit_target_object_id: None,
     };
 
@@ -1489,7 +1726,6 @@ async fn test_pre_fails_with_wrong_derivation() {
     // Bob's keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE with CORRECT derivation (re-encryption should work)
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1506,7 +1742,7 @@ async fn test_pre_fails_with_wrong_derivation() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token with CORRECT derivation
-    let pre_token = test_keys
+    let (pre_token, _) = test_keys
         .create_pre_jwt(
             bob_pk_bytes.clone(),
             &object_id,
@@ -1514,6 +1750,16 @@ async fn test_pre_fails_with_wrong_derivation() {
             None,
         )
         .expect("Failed to create PRE JWT");
+
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        Some(correct_derivation.clone()),
+    );
 
     // Initiate re-encryption with CORRECT derivation
     let pre_response_bytes = pre_coordinator
@@ -1536,7 +1782,7 @@ async fn test_pre_fails_with_wrong_derivation() {
             secret_bytes.clone(),
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes.clone(),
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id: object_id.clone(),
                 token_string: pre_token,
                 derivation: Some(correct_derivation.clone()),
@@ -1549,6 +1795,7 @@ async fn test_pre_fails_with_wrong_derivation() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await
         .expect("PRE with correct derivation should succeed");
@@ -1683,7 +1930,6 @@ async fn test_pre_fails_with_bad_proof() {
     // Bob's keys
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).unwrap();
-    let bob_pk_proof = PreImpl::prove_reader_key(&bob_sk, &bob_pk).unwrap();
 
     // PRE
     let pre_coordinator = PreCoordinator::<DkgImpl, PreImpl>::with_routes(
@@ -1700,9 +1946,19 @@ async fn test_pre_fails_with_bad_proof() {
     let object_id = setup_document_in_bulletin(dummy_bulletin, &secret_bytes, proof).await;
 
     // Create PRE JWT token
-    let pre_token = test_keys
+    let (pre_token, _) = test_keys
         .create_pre_jwt(bob_pk_bytes.clone(), &object_id, None, None)
         .expect("Failed to create PRE JWT");
+
+    let (reader_auth_context, bob_pk_signature) = sign_pre_request(
+        dummy_bulletin,
+        &ring_payload,
+        &pre_token,
+        &object_id,
+        &bob_sk,
+        &bob_pk,
+        None,
+    );
 
     // Attempt re-encryption — should fail because proof verification fails on peer nodes
     let pre_result = pre_coordinator
@@ -1725,7 +1981,7 @@ async fn test_pre_fails_with_bad_proof() {
             secret_bytes,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id,
                 token_string: pre_token,
                 derivation: None,
@@ -1738,6 +1994,7 @@ async fn test_pre_fails_with_bad_proof() {
                 pet_evidence: None,
             },
             test_report_binding(dummy_bulletin, &ring_payload, None, None),
+            reader_auth_context,
         )
         .await;
 
@@ -1809,8 +2066,8 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
 
     let (bob_sk, bob_pk) = PreImpl::generate_keypair();
     let bob_pk_bytes = CryptoSerialize::to_bytes(&bob_pk).expect("serialize reader public key");
-    let bob_pk_proof =
-        PreImpl::prove_reader_key(&bob_sk, &bob_pk).expect("prove reader public key");
+    let (reader_auth_context, bob_pk_signature) =
+        plain_reader_auth_context_and_signature("local-verify-failure-object", &bob_sk, &bob_pk);
     let (_, encrypted_secret, _) = PreImpl::encrypt_secret(
         &aggregate_pk,
         b"local verification failure",
@@ -1853,7 +2110,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
             0,
             PreRequestContext {
                 rdr_pk_bytes: bob_pk_bytes,
-                rdr_pk_proof: bob_pk_proof,
+                rdr_pk_signature: bob_pk_signature,
                 object_id: "local-verify-failure-object".to_string(),
                 token_string: "unused".to_string(),
                 derivation: None,
@@ -1873,6 +2130,7 @@ async fn test_local_pre_share_verification_failure_is_not_counted() {
                 None,
                 None,
             ),
+            reader_auth_context,
         )
         .await;
 

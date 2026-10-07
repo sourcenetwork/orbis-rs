@@ -94,11 +94,15 @@ fn random_keypair() -> (Fr, G1Affine) {
 fn public_derivation_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
     let mut hasher = Sha512::new();
     hasher.update(b"sign-derivation-v1");
+    hasher.update((derivation.len() as u64).to_le_bytes());
     hasher.update(derivation);
-    if let Some(meta) = metadata {
-        hasher.update(b"\x00");
-        hasher.update((meta.len() as u64).to_le_bytes());
-        hasher.update(meta);
+    match metadata {
+        None => hasher.update([0]),
+        Some(meta) => {
+            hasher.update([1]);
+            hasher.update((meta.len() as u64).to_le_bytes());
+            hasher.update(meta);
+        }
     }
     Fr::from_le_bytes_mod_order(&hasher.finalize())
 }

@@ -20,6 +20,9 @@ use sha2::{Digest, Sha256};
 pub const CONTEXT_DIGEST_DOMAIN: &[u8] = b"orbis-context-v1";
 /// Domain separator for [`ciphertext_digest`].
 pub const CIPHERTEXT_DIGEST_DOMAIN: &[u8] = b"orbis-ciphertext-v1";
+/// Domain separator for [`reader_authorization_context_digest`].
+pub const READER_AUTHORIZATION_CONTEXT_DIGEST_DOMAIN: &[u8] =
+    b"orbis-reader-authorization-context-v1";
 
 /// Binds a payload's encryption to the exact PET ownership tag it was
 /// created for.
@@ -81,14 +84,14 @@ pub struct CiphertextContext {
 }
 
 /// Append `bytes` with a 4-byte big-endian length prefix.
-fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
 }
 
 /// Append an optional string: `0x00` for `None`, `0x01` + length-prefixed bytes
 /// for `Some`.
-fn put_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
+pub(crate) fn put_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
     match value {
         None => out.push(0),
         Some(s) => {
@@ -100,12 +103,24 @@ fn put_opt_str(out: &mut Vec<u8>, value: Option<&str>) {
 
 /// Append an optional `u64`: `0x00` for `None`, `0x01` + 8 big-endian bytes for
 /// `Some`.
-fn put_opt_u64(out: &mut Vec<u8>, value: Option<u64>) {
+pub(crate) fn put_opt_u64(out: &mut Vec<u8>, value: Option<u64>) {
     match value {
         None => out.push(0),
         Some(n) => {
             out.push(1);
             out.extend_from_slice(&n.to_be_bytes());
+        }
+    }
+}
+
+/// Append optional bytes: `0x00` for `None`, `0x01` + length-prefixed bytes for
+/// `Some`.
+pub(crate) fn put_opt_bytes(out: &mut Vec<u8>, value: Option<&[u8]>) {
+    match value {
+        None => out.push(0),
+        Some(b) => {
+            out.push(1);
+            put_bytes(out, b);
         }
     }
 }
@@ -168,6 +183,126 @@ pub fn ciphertext_digest(nonce: &[u8], encrypted_data: &[u8]) -> [u8; 32] {
     hasher.update(CIPHERTEXT_DIGEST_DOMAIN);
     hasher.update(nonce);
     hasher.update(encrypted_data);
+    hasher.finalize().into()
+}
+
+/// Crypto-local mirror of `authz::vera::ValidWindow` — this crate has no
+/// dependency on `authz` and shouldn't gain one just for this field, so the
+/// node layer maps `ValidWindow { start, end }` to this identical shape when
+/// building a [`ReaderAuthorizationContext`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ValidWindowBinding {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Append an optional [`ValidWindowBinding`]: `0x00` for `None`, `0x01` + the
+/// two `u64` fields (big-endian, declaration order) for `Some`.
+fn put_opt_valid_window(out: &mut Vec<u8>, value: Option<&ValidWindowBinding>) {
+    match value {
+        None => out.push(0),
+        Some(w) => {
+            out.push(1);
+            out.extend_from_slice(&w.start.to_be_bytes());
+            out.extend_from_slice(&w.end.to_be_bytes());
+        }
+    }
+}
+
+/// Request-bound recipient-authorization transcript — the message a PRE
+/// recipient's Schnorr signature over their own key actually signs, replacing
+/// the old context-free proof-of-possession. A plain data-bag populated by the
+/// node layer from already-verified claims and already-resolved ring/document
+/// state: this type itself knows nothing about JWTs, the bulletin, or ACP,
+/// exactly like [`CiphertextContext`] doesn't.
+///
+/// Deliberately does **not** bind the ciphertext (`enc_cmt`/a digest of
+/// `nonce`+`encrypted_data`): binding `object_id` already closes the
+/// cross-ciphertext replay this exists to prevent (a signature for one
+/// `object_id` cannot be reused for a request naming a different one, since
+/// it's baked into the Fiat-Shamir challenge), and the correspondence between
+/// a resolved `object_id` and the `Secret` actually used is already a
+/// node-layer invariant (stage 3 resolves the document once; both this
+/// context and the `Secret` passed to `reencrypt` derive from that same
+/// resolution) backed by the same honest-threshold-of-nodes assumption this
+/// protocol's other per-node checks (ACP, PET admission, encryption-binding)
+/// already rest on — not something that needs independent crypto-layer
+/// enforcement on top of that.
+///
+/// `ring_id` is similarly excluded: it's immutable per `object_id` and
+/// independently, authoritatively resolved by the server regardless of any
+/// client input, so binding `object_id` already implies it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ReaderAuthorizationContext {
+    /// Vera chain id — static per deployment.
+    pub chain_id: String,
+    /// Authoritative ring / DKG aggregate public key (compressed point
+    /// bytes), server-resolved — never the client's own claim.
+    pub ring_pk: Vec<u8>,
+    /// Authenticated JWT issuer (`iss`).
+    pub jwt_issuer: String,
+    /// Delegated subject (`sub`), if the issuer is a trusted relay.
+    pub jwt_subject: Option<String>,
+    /// The actor the token actually resolves to (issuer, or the delegated
+    /// subject when delegation is permitted) — bound in addition to the raw
+    /// issuer/subject so the transcript is unambiguous even if delegation
+    /// trust configuration ever changes between signing and verification.
+    pub resolved_actor: String,
+    /// JWT id (`jti`) — the logical request identifier. Callers must reject
+    /// an empty value before constructing this context; there is no legacy
+    /// tolerance for a token minted before `jti` existed.
+    pub jwt_id: String,
+    pub jwt_issued_time: u64,
+    pub jwt_expiration_time: u64,
+    pub jwt_not_before: Option<u64>,
+    /// The document id this authorization is for, bound only once it has
+    /// been used to successfully resolve a document server-side.
+    pub object_id: String,
+    /// The recipient public key itself, folded into the transcript (rather
+    /// than hashed alongside it) so the transcript alone is fully
+    /// self-describing — useful for the external, reproducible test-vector
+    /// this type's signing scheme is expected to support.
+    pub recipient_pk: Vec<u8>,
+    pub derivation: Option<Vec<u8>>,
+    pub salt: Option<String>,
+    pub valid_window: Option<ValidWindowBinding>,
+    pub audit_target_object_id: Option<String>,
+}
+
+/// Deterministic length-prefixed encoding of a [`ReaderAuthorizationContext`],
+/// following [`canonical_encode`]'s exact conventions: fixed field order,
+/// every variable-length field length-prefixed, every optional field
+/// presence-tagged.
+pub fn canonical_encode_reader_authorization(ctx: &ReaderAuthorizationContext) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_bytes(&mut out, ctx.chain_id.as_bytes());
+    put_bytes(&mut out, &ctx.ring_pk);
+    put_bytes(&mut out, ctx.jwt_issuer.as_bytes());
+    put_opt_str(&mut out, ctx.jwt_subject.as_deref());
+    put_bytes(&mut out, ctx.resolved_actor.as_bytes());
+    put_bytes(&mut out, ctx.jwt_id.as_bytes());
+    out.extend_from_slice(&ctx.jwt_issued_time.to_be_bytes());
+    out.extend_from_slice(&ctx.jwt_expiration_time.to_be_bytes());
+    put_opt_u64(&mut out, ctx.jwt_not_before);
+    put_bytes(&mut out, ctx.object_id.as_bytes());
+    put_bytes(&mut out, &ctx.recipient_pk);
+    put_opt_bytes(&mut out, ctx.derivation.as_deref());
+    put_opt_str(&mut out, ctx.salt.as_deref());
+    put_opt_valid_window(&mut out, ctx.valid_window.as_ref());
+    put_opt_str(&mut out, ctx.audit_target_object_id.as_deref());
+    out
+}
+
+/// `SHA256(READER_AUTHORIZATION_CONTEXT_DIGEST_DOMAIN || canonical_encode_reader_authorization(ctx))`.
+///
+/// Folded into the reader-authorization Schnorr signature's Fiat-Shamir
+/// challenge alongside the recipient key and nonce commitment. No
+/// ciphertext-binding term — see [`ReaderAuthorizationContext`]'s doc comment
+/// for why that's a deliberate choice, not an omission.
+pub fn reader_authorization_context_digest(ctx: &ReaderAuthorizationContext) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(READER_AUTHORIZATION_CONTEXT_DIGEST_DOMAIN);
+    hasher.update(canonical_encode_reader_authorization(ctx));
     hasher.finalize().into()
 }
 
@@ -278,6 +413,108 @@ mod tests {
         assert_ne!(
             ciphertext_digest(&[0u8; 12], b"ct"),
             ciphertext_digest(&[0u8; 12], b"cu")
+        );
+    }
+
+    fn sample_reader_auth_context() -> ReaderAuthorizationContext {
+        ReaderAuthorizationContext {
+            chain_id: "vera-test".into(),
+            ring_pk: vec![1, 2, 3, 4],
+            jwt_issuer: "did:key:issuer".into(),
+            jwt_subject: None,
+            resolved_actor: "did:key:issuer".into(),
+            jwt_id: "jti-1".into(),
+            jwt_issued_time: 1000,
+            jwt_expiration_time: 2000,
+            jwt_not_before: None,
+            object_id: "object-1".into(),
+            recipient_pk: vec![9, 9, 9],
+            derivation: None,
+            salt: None,
+            valid_window: None,
+            audit_target_object_id: None,
+        }
+    }
+
+    #[test]
+    fn reader_authorization_canonical_encode_is_deterministic() {
+        assert_eq!(
+            canonical_encode_reader_authorization(&sample_reader_auth_context()),
+            canonical_encode_reader_authorization(&sample_reader_auth_context())
+        );
+    }
+
+    #[test]
+    fn reader_authorization_distinct_object_ids_produce_distinct_encodings() {
+        let base = sample_reader_auth_context();
+        let mut other = base.clone();
+        other.object_id = "object-2".into();
+        assert_ne!(
+            canonical_encode_reader_authorization(&base),
+            canonical_encode_reader_authorization(&other)
+        );
+
+        // Ambiguity guard: moving a byte across the jwt_issuer/resolved_actor
+        // boundary must not collide thanks to the length prefixes.
+        let mut a = base.clone();
+        a.jwt_issuer = "ab".into();
+        a.resolved_actor = "c".into();
+        let mut b = base.clone();
+        b.jwt_issuer = "a".into();
+        b.resolved_actor = "bc".into();
+        assert_ne!(
+            canonical_encode_reader_authorization(&a),
+            canonical_encode_reader_authorization(&b)
+        );
+    }
+
+    #[test]
+    fn reader_authorization_option_presence_changes_encoding() {
+        let mut none_salt = sample_reader_auth_context();
+        none_salt.salt = None;
+        let mut empty_salt = sample_reader_auth_context();
+        empty_salt.salt = Some(String::new());
+        assert_ne!(
+            canonical_encode_reader_authorization(&none_salt),
+            canonical_encode_reader_authorization(&empty_salt),
+            "None and Some(\"\") must not collide"
+        );
+
+        let mut no_window = sample_reader_auth_context();
+        no_window.valid_window = None;
+        let mut with_window = sample_reader_auth_context();
+        with_window.valid_window = Some(ValidWindowBinding { start: 0, end: 0 });
+        assert_ne!(
+            canonical_encode_reader_authorization(&no_window),
+            canonical_encode_reader_authorization(&with_window),
+            "presence of a valid_window must change the encoding even when start=end=0"
+        );
+    }
+
+    #[test]
+    fn reader_authorization_context_digest_binds_every_field() {
+        let base = sample_reader_auth_context();
+        let base_digest = reader_authorization_context_digest(&base);
+
+        let mut different_chain = base.clone();
+        different_chain.chain_id = "vera-other".into();
+        assert_ne!(
+            base_digest,
+            reader_authorization_context_digest(&different_chain)
+        );
+
+        let mut different_recipient = base.clone();
+        different_recipient.recipient_pk = vec![0, 0, 0];
+        assert_ne!(
+            base_digest,
+            reader_authorization_context_digest(&different_recipient)
+        );
+
+        let mut different_jti = base;
+        different_jti.jwt_id = "jti-2".into();
+        assert_ne!(
+            base_digest,
+            reader_authorization_context_digest(&different_jti)
         );
     }
 }

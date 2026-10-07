@@ -1,4 +1,4 @@
-use crate::context::CiphertextContext;
+use crate::context::{CiphertextContext, ReaderAuthorizationContext};
 use crate::error::Result;
 use crate::jubjub::{
     common::{Element, Fr, PubPoly},
@@ -81,7 +81,29 @@ fn pre_rejects_non_subgroup_and_noncanonical_points_at_decoding() {
 
     let reader_secret = Fr::from(7u64);
     let reader_key = Element::generator() * reader_secret;
-    let reader_proof = ThresholdDealerNode::prove_reader_key(&reader_secret, &reader_key).unwrap();
+    let reader_auth_context = ReaderAuthorizationContext {
+        chain_id: "test-chain".to_string(),
+        ring_pk: public_key.to_bytes().unwrap(),
+        jwt_issuer: "did:key:issuer".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:issuer".to_string(),
+        jwt_id: "jti-1".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: None,
+        object_id: "secret".to_string(),
+        recipient_pk: reader_key.to_bytes().unwrap(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    };
+    let reader_signature = ThresholdDealerNode::sign_reader_authorization(
+        &reader_secret,
+        &reader_key,
+        &reader_auth_context,
+    )
+    .unwrap();
     let share = DistKeyShare {
         pri_share: PriShare {
             i: 1,
@@ -90,7 +112,13 @@ fn pre_rejects_non_subgroup_and_noncanonical_points_at_decoding() {
     };
     let dealer = ThresholdDealerNode::new();
     dealer
-        .reencrypt(&share, &secret, &reader_key, &reader_proof, None)
+        .reencrypt(
+            &share,
+            &secret,
+            &reader_key,
+            &reader_auth_context,
+            &reader_signature,
+        )
         .unwrap();
 
     for (case, bytes) in invalid_point_encodings() {
@@ -105,7 +133,13 @@ fn pre_rejects_non_subgroup_and_noncanonical_points_at_decoding() {
             case,
         );
         assert_decode_error(
-            dealer.reencrypt(&share, &malformed, &reader_key, &reader_proof, None),
+            dealer.reencrypt(
+                &share,
+                &malformed,
+                &reader_key,
+                &reader_auth_context,
+                &reader_signature,
+            ),
             "failed to decompress point",
             case,
         );

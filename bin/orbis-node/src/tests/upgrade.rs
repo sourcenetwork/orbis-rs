@@ -11,8 +11,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::constants::reporting_genesis_json;
-use crypto::helpers::generate_keypair;
-use crypto::CryptoSerialize;
 use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration};
 
@@ -139,11 +137,6 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
         .await
         .expect("node 1 gRPC services must be available before Phase 1");
 
-    // do_pre validates reader_pk before the version check — need a real keypair
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-
     // ─── Phase 1: pre-activation — version gate must NOT fire ────────────────
     let phase_1_slack = assert_before_activation("Phase 1", activation_time);
     println!(
@@ -184,16 +177,14 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
     let _ = assert_before_activation("PRE", activation_time);
     let pre_result = cli_tool::do_pre(
         endpoint.clone(),
+        "vera-localnet".to_string(),
         String::new(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         DOCUMENT_ID.to_string(),
         None,
         None,
         None,
         None,
         None,
-        false,
     )
     .await;
     assert_pre_activation_response("PRE", &pre_result);
@@ -246,16 +237,14 @@ async fn test_v0_services_rejected_after_ring_upgrade() {
 
     let pre_err = cli_tool::do_pre(
         endpoint.clone(),
+        "vera-localnet".to_string(),
         String::new(),
-        reader_pk_hex,
-        Some(reader_sk_hex),
         DOCUMENT_ID.to_string(),
         None,
         None,
         None,
         None,
         None,
-        false,
     )
     .await
     .expect_err("v0 PRE must refuse a document whose ring activated to v1");

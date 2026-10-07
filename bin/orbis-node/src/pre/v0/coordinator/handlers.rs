@@ -3,8 +3,9 @@ use crate::constants::{JWT_CLOCK_SKEW_LEEWAY_SECS, MAX_JWT_BYTES, MAX_TOKEN_LIFE
 use crate::helpers::auth::request_actor;
 use crate::pre::v0::error::{PreError, Result};
 use crate::pre::v0::helpers::{
-    build_ciphertext_context, check_policy_access, decode_ring_pk, deserialize_secret,
-    resolve_document_and_ring_payloads, validate_pre_claims, verify_encryption_binding,
+    build_ciphertext_context, build_reader_authorization_context, check_policy_access,
+    decode_ring_pk, deserialize_secret, resolve_document_and_ring_payloads, validate_pre_claims,
+    verify_encryption_binding,
 };
 use crate::pre::v0::messages::{PreMessage, PreRequestContext, ReencryptRequest};
 use crate::reporting::v0::types::{
@@ -194,6 +195,23 @@ where
             ring_payload.pet_pk.as_deref(),
         )?;
 
+        // Rebuild the request-bound transcript the client's `sign_reader_authorization`
+        // call signed, independently of whatever the leader/relay claims — this node
+        // verifies the reader's signature against its own resolution, never trusting a
+        // coordinator-supplied context.
+        let reader_auth_context = build_reader_authorization_context(
+            self.app_state.bulletin.chain_id(),
+            &ring_payload.ring_pk,
+            &token,
+            &actor_id,
+            &ctx.object_id,
+            &ctx.rdr_pk_bytes,
+            ctx.derivation.clone(),
+            ctx.salt.clone(),
+            ctx.valid_window.clone(),
+            ctx.audit_target_object_id.clone(),
+        )?;
+
         // Both the ACP re-check below and the PET admission check further down reject on the
         // same request, so a relayer's signed statement binds identically to either failure —
         // built once and reused by `report_relay_if_bound` from whichever branch rejects.
@@ -297,6 +315,25 @@ where
             }
         }
 
+        // Deserialize the reader public key once here so it's available both for
+        // the fail-fast signature check immediately below and the reencryption
+        // call further down.
+        let rdr_pk = <D::PublicKey>::from_bytes(&ctx.rdr_pk_bytes[..]).map_err(|e| {
+            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
+        })?;
+
+        // Verify the reader-authorization signature before the JTI guard below
+        // records this token as used. `reencrypt` re-verifies this
+        // independently further down (the actual security boundary — every
+        // committee member checks it regardless), but checking it here too
+        // means a tampered or malformed signature — e.g. from a misbehaving
+        // relay forwarding a genuine client JWT alongside a corrupted
+        // signature — can't burn the caller's one-time JWT on a request that
+        // was never going to succeed. Mirrors the service layer's own stage 3
+        // ordering (`PreServiceImpl::authorize_pre_request`).
+        T::verify_reader_authorization(&rdr_pk, &reader_auth_context, &ctx.rdr_pk_signature)
+            .map_err(|e| PreError::Unauthorized(format!("Invalid reader authorization: {}", e)))?;
+
         // Reject a forwarded JWT this node has already accepted. A responder sees
         // the client token exactly once per PRE, so a duplicate means the leader
         // (or a ring insider) replayed a captured `ReencryptRequest`. Recorded only
@@ -321,29 +358,24 @@ where
         // 1. Deserialize the secret
         let secret = deserialize_secret(&document_payload.document)?;
 
-        // 2. Deserialize reader public key
-        let rdr_pk = <D::PublicKey>::from_bytes(&ctx.rdr_pk_bytes[..]).map_err(|e| {
-            PreError::Deserialization(format!("Failed to deserialize reader public key: {}", e))
-        })?;
-
-        // 3. Deserialize ring public key to get the storage key
+        // 2. Deserialize ring public key to get the storage key
         let (_, ring_pk) = decode_ring_pk(&ring_payload.ring_pk)?;
 
-        // 4. Load share bundle from local storage (single encrypted entry = atomic share+poly)
+        // 3. Load share bundle from local storage (single encrypted entry = atomic share+poly)
         let bundle = RingShareBundle::load(&self.app_state.local_storage, &ring_pk)
             .map_err(|e| PreError::Storage(format!("Failed to load share bundle: {}", e)))?;
 
-        // 5. Deserialize final share from bundle
+        // 4. Deserialize final share from bundle
         let pri_share: PriShare<D::ShareValue> = PriShare::from_bytes(&bundle.share_bytes)
             .map_err(|e| {
                 PreError::Deserialization(format!("Failed to deserialize final share: {}", e))
             })?;
         let node_id = pri_share.i;
 
-        // 6. Create distributed key share
+        // 5. Create distributed key share
         let dist_key_share = DistKeyShare { pri_share };
 
-        // 7. Perform reencryption
+        // 6. Perform reencryption
         let dealer = T::new();
         // Check permission binding - verify proof before re-encryption
         verify_encryption_binding(&ciphertext_context, &secret, document_payload.proof)?;
@@ -352,12 +384,12 @@ where
                 &dist_key_share,
                 &secret,
                 &rdr_pk,
-                &ctx.rdr_pk_proof,
-                ctx.derivation.as_deref(),
+                &reader_auth_context,
+                &ctx.rdr_pk_signature,
             )
             .map_err(|e| PreError::Crypto(format!("Reencryption failed: {}", e)))?;
 
-        // 8. Serialize the reply components using trait methods
+        // 7. Serialize the reply components using trait methods
         let share_bytes = CryptoSerialize::to_bytes(&reply.share.v)
             .map_err(|e| PreError::Serialization(format!("Failed to serialize share: {}", e)))?;
 
@@ -407,7 +439,7 @@ where
             sign_node_message_with_hex_key(&signing_key_hex, &statement.canonical_bytes())
                 .map_err(|e| PreError::Crypto(format!("Failed to sign PRE response: {}", e)))?;
 
-        // 9. Create response message
+        // 8. Create response message
         let response = PreMessage::ReencryptResponse {
             request_id: request_id.clone(),
             from_node_id: node_id,

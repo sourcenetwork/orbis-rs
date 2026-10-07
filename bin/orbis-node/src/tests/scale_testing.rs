@@ -27,9 +27,8 @@ use crate::harness::{spawn_harness_node, HarnessNodeHandle, HarnessNodeParams};
 use authn::jwt_builder::{create_authenticated_request, JwtSigner};
 use bulletin::dummy::DummyBulletin;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation, RingPayload};
-use crypto::helpers::generate_keypair;
 use crypto::r#trait::ThresholdSigner;
-use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, SignImpl};
+use crypto::{CryptoDeserialize, GroupAffine, SignImpl};
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 use std::sync::Arc;
@@ -229,12 +228,6 @@ async fn test_scale_dkg_pre_sign() {
 
     // ---- PRE round-trip ----
     let reader_identity = "orbis-node-scale-test-reader".to_string();
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate PRE reader keypair");
-    // Use the shared wire serialization interface for either backend.
-    let reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
     let plaintext = b"orbis-node scale test plaintext".to_vec();
 
     let prepared = cli_tool::prepare_secret(
@@ -262,16 +255,14 @@ async fn test_scale_dkg_pre_sign() {
     .expect("store PRE secret");
     let decrypted = cli_tool::do_pre(
         endpoint.clone(),
+        "vera-localnet".to_string(),
         ring_pk.clone(),
-        reader_pk_hex,
-        Some(reader_sk_hex),
         stored.object_id,
         Some(reader_identity),
         None,
         None,
         None,
         None,
-        false,
     )
     .await
     .expect("run PRE ceremony");

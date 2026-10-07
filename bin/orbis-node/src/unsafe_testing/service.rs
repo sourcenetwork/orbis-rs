@@ -807,9 +807,9 @@ async fn forward_unauthorized_pre(
             rdr_pk_bytes: pre_reader_pk,
             // This harness exercises the ACP-denial / unauthorized-relay-report
             // path, which `handle_reencrypt_request` short-circuits on before
-            // ever calling `reencrypt` — so a placeholder proof is fine here and
-            // never needs to be genuinely valid.
-            rdr_pk_proof: crypto::r#trait::ReaderKeyProof {
+            // ever calling `reencrypt` — so a placeholder signature is fine here
+            // and never needs to be genuinely valid.
+            rdr_pk_signature: crypto::r#trait::ReaderAuthorizationSignature {
                 challenge: Vec::new(),
                 response: Vec::new(),
             },

@@ -480,6 +480,7 @@ pub struct PssMeasurement {
 
 #[derive(Clone, Debug)]
 pub struct PreFixture {
+    pub chain_id: String,
     pub ring_pk: String,
     pub reader_pk: Vec<u8>,
     pub reader_sk: ScalarField,
@@ -515,14 +516,35 @@ pub async fn pre_call(
     fixture: &PreFixture,
 ) -> Result<PreMeasurement> {
     let signer = JwtSigner::from_key_pair(did_key_pair(&fixture.reader_identity));
-    let token = signer.create_pre_jwt(
+    let (token, token_metadata) = signer.create_pre_jwt(
         fixture.reader_pk.clone(),
         &fixture.object_id,
         fixture.derivation.clone(),
         fixture.salt.clone(),
     )?;
     let reader_pk_point = GroupAffine::from_bytes(&fixture.reader_pk)?;
-    let rdr_pk_proof = PreImpl::prove_reader_key(&fixture.reader_sk, &reader_pk_point)?;
+    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        chain_id: fixture.chain_id.clone(),
+        ring_pk: hex::decode(&fixture.ring_pk)?,
+        jwt_issuer: signer.did_uri.clone(),
+        jwt_subject: None,
+        resolved_actor: signer.did_uri.clone(),
+        jwt_id: token_metadata.jwt_id,
+        jwt_issued_time: token_metadata.issued_time,
+        jwt_expiration_time: token_metadata.expiration_time,
+        jwt_not_before: token_metadata.not_before,
+        object_id: fixture.object_id.clone(),
+        recipient_pk: fixture.reader_pk.clone(),
+        derivation: fixture.derivation.clone(),
+        salt: fixture.salt.clone(),
+        valid_window: None,
+        audit_target_object_id: fixture.audit_target_object_id.clone(),
+    };
+    let rdr_pk_signature = PreImpl::sign_reader_authorization(
+        &fixture.reader_sk,
+        &reader_pk_point,
+        &reader_auth_context,
+    )?;
     let total_started = Instant::now();
     let request = create_authenticated_request(
         StartPreRequest {
@@ -532,9 +554,9 @@ pub async fn pre_call(
             salt: fixture.salt.clone(),
             valid_window: None,
             document: None,
-            rdr_pk_proof: Some(proto::v0::pre::ReaderKeyProof {
-                challenge: rdr_pk_proof.challenge,
-                response: rdr_pk_proof.response,
+            rdr_pk_signature: Some(proto::v0::pre::ReaderAuthorizationSignature {
+                challenge: rdr_pk_signature.challenge,
+                response: rdr_pk_signature.response,
             }),
             audit_target_object_id: fixture.audit_target_object_id.clone(),
         },

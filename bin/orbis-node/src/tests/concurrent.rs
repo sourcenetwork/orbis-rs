@@ -49,7 +49,6 @@ use common::blockchain::{
     VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
 use crypto::{
-    helpers::generate_keypair,
     r#trait::{CryptoDeserialize, Dkg, DkgMode, DkgRole},
     CryptoSerialize, DkgImpl, PreImpl, ScalarField, SignImpl,
 };
@@ -933,53 +932,41 @@ async fn test_concurrent_pre_requests() {
     .await
     .expect("set relationship on chain");
 
-    // Step 4: Generate a reader keypair
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-    let reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
-
-    // Step 5: Three concurrent PRE decryptions
+    // Step 4: Three concurrent PRE decryptions — each generates its own fresh
+    // ephemeral reader keypair internally.
     let (r1, r2, r3) = tokio::join!(
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
         ),
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
         ),
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
         ),
     );
 

@@ -838,6 +838,9 @@ impl NodeFixtureV1 {
 impl PreFixtureV1 {
     fn to_runtime(&self) -> Result<PreFixture> {
         Ok(PreFixture {
+            // Every upgrade-benchmark chain is discovered via
+            // `discover_chain_config`, which never overrides this default.
+            chain_id: "vera-localnet".to_string(),
             ring_pk: self.ring_pk.clone(),
             reader_pk: hex::decode(&self.reader_pk_hex)?,
             reader_sk: <ScalarField as CryptoDeserialize>::from_bytes(&hex::decode(
