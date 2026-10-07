@@ -18,9 +18,9 @@ tempfile = { workspace = true }
 commonware-codec = { version = "2026.9.0", optional = true }
 hex = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
 
 [features]
 native = ["dep:commonware-codec", "dep:hex", "dep:tokio", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
