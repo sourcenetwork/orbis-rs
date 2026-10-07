@@ -6,6 +6,8 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
+mod pet_reshare;
+
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
@@ -1921,13 +1923,20 @@ async fn test_pet_ring_refresh_and_reshare() {
     let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
     let reshare_threshold = 2u32;
 
-    let pre_reshare_pet_states = wait_for_pet_ring_state_on_all_nodes(
-        &node_endpoints[..2],
-        &ring_id,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let (pre_reshare_main_states, pre_reshare_pet_states) = tokio::join!(
+        wait_for_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_pk_hex,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+        wait_for_pet_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_id,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+    );
 
     cli_tool::start_ring_reshare_by_acp_with_config(
         ring_id.clone(),
@@ -1966,9 +1975,12 @@ async fn test_pet_ring_refresh_and_reshare() {
         &ring_id[..16.min(ring_id.len())]
     );
 
-    let reshared_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
+    let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
+        &chain_config,
         &node_endpoints[..2],
         &ring_id,
+        &reshared_payload,
+        &pre_reshare_main_states,
         &pre_reshare_pet_states,
         Duration::from_secs(120),
         Duration::from_secs(2),

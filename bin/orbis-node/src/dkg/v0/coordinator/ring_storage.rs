@@ -10,11 +10,13 @@ use crate::dkg::v0::session_state::DkgPhase;
 use crate::dkg::v0::transport::AttemptKey;
 use crate::helpers::auth::current_unix_time;
 use crate::ring_state::RingIndexEntry;
-use bulletin::r#trait::{Bulletin, BulletinWriteKind, RingFinalizationPayload};
+use bulletin::r#trait::{
+    Bulletin, BulletinKind, BulletinWriteKind, RingFinalizationPayload, RingPayload,
+};
 use crypto::r#trait::Dkg;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::sync::Arc;
-use tokio::time::{sleep, Instant};
+use tokio::time::{sleep, timeout_at, Instant};
 
 use super::{attempt_state_error, types::CoordinatorDkg, DkgCoordinator};
 
@@ -181,6 +183,7 @@ where
         &coord.app_state.node_key,
         ring_id,
         &ring_pk,
+        None,
         payload_bytes,
     )
     .await?;
@@ -231,6 +234,7 @@ where
         &coord.app_state.node_key,
         ring_id,
         main_ring_pk_hex,
+        Some(&pet_pk),
         payload_bytes,
     )
     .await?;
@@ -269,6 +273,7 @@ async fn post_and_verify_fresh_ring_finalization(
     node_key: &str,
     ring_id: &str,
     ring_pk: &str,
+    pet_pk: Option<&str>,
     payload_bytes: Vec<u8>,
 ) -> Result<usize> {
     let mut post_error = bulletin
@@ -290,7 +295,39 @@ async fn post_and_verify_fresh_ring_finalization(
             )));
         }
 
-        match bulletin.ring_finalization_status(ring_id.to_string()).await {
+        let mut status = bulletin.ring_finalization_status(ring_id.to_string()).await;
+        if let (Ok(current), Some(expected_pet_pk)) = (&status, pet_pk) {
+            if current.ring_pk == ring_pk {
+                // A main-key confirmation alone cannot acknowledge the independent PET key,
+                // including when a failed post was actually a conflicting confirmation.
+                let readback = async {
+                    let post = bulletin
+                        .read(ring_id.to_string(), BulletinKind::Ring)
+                        .await?;
+                    RingPayload::try_from(post)
+                };
+                match timeout_at(deadline, readback).await {
+                    Ok(Ok(ring)) => {
+                        if ring.ring_pk != ring_pk
+                            || !ring.requires_pet
+                            || ring.pet_pk.as_deref() != Some(expected_pet_pk)
+                        {
+                            return Err(DkgError::Bulletin(format!(
+                                "Ring {ring_id} finalized state does not match the expected main and PET key pair"
+                            )));
+                        }
+                    }
+                    Ok(Err(error)) => status = Err(error),
+                    Err(_) => {
+                        return Err(DkgError::Bulletin(format!(
+                            "Timed out verifying finalized PET key for ring {ring_id}"
+                        )));
+                    }
+                }
+            }
+        }
+
+        match status {
             Ok(status) if status.ring_pk == ring_pk => break,
             Ok(status) if !status.ring_pk.is_empty() => {
                 return Err(DkgError::Bulletin(format!(
@@ -303,6 +340,10 @@ async fn post_and_verify_fresh_ring_finalization(
                 let Some(confirmation_node_keys) = status.confirmation_node_keys else {
                     if let Some(error) = post_error {
                         return Err(error);
+                    }
+                    if pet_pk.is_some() {
+                        sleep(FINALIZATION_STATUS_POLL_INTERVAL).await;
+                        continue;
                     }
                     break;
                 };
@@ -596,6 +637,7 @@ mod tests {
             "node-key",
             "ring",
             "pk",
+            None,
             payload.clone(),
         )
         .await
@@ -713,6 +755,7 @@ mod tests {
             "node-key",
             "ring",
             "pk",
+            None,
             payload.clone(),
         )
         .await
@@ -723,3 +766,7 @@ mod tests {
         assert_eq!(payloads.as_slice(), [payload.clone(), payload].as_slice());
     }
 }
+
+#[cfg(test)]
+#[path = "ring_storage/pet_finalization_tests.rs"]
+mod pet_finalization_tests;
