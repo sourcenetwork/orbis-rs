@@ -23,7 +23,6 @@ use crypto::{
 };
 use local_storage::{common::StoredKdfParams, r#trait::LocalStorage, LocalStorageImpl};
 use proto::v0::dkg::{dkg_service_server::DkgService, StartDkgRequest};
-use redb::{ReadableDatabase, TableDefinition};
 use std::{sync::Arc, time::Duration};
 
 struct Stores([String; 3]);
@@ -279,16 +278,8 @@ async fn refresh(name: &str) -> (RingPayload, Vec<RingShareBundle>, Vec<RingShar
 }
 
 fn assert_production_kdf(storage: &LocalStorageImpl) {
-    let transaction = storage.store.begin_read().unwrap();
-    let table = transaction
-        .open_table(TableDefinition::<&[u8], &[u8]>::new("orbis_local"))
-        .unwrap();
-    let stored = table
-        .get(b"__internal__kdf_params".as_slice())
-        .unwrap()
-        .unwrap();
     assert_eq!(
-        StoredKdfParams::from_bytes(stored.value()).unwrap(),
+        storage.stored_kdf_params().unwrap(),
         StoredKdfParams {
             m_cost_kib: 262_144,
             t_cost: 3,

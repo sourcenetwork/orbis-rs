@@ -1,5 +1,5 @@
 use super::{
-    raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KDF_PARAMS_KEY,
+    raw_delete, raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KDF_PARAMS_KEY,
     INTERNAL_KEY_COMMITMENT_KEY,
 };
 use crate::common::StoredKdfParams;
@@ -131,24 +131,14 @@ fn kdf_params_are_persisted_and_reused_on_reopen() {
     let path = test_db_path("sec04_kdf_persist");
     cleanup_db(&path);
 
-    {
-        RedbStorage::new("pw".to_string(), path.clone()).unwrap();
-    }
+    let expected = StoredKdfParams::for_new_db();
+    let db = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    assert_eq!(db.stored_kdf_params().unwrap(), expected);
+    drop(db);
 
-    let raw = raw_get(
-        &::redb::Database::create(&path).unwrap(),
-        INTERNAL_KDF_PARAMS_KEY,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        StoredKdfParams::from_bytes(&raw).unwrap(),
-        StoredKdfParams::for_new_db(),
-        "creation parameters must be written to disk"
-    );
-
-    // Reopen re-derives from the persisted parameters — succeeds.
-    RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    let reopened = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    assert_eq!(reopened.stored_kdf_params().unwrap(), expected);
+    drop(reopened);
 
     cleanup_db(&path);
 }
@@ -296,6 +286,26 @@ fn native_worker_identity_survives_restart_and_deletion() {
     drop(db);
     let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
     assert!(db.get_encrypted(key).unwrap().is_none());
+    drop(db);
+    cleanup_db(&path);
+}
+
+/// The readback must use the stored header, never current defaults or a cache.
+#[test]
+fn stored_kdf_params_rejects_missing_or_malformed_header() {
+    let path = test_db_path("kdf_readback_invalid");
+    cleanup_db(&path);
+    let db = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    raw_set(&db.store, INTERNAL_KDF_PARAMS_KEY, &[0; 15]).unwrap();
+    assert!(matches!(
+        db.stored_kdf_params(),
+        Err(LocalStorageError::CorruptData)
+    ));
+    raw_delete(&db.store, INTERNAL_KDF_PARAMS_KEY).unwrap();
+    assert!(matches!(
+        db.stored_kdf_params(),
+        Err(LocalStorageError::CorruptData)
+    ));
     drop(db);
     cleanup_db(&path);
 }

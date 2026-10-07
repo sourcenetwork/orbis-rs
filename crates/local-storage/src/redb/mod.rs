@@ -34,6 +34,16 @@ pub struct RedbStorage {
     salt: Option<Vec<u8>>,
 }
 
+impl RedbStorage {
+    /// Read the persisted, non-secret KDF header used when this database opens.
+    /// Missing or malformed headers are errors; current defaults are never substituted.
+    pub fn stored_kdf_params(&self) -> Result<StoredKdfParams> {
+        let bytes =
+            raw_get(&self.store, INTERNAL_KDF_PARAMS_KEY)?.ok_or(LocalStorageError::CorruptData)?;
+        StoredKdfParams::from_bytes(&bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

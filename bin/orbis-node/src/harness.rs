@@ -219,7 +219,8 @@ pub async fn spawn_harness_node(
     let config = NodeConfig {
         args,
         cors_policy: CorsPolicy::Disabled,
-        node_key: node_key.clone(),
+        identity: bulletin::startup::cosmos::identity(&signer),
+        backend_names: ("injected".into(), "injected".into()),
         network,
         local_storage,
         authz,
@@ -245,7 +246,8 @@ pub async fn spawn_harness_node(
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::pet::v0::messages::DecryptRequest;
+use crate::unsafe_testing::pet_fault::{PetFaultControl, PetFaultCoordinator, PetFaultError};
 use crate::unsafe_testing::service::UnsafeTestingServiceImpl;
 use proto::unsafe_testing::{
     unsafe_testing_service_server::UnsafeTestingService, SetPetDecryptFaultRequest,
@@ -12,8 +13,10 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
     let db_name = "pet_signed_decrypt_fault";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
     let coordinator = test_coordinator(db_name, &fixture).await;
-    let state = &coordinator.app_state;
-    let service = UnsafeTestingServiceImpl::with_app_state(state.clone());
+    let state = coordinator.app_state.clone();
+    let control = Arc::new(PetFaultControl::default());
+    let service = UnsafeTestingServiceImpl::with_app_state(state.clone(), control.clone());
+    let coordinator = PetFaultCoordinator::new(coordinator, control);
     let context = authorized_pet_context(&fixture);
     let actor = verify_pet_audit_authorization(&*state.authz, &context, None, current_unix_time())
         .await
@@ -110,6 +113,7 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
     for (ring, enabled, invalid) in [
         ("other-ring", true, false),
         (RING_ID, true, true),
+        ("other-ring", false, true),
         (RING_ID, false, false),
     ] {
         service
@@ -120,7 +124,7 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
             .await
             .unwrap();
         let response = coordinator
-            .handle_decrypt_request(request.clone(), &peer)
+            .handle_message(PetMessage::DecryptRequest(Box::new(request.clone())), &peer)
             .await
             .unwrap()
             .unwrap();
@@ -150,6 +154,15 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
         }))
         .await
         .unwrap();
+    let mut stale = request.clone();
+    stale.context.ring_state_sha256 = "00".repeat(32);
+    assert!(matches!(
+        coordinator
+            .handle_message(PetMessage::DecryptRequest(Box::new(stale)), &peer)
+            .await
+            .unwrap(),
+        Some(PetMessage::GenerationMismatch { .. })
+    ));
     let mut corrupt = original.clone();
     let share = PriShare {
         i: 1,
@@ -160,9 +173,12 @@ async fn signed_decrypt_fault_is_ring_scoped_and_preserves_bundle_validation() {
         .save_by_pet_ring_key(&state.local_storage, RING_ID)
         .unwrap();
     let error = coordinator
-        .handle_decrypt_request(request, &peer)
+        .handle_message(PetMessage::DecryptRequest(Box::new(request)), &peer)
         .await
         .unwrap_err();
-    assert!(matches!(error, PetError::Storage(_)), "{error:?}");
+    assert!(
+        matches!(error, PetFaultError::Coordinator(PetError::Storage(_))),
+        "{error:?}"
+    );
     cleanup_db(&test_db_path(db_name));
 }

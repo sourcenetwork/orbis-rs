@@ -1,5 +1,7 @@
 //! Vera-backed bulletin implementation.
 
+pub mod startup;
+
 use crate::{
     error::{BulletinError, Result},
     r#trait::{

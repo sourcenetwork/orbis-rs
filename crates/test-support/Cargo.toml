@@ -6,13 +6,24 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
-# Docker Compose integration-test harness (Vera chain + orbis-node containers).
-# Consumed only as a `[dev-dependencies]` entry; never in a production build.
+# Docker Compose integration-test harness; consumed only as a dev-dependency.
 
 [dependencies]
 common = { path = "../common" }
 serde_json = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
 tempfile = { workspace = true }
+
+commonware-codec = { version = "2026.9.0", optional = true }
+hex = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+
+[features]
+native = ["dep:commonware-codec", "dep:hex", "dep:tokio", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
 
 [dev-dependencies]
 # `tests/blockchain_vera.rs` — live-chain tests for common's VeraClient/TxSigner.

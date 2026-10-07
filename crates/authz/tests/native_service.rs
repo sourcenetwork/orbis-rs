@@ -192,10 +192,15 @@ fn assert_historical_result(result: authz::error::Result<bool>, expected: bool) 
     match result {
         Ok(allowed) => assert_eq!(allowed, expected, "historical permissions changed"),
         // The current store cannot prove a historical root after a policy mutation.
-        Err(authz::error::AuthZError::Native(message)) => assert_eq!(
-            message,
-            "RPC error (-32002): invalid permission evidence: selected module root changed",
-        ),
+        Err(authz::error::AuthZError::Native(authz::native::Error::VerifyAnchoredAccess(
+            vera_client::ClientError::Rpc { code, message },
+        ))) => {
+            assert_eq!(code, -32002);
+            assert_eq!(
+                message,
+                "invalid permission evidence: selected module root changed"
+            );
+        }
         Err(error) => panic!("unexpected historical authorization error: {error}"),
     }
 }
