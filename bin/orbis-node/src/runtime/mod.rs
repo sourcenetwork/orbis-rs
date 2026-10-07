@@ -54,6 +54,8 @@ pub(crate) struct NodeConfig {
 
 /// Result of initializing the node (before starting the server)
 pub(crate) struct InitializedNode {
+    #[cfg(feature = "unsafe-testing")]
+    pet_fault: Option<Arc<crate::unsafe_testing::pet_fault::PetFaultControl>>,
     pub(crate) identity: NodeIdentity,
     backend_names: (String, String),
     pub(crate) app_state: Arc<AppState<DkgImpl>>,
@@ -295,17 +297,48 @@ pub(crate) async fn init_node(
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG, PRE, and Sign protocol handlers
+    #[cfg(feature = "unsafe-testing")]
+    let pet_fault = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
+        .is_ok_and(|value| value == "true")
+        .then(|| Arc::new(crate::unsafe_testing::pet_fault::PetFaultControl::default()));
+    #[cfg(feature = "unsafe-testing")]
+    let router = if let Some(control) = &pet_fault {
+        use crate::helpers::create_routers::create_router_with_pet_handler;
+        use crate::helpers::protocol_handler::GenericProtocolHandler;
+        use crate::pet::v0::coordinator::PetCoordinator;
+        use crate::unsafe_testing::pet_fault::PetFaultCoordinator;
+        create_router_with_pet_handler::<DkgImpl, PreImpl, SignImpl>(
+            &config.network,
+            app_state_arc.clone(),
+            |state, routes| {
+                Arc::new(GenericProtocolHandler::new(Arc::new(
+                    PetFaultCoordinator::new(
+                        PetCoordinator::with_routes(state, routes),
+                        control.clone(),
+                    ),
+                )))
+            },
+        )
+    } else {
+        create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+            &config.network,
+            app_state_arc.clone(),
+        )
+    };
+    #[cfg(not(feature = "unsafe-testing"))]
     let router = create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
         &config.network,
         app_state_arc.clone(),
-    )
-    .map_err(|e| format!("Failed to create router: {}", e))?;
+    );
+    let router = router.map_err(|e| format!("Failed to create router: {}", e))?;
 
     tracing::info!(
         "Router started with DKG, PRE, and Sign protocol handlers and ready to accept connections"
     );
 
     Ok(InitializedNode {
+        #[cfg(feature = "unsafe-testing")]
+        pet_fault,
         identity: config.identity,
         backend_names: config.backend_names,
         app_state: app_state_arc,
@@ -415,13 +448,10 @@ async fn run_server(
         use crate::unsafe_testing::service::UnsafeTestingServiceImpl;
         use proto::unsafe_testing::unsafe_testing_service_server::UnsafeTestingServiceServer;
 
-        let unsafe_testing_enabled = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
-            .map(|value| matches!(value.as_str(), "true"))
-            .unwrap_or(false);
-        if unsafe_testing_enabled {
+        if let Some(control) = node.pet_fault {
             tracing::warn!("Unsafe testing gRPC service is enabled");
             let unsafe_testing_service =
-                UnsafeTestingServiceImpl::with_app_state(node.app_state.clone());
+                UnsafeTestingServiceImpl::with_app_state(node.app_state.clone(), control);
             grpc_server = grpc_server.add_service(
                 UnsafeTestingServiceServer::new(unsafe_testing_service)
                     .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),

@@ -17,6 +17,11 @@ use vera_client::{
 };
 use vera_domain::ConsensusPublicKey;
 
+#[path = "native_pet/dkg.rs"]
+mod dkg;
+#[path = "pet_dkg_contract.rs"]
+mod pet_dkg_contract;
+
 #[path = "native_pet/document.rs"]
 mod document;
 use document::{Delivery, Document, PreChecks, Reader};
@@ -79,33 +84,7 @@ pub async fn run(scenario: Scenario) {
         .unwrap()
         .into_inner();
     assert!(!response.session_id.is_empty());
-    let record = tokio::time::timeout(Duration::from_secs(60), async {
-        loop {
-            let Some(record) = read_ring(&client, &trusted, &ring_id).await else {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            };
-            match record.state {
-                RingState::Active { .. } => break record,
-                RingState::Pending { .. } => (),
-                state => panic!("paired DKG terminated: {state:?}"),
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("paired DKG must finalize within the native deadline");
-    assert!(record.config.requires_pet);
-    let RingState::Active { keys } = record.state else {
-        unreachable!()
-    };
-    assert!(!keys.public_key.is_empty());
-    assert!(keys
-        .pet_public_key
-        .as_ref()
-        .is_some_and(|key| !key.is_empty()));
-    assert_ne!(Some(&keys.public_key), keys.pet_public_key.as_ref());
-    let baseline = wait_polynomials(&addresses, &ring_id, &keys, None).await;
+    let (keys, baseline) = dkg::verify(&client, &trusted, &ring_id, &addresses).await;
     eprintln!("native PET phase=paired-dkg members=3 threshold=2");
 
     let reader = Reader::new();
@@ -210,6 +189,20 @@ pub async fn run(scenario: Scenario) {
         .await;
         for node in &mut nodes {
             node.stop().await;
+        }
+        for index in 0..nodes.len() {
+            let directory = base.path().join(format!("node-{index}"));
+            let storage = stored_bundle::open(&directory);
+            assert_eq!(
+                storage.stored_kdf_params().unwrap(),
+                local_storage::common::StoredKdfParams {
+                    m_cost_kib: 262_144,
+                    t_cost: 3,
+                    p_cost: 1,
+                    version: 0x13,
+                },
+                "native fault-report stores must retain production KDF parameters"
+            );
         }
         return;
     }
