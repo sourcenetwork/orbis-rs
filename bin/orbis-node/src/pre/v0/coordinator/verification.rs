@@ -278,6 +278,7 @@ where
             // enters the threshold-signed envelope.
             inline_document: report_context.inline_document.clone(),
             pet_blind_context: None,
+            pet_blind_certificate: None,
         }))
     }
 }

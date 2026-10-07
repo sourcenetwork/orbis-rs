@@ -32,6 +32,7 @@ const (
 	UnsafeTestingService_SubmitOrganicNoncanonicalPrepare_FullMethodName          = "/orbis.unsafe_testing.UnsafeTestingService/SubmitOrganicNoncanonicalPrepare"
 	UnsafeTestingService_SubmitOrganicConflictingManifest_FullMethodName          = "/orbis.unsafe_testing.UnsafeTestingService/SubmitOrganicConflictingManifest"
 	UnsafeTestingService_SubmitOrganicInvalidRefreshResult_FullMethodName         = "/orbis.unsafe_testing.UnsafeTestingService/SubmitOrganicInvalidRefreshResult"
+	UnsafeTestingService_SetPetDecryptFault_FullMethodName                        = "/orbis.unsafe_testing.UnsafeTestingService/SetPetDecryptFault"
 )
 
 // UnsafeTestingServiceClient is the client API for UnsafeTestingService service.
@@ -51,6 +52,7 @@ type UnsafeTestingServiceClient interface {
 	SubmitOrganicNoncanonicalPrepare(ctx context.Context, in *SubmitOrganicNoncanonicalPrepareRequest, opts ...grpc.CallOption) (*SubmitOrganicNoncanonicalPrepareResponse, error)
 	SubmitOrganicConflictingManifest(ctx context.Context, in *SubmitOrganicConflictingManifestRequest, opts ...grpc.CallOption) (*SubmitOrganicConflictingManifestResponse, error)
 	SubmitOrganicInvalidRefreshResult(ctx context.Context, in *SubmitOrganicInvalidRefreshResultRequest, opts ...grpc.CallOption) (*SubmitOrganicInvalidRefreshResultResponse, error)
+	SetPetDecryptFault(ctx context.Context, in *SetPetDecryptFaultRequest, opts ...grpc.CallOption) (*SetPetDecryptFaultResponse, error)
 }
 
 type unsafeTestingServiceClient struct {
@@ -191,6 +193,16 @@ func (c *unsafeTestingServiceClient) SubmitOrganicInvalidRefreshResult(ctx conte
 	return out, nil
 }
 
+func (c *unsafeTestingServiceClient) SetPetDecryptFault(ctx context.Context, in *SetPetDecryptFaultRequest, opts ...grpc.CallOption) (*SetPetDecryptFaultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetPetDecryptFaultResponse)
+	err := c.cc.Invoke(ctx, UnsafeTestingService_SetPetDecryptFault_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // UnsafeTestingServiceServer is the server API for UnsafeTestingService service.
 // All implementations must embed UnimplementedUnsafeTestingServiceServer
 // for forward compatibility.
@@ -208,6 +220,7 @@ type UnsafeTestingServiceServer interface {
 	SubmitOrganicNoncanonicalPrepare(context.Context, *SubmitOrganicNoncanonicalPrepareRequest) (*SubmitOrganicNoncanonicalPrepareResponse, error)
 	SubmitOrganicConflictingManifest(context.Context, *SubmitOrganicConflictingManifestRequest) (*SubmitOrganicConflictingManifestResponse, error)
 	SubmitOrganicInvalidRefreshResult(context.Context, *SubmitOrganicInvalidRefreshResultRequest) (*SubmitOrganicInvalidRefreshResultResponse, error)
+	SetPetDecryptFault(context.Context, *SetPetDecryptFaultRequest) (*SetPetDecryptFaultResponse, error)
 	mustEmbedUnimplementedUnsafeTestingServiceServer()
 }
 
@@ -256,6 +269,9 @@ func (UnimplementedUnsafeTestingServiceServer) SubmitOrganicConflictingManifest(
 }
 func (UnimplementedUnsafeTestingServiceServer) SubmitOrganicInvalidRefreshResult(context.Context, *SubmitOrganicInvalidRefreshResultRequest) (*SubmitOrganicInvalidRefreshResultResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SubmitOrganicInvalidRefreshResult not implemented")
+}
+func (UnimplementedUnsafeTestingServiceServer) SetPetDecryptFault(context.Context, *SetPetDecryptFaultRequest) (*SetPetDecryptFaultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetPetDecryptFault not implemented")
 }
 func (UnimplementedUnsafeTestingServiceServer) mustEmbedUnimplementedUnsafeTestingServiceServer() {}
 func (UnimplementedUnsafeTestingServiceServer) testEmbeddedByValue()                              {}
@@ -512,6 +528,24 @@ func _UnsafeTestingService_SubmitOrganicInvalidRefreshResult_Handler(srv interfa
 	return interceptor(ctx, in, info, handler)
 }
 
+func _UnsafeTestingService_SetPetDecryptFault_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetPetDecryptFaultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(UnsafeTestingServiceServer).SetPetDecryptFault(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: UnsafeTestingService_SetPetDecryptFault_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(UnsafeTestingServiceServer).SetPetDecryptFault(ctx, req.(*SetPetDecryptFaultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // UnsafeTestingService_ServiceDesc is the grpc.ServiceDesc for UnsafeTestingService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -570,6 +604,10 @@ var UnsafeTestingService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SubmitOrganicInvalidRefreshResult",
 			Handler:    _UnsafeTestingService_SubmitOrganicInvalidRefreshResult_Handler,
+		},
+		{
+			MethodName: "SetPetDecryptFault",
+			Handler:    _UnsafeTestingService_SetPetDecryptFault_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

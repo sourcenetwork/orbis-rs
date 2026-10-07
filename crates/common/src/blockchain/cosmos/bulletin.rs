@@ -1,6 +1,6 @@
 //! `VeraClient` extension methods for x/bulletin: post/namespace transactions and queries.
 
-use super::types::*;
+use crate::blockchain::bulletin::*;
 use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 

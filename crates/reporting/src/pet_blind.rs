@@ -1,29 +1,8 @@
-//! Canonical digests, signed statements, and the blinding certificate for
-//! the PET blind equality test — a multi-round protocol where a committee
-//! commits to a blinded set of candidate fingerprints, reveals a selected
-//! threshold-sized subset, and each node proves decryption against its own
-//! blinded share, so no single round leaks the plaintext fingerprint the
-//! way the original single-round check could. This replaces `pet.rs`'s
-//! single-round `PetCheckResponseStatement` protocol rather than extending
-//! it: a genuine `Z·R` decryption proof would not verify against that
-//! statement's shape, and must not be coerced into it.
+//! Canonical PET blinding commitments, signed statements, and certificates.
 //!
-//! Three digests bind the protocol together:
-//! - `context_digest` ([`PetBlindContext::context_digest`]) — every
-//!   participant recomputes this from independently verified inputs; it is
-//!   never trusted from the coordinator. Mirrors the role
-//!   `pet::v0::attestation::PetCheckStatementContext` plays for the old
-//!   protocol, but lives here since every other Stage 2 type does too.
-//! - `selection_digest` ([`pet_blind_selection_digest`]) — binds the exact
-//!   selected `threshold`-sized commitment list every reveal endorses.
-//! - `certificate_digest` ([`PetBlindCertificate::certificate_digest`]) —
-//!   covers the complete certificate; decrypt responses bind this plus both
-//!   reconstructed aggregate points.
-//!
-//! Digests are `[u8; 32]`, not hex strings — unlike `ring_state_sha256`
-//! elsewhere in this module, these travel inside canonically-encoded signed
-//! statements (`PetBlindRevealStatement`/`PetBlindDecryptStatement`), where
-//! a fixed-width encoding removes any hex-case or round-trip ambiguity.
+//! The context digest binds one request, ring snapshot, and public polynomial.
+//! Signed reveals endorse the selected commitments; decrypt responses bind the
+//! resulting certificate and reconstructed aggregate points.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,25 +19,12 @@ use super::codec::{
     write_u32, write_u64, Decoder,
 };
 
-/// Everything the `context_digest` binds: the chain, protocol
-/// version/crypto suite, ring identity/state, authoritative PET checking
-/// key and share-generation/public-polynomial identifier, validated
-/// document/tag digest (including the existing document salt/timestamp
-/// binding), exact audit target, authenticated audit scope, and the
-/// authenticated coordinator identity and attempt.
+/// Authenticated inputs for one PET attempt.
 ///
-/// `pet_pk` alone serves as both the checking key and the
-/// share-generation/public-polynomial identifier: PET keys have no
-/// refresh/reshare path (see `RingShareBundle::save_by_pet_ring_key`'s doc
-/// comment), so a ring never has more than one PET key generation to
-/// disambiguate. `object_id`/`salt`/`timestamp`/`document_inline` mirror
-/// `PetCheckStatementContext`'s existing document/tag locator fields
-/// exactly, and `actor_id`/`valid_window_start`/`valid_window_end` mirror
-/// `RelayRequestStatement`'s existing authorized-scope binding.
-///
-/// This struct never itself travels on the wire — only its digest does
-/// (e.g. `CommitResponse::context_digest`). Building one from a live
-/// `PetCheckContext` and ring state is a later stage's concern.
+/// The checking key stays constant across refreshes. The polynomial digest binds
+/// the exact share generation; the ring-state digest binds committee membership.
+/// Context travels between reporting participants, while signed public statements
+/// carry its digest. This type does not validate its inputs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PetBlindContext {
     pub chain_id: String,
@@ -68,6 +34,7 @@ pub struct PetBlindContext {
     pub ring_pk: String,
     pub ring_state_sha256: String,
     pub pet_pk: String,
+    pub public_polynomial_digest: [u8; 32],
     pub object_id: String,
     pub salt: Option<String>,
     pub timestamp: Option<u64>,
@@ -88,13 +55,7 @@ impl PetBlindContext {
         Sha256::digest(&out).into()
     }
 
-    /// Field order only needs to be stable for `context_digest`'s own hash to be
-    /// deterministic — unlike every other canonical-bytes method in this file, this one's output
-    /// never itself travels on the wire or on chain. `PetBlindContext` values travel out-of-band
-    /// (via `ReportSigningContext`/`ReportValidationContext`, serde-encoded) exactly like
-    /// `ReportedDocumentEvidence`, precisely so the audit target and every other context field
-    /// are never published on chain — see `reporting::v0::types::invalid_crypto`'s
-    /// `PetBlindReveal`/`PetBlindDecrypt` doc comments.
+    /// Stable field encoding used by the domain-separated context digest.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.chain_id);
@@ -104,6 +65,7 @@ impl PetBlindContext {
         write_string(&mut out, &self.ring_pk);
         write_string(&mut out, &self.ring_state_sha256);
         write_string(&mut out, &self.pet_pk);
+        write_fixed_32(&mut out, &self.public_polynomial_digest);
         write_string(&mut out, &self.object_id);
         write_optional_string(&mut out, self.salt.as_deref());
         write_optional_u64(&mut out, self.timestamp);
@@ -116,6 +78,15 @@ impl PetBlindContext {
         write_string(&mut out, &self.attempt_id);
         out
     }
+}
+
+/// Hash the exact canonical polynomial bytes endorsed for one PET attempt.
+pub fn pet_public_polynomial_digest(bytes: &[u8]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    hash.update(b"orbis-pet-public-polynomial-v2\0");
+    hash.update((bytes.len() as u64).to_be_bytes());
+    hash.update(bytes);
+    hash.finalize().into()
 }
 
 /// `C_i = H(encode(COMMIT_DOMAIN, attempt_id, context_digest, i,
@@ -239,8 +210,7 @@ pub struct PetBlindRevealStatement {
 }
 
 impl PetBlindRevealStatement {
-    /// Field order is the canonical wire contract — the chain-side (Go)
-    /// decoder must read fields in exactly this order.
+    /// Canonical v2 encoding used for the certificate digest.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
@@ -373,8 +343,7 @@ pub struct PetBlindDecryptStatement {
 }
 
 impl PetBlindDecryptStatement {
-    /// Field order is the canonical wire contract — the chain-side (Go)
-    /// decoder must read fields in exactly this order.
+    /// Canonical v2 encoding used for the certificate digest.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, &self.domain);
@@ -442,15 +411,15 @@ impl PetBlindDecryptStatement {
     }
 }
 
-/// The complete round-2 output: the exact selected commitment list and
-/// every selected node's signed reveal, opening, and proof. A verifier
-/// (the initiator, any decryptor, PRE admission, or a reporting validator)
-/// must reject missing, duplicate, extra, mixed-context, or
-/// mixed-selection entries — see `verify_pet_blind_certificate` (a later
-/// stage) for that shared check. This struct only carries the data and
-/// computes its own digest; it does not validate itself.
+/// Selected commitments, signed reveals, and the polynomial they endorse.
+///
+/// The node's `build_and_verify_pet_blind_certificate` checks membership,
+/// signatures, context, openings, and proofs before using a certificate. This
+/// data type only provides encoding and digest calculation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PetBlindCertificate {
+    /// Canonical polynomial endorsed by every signed reveal through context_digest.
+    pub public_polynomial: Vec<u8>,
     pub attempt_id: String,
     pub context_digest: [u8; 32],
     /// The exact selected list, in canonical (node-id-sorted) order — not
@@ -467,11 +436,11 @@ impl PetBlindCertificate {
         Sha256::digest(self.canonical_bytes()).into()
     }
 
-    /// Field order is the canonical wire contract — the chain-side (Go)
-    /// decoder must read fields in exactly this order.
+    /// Canonical v2 encoding used for the certificate digest.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         write_string(&mut out, PET_BLIND_CERTIFICATE_DOMAIN);
+        write_bytes(&mut out, &self.public_polynomial);
         write_string(&mut out, &self.attempt_id);
         write_fixed_32(&mut out, &self.context_digest);
         write_u32(&mut out, self.all_commitments.len() as u32);
@@ -487,21 +456,21 @@ impl PetBlindCertificate {
         out
     }
 
-    /// Kept for API symmetry with every other canonical type in this file
-    /// (and exercised by this file's own round-trip tests) even though no
-    /// production caller decodes a certificate from raw canonical bytes
-    /// today — a certificate travels over the wire via ordinary serde
-    /// (de)serialization; only `certificate_digest()`/`canonical_bytes()`
-    /// are called in production, to compute and check the digest.
-    #[allow(dead_code)]
+    /// Decode a v2 certificate without validating its cryptographic evidence.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let mut decoder = Decoder::new(bytes);
-        let _domain = decoder.read_string("domain")?;
+        let domain = decoder.read_string("domain")?;
+        if domain != PET_BLIND_CERTIFICATE_DOMAIN {
+            return Err(crate::error::ReportingError::InvalidReport(
+                "invalid PET certificate domain".into(),
+            ));
+        }
+        let public_polynomial = decoder.read_bytes("public_polynomial")?;
         let attempt_id = decoder.read_string("attempt_id")?;
         let context_digest = decoder.read_fixed_32("context_digest")?;
 
         let commitment_count = decoder.read_u32("all_commitments_count")? as usize;
-        let mut all_commitments = Vec::with_capacity(commitment_count);
+        let mut all_commitments = Vec::new();
         for _ in 0..commitment_count {
             let node_id = decoder.read_u32("all_commitments_node_id")?;
             let commitment = decoder.read_bytes("all_commitments_commitment")?;
@@ -509,7 +478,7 @@ impl PetBlindCertificate {
         }
 
         let reveal_count = decoder.read_u32("reveals_count")? as usize;
-        let mut reveals = Vec::with_capacity(reveal_count);
+        let mut reveals = Vec::new();
         for _ in 0..reveal_count {
             let statement_bytes = decoder.read_bytes("reveals_statement")?;
             let statement = PetBlindRevealStatement::from_canonical_bytes(&statement_bytes)?;
@@ -522,6 +491,7 @@ impl PetBlindCertificate {
 
         decoder.finish()?;
         Ok(Self {
+            public_polynomial,
             attempt_id,
             context_digest,
             all_commitments,
@@ -544,6 +514,7 @@ mod tests {
             ring_pk: "aabb".to_string(),
             ring_state_sha256: "11".repeat(32),
             pet_pk: "ccdd".to_string(),
+            public_polynomial_digest: pet_public_polynomial_digest(&[1, 2, 3, 4]),
             object_id: "derivation-1".to_string(),
             salt: Some("salt-1".to_string()),
             timestamp: Some(1_700_000_000),
@@ -558,8 +529,15 @@ mod tests {
     }
 
     #[test]
-    fn context_digest_is_deterministic() {
-        assert_eq!(context().context_digest(), context().context_digest());
+    fn v2_context_and_polynomial_digest_vectors() {
+        assert_eq!(
+            hex::encode(pet_public_polynomial_digest(&[1, 2, 3, 4])),
+            "1cbd3f88241bb142f2848723e754ed13fa3d65bd8c1fefcb631f7014d69f52c3"
+        );
+        assert_eq!(
+            hex::encode(context().context_digest()),
+            "907a85326e6838c48717f228be3bc75d2eaee18bdc61b1c1c4f3ecfdedce9216"
+        );
     }
 
     #[test]
@@ -593,6 +571,10 @@ mod tests {
         let mut pet_pk = context();
         pet_pk.pet_pk = "ffff".to_string();
         assert_ne!(pet_pk.context_digest(), base);
+
+        let mut polynomial = context();
+        polynomial.public_polynomial_digest = pet_public_polynomial_digest(&[1, 2, 3, 5]);
+        assert_ne!(polynomial.context_digest(), base);
 
         let mut object_id = context();
         object_id.object_id = "derivation-2".to_string();
@@ -810,6 +792,7 @@ mod tests {
 
     fn certificate() -> PetBlindCertificate {
         PetBlindCertificate {
+            public_polynomial: vec![1, 2, 3, 4],
             attempt_id: "attempt-1".to_string(),
             context_digest: [1u8; 32],
             all_commitments: vec![(1, vec![2, 3]), (2, vec![4, 5])],
@@ -840,6 +823,43 @@ mod tests {
     }
 
     #[test]
+    fn certificate_rejects_v1_domain_and_trailing_bytes() {
+        let mut old_domain = certificate().canonical_bytes();
+        old_domain[4 + PET_BLIND_CERTIFICATE_DOMAIN.len() - 1] = b'1';
+        let error = PetBlindCertificate::from_canonical_bytes(&old_domain).unwrap_err();
+        assert!(error.to_string().contains("invalid PET certificate domain"));
+
+        let mut trailing = certificate().canonical_bytes();
+        trailing.push(0);
+        let error = PetBlindCertificate::from_canonical_bytes(&trailing).unwrap_err();
+        assert!(error.to_string().contains("trailing payload bytes"));
+    }
+
+    #[test]
+    fn certificate_rejects_truncated_collection_counts() {
+        let cert = certificate();
+        let mut prefix = Vec::new();
+        write_string(&mut prefix, PET_BLIND_CERTIFICATE_DOMAIN);
+        write_bytes(&mut prefix, &cert.public_polynomial);
+        write_string(&mut prefix, &cert.attempt_id);
+        write_fixed_32(&mut prefix, &cert.context_digest);
+
+        let mut commitments = prefix.clone();
+        write_u32(&mut commitments, u32::MAX);
+        let error = PetBlindCertificate::from_canonical_bytes(&commitments).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing all_commitments_node_id"));
+
+        write_u32(&mut prefix, 0);
+        write_u32(&mut prefix, u32::MAX);
+        let error = PetBlindCertificate::from_canonical_bytes(&prefix).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing reveals_statement_length"));
+    }
+
+    #[test]
     fn certificate_with_no_reveals_round_trips() {
         let mut cert = certificate();
         cert.reveals.clear();
@@ -853,6 +873,10 @@ mod tests {
     fn certificate_digest_changes_when_a_reveal_changes() {
         let base = certificate();
         let base_digest = base.certificate_digest();
+
+        let mut different_polynomial = base.clone();
+        different_polynomial.public_polynomial[0] ^= 1;
+        assert_ne!(different_polynomial.certificate_digest(), base_digest);
 
         let mut different_reveal = base.clone();
         different_reveal.reveals[0].response_signature = vec![99];

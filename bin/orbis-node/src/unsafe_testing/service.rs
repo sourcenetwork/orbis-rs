@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::pet_fault::PetFaultControl;
 use crate::app_state::AppState;
 use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::coordinator::evidence::{
@@ -43,8 +44,8 @@ use proto::unsafe_testing::{
     DeleteLocalStorageResponse, GetActivePssSessionRequest, GetActivePssSessionResponse,
     GetLocalStorageRequest, GetLocalStorageResponse, LocalStorageAccessMode, LocalStorageKey,
     LocalStorageKeyType, SetLocalStorageRequest, SetLocalStorageResponse,
-    SubmitDkgEquivocationEvidenceRequest, SubmitDkgEquivocationEvidenceResponse,
-    SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
+    SetPetDecryptFaultRequest, SetPetDecryptFaultResponse, SubmitDkgEquivocationEvidenceRequest,
+    SubmitDkgEquivocationEvidenceResponse, SubmitDkgInvalidRefreshCommitmentEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceResponse, SubmitDkgInvalidShareEvidenceRequest,
     SubmitDkgInvalidShareEvidenceResponse, SubmitOrganicConflictingCommitmentRequest,
     SubmitOrganicConflictingCommitmentResponse, SubmitOrganicConflictingManifestRequest,
@@ -61,6 +62,7 @@ use zeroize::Zeroizing;
 pub struct UnsafeTestingServiceImpl {
     local_storage: LocalStorageImpl,
     app_state: Option<Arc<AppState<DkgImpl>>>,
+    pet_fault: Option<Arc<PetFaultControl>>,
 }
 
 impl UnsafeTestingServiceImpl {
@@ -69,13 +71,18 @@ impl UnsafeTestingServiceImpl {
         Self {
             local_storage,
             app_state: None,
+            pet_fault: None,
         }
     }
 
-    pub fn with_app_state(app_state: Arc<AppState<DkgImpl>>) -> Self {
+    pub(crate) fn with_app_state(
+        app_state: Arc<AppState<DkgImpl>>,
+        pet_fault: Arc<PetFaultControl>,
+    ) -> Self {
         Self {
             local_storage: app_state.local_storage.clone(),
             app_state: Some(app_state),
+            pet_fault: Some(pet_fault),
         }
     }
 }
@@ -215,6 +222,23 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
             .map_err(|error| storage_error("delete", error))?;
 
         Ok(Response::new(DeleteLocalStorageResponse { existed }))
+    }
+
+    async fn set_pet_decrypt_fault(
+        &self,
+        request: Request<SetPetDecryptFaultRequest>,
+    ) -> Result<Response<SetPetDecryptFaultResponse>, Status> {
+        let request = request.into_inner();
+        if request.ring_id.trim().is_empty() || request.ring_id.len() > 1024 {
+            return Err(Status::invalid_argument(
+                "ring_id must contain 1..=1024 bytes",
+            ));
+        }
+        let control = self.pet_fault.as_ref().ok_or_else(|| {
+            Status::failed_precondition("unsafe PET fault requires a testing protocol handler")
+        })?;
+        control.set(request.ring_id, request.enabled).await;
+        Ok(Response::new(SetPetDecryptFaultResponse {}))
     }
 
     async fn get_active_pss_session(

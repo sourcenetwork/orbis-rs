@@ -1,3 +1,5 @@
+use test_support::NativeTestNetwork as TestCluster;
+
 #[path = "support/native_confirmation.rs"]
 mod native_confirmation;
 use native_confirmation::{confirmed, submit};
@@ -5,6 +7,18 @@ use native_confirmation::{confirmed, submit};
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[path = "support/policy_generations.rs"]
 mod policy_generations;
+
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_workflow.rs"]
+mod native_workflow;
+
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_pet.rs"]
+mod native_pet;
+
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_trust_gateway.rs"]
+mod native_trust_gateway;
 
 #[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
@@ -18,17 +32,12 @@ use commonware_codec::Encode;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{
-    fs,
-    net::TcpListener,
-    path::Path,
-    process::{Child, Command, Stdio},
-    time::Duration,
-};
+use std::{fs, net::TcpListener, path::Path, time::Duration};
+use test_support::{ContainerNode, NativeImage};
 use vera_client::VeraClient;
-use vera_harness::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
+use vera_harness::cluster::KeySet;
 
-struct Node(Child);
+struct Node(ContainerNode);
 impl Drop for Node {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -41,42 +50,50 @@ impl Node {
     }
 
     fn start_bound(base: &Path, addr: &str, controller: &str, log: &Path, bind: &str) -> Self {
-        let output = fs::File::create(log).unwrap();
-        Self(
-            Command::new(
-                std::env::var_os("ORBIS_NODE_BINARY")
-                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_orbis-node").into()),
-            )
-            .arg("--vera-config")
-            .arg(base.join("vera.json"))
-            .args([
-                "--addr",
-                addr,
-                "--node-controller-key",
-                controller,
-                "--network-private-routes-only",
-                "--network-bind-addr",
-                bind,
-                "--reshare-interval-secs",
-                "1",
-            ])
-            .arg("--runtime-base-path")
-            .arg(base)
-            .env("ORBIS_PASSWORD_FILE", base.join("password"))
-            .stdin(Stdio::null())
-            .stdout(output.try_clone().unwrap())
-            .stderr(output)
-            .spawn()
-            .unwrap(),
-        )
+        Self::start_configured(base, addr, controller, log, bind, false)
     }
-    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+
+    fn start_configured(
+        base: &Path,
+        addr: &str,
+        controller: &str,
+        log: &Path,
+        bind: &str,
+        report_fault: bool,
+    ) -> Self {
+        assert!(!report_fault || cfg!(feature = "unsafe-testing"));
+        let base = base.canonicalize().unwrap();
+        let args = [
+            "--vera-config".to_owned(),
+            base.join("vera.json").display().to_string(),
+            "--addr".into(),
+            addr.into(),
+            "--node-controller-key".into(),
+            controller.into(),
+            "--network-private-routes-only".into(),
+            "--network-bind-addr".into(),
+            bind.into(),
+            "--reshare-interval-secs".into(),
+            "1".into(),
+            "--runtime-base-path".into(),
+            base.display().to_string(),
+        ];
+        let mut environment = vec![("ORBIS_PASSWORD_FILE", "password"), ("RUST_LOG", "info")];
+        let image = if report_fault {
+            environment.push(("ORBIS_ENABLE_INTEGRATION_TEST", "true"));
+            NativeImage::OrbisDiagnostic
+        } else {
+            NativeImage::Orbis
+        };
+        Self(ContainerNode::start(image, &base, &base, &args, &environment, log).unwrap())
+    }
+
+    async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 assert!(
-                    self.0.try_wait().unwrap().is_none(),
-                    "node exited: {}",
-                    fs::read_to_string(log).unwrap()
+                    self.0.try_wait_async().await.unwrap().is_none(),
+                    "node exited; logs retained privately"
                 );
                 if let Ok(mut client) = InfoServiceClient::connect(format!("http://{addr}")).await {
                     if let Ok(response) = client.get_node_info(GetNodeInfoRequest {}).await {
@@ -96,21 +113,20 @@ impl Node {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("startup timed out: {}", fs::read_to_string(log).unwrap()))
+        .unwrap_or_else(|_| {
+            let _ = self.0.retain_logs();
+            panic!("startup timed out; logs retained privately")
+        })
     }
     async fn stop(&mut self) {
-        if let Some(status) = self.0.try_wait().unwrap() {
-            assert!(status.success(), "{status}");
-            return;
-        }
-        assert!(Command::new("kill")
-            .args(["-INT", &self.0.id().to_string()])
-            .status()
-            .unwrap()
-            .success());
         tokio::time::timeout(Duration::from_secs(10), async {
+            if let Some(status) = self.0.try_wait_async().await.unwrap() {
+                assert!(status.success(), "{status}");
+                return;
+            }
+            self.0.interrupt_async().await.unwrap();
             loop {
-                if let Some(status) = self.0.try_wait().unwrap() {
+                if let Some(status) = self.0.try_wait_async().await.unwrap() {
                     assert!(status.success(), "{status}");
                     return;
                 }
@@ -123,7 +139,7 @@ impl Node {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -134,25 +150,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .output
         .public()
         .public();
-    let cluster = TestCluster::builder()
-        .nodes(4)
-        .seed(deployment)
-        .chain_id(deployment)
-        .genesis(
-            GenesisBuilder::devnet()
-                .blocks_per_epoch(192)
-                .simplex(Default::default()),
-        )
-        .preset(ConsensusPreset::Normal)
-        .build()
-        .await
-        .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    cluster
-        .observe(Duration::from_millis(100))
-        .wait_for_height(3, Duration::from_secs(30))
-        .await
-        .unwrap();
+    let cluster = TestCluster::start(deployment).await;
     let url = cluster.node(0).rpc_url();
     let client = VeraClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
@@ -210,7 +208,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -218,16 +216,53 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
     distributed_threshold_workflows(true).await;
 }
 
+#[tokio::test]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_threshold_workflows() {
+    native_pet::run(native_pet::Scenario::Lifecycle).await;
+}
+
+#[tokio::test]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_member_replacement() {
+    native_pet::run(native_pet::Scenario::MemberReplacement).await;
+}
+
+#[tokio::test]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_scheduled_refresh_after_restart() {
+    native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
+}
+
+#[tokio::test]
+#[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_trust_gateway_ring_dkg() {
+    native_trust_gateway::run().await;
+}
+
+#[tokio::test]
+#[ignore = "requires native Vera and diagnostic Orbis Docker images on Linux"]
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+async fn native_pet_fault_reports() {
+    native_pet::run(native_pet::Scenario::ReportFault).await;
+}
+
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn distributed_threshold_workflows(signing_only: bool) {
-    use alloy_primitives::B256;
     use alloy_sol_types::SolCall;
     use authn::jwt_builder::{create_authenticated_request, JwtSigner};
     use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
@@ -241,188 +276,31 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     use vera_client::{
         create_scoped_bearer_token,
         nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
-        rings::{
-            encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate,
-        },
+        rings::{encode_ring_command, RingCommand, RingPublicKeys, RingState, RingUpdate},
         threshold_objects::{encode_threshold_object, KeyDerivation, ThresholdObject},
-        BlsSigner, DelegationScope,
+        DelegationScope,
     };
     let deployment = 9074;
-    let trusted = *KeySet::builder()
-        .seed(deployment)
-        .build()
-        .unwrap()
-        .epoch_info()
-        .output
-        .public()
-        .public();
-    let cluster = TestCluster::builder()
-        .nodes(4)
-        .seed(deployment)
-        .chain_id(deployment)
-        .genesis(
-            GenesisBuilder::devnet()
-                .blocks_per_epoch(192)
-                .simplex(Default::default()),
-        )
-        .preset(ConsensusPreset::Normal)
-        .build()
-        .await
-        .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    cluster
-        .observe(Duration::from_millis(100))
-        .wait_for_height(3, Duration::from_secs(30))
-        .await
-        .unwrap();
-    let url = cluster.node(0).rpc_url();
-    let client = VeraClient::new(&url);
-    let first = client.read_finalized_revision(1, &trusted).await.unwrap();
-    let headers = acp_light_client::header_sync::HeaderChain::connect(
-        &url.replacen("http://", "ws://", 1),
-        acp_light_client::ProofClient::new(&url, &hex::encode(trusted.encode())).unwrap(),
-    )
-    .await
-    .unwrap();
-    headers
-        .wait_for_height(first.height + 1, Duration::from_secs(15))
-        .await
-        .unwrap();
-    assert!(headers.fresh_state().unwrap().height > first.height);
-    let root: B256 = first.parent_hash.parse().unwrap();
-    let controller = k256::ecdsa::SigningKey::from_slice(&[34; 32]).unwrap();
-    let controller_key = hex::encode(controller.verifying_key().to_sec1_bytes());
-    let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
-        controller.verifying_key().to_sec1_bytes().as_ref(),
-    )
-    .unwrap();
-    let base = tempfile::tempdir().unwrap();
-    let mut nodes = Vec::new();
-    let mut addresses = Vec::new();
-    let mut logs = Vec::new();
-    for index in 0..3 {
-        let directory = base.path().join(format!("node-{index}"));
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("password"), "native-dkg-test").unwrap();
-        fs::write(
-            directory.join("vera.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "endpoint": url, "deployment_id": deployment, "deployment_root": hex::encode(root),
-                "consensus_key": hex::encode(trusted.encode()),
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap().to_string();
-        drop(listener);
-        let log = directory.join("node.log");
-        nodes.push(Node::start(&directory, &addr, &controller_key, &log));
-        addresses.push(addr);
-        logs.push(log);
-    }
-    let mut infos = Vec::new();
-    for index in 0..nodes.len() {
-        infos.push(nodes[index].ready(&addresses[index], &logs[index]).await);
-    }
-    let worker = BlsSigner::new(7u64.into(), deployment).unwrap();
-    let policy_schema = policy_generations::definition(true, true);
-    let created = client
-        .native_create_policy(&worker, policy_schema.as_bytes(), 1)
-        .await
-        .unwrap();
-    confirmed(&client, created.transaction_hash, &trusted).await;
-    let policy = client.get_policy_ids().await.unwrap().pop().unwrap();
-    let policy_bytes = B256::from_slice(&hex::decode(&policy).unwrap());
-    let registered = client
-        .native_register_object(&worker, policy_bytes, &policy, "ring_policy")
-        .await
-        .unwrap();
-    confirmed(&client, registered.transaction_hash, &trusted).await;
-    let granted = client
-        .native_set_relationship(
-            &worker,
-            policy_bytes,
-            "ring_policy",
-            &policy,
-            "creator",
-            &actor,
-        )
-        .await
-        .unwrap();
-    confirmed(&client, granted.transaction_hash, &trusted).await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-    for (index, info) in infos.iter().enumerate() {
-        for (command_name, command) in [
-            ("set peer", NodeCommand::SetPeer(info.p2p_address.clone())),
-            (
-                "allow policy",
-                NodeCommand::Allow(NodeTarget::Policy(policy.clone())),
-            ),
-        ] {
-            let current = client
-                .read_threshold_node(&info.node_key, 1, &trusted)
-                .await
-                .unwrap()
-                .record
-                .unwrap();
-            let signed = sign_node_request(
-                NodeRequest {
-                    deployment_root: root.0,
-                    deployment_id: deployment,
-                    node_key: info.node_key.clone(),
-                    sequence: current.sequence,
-                    expires_at: now + 300,
-                    command,
-                },
-                &controller,
-            )
-            .unwrap();
-            submit(
-                &client,
-                &worker,
-                &trusted,
-                encode_node_request(&signed).unwrap(),
-                &format!("authorize node {index}: {command_name}"),
-                &cluster,
-            )
-            .await;
-        }
-    }
-    let mut members: Vec<_> = infos.iter().map(|info| info.node_key.clone()).collect();
-    members.sort();
-    let config = RingConfig {
-        policy_id: policy.clone(),
-        peer_node_keys: members,
-        threshold: 2,
-        pss_interval: 86400,
-        current_version: 0,
-        nonce: [2; 32],
-        trusted_auth_relay_dids: None,
-        reporting: ReportingConfig::default(),
-    };
-    let ring_id = config.id(root.0, &actor).unwrap();
-    let token = create_scoped_bearer_token(
-        &controller,
-        worker.did(),
-        deployment,
+    let native_workflow::NativeWorkflow {
+        cluster,
+        client,
+        trusted,
+        root,
+        controller,
+        controller_key,
+        actor,
+        base,
+        mut nodes,
+        mut addresses,
+        mut logs,
+        mut infos,
+        worker,
+        policy,
+        policy_bytes,
+        ring_id,
         now,
-        now + 300,
-        DelegationScope::ManageRings,
-    )
-    .unwrap();
-    submit(
-        &client,
-        &worker,
-        &trusted,
-        encode_ring_command(&RingCommand::Create(config), &token).unwrap(),
-        "create ring",
-        &cluster,
-    )
-    .await;
+        headers: _headers,
+    } = native_workflow::NativeWorkflow::start(deployment, false, false).await;
     let response = DkgServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[0]))
             .unwrap()
@@ -446,7 +324,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 .record
                 .unwrap();
             match ring.state {
-                RingState::Active { public_key } => break public_key,
+                RingState::Active { keys } => break keys.public_key,
                 RingState::Pending { .. } => (),
                 state => panic!("DKG terminated: {state:?}"),
             }
@@ -1074,11 +952,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .iter()
         .position(|info| info.node_key == target[0])
         .unwrap();
-    assert!(Command::new("kill")
-        .args(["-STOP", &nodes[leader].0.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
+    nodes[leader].0.pause().unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1114,11 +988,18 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     .await;
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let started = (0..nodes.len() - 1).any(|index| {
-                fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+            let mut started = false;
+            for (index, node) in nodes.iter().take(nodes.len() - 1).enumerate() {
+                node.0.refresh_logs().await.unwrap();
+                if tokio::fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                    .await
                     .unwrap()
                     .contains("forwarding pending reshare to canonical next-committee leader")
-            });
+                {
+                    started = true;
+                    break;
+                }
+            }
             if started {
                 break;
             }
@@ -1171,7 +1052,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             assert_eq!(
                 current.state,
                 RingState::Active {
-                    public_key: ring_pk.clone()
+                    keys: RingPublicKeys {
+                        public_key: ring_pk.clone(),
+                        pet_public_key: None
+                    }
                 }
             );
             if settings.peer_node_keys == target && settings.pending_reshare.is_none() {
