@@ -5,6 +5,7 @@ use super::{wait_for_shutdown, InitializedNode};
 use crate::constants;
 use crate::helpers::launch::CorsPolicy;
 use crate::info::BootstrapInfoServiceImpl;
+use bulletin::startup::NodeIdentity;
 use local_storage::LocalStorageImpl;
 use network::Network;
 use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
@@ -66,8 +67,15 @@ pub(crate) fn start_bootstrap_info_server(
     network: Arc<dyn Network>,
     local_storage: LocalStorageImpl,
     cors_policy: CorsPolicy,
+    identity: NodeIdentity,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
-    start_bootstrap_info_server_with_identity(grpc_addr, network, local_storage, cors_policy, None)
+    start_bootstrap_info_server_with_identity(
+        grpc_addr,
+        network,
+        local_storage,
+        cors_policy,
+        identity,
+    )
 }
 
 pub(super) fn start_bootstrap_info_server_with_identity(
@@ -75,14 +83,14 @@ pub(super) fn start_bootstrap_info_server_with_identity(
     network: Arc<dyn Network>,
     local_storage: LocalStorageImpl,
     cors_policy: CorsPolicy,
-    native_identity: Option<String>,
+    identity: NodeIdentity,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
-    let mut info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
-    info_service.native_identity = native_identity;
+    let info_service =
+        BootstrapInfoServiceImpl::new(network, local_storage, status.shared(), identity);
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()

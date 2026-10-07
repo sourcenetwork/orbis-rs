@@ -1,6 +1,7 @@
 #[cfg(feature = "unsafe-testing")]
 mod decrypt_fault;
 mod generation_reports;
+mod signed_context;
 
 use super::*;
 use crate::helpers::test_helpers::{
