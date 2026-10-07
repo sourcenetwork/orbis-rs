@@ -1,3 +1,5 @@
+use test_support::NativeTestNetwork as TestCluster;
+
 #[path = "support/native_confirmation.rs"]
 mod native_confirmation;
 use native_confirmation::{confirmed, submit};
@@ -14,6 +16,10 @@ mod native_workflow;
 #[path = "support/native_pet.rs"]
 mod native_pet;
 
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_trust_gateway.rs"]
+mod native_trust_gateway;
+
 #[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
@@ -26,17 +32,12 @@ use commonware_codec::Encode;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{
-    fs,
-    net::TcpListener,
-    path::Path,
-    process::{Child, Command, Stdio},
-    time::Duration,
-};
+use std::{fs, net::TcpListener, path::Path, time::Duration};
+use test_support::{ContainerNode, NativeImage};
 use vera_client::VeraClient;
-use vera_harness::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
+use vera_harness::cluster::KeySet;
 
-struct Node(Child);
+struct Node(ContainerNode);
 impl Drop for Node {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -61,44 +62,38 @@ impl Node {
         report_fault: bool,
     ) -> Self {
         assert!(!report_fault || cfg!(feature = "unsafe-testing"));
-        let output = fs::File::create(log).unwrap();
-        let mut command = Command::new(
-            std::env::var_os("ORBIS_NODE_BINARY")
-                .unwrap_or_else(|| env!("CARGO_BIN_EXE_orbis-node").into()),
-        );
-        command
-            .arg("--vera-config")
-            .arg(base.join("vera.json"))
-            .args([
-                "--addr",
-                addr,
-                "--node-controller-key",
-                controller,
-                "--network-private-routes-only",
-                "--network-bind-addr",
-                bind,
-                "--reshare-interval-secs",
-                "1",
-            ])
-            .arg("--runtime-base-path")
-            .arg(base)
-            .env("ORBIS_PASSWORD_FILE", base.join("password"))
-            .env_remove("ORBIS_ENABLE_INTEGRATION_TEST")
-            .stdin(Stdio::null())
-            .stdout(output.try_clone().unwrap())
-            .stderr(output);
-        if report_fault {
-            command.env("ORBIS_ENABLE_INTEGRATION_TEST", "true");
-        }
-        Self(command.spawn().unwrap())
+        let base = base.canonicalize().unwrap();
+        let args = [
+            "--vera-config".to_owned(),
+            base.join("vera.json").display().to_string(),
+            "--addr".into(),
+            addr.into(),
+            "--node-controller-key".into(),
+            controller.into(),
+            "--network-private-routes-only".into(),
+            "--network-bind-addr".into(),
+            bind.into(),
+            "--reshare-interval-secs".into(),
+            "1".into(),
+            "--runtime-base-path".into(),
+            base.display().to_string(),
+        ];
+        let mut environment = vec![("ORBIS_PASSWORD_FILE", "password"), ("RUST_LOG", "info")];
+        let image = if report_fault {
+            environment.push(("ORBIS_ENABLE_INTEGRATION_TEST", "true"));
+            NativeImage::OrbisDiagnostic
+        } else {
+            NativeImage::Orbis
+        };
+        Self(ContainerNode::start(image, &base, &base, &args, &environment, log).unwrap())
     }
-    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+
+    async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 assert!(
-                    self.0.try_wait().unwrap().is_none(),
-                    "node exited: {}",
-                    fs::read_to_string(log).unwrap()
+                    self.0.try_wait_async().await.unwrap().is_none(),
+                    "node exited; logs retained privately"
                 );
                 if let Ok(mut client) = InfoServiceClient::connect(format!("http://{addr}")).await {
                     if let Ok(response) = client.get_node_info(GetNodeInfoRequest {}).await {
@@ -118,21 +113,20 @@ impl Node {
             }
         })
         .await
-        .unwrap_or_else(|_| panic!("startup timed out: {}", fs::read_to_string(log).unwrap()))
+        .unwrap_or_else(|_| {
+            let _ = self.0.retain_logs();
+            panic!("startup timed out; logs retained privately")
+        })
     }
     async fn stop(&mut self) {
-        if let Some(status) = self.0.try_wait().unwrap() {
-            assert!(status.success(), "{status}");
-            return;
-        }
-        assert!(Command::new("kill")
-            .args(["-INT", &self.0.id().to_string()])
-            .status()
-            .unwrap()
-            .success());
         tokio::time::timeout(Duration::from_secs(10), async {
+            if let Some(status) = self.0.try_wait_async().await.unwrap() {
+                assert!(status.success(), "{status}");
+                return;
+            }
+            self.0.interrupt_async().await.unwrap();
             loop {
-                if let Some(status) = self.0.try_wait().unwrap() {
+                if let Some(status) = self.0.try_wait_async().await.unwrap() {
                     assert!(status.success(), "{status}");
                     return;
                 }
@@ -145,7 +139,7 @@ impl Node {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -156,25 +150,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .output
         .public()
         .public();
-    let cluster = TestCluster::builder()
-        .nodes(4)
-        .seed(deployment)
-        .chain_id(deployment)
-        .genesis(
-            GenesisBuilder::devnet()
-                .blocks_per_epoch(192)
-                .simplex(Default::default()),
-        )
-        .preset(ConsensusPreset::Normal)
-        .build()
-        .await
-        .unwrap();
-    cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-    cluster
-        .observe(Duration::from_millis(100))
-        .wait_for_height(3, Duration::from_secs(30))
-        .await
-        .unwrap();
+    let cluster = TestCluster::start(deployment).await;
     let url = cluster.node(0).rpc_url();
     let client = VeraClient::new(&url);
     let first = client.read_finalized_revision(1, &trusted).await.unwrap();
@@ -232,7 +208,7 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -240,7 +216,7 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "requires a built verad supplied through VERAD_BINARY"]
+#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -248,14 +224,35 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
-#[ignore = "requires built native verad and orbis-node binaries"]
+#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
 }
 
 #[tokio::test]
-#[ignore = "requires native verad and an unsafe-testing orbis-node diagnostic binary"]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_member_replacement() {
+    native_pet::run(native_pet::Scenario::MemberReplacement).await;
+}
+
+#[tokio::test]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_scheduled_refresh_after_restart() {
+    native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
+}
+
+#[tokio::test]
+#[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_trust_gateway_ring_dkg() {
+    native_trust_gateway::run().await;
+}
+
+#[tokio::test]
+#[ignore = "requires native Vera and diagnostic Orbis Docker images on Linux"]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
@@ -955,11 +952,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .iter()
         .position(|info| info.node_key == target[0])
         .unwrap();
-    assert!(Command::new("kill")
-        .args(["-STOP", &nodes[leader].0.id().to_string()])
-        .status()
-        .unwrap()
-        .success());
+    nodes[leader].0.pause().unwrap();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -995,11 +988,18 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     .await;
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
-            let started = (0..nodes.len() - 1).any(|index| {
-                fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+            let mut started = false;
+            for (index, node) in nodes.iter().take(nodes.len() - 1).enumerate() {
+                node.0.refresh_logs().await.unwrap();
+                if tokio::fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                    .await
                     .unwrap()
                     .contains("forwarding pending reshare to canonical next-committee leader")
-            });
+                {
+                    started = true;
+                    break;
+                }
+            }
             if started {
                 break;
             }
