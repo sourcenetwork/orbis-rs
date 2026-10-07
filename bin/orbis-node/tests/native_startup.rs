@@ -16,6 +16,10 @@ mod native_workflow;
 #[path = "support/native_pet.rs"]
 mod native_pet;
 
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_trust_gateway.rs"]
+mod native_trust_gateway;
+
 #[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
@@ -238,6 +242,13 @@ async fn native_pet_member_replacement() {
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
+}
+
+#[tokio::test]
+#[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_trust_gateway_ring_dkg() {
+    native_trust_gateway::run().await;
 }
 
 #[tokio::test]

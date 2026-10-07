@@ -36,6 +36,16 @@ pub(super) struct NativeWorkflow {
 
 impl NativeWorkflow {
     pub async fn start(deployment: u64, requires_pet: bool, report_fault: bool) -> Self {
+        let cluster = TestCluster::start(deployment).await;
+        Self::start_with_network(deployment, requires_pet, report_fault, cluster).await
+    }
+
+    pub async fn start_with_network(
+        deployment: u64,
+        requires_pet: bool,
+        report_fault: bool,
+        cluster: TestCluster,
+    ) -> Self {
         let trusted = *KeySet::builder()
             .seed(deployment)
             .build()
@@ -44,7 +54,6 @@ impl NativeWorkflow {
             .output
             .public()
             .public();
-        let cluster = TestCluster::start(deployment).await;
         let url = cluster.node(0).rpc_url();
         let client = VeraClient::new(&url);
         let first = client.read_finalized_revision(1, &trusted).await.unwrap();

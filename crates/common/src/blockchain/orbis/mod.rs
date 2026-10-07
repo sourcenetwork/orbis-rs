@@ -9,13 +9,12 @@
 //! - [`ids`] — deterministic hashing: the reshare finalize sign doc and
 //!   document/key-derivation object-id derivation.
 //! - [`decode`] — decoding typed responses out of Cosmos SDK ABCI broadcast results.
-//! - `client` (feature `cosmos`) — `VeraClient` extension methods (`orbis_*`) that call the chain.
+//!
+//! Cosmos client operations are provided by the `cosmos` feature.
 //!
 //! Each submodule's public items are re-exported here, so external code keeps using
 //! `common::blockchain::orbis::<Item>` rather than reaching into a submodule directly.
 
-#[cfg(feature = "cosmos")]
-mod client;
 mod decode;
 mod ids;
 mod types;
