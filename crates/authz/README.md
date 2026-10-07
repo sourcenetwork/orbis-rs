@@ -38,13 +38,17 @@ qualification requirement.
 
 Requests reject unknown and duplicate fields. Timestamp/window pairing and
 inclusion retain the existing consumer behavior; tier remains metadata and does
-not select a different policy evaluator. This library is not yet selected by
-node startup.
+not select a different policy evaluator. Native node startup selects this
+implementation with `--vera-config`.
+
+Native failures are defined in [`native::error`](src/native/error.rs). The shared
+`AuthZError` wraps that concrete error only when `native` is enabled, preserving
+client, decoding, identity, clock and anchor-parsing sources.
 
 The focused service fixture requires a built native node:
 
 ```bash
-HUBD_BINARY=/path/to/hubd cargo test -p authz --features native --test native_service -- --ignored
+VERAD_BINARY=/path/to/verad cargo test -p authz --features native --test native_service -- --ignored
 ```
 
 ## Feature flags

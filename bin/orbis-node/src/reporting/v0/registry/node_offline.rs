@@ -48,6 +48,7 @@ impl ReportHandler for NodeOfflineHandler {
             ring_config,
             inline_document: None,
             pet_blind_context: None,
+            pet_blind_certificate: None,
         })
     }
 

@@ -70,6 +70,9 @@ pub(crate) fn build_pet_blind_context(
         ring_pk: ring_payload.ring_pk.clone(),
         ring_state_sha256: ring_state_sha256(ring_payload),
         pet_pk: pet_pk_hex.to_string(),
+        public_polynomial_digest: crate::reporting::v0::types::pet_public_polynomial_digest(
+            &ctx.public_polynomial,
+        ),
         object_id: ctx.object_id.clone(),
         salt: ctx.salt.clone(),
         timestamp: ctx.document.timestamp,
@@ -118,6 +121,7 @@ pub(crate) fn invalid_pet_blind_reveal_observation(
         },
         inline_document,
         pet_blind_context: Some(context),
+        pet_blind_certificate: None,
     }
 }
 
@@ -134,6 +138,7 @@ pub(crate) fn invalid_pet_blind_decrypt_observation(
     statement: PetBlindDecryptStatement,
     response_signature: Vec<u8>,
     inline_document: Option<ReportedDocumentEvidence>,
+    certificate: PetBlindCertificate,
 ) -> InvalidCryptoResponseObservation {
     let observed_at = statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS);
     InvalidCryptoResponseObservation {
@@ -147,5 +152,6 @@ pub(crate) fn invalid_pet_blind_decrypt_observation(
         },
         inline_document,
         pet_blind_context: Some(context),
+        pet_blind_certificate: Some(certificate),
     }
 }

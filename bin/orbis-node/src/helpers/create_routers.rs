@@ -98,6 +98,58 @@ where
         + Sync
         + 'static,
 {
+    create_router_with_pet_handler::<D, T, S>(network, app_state, |state, routes| {
+        Arc::new(GenericProtocolHandler::new(Arc::new(
+            crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
+                state, routes,
+            ),
+        )))
+    })
+}
+
+/// Assemble the same protocol routes with an injected PET handler at startup.
+pub(crate) fn create_router_with_pet_handler<D, T, S>(
+    network: &Arc<dyn network::Network>,
+    app_state: Arc<AppState<D>>,
+    pet_handler: impl Fn(
+        Arc<AppState<D>>,
+        &'static network::ProtocolRoutes,
+    ) -> Arc<dyn network::ProtocolHandler>,
+) -> NetworkResult<Box<dyn Router>>
+where
+    D: crypto::r#trait::Dkg<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            PolynomialCommitment = crypto::PolynomialCommitmentImpl,
+            PubPoly = crypto::PubPolyImpl,
+        > + Clone
+        + Send
+        + Sync
+        + 'static,
+    T: crypto::r#trait::ThresholdDealer<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
+            Secret = crypto::r#trait::Secret,
+            ReencryptReply = crypto::r#trait::ReencryptReply<
+                crypto::ScalarField,
+                crypto::GroupAffine,
+            >,
+            PubPoly = D::PubPoly,
+        > + Send
+        + Sync
+        + 'static,
+    S: crypto::r#trait::ThresholdSigner<
+            ShareValue = crypto::ScalarField,
+            PublicKey = crypto::GroupAffine,
+            DistKeyShare = crypto::r#trait::DistKeyShare<crypto::ScalarField>,
+            PubPoly = D::PubPoly,
+            Signature = crypto::SignaturePoint,
+            SigShare = crypto::r#trait::PubShare<crypto::SigShareInner>,
+        > + Send
+        + Sync
+        + 'static,
+{
     let mut router_builder = network.create_router_builder()?;
     for version in network::SUPPORTED_PROTOCOL_VERSIONS {
         let routes = network::routes_for_version(*version)
@@ -110,16 +162,7 @@ where
         let sign_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
             SignCoordinator::<D, S>::with_routes(app_state.clone(), routes),
         )));
-        // PET has no independently-swappable crypto backend to generalize
-        // over — it's tied to whichever curve backend the build selected,
-        // exactly like `crypto::PetImpl` itself — so this uses the concrete
-        // type directly rather than adding a fourth generic parameter.
-        let pet_handler = Arc::new(GenericProtocolHandler::new(Arc::new(
-            crate::pet::v0::coordinator::PetCoordinator::<D, crypto::PetImpl>::with_routes(
-                app_state.clone(),
-                routes,
-            ),
-        )));
+        let pet_handler = pet_handler(app_state.clone(), routes);
         let health_handler = Arc::new(HealthProtocolHandler);
         router_builder =
             router_builder.accept(routes.dkg_control_alpn.to_vec(), dkg_control_handler);

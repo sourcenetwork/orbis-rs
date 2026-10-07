@@ -5,18 +5,44 @@ use vera_client::{BlsSigner, VeraClient};
 use vera_domain::ConsensusPublicKey;
 use vera_harness::cluster::{ConsensusPreset, KeySet, TestCluster};
 
-async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
+async fn receipt(reader: &VeraClient, id: B256, trusted: &ConsensusPublicKey) -> u64 {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Some(proof) = reader.read_receipt(id, trusted).await.unwrap() {
                 assert!(proof.verify(id, trusted).unwrap().success());
-                break;
+                break proof.revision.height;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
     .await
-    .unwrap();
+    .unwrap()
+}
+
+async fn assert_current_permission(
+    auth: &NativeAuth,
+    request: &[u8],
+    subject: &str,
+    minimum: u64,
+    expected: bool,
+) {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let anchor = auth.current_anchor().await.unwrap();
+            let height: u64 = anchor.split(':').nth(1).unwrap().parse().unwrap();
+            if height >= minimum {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        // The certified anchor advances NativeAuth's minimum before its permission read.
+        assert_eq!(
+            auth.check(request.to_vec(), subject).await.unwrap(),
+            expected
+        );
+    })
+    .await
+    .expect("reader did not publish and authorize the required revision");
 }
 
 #[tokio::test]
@@ -78,7 +104,7 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
         .native_register_object(&signer, policy_bytes, "doc", "document")
         .await
         .unwrap();
-    receipt(&reader, registered.transaction_hash, &trusted).await;
+    let registered_height = receipt(&reader, registered.transaction_hash, &trusted).await;
     let request = AccessCheckRequest::new(
         policy.clone(),
         "document".into(),
@@ -91,7 +117,7 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
     .to_bytes()
     .unwrap();
     let subject = "did:key:reader";
-    assert!(!auth.check(request.clone(), subject).await.unwrap());
+    assert_current_permission(&auth, &request, subject, registered_height, false).await;
     let denied_anchor = auth.current_anchor().await.unwrap();
     assert!(auth.anchor_time(&denied_anchor).await.unwrap() > 0);
     assert!(!auth
@@ -102,8 +128,8 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
         .native_set_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
         .await
         .unwrap();
-    receipt(&reader, grant.transaction_hash, &trusted).await;
-    assert!(auth.check(request.clone(), subject).await.unwrap());
+    let grant_height = receipt(&reader, grant.transaction_hash, &trusted).await;
+    assert_current_permission(&auth, &request, subject, grant_height, true).await;
     assert_historical_result(
         auth.check_at(request.clone(), subject, &denied_anchor)
             .await,
@@ -115,12 +141,37 @@ async fn native_authorization_tracks_revocation_and_binds_recovered_anchors() {
         .check_at(request.clone(), subject, &allowed_anchor)
         .await
         .unwrap());
+    let archived = writer
+        .native_archive_object(&signer, policy_bytes, "doc", "document")
+        .await
+        .unwrap();
+    let archived_height = receipt(&reader, archived.transaction_hash, &trusted).await;
+    assert_current_permission(&auth, &request, subject, archived_height, false).await;
+
+    let unarchive = serde_json::from_value(serde_json::json!({
+        "command": {"UnarchiveObject": {"resource": "document", "id": "doc"}}
+    }))
+    .unwrap();
+    let unarchived = writer
+        .native_policy_command(&signer, policy_bytes, &unarchive)
+        .await
+        .unwrap();
+    let unarchived_height = receipt(&reader, unarchived.transaction_hash, &trusted).await;
+    assert_current_permission(&auth, &request, subject, unarchived_height, false).await;
+
+    let regranted = writer
+        .native_set_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
+        .await
+        .unwrap();
+    let regranted_height = receipt(&reader, regranted.transaction_hash, &trusted).await;
+    assert_current_permission(&auth, &request, subject, regranted_height, true).await;
+
     let revoked = writer
         .native_delete_relationship(&signer, policy_bytes, "document", "doc", "reader", subject)
         .await
         .unwrap();
-    receipt(&reader, revoked.transaction_hash, &trusted).await;
-    assert!(!auth.check(request.clone(), subject).await.unwrap());
+    let revoked_height = receipt(&reader, revoked.transaction_hash, &trusted).await;
+    assert_current_permission(&auth, &request, subject, revoked_height, false).await;
     assert_historical_result(
         auth.check_at(request.clone(), subject, &allowed_anchor)
             .await,
@@ -141,10 +192,15 @@ fn assert_historical_result(result: authz::error::Result<bool>, expected: bool) 
     match result {
         Ok(allowed) => assert_eq!(allowed, expected, "historical permissions changed"),
         // The current store cannot prove a historical root after a policy mutation.
-        Err(authz::error::AuthZError::Native(message)) => assert_eq!(
-            message,
-            "RPC error (-32002): invalid permission evidence: selected module root changed",
-        ),
+        Err(authz::error::AuthZError::Native(authz::native::Error::VerifyAnchoredAccess(
+            vera_client::ClientError::Rpc { code, message },
+        ))) => {
+            assert_eq!(code, -32002);
+            assert_eq!(
+                message,
+                "invalid permission evidence: selected module root changed"
+            );
+        }
         Err(error) => panic!("unexpected historical authorization error: {error}"),
     }
 }

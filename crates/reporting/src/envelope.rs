@@ -147,6 +147,7 @@ pub struct ReportSigningContext {
     /// non-PET report. Mirrors `inline_document` exactly.
     #[serde(default)]
     pub pet_blind_context: Option<PetBlindContext>,
+    pub pet_blind_certificate: Option<crate::PetBlindCertificate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

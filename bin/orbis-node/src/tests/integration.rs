@@ -6,6 +6,11 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
+mod pet_dkg;
+#[path = "../../tests/support/pet_dkg_contract.rs"]
+mod pet_dkg_contract;
+mod pet_reshare;
+
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
@@ -1228,61 +1233,9 @@ async fn test_cli_calls_dkg_for_pet_ring() {
         dkg_result.unwrap().session_id
     );
 
-    // Two sequential fresh-DKG ceremonies (main key, then auto-chained PET
-    // key), each with its own up-to-~150s prepare-barrier allowance
-    // (DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE) — a
-    // longer budget than the reference test's single-ceremony 90s wait.
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
-
-    let finalized_ring = controller_client
-        .orbis_read_ring(&ring_id)
-        .await
-        .expect("read finalized ring")
-        .expect("finalized ring should exist");
-    assert!(
-        finalized_ring.requires_pet,
-        "finalized ring should still report requires_pet"
-    );
-    assert_eq!(
-        finalized_ring.ring_pk, ring_pk_hex,
-        "ring_pk mismatch between wait_for_ring_finalized and a fresh read-back"
-    );
-    assert!(
-        finalized_ring.confirmations.is_empty(),
-        "confirmations should be cleared once the ring is fully finalized"
-    );
-    let pet_pk_hex = finalized_ring
-        .pet_pk
-        .clone()
-        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
-    assert_ne!(
-        pet_pk_hex, ring_pk_hex,
-        "the PET key must be independent of the main key"
-    );
-
-    // Both keys must be valid, non-identity curve points, not just opaque hex.
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let _ = GroupAffine::from_bytes(&ring_pk_bytes)
-        .expect("main key should deserialize to a valid point");
-    let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
-    let _ = GroupAffine::from_bytes(&pet_pk_bytes)
-        .expect("PET key should deserialize to a valid point");
-
-    // The main key's local per-node state (share + polynomial) is consistent
-    // across all three nodes — mirrors the reference test's cross-node check.
-    // The PET key has no RingIndex entry of its own (it's stored keyed by the
-    // ring's ring_id, not its own pubkey, since it's never looked up
-    // independently of the main key) so this check only covers the main key;
-    // agreement on pet_pk is instead guaranteed by Vera's FinalizeRing conflict
-    // check, which deletes the ring outright if any two confirmations disagree.
-    wait_for_ring_state_on_all_nodes(
-        &node_endpoints,
-        &ring_pk_hex,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let keys = pet_dkg::verify(&chain_config, &controller_client, &ring_id, &node_endpoints).await;
+    let ring_pk_hex = keys.main;
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
@@ -1891,13 +1844,20 @@ async fn test_pet_ring_refresh_and_reshare() {
     let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
     let reshare_threshold = 2u32;
 
-    let pre_reshare_pet_states = wait_for_pet_ring_state_on_all_nodes(
-        &node_endpoints[..2],
-        &ring_id,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let (pre_reshare_main_states, pre_reshare_pet_states) = tokio::join!(
+        wait_for_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_pk_hex,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+        wait_for_pet_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_id,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+    );
 
     cli_tool::start_ring_reshare_by_acp_with_config(
         ring_id.clone(),
@@ -1936,9 +1896,12 @@ async fn test_pet_ring_refresh_and_reshare() {
         &ring_id[..16.min(ring_id.len())]
     );
 
-    let reshared_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
+    let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
+        &chain_config,
         &node_endpoints[..2],
         &ring_id,
+        &reshared_payload,
+        &pre_reshare_main_states,
         &pre_reshare_pet_states,
         Duration::from_secs(120),
         Duration::from_secs(2),

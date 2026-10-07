@@ -95,9 +95,10 @@ unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 allow-git = [
-    "https://github.com/iverc/commonware.git",
+    "https://github.com/iverc/commonware-upstream",
     "https://github.com/sourcenetwork/backbone.git",
     "https://github.com/sourcenetwork/defradb.rs",
     "https://github.com/sourcenetwork/orbis-rs",
+    "https://github.com/sourcenetwork/regolith.git",
     "https://github.com/sourcenetwork/vera.rs",
 ]

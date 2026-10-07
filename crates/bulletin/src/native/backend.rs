@@ -38,6 +38,35 @@ fn now() -> Result<u64> {
         .map_err(error)
 }
 
+fn prepare_finalization(
+    writer: &mut NativeVeraClient,
+    ring: &RingRecord,
+    requested: RingPublicKeys,
+    expires_at: u64,
+) -> Result<bool> {
+    requested
+        .validate(ring.config.requires_pet)
+        .map_err(error)?;
+    match &ring.state {
+        RingState::Active { keys } if keys == &requested => return Ok(false),
+        RingState::Pending {
+            keys,
+            confirmations,
+        } if keys.as_ref() == Some(&requested) && confirmations.contains(&writer.node_key()) => {
+            return Ok(false);
+        }
+        _ => {}
+    }
+    writer
+        .prepare_ring_participant_request(
+            ring.id.clone(),
+            RingParticipantCommand::Confirm(requested),
+            expires_at,
+        )
+        .map_err(error)?;
+    Ok(true)
+}
+
 fn unauthorized_report_session_key(
     deployment: &str,
     ring_id: &str,
@@ -241,31 +270,14 @@ impl NativeBulletin {
             BulletinWriteKind::Finalize => {
                 let request: RingFinalizationPayload =
                     serde_json::from_slice(payload).map_err(error)?;
-                if request.pet_pk.is_some() {
-                    return Err(error("native Vera does not support PET ring finalization"));
-                }
                 let ring = self.ring(&request.ring_id).await?;
-                match &ring.state {
-                    RingState::Active { public_key } if public_key == &request.ring_pk => {
-                        return Ok(request.ring_id)
-                    }
-                    RingState::Pending {
-                        public_key,
-                        confirmations,
-                    } if public_key.as_ref() == Some(&request.ring_pk)
-                        && confirmations.contains(&writer.node_key()) =>
-                    {
-                        return Ok(request.ring_id)
-                    }
-                    _ => {}
+                let keys = RingPublicKeys {
+                    public_key: request.ring_pk,
+                    pet_public_key: request.pet_pk,
+                };
+                if !prepare_finalization(&mut writer, &ring, keys, expiry)? {
+                    return Ok(request.ring_id);
                 }
-                writer
-                    .prepare_ring_participant_request(
-                        request.ring_id.clone(),
-                        RingParticipantCommand::Confirm(request.ring_pk),
-                        expiry,
-                    )
-                    .map_err(error)?;
                 request.ring_id
             }
             BulletinWriteKind::CancelPendingRing => {
@@ -315,20 +327,7 @@ impl NativeBulletin {
             }
             BulletinWriteKind::Document | BulletinWriteKind::KeyDerivation => {
                 let object = if kind == BulletinWriteKind::Document {
-                    let mut request: serde_json::Value =
-                        serde_json::from_slice(payload).map_err(error)?;
-                    for field in ["pet_tag", "pet_tag_proof"] {
-                        if let Some(value) = request.get(field) {
-                            if !value.is_null() {
-                                return Err(error("native Vera does not support PET documents"));
-                            }
-                            request
-                                .as_object_mut()
-                                .expect("document field")
-                                .remove(field);
-                        }
-                    }
-                    ThresholdObject::Document(serde_json::from_value(request).map_err(error)?)
+                    ThresholdObject::Document(serde_json::from_slice(payload).map_err(error)?)
                 } else {
                     ThresholdObject::KeyDerivation(serde_json::from_slice(payload).map_err(error)?)
                 };

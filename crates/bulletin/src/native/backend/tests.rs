@@ -232,11 +232,210 @@ async fn reads_and_ring_status_honor_configured_deadline() {
     }
 }
 
+fn ring_fixture(writer: &NativeVeraClient, requires_pet: bool, state: RingState) -> RingRecord {
+    let creator =
+        vera_crypto::secp256k1::did_from_secp256k1_pubkey(&hex::decode(writer.node_key()).unwrap())
+            .unwrap();
+    let second = SigningKey::from_slice(&[32; 32]).unwrap();
+    let mut peers = vec![
+        writer.node_key(),
+        hex::encode(second.verifying_key().to_sec1_bytes()),
+    ];
+    peers.sort();
+    let config = RingConfig {
+        policy_id: "11".repeat(32),
+        peer_node_keys: peers,
+        threshold: 2,
+        pss_interval: 86400,
+        current_version: 0,
+        requires_pet,
+        nonce: [4; 32],
+        trusted_auth_relay_dids: None,
+        reporting: Default::default(),
+    };
+    let record = RingRecord {
+        id: config.id(writer.deployment_root, &creator).unwrap(),
+        deployment_root: writer.deployment_root,
+        creator,
+        config,
+        state,
+        revision: serde_json::from_value(json!({"seconds": 100, "block_height": 5})).unwrap(),
+        settings: None,
+        sequence: 1,
+    };
+    record.validate(&record.id).unwrap();
+    record
+}
+
 #[tokio::test]
-async fn unsupported_pet_fields_are_rejected_without_journaling() {
+async fn finalization_retries_require_the_entire_confirmed_pair() {
+    for pet_public_key in [None, Some("ccdd".to_owned())] {
+        let (root, backend) = read_fixture("http://127.0.0.1:1");
+        let mut writer = backend.writer.lock().await;
+        let keys = RingPublicKeys {
+            public_key: "aabb".into(),
+            pet_public_key,
+        };
+        let journal = root.path().join("worker/state.json");
+        let before = std::fs::read(&journal).unwrap();
+        for state in [
+            RingState::Active { keys: keys.clone() },
+            RingState::Pending {
+                keys: Some(keys.clone()),
+                confirmations: vec![writer.node_key()],
+            },
+        ] {
+            let record = ring_fixture(&writer, keys.pet_public_key.is_some(), state);
+            assert!(!prepare_finalization(&mut writer, &record, keys.clone(), 200).unwrap());
+            assert!(writer.pending_id().unwrap().is_none());
+            assert_eq!(std::fs::read(&journal).unwrap(), before);
+        }
+    }
+}
+
+#[tokio::test]
+async fn different_pet_key_or_missing_confirmation_is_not_acknowledged() {
+    for (active, confirmed, same_pet) in [
+        (true, true, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let (_root, backend) = read_fixture("http://127.0.0.1:1");
+        let mut writer = backend.writer.lock().await;
+        let requested = RingPublicKeys {
+            public_key: "aabb".into(),
+            pet_public_key: Some("ccdd".into()),
+        };
+        let stored = RingPublicKeys {
+            public_key: requested.public_key.clone(),
+            pet_public_key: Some(if same_pet { "ccdd" } else { "eeff" }.into()),
+        };
+        let state = if active {
+            RingState::Active { keys: stored }
+        } else {
+            let participant = if confirmed {
+                writer.node_key()
+            } else {
+                hex::encode(
+                    SigningKey::from_slice(&[32; 32])
+                        .unwrap()
+                        .verifying_key()
+                        .to_sec1_bytes(),
+                )
+            };
+            RingState::Pending {
+                keys: Some(stored),
+                confirmations: vec![participant],
+            }
+        };
+        let record = ring_fixture(&writer, true, state);
+        assert!(prepare_finalization(&mut writer, &record, requested.clone(), 200).unwrap());
+        let expected = sign_ring_participant_request(
+            RingParticipantRequest {
+                deployment_root: writer.deployment_root,
+                deployment_id: writer.worker.deployment_id(),
+                ring_id: record.id,
+                node_key: writer.node_key(),
+                command: RingParticipantCommand::Confirm(requested),
+                expires_at: 200,
+            },
+            &writer.authority,
+        )
+        .unwrap();
+        assert_eq!(
+            writer.pending_call().unwrap(),
+            Some(encode_ring_participant_request(&expected).unwrap())
+        );
+    }
+}
+
+#[tokio::test]
+async fn invalid_finalization_pair_leaves_the_journal_unchanged() {
+    let (root, backend) = read_fixture("http://127.0.0.1:1");
+    let mut writer = backend.writer.lock().await;
+    let journal = root.path().join("worker/state.json");
+    let before = std::fs::read(&journal).unwrap();
+    for (requires_pet, public_key, pet_public_key) in [
+        (true, "aabb", None),
+        (false, "aabb", Some("ccdd")),
+        (true, "aabb", Some("")),
+        (true, "aabb", Some("CCDD")),
+        (true, "aabb", Some("not-hex")),
+        (true, "AABB", Some("ccdd")),
+    ] {
+        let record = ring_fixture(
+            &writer,
+            requires_pet,
+            RingState::Pending {
+                keys: None,
+                confirmations: vec![],
+            },
+        );
+        let requested = RingPublicKeys {
+            public_key: public_key.into(),
+            pet_public_key: pet_public_key.map(str::to_owned),
+        };
+        assert!(prepare_finalization(&mut writer, &record, requested, 200).is_err());
+        assert!(writer.pending_id().unwrap().is_none());
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn ring_readback_retains_pet_mode_and_only_finalized_keys() {
     let (_root, backend) = read_fixture("http://127.0.0.1:1");
-    for field in ["pet_tag", "pet_tag_proof"] {
-        let request = json!({field: "attachment"});
+    let writer = backend.writer.lock().await;
+    let keys = RingPublicKeys {
+        public_key: "aabb".into(),
+        pet_public_key: Some("ccdd".into()),
+    };
+    let mut record = ring_fixture(
+        &writer,
+        true,
+        RingState::Pending {
+            keys: Some(keys.clone()),
+            confirmations: vec![writer.node_key()],
+        },
+    );
+    let pending = RingPayload::try_from(ring_post(record.clone()).unwrap()).unwrap();
+    assert!(pending.requires_pet);
+    assert!(pending.ring_pk.is_empty());
+    assert_eq!(pending.pet_pk, None);
+    record.state = RingState::Active { keys: keys.clone() };
+    let active = RingPayload::try_from(ring_post(record).unwrap()).unwrap();
+    assert!(active.requires_pet);
+    assert_eq!(active.ring_pk, keys.public_key);
+    assert_eq!(active.pet_pk, keys.pet_public_key);
+}
+
+#[tokio::test]
+async fn incomplete_or_malformed_pet_documents_are_rejected_without_journaling() {
+    let (root, backend) = read_fixture("http://127.0.0.1:1");
+    let journal = root.path().join("worker/state.json");
+    let before = std::fs::read(&journal).unwrap();
+    let tag = r#"{"ephemeral_point":[1,1],"masked_fingerprint":[2,2]}"#;
+    let proof = r#"{"challenge":[3,3],"response":[4,4]}"#;
+    for (pet_tag, pet_tag_proof) in [
+        (Some(tag), None),
+        (None, Some(proof)),
+        (Some("{}"), Some(proof)),
+        (Some(tag), Some("not-json")),
+    ] {
+        let request = DocumentPayload {
+            ring_id: "11".repeat(32),
+            document: r#"{"enc_cmt":[1],"encrypted_data":[2],"nonce":[3]}"#.into(),
+            proof: r#"{"challenge":[4],"response":[5]}"#.into(),
+            policy_id: "22".repeat(32),
+            resource: "document".into(),
+            permission: "read".into(),
+            pet_tag: pet_tag.map(str::to_owned),
+            pet_tag_proof: pet_tag_proof.map(str::to_owned),
+            ..Default::default()
+        };
+        let expected = ThresholdObject::Document(native_document(request.clone()))
+            .validate()
+            .unwrap_err()
+            .to_string();
         let failure = backend
             .post_inner(
                 BulletinWriteKind::Document,
@@ -244,25 +443,15 @@ async fn unsupported_pet_fields_are_rejected_without_journaling() {
             )
             .await
             .unwrap_err();
-        assert!(failure
-            .to_string()
-            .contains("does not support PET documents"));
+        assert!(failure.to_string().contains(&expected), "{failure}");
         assert!(backend.writer.lock().await.pending_id().unwrap().is_none());
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
+        assert!(backend
+            .writer
+            .lock()
+            .await
+            .prepare_document(request, "token")
+            .is_err());
+        assert_eq!(std::fs::read(&journal).unwrap(), before);
     }
-    let request = RingFinalizationPayload {
-        ring_id: "11".repeat(32),
-        ring_pk: "22".repeat(48),
-        pet_pk: Some("33".repeat(48)),
-    };
-    let failure = backend
-        .post_inner(
-            BulletinWriteKind::Finalize,
-            &serde_json::to_vec(&request).unwrap(),
-        )
-        .await
-        .unwrap_err();
-    assert!(failure
-        .to_string()
-        .contains("does not support PET ring finalization"));
-    assert!(backend.writer.lock().await.pending_id().unwrap().is_none());
 }

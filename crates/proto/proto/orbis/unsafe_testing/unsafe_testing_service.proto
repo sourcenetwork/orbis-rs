@@ -18,6 +18,7 @@ service UnsafeTestingService {
   rpc SubmitOrganicNoncanonicalPrepare(SubmitOrganicNoncanonicalPrepareRequest) returns (SubmitOrganicNoncanonicalPrepareResponse);
   rpc SubmitOrganicConflictingManifest(SubmitOrganicConflictingManifestRequest) returns (SubmitOrganicConflictingManifestResponse);
   rpc SubmitOrganicInvalidRefreshResult(SubmitOrganicInvalidRefreshResultRequest) returns (SubmitOrganicInvalidRefreshResultResponse);
+  rpc SetPetDecryptFault(SetPetDecryptFaultRequest) returns (SetPetDecryptFaultResponse);
 }
 
 enum LocalStorageKeyType {
@@ -195,3 +196,12 @@ message SubmitOrganicInvalidRefreshResultRequest {
 }
 
 message SubmitOrganicInvalidRefreshResultResponse {}
+
+// Corrupt only the signed decrypt proof for one ring. Stored shares and all
+// authorization/generation checks remain unchanged. Replaces any prior target.
+message SetPetDecryptFaultRequest {
+  string ring_id = 1;
+  bool enabled = 2;
+}
+
+message SetPetDecryptFaultResponse {}

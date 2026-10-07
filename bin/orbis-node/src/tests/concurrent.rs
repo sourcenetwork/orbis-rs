@@ -128,7 +128,8 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,
@@ -284,7 +285,11 @@ async fn setup_live_three_node_network(db_prefix: &str, base_port: u16) -> LiveT
                 network_ingress: NetworkIngressArgs::default(),
             },
             cors_policy: CorsPolicy::Disabled,
-            node_key,
+            identity: bulletin::startup::NodeIdentity {
+                node_key,
+                public_address: public_address.clone(),
+            },
+            backend_names: ("injected".into(), "injected".into()),
             network,
             local_storage,
             authz,
@@ -427,7 +432,11 @@ async fn setup_live_four_node_network(db_prefix: &str, base_port: u16) -> LiveFo
                 network_ingress: NetworkIngressArgs::default(),
             },
             cors_policy: CorsPolicy::Disabled,
-            node_key,
+            identity: bulletin::startup::NodeIdentity {
+                node_key,
+                public_address: public_address.clone(),
+            },
+            backend_names: ("injected".into(), "injected".into()),
             network,
             local_storage,
             authz,
@@ -647,6 +656,7 @@ fn signed_bad_refresh_dkg_share_observation(
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgShare {
             statement: Box::new(statement),
             response_signature,

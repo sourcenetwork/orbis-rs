@@ -22,7 +22,30 @@ fn default_timeout() -> u64 {
     30
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("cannot read native Vera configuration")]
+    Read(#[from] std::io::Error),
+    #[error("native Vera configuration exceeds 16 KiB")]
+    TooLarge,
+    #[error("invalid native Vera configuration JSON")]
+    Json(#[from] serde_json::Error),
+    #[error("invalid native Vera endpoint")]
+    Url(#[from] url::ParseError),
+    #[error("native Vera endpoint must be an HTTP(S) URL without credentials or a fragment")]
+    Endpoint,
+    #[error("invalid native Vera deployment key encoding")]
+    Hex(#[from] hex::FromHexError),
+    #[error("deployment_root must encode exactly 32 bytes")]
+    RootLength,
+    #[error("invalid native Vera consensus public key")]
+    ConsensusKey(#[from] commonware_codec::Error),
+    #[error("deployment identity and time bounds must be nonzero")]
+    ZeroBound,
+}
+
 /// Validated native deployment trust and request bounds, shared by nodes and operator tools.
+#[derive(Clone)]
 pub struct NativeConfig {
     /// HTTP(S) endpoint serving native requests and evidence.
     pub endpoint: String,
@@ -40,13 +63,13 @@ pub struct NativeConfig {
 
 impl NativeConfig {
     /// Read a bounded trust file, rejecting unknown or duplicate fields and invalid bounds.
-    pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let mut bytes = Vec::new();
         fs::File::open(path)?
             .take(MAX_CONFIG_BYTES + 1)
             .read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_CONFIG_BYTES {
-            return Err("native Vera configuration exceeds 16 KiB".into());
+            return Err(ConfigError::TooLarge);
         }
         let raw: ConfigFile = serde_json::from_slice(&bytes)?;
         let endpoint = url::Url::parse(&raw.endpoint)?;
@@ -56,14 +79,11 @@ impl NativeConfig {
             || endpoint.password().is_some()
             || endpoint.fragment().is_some()
         {
-            return Err(
-                "native Vera endpoint must be an HTTP(S) URL without credentials or a fragment"
-                    .into(),
-            );
+            return Err(ConfigError::Endpoint);
         }
         let root: [u8; 32] = hex::decode(&raw.deployment_root)?
             .try_into()
-            .map_err(|_| "deployment_root must encode exactly 32 bytes")?;
+            .map_err(|_| ConfigError::RootLength)?;
         let trusted = ConsensusPublicKey::decode(alloy_primitives::bytes::Bytes::from(
             hex::decode(&raw.consensus_key)?,
         ))?;
@@ -72,7 +92,7 @@ impl NativeConfig {
             || raw.max_evidence_age_secs == 0
             || raw.request_timeout_secs == 0
         {
-            return Err("deployment identity and time bounds must be nonzero".into());
+            return Err(ConfigError::ZeroBound);
         }
         Ok(Self {
             endpoint: endpoint.into(),

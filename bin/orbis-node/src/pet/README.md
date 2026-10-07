@@ -1,185 +1,100 @@
 # PET Developer Guide
 
-This module implements the node-local threshold ownership-tag (PET) check that
-gates PRE release on a `requires_pet` ring. It has no public-facing service —
-unlike PRE and Sign, there is no client-facing gRPC entrypoint here. The only
-caller is PRE's own `start_pre` pipeline (`pre::v0::service::stages`), which
-runs the check as one internal stage, immediately after ACP authorization and
-before setting up the reencryption round, when the ring requires it.
+PET checks an ownership tag before PRE releases reencryption shares for a ring
+with `requires_pet`. It runs inside PRE; there is no separate public PET service.
+The same protocol uses the selected BLS or Jubjub implementation.
 
-The mental model is:
+## Request and authorization
 
-```text
-pre::v0::service::stages (a new stage, gated on ring_payload.requires_pet)
-    -> PetCoordinator::initiate_pet_check
-    -> check_pet_permission: does the requester hold document.permission
-       on the audit target? (ACP, additive — checked before anything below
-       reveals whether the tag itself would have matched)
-    -> this node's own independent tag-knowledge verification
-    -> threshold check-share round (peer-to-peer, mirrors PRE's reencrypt round)
-       — each contribution individually DLEQ-verified against its own
-       authoritative public share as it's collected (verify_check_response),
-       not just signature-checked; see "Per-share proof of correctness" below
-    -> combine (only) verified shares -> pet_sk * R
-    -> F(audit_target_object_id) — the plaintext owner identity itself,
-       not resolved via ACP; see the invariant below
-    -> verify T == F(target) + pet_sk*R
-    -> Ok(signed attestations) or PetError, folded into PreError by `start_pre`
+[PRE's service stages](../pre/v0/service/stages.rs) authenticate the request,
+check ACP access to the document, and call
+`PetCoordinator::initiate_pet_check`. PET additionally requires the actor to hold
+`document.permission` on the audit target under the document's policy and
+resource. A successful tag comparison cannot replace either permission check.
 
-network message (PET's own check-share round)
-    -> protocol_handler.rs
-    -> PetCoordinator::handle_message
-    -> handlers.rs: verify request, load local PET share, reply with a
-       signed partial + its DLEQ proof (PetShareAttestation)
+Each commit, reveal, and decrypt handler independently validates the JWT and its
+object/salt binding, derives the actor, and repeats the audit permission check.
+It reads the ring from the bulletin, verifies the document's tag-knowledge proof,
+and resolves the authenticated transport peer to a current committee member.
+A claimed node index alone does not authenticate a coordinator or contributor.
+Every [PRE responder](../pre/v0/coordinator/handlers.rs) independently checks
+document ACP and calls `verify_pet_admission` before releasing its share.
 
-pre::v0::coordinator::handlers::handle_reencrypt_request (every PRE peer,
-gated on ring_payload.requires_pet, using the attestations forwarded in
-PreRequestContext rather than re-running the threshold round above)
-    -> PetCoordinator::verify_pet_admission
-    -> same check_pet_permission gate, independently re-checked
-    -> independently re-verifies the tag-knowledge proof
-    -> verifies each attestation's signature *and* its DLEQ proof,
-       recombines, does its own final match against F(audit_target_object_id)
-    -> only then releases its reencryption share
-```
+`audit_target_object_id` is the plaintext identifier whose fingerprint is
+compared with the tag. There is no ACP identity-resolution step. The identifier
+is carried to PET participants and PRE responders; it is not hidden from them.
 
-Like PRE, this is a bounded one-round request/response protocol — no
-long-lived state machine, no leader election. Whichever node received the
-external `StartPreRequest` drives the check directly against the whole ring
-committee, exactly like PRE's own reencryption round.
+## Commit, reveal, decrypt
 
-## Directory Map
+The [initiator](v0/coordinator/initiator.rs) creates a fresh attempt and fixes its
+ring snapshot and exact canonical PET public polynomial. The
+[handlers](v0/coordinator/handlers.rs) run three phases:
 
-```text
-pet/
-  README.md
-  v0/
-    error.rs                PetError (no public service, so no GrpcServiceError —
-                             surfaces via `From<PetError> for PreError`)
-    messages.rs              wire messages and PetCheckContext
-    protocol_handler.rs       network protocol adapter (MessageCoordinator impl)
-    response_state.rs        response collection (thin wrapper over the shared
-                             ResponseManager, mirrors PreResponseManager)
-    coordinator/
-      mod.rs                  PetCoordinator facade
-      initiator.rs            fan-out, combine, final verify against the target
-      network.rs               per-peer send and same-stream response receive
-      handlers.rs             inbound CheckRequest handler (responder side)
-      verification.rs        shared tag-knowledge-proof verification, reused
-                              by both the initiator's own contribution and
-                              every incoming request
-```
+1. **Commit.** Each participant checks its stored bundle against the requested
+   polynomial and current member index, then commits to a fresh blinding
+   contribution for `R` and `T - F(audit_target_object_id)`.
+2. **Reveal.** The initiator selects exactly a threshold-sized commitment set.
+   Those participants reveal signed openings and proofs bound to that exact
+   selection. A shortfall discards the attempt; the selected blinders cannot be
+   substituted. Their verified responses form a `PetBlindCertificate`.
+3. **Decrypt.** Participants verify the complete certificate before applying
+   their PET shares to its aggregate blinded point. The initiator verifies each
+   signed DLEQ contribution against the certified polynomial and combines a
+   threshold of valid shares. The comparison succeeds only when the result
+   equals the certificate's aggregate blinded difference. Decrypt participants
+   need not be the same set as the selected reveal participants.
 
-## Threshold check, precisely
+The certificate and signed decrypt responses become `PetBlindEvidence` in the
+PRE request. `verify_pet_admission` repeats the audit permission, tag proof,
+certificate, contribution, generation, and final comparison checks. Missing or
+invalid evidence prevents share release.
 
-A PET tag is `(R = r_tag*G, T = F(owner_id) + r_tag*pet_pk)`, produced
-off-chain by Bankd. The check recovers `r_tag*pet_pk` via a **threshold
-decryption** shape (the same "apply my secret share to a public group
-element" structure as `ThresholdDealer::reencrypt`, just against a single
-point instead of a sum):
+## Generation and context binding
 
-- Each committee member holds a Shamir share `pet_sk_i` of the ring's PET
-  secret key (from its own fresh-DKG ceremony — see `docs/plans/pet-integration.md`'s
-  "Checking-key lifecycle").
-- Each contributes `pet_sk_i * R` (`Pet::partial_pet_check`).
-- The initiator Lagrange-combines `threshold`-many contributions into
-  `pet_sk * R = pet_sk*(r_tag*G) = r_tag*pet_pk` (`Pet::combine_pet_check_shares`).
-- The check passes iff `T == F(target) + pet_sk*R` (`Pet::verify_pet_match`),
-  where `target` is `audit_target_object_id` itself — the plaintext owner
-  identity, recomputed locally, never taken from the wire (the request
-  supplies the *identifier*, not a precomputed fingerprint).
+[Generation validation](v0/generation.rs) checks bounded canonical polynomial
+encoding, its coefficient count, the checking key, and the local share's
+consistency and member index. Matching the polynomial's constant term to
+`pet_pk` establishes key consistency, not authority for a share generation.
 
-## Key invariants
+The [v2 reporting types](../../../../crates/reporting/src/pet_blind.rs) bind the
+exact polynomial digest into `PetBlindContext`. The context also binds the
+chain, protocol and crypto suite, ring snapshot and keys, document locator,
+audit target, actor and validity window, coordinator, and attempt. The
+certificate carries the polynomial and threshold signed reveals from distinct
+current members. Decrypt statements bind the context, complete certificate,
+aggregate points, and polynomial; an accused node cannot select a different
+polynomial for verification.
 
-- **Every participant, including the initiator, independently verifies the
-  tag-knowledge proof** (`verification.rs`) before touching its secret share
-  with an untrusted `R` — an unverified ephemeral point could otherwise be
-  used to probe the checking key. This mirrors PRE's own "every peer
-  independently re-does `check_policy_access`" pattern.
-- **Responders never resolve or need the audit target.** Computing
-  `share_i * R` reveals nothing about which owner it will be checked
-  against — only the initiator needs the target, for the one final
-  comparison after combining. This is why `PetCheckContext` (the wire
-  payload) carries the full `DocumentPayload` but not `audit_target_object_id`.
-- **`audit_target_object_id` is the plaintext owner identity itself — there
-  is deliberately no ACP identity-resolution step.** Earlier drafts of this
-  feature resolved a `"creator"` relation via ACP to find "the real owner";
-  that indirection was removed because it added no protection a caller
-  can't already get around by naming any object it likes — nothing stops
-  that, and it doesn't need to. What actually gates the check is the
-  cryptographic match below (a wrong identity fails it outright — nobody
-  can guess or forge a matching tag) and `check_pet_permission` (below).
-  `audit_target_object_id` still names an ACP object *under the document's
-  own resource type* (`document.resource` — not a separate resource; a
-  document and its audit target sharing a resource type risks nothing in
-  practice, since `object_id` is always a content hash and
-  `audit_target_object_id` a chosen identifier).
-- **A second, independent ACP gate: `check_pet_permission`.** Does the
-  requesting actor hold `document.permission` (reused as-is — already bound
-  into the tag digest via `ciphertext_context`, so no dedicated field exists
-  for this) on `(document.resource, audit_target_object_id)`? This is
-  additive to the cryptographic tag-match above, not a replacement — a
-  genuinely matching tag still proves the tag is real; this proves the
-  requester is allowed to invoke/learn that fact. Checked *first*, in both
-  `initiate_pet_check` and `verify_pet_admission` — an unauthorized caller
-  learns nothing about whether the tag would have matched. Reuses
-  `PetError::Mismatch` on denial rather than a distinct variant, so "wrong
-  tag" and "not authorized" stay indistinguishable to the caller. This is
-  what lets the real owner delegate `reader` on the audit target to other
-  actors, exactly like decrypting the document itself.
-- **No refresh/reshare support yet.** The PET checking key's `RingShareBundle`
-  is write-once (only fresh-DKG writes it via `save_by_ring_key`, keyed by
-  `ring_id` rather than by public key) — the PSS-generation TOCTOU handling
-  PRE's own initiator has isn't needed here yet, since there is no PET-key
-  refresh ceremony to race against. Revisit this once that lands. This also
-  means the per-share DLEQ verification below (Step 4 of this feature's plan)
-  only ever checks against the current, sole generation of the checking
-  key's public polynomial — no "recently retired generation" candidate list
-  like PRE's `candidate_public_polynomials`, since there's nothing to retire
-  yet.
-- **Relay attribution for ACP failures, not PET-specific evidence.** A
-  relayed request whose PET *admission* check fails (not the per-share proof
-  below — the final `check_pet_permission`/tag-match gate) is reported
-  exactly like one that fails ACP: PRE's `handle_reencrypt_request` shares
-  one `RelayRequestBinding` between both checks and calls the same
-  `report_relay_if_bound` helper from whichever branch rejects with
-  `PreError::Unauthorized`, provided the relayer signed a `relay_statement`
-  for this exact request. It resolves to the same generic
-  `unauthorized_request` on-chain report type as an ACP failure — nothing
-  distinguishes "PET admission failed" from "ACP failed" in that report. A
-  JWT-validation failure (`resolve_jwt_did`) still isn't reported at all —
-  that gap predates PET, applies identically to Sign, and is a known,
-  deliberately deferred issue, not something this covers.
-- **Per-share proof of correctness, with its own report kind.** Unlike the
-  bullet above, a single committee member's *threshold contribution* being
-  wrong is independently detectable and reportable — mirrors PRE's own
-  Chaum–Pedersen DLEQ proof (`ThresholdDealer::reencrypt`/`verify`) almost
-  exactly, just against one base point (`R`) instead of a summed pair.
-  `Pet::partial_pet_check` always returns a `PetCheckReply` (partial +
-  DLEQ proof), never a bare value, so a caller can't skip verification by
-  construction; `Pet::verify_partial_pet_check` checks it against
-  `pub_poly.eval(node_id)` — that node's own authoritative public share —
-  with no secret needed. This matters beyond "catch a buggy node": because
-  `combine_pet_check_shares` combines contributions *linearly*, checking
-  only the final equation is insufficient — a malicious committee member can
-  submit a fabricated, correctly-*signed* contribution chosen so that
-  combining it with honest ones still satisfies the tag's equation for a
-  target the attacker picked (a cancellation/framing attack, see the crypto
-  crate's `per_share_verification_rejects_a_cancellation_attack_...` test
-  for a worked example). Wired into both collection points
-  (`initiator.rs`'s live loop via `verify_check_response`,
-  `verify_pet_admission`'s forwarded-attestation loop) with a specific
-  acceptance order — resolve identity, verify signature, decode, verify the
-  DLEQ proof, *only then* record the participant as seen — so a rejected or
-  cryptographically invalid response can never preempt an honest
-  participant's slot (a real bug found and fixed while building this: the
-  original ordering let a spoofed response with a bad signature permanently
-  occupy the claimed slot). An authenticated-but-invalid contribution
-  produces its own `InvalidCryptoResponse::Pet` report — a real,
-  PET-specific report kind (unlike the relay-attribution bullet above),
-  reusing the exact same `PetCheckResponseStatement` the responder signed
-  live, no separate evidence design. `verify_check_response`'s own doc
-  comment has the exact seven-step order; `pet_admission_rejects_*`/
-  `verify_pet_admission_accepts_genuine_attestations` and the four
-  `*_does_not_*`/`three_of_five_*` tests in `verification.rs` are the
-  regression coverage.
+PET has fresh DKG, refresh, and reshare paths. Refresh can change the whole
+polynomial while preserving `pet_pk`; reshare can also change membership and
+threshold. A local bundle, member index, or ring snapshot that no longer matches
+the attempt returns `GenerationMismatch`. Collectors can finish with enough
+matching peers; otherwise this surfaces through PRE as `ReshareInProgress`
+(gRPC `Unavailable`), allowing a fresh request after state converges. A mismatch
+is neither an invalid-crypto contribution nor an offline observation. Malformed,
+missing, or unbound certificates remain verification errors, not a general
+retry classification.
+
+## Reports and publication boundary
+
+The [PET report verifier](../reporting/v0/registry/invalid_crypto/pet.rs)
+authenticates the accused's signed response and its context before treating a
+cryptographic failure as reportable. Decrypt report validation requires the full
+threshold reveal certificate and checks the response against its certified
+polynomial, without consulting the validator's local share generation. A genuine
+response therefore does not become invalid merely because the validator has
+refreshed. Evidence bound to a different current ring or committee is rejected.
+
+Report co-signers receive `PetBlindContext` and the decrypt certificate through
+the private, out-of-band `ReportSigningContext`. These are not fields in the
+report submitted to Vera. Vera receives the signed report with the accused's
+signed statement and opaque context/certificate digests; the statement still
+contains public proof material, including the decrypt polynomial. This boundary
+does not hide the audit target from protocol participants or report co-signers,
+and does not establish a broader privacy guarantee.
+
+Deploy the PET v2 codec, node protocol, and compatible Vera report decoder as a
+fresh aligned set. There is no v1 fallback or migration path for old PET
+messages, certificates, or reports. Protocol tests and controlled refresh
+fixtures do not by themselves qualify a full deployment or the native service's
+24-hour scheduled-refresh behavior.

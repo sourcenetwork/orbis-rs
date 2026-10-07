@@ -18,6 +18,10 @@ pub enum PetError {
     #[error("PET check failed: tag does not match the audit target")]
     Mismatch,
 
+    /// A refresh changed the local generation. This is retryable, not evidence of misconduct.
+    #[error("PET generation changed; retry with a fresh attempt")]
+    GenerationMismatch,
+
     /// Serialization error.
     #[error("Serialization error: {0}")]
     Serialization(String),
@@ -75,6 +79,7 @@ impl From<PetError> for PreError {
             PetError::Mismatch => PreError::Unauthorized(
                 "PET check failed: tag does not match the audit target".to_string(),
             ),
+            PetError::GenerationMismatch => PreError::ReshareInProgress,
             PetError::Serialization(msg) => PreError::Serialization(msg),
             PetError::Deserialization(msg) => PreError::Deserialization(msg),
             PetError::NetworkConnection(msg) => PreError::NetworkConnection(msg),

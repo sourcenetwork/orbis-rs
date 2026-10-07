@@ -3,9 +3,12 @@
 mod backend;
 mod config;
 #[cfg(test)]
+mod pet_tests;
+#[cfg(test)]
 mod reshare_tests;
+pub mod startup;
 pub use backend::NativeBulletin;
-pub use config::NativeConfig;
+pub use config::{ConfigError, NativeConfig};
 
 use std::path::Path;
 
@@ -36,7 +39,8 @@ use vera_client::rings::{
 };
 pub use vera_client::rings::{
     ReshareTarget, RingCommand, RingConfig, RingParticipantCommand, RingParticipantRequest,
-    RingReshareRequest, RingSettings, RingUpdate, ScheduledUpgrade, ThresholdScheme,
+    RingPublicKeys, RingReshareRequest, RingSettings, RingUpdate, ScheduledUpgrade,
+    ThresholdScheme,
 };
 pub use vera_client::threshold_objects::ObjectKind;
 
@@ -214,11 +218,11 @@ impl NativeVeraClient {
         let message = record
             .reshare_signing_bytes(self.worker.deployment_id())
             .map_err(|e| ClientError::Signing(e.to_string()))?;
-        let RingState::Active { public_key } = &record.state else {
+        let RingState::Active { keys } = &record.state else {
             return Err(ClientError::Signing("ring is not active".into()));
         };
         let public_key =
-            hex::decode(public_key).map_err(|e| ClientError::Signing(e.to_string()))?;
+            hex::decode(&keys.public_key).map_err(|e| ClientError::Signing(e.to_string()))?;
         vera_crypto::threshold::verify(scheme, &public_key, &message, signature)
             .map_err(|e| ClientError::Signing(e.to_string()))?;
         self.prepare_call(encode_ring_reshare(&RingReshareRequest {
@@ -237,7 +241,7 @@ impl NativeVeraClient {
         document: DocumentPayload,
         token: &str,
     ) -> Result<B256, ClientError> {
-        let object = ThresholdObject::Document(native_document(document)?);
+        let object = ThresholdObject::Document(native_document(document));
         self.prepare_call(encode_threshold_object(&object, token)?)
     }
 
@@ -425,13 +429,8 @@ impl NativeVeraClient {
     }
 }
 
-fn native_document(document: DocumentPayload) -> Result<EncryptedDocument, ClientError> {
-    if document.pet_tag.is_some() || document.pet_tag_proof.is_some() {
-        return Err(ClientError::Signing(
-            "native Vera does not support PET documents".into(),
-        ));
-    }
-    Ok(EncryptedDocument {
+fn native_document(document: DocumentPayload) -> EncryptedDocument {
+    EncryptedDocument {
         ring_id: document.ring_id,
         document: document.document,
         proof: document.proof,
@@ -440,7 +439,9 @@ fn native_document(document: DocumentPayload) -> Result<EncryptedDocument, Clien
         permission: document.permission,
         tier: document.tier,
         timestamp: document.timestamp,
-    })
+        pet_tag: document.pet_tag,
+        pet_tag_proof: document.pet_tag_proof,
+    }
 }
 
 fn object_post(
@@ -486,8 +487,8 @@ fn ring_status(record: &RingRecord) -> crate::error::Result<RingFinalizationStat
             ring_pk: String::new(),
             confirmation_node_keys: Some(confirmations.clone()),
         }),
-        RingState::Active { public_key } => Ok(RingFinalizationStatus {
-            ring_pk: public_key.clone(),
+        RingState::Active { keys } => Ok(RingFinalizationStatus {
+            ring_pk: keys.public_key.clone(),
             confirmation_node_keys: Some(Vec::new()),
         }),
         RingState::Cancelled { .. } | RingState::Conflict { .. } => {
@@ -510,8 +511,11 @@ fn ring_post(record: RingRecord) -> crate::error::Result<BulletinPost> {
             (Some(upgrade.version), Some(upgrade.activates_at))
         });
     let ring = RingPayload {
-        requires_pet: false,
-        pet_pk: None,
+        requires_pet: record.config.requires_pet,
+        pet_pk: match &record.state {
+            RingState::Active { keys } => keys.pet_public_key.clone(),
+            _ => None,
+        },
         ring_pk: status.ring_pk,
         new_peer_node_keys,
         new_threshold,
@@ -564,6 +568,8 @@ mod tests {
             permission: "read".into(),
             tier: Some("gold".into()),
             timestamp: Some(1_700_000_000),
+            pet_tag: None,
+            pet_tag_proof: None,
         };
         let expected = common::blockchain::orbis::generate_document_id(
             &document.ring_id,
@@ -734,7 +740,10 @@ mod tests {
         let id = client
             .prepare_ring_participant_request(
                 "11".repeat(32),
-                RingParticipantCommand::Confirm("aabb".into()),
+                RingParticipantCommand::Confirm(RingPublicKeys {
+                    public_key: "aabb".into(),
+                    pet_public_key: Some("ccdd".into()),
+                }),
                 100,
             )
             .unwrap();
@@ -745,12 +754,26 @@ mod tests {
             client
                 .prepare_ring_participant_request(
                     "11".repeat(32),
-                    RingParticipantCommand::Confirm("aabb".into()),
+                    RingParticipantCommand::Confirm(RingPublicKeys {
+                        public_key: "aabb".into(),
+                        pet_public_key: Some("ccdd".into()),
+                    }),
                     100
                 )
                 .unwrap(),
             id
         );
+        assert!(client
+            .prepare_ring_participant_request(
+                "11".repeat(32),
+                RingParticipantCommand::Confirm(RingPublicKeys {
+                    public_key: "aabb".into(),
+                    pet_public_key: Some("eeff".into()),
+                }),
+                100,
+            )
+            .is_err());
+        assert_eq!(client.pending_id().unwrap(), Some(id));
         assert!(client
             .prepare_ring_participant_request("11".repeat(32), RingParticipantCommand::Cancel, 100)
             .is_err());
@@ -772,6 +795,7 @@ mod tests {
             threshold: 2,
             pss_interval: 90000,
             current_version: 0,
+            requires_pet: false,
             nonce: [9; 32],
             trusted_auth_relay_dids: Some(vec![
                 "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH".into(),
@@ -790,7 +814,10 @@ mod tests {
             settings: None,
             sequence: 2,
             state: RingState::Pending {
-                public_key: Some("aabb".into()),
+                keys: Some(RingPublicKeys {
+                    public_key: "aabb".into(),
+                    pet_public_key: None,
+                }),
                 confirmations: vec![node.clone()],
             },
             revision: serde_json::from_value(
@@ -814,7 +841,10 @@ mod tests {
         assert!(payload.new_peer_node_keys.is_none());
         assert!(payload.new_threshold.is_none());
         record.state = RingState::Active {
-            public_key: "aabb".into(),
+            keys: RingPublicKeys {
+                public_key: "aabb".into(),
+                pet_public_key: None,
+            },
         };
         assert_eq!(
             RingPayload::try_from(ring_post(record.clone()).unwrap())
@@ -891,8 +921,14 @@ mod tests {
             Err(crate::error::BulletinError::NotFound { .. })
         ));
         record.state = RingState::Conflict {
-            first_key: "aabb".into(),
-            conflicting_key: "ccdd".into(),
+            first_keys: RingPublicKeys {
+                public_key: "aabb".into(),
+                pet_public_key: None,
+            },
+            conflicting_keys: RingPublicKeys {
+                public_key: "ccdd".into(),
+                pet_public_key: None,
+            },
             by: record.config.peer_node_keys[0].clone(),
         };
         assert!(matches!(

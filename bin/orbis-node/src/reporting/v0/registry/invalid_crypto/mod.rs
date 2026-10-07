@@ -71,6 +71,7 @@ impl ReportHandler for InvalidCryptoResponseHandler {
             ring_config,
             inline_document: observation.inline_document,
             pet_blind_context: observation.pet_blind_context,
+            pet_blind_certificate: observation.pet_blind_certificate,
         })
     }
 

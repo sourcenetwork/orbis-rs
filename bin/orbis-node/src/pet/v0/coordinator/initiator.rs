@@ -56,9 +56,7 @@ use crate::reporting::v0::{queue_report, spawn_error_drain};
 use crate::ring_state::RingShareBundle;
 use authz::request::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
-use crypto::r#trait::{
-    CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PubShare, ThresholdSigner,
-};
+use crypto::r#trait::{CryptoSerialize, DistKeyShare, Dkg, Pet, PubShare, ThresholdSigner};
 use crypto::{GroupAffine as G1Affine, ScalarField as Fr};
 use crypto::{SigShareInner, SignImpl, SignaturePoint};
 use std::collections::HashSet;
@@ -141,6 +139,7 @@ where
         pub_poly: D::PubPoly,
         context_digest: [u8; 32],
         certificate_digest: [u8; 32],
+        certificate: PetBlindCertificate,
         aggregate_r_bytes: Vec<u8>,
         aggregate_diff_bytes: Vec<u8>,
         blind_context: PetBlindContext,
@@ -180,6 +179,7 @@ where
                                 &aggregate_r_bytes,
                                 &aggregate_diff_bytes,
                                 &blind_context,
+                                &certificate,
                                 &document_evidence,
                                 &mut seen_node_ids,
                             )
@@ -284,7 +284,14 @@ where
         // phase-specific transport ids are derived from it below.
         let attempt_id = format!("{request_id}-{}", rand::random::<u64>());
 
+        let bundle =
+            RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
+                .map_err(PetError::Storage)?;
+        let public_polynomial =
+            hex::decode(&bundle.public_polynomial).map_err(|e| PetError::Storage(e.to_string()))?;
         let ctx = PetCheckContext {
+            ring_state_sha256: crate::reporting::v0::types::ring_state_sha256(&ring_payload),
+            public_polynomial,
             document: document.clone(),
             salt: salt.clone(),
             object_id: object_id.clone(),
@@ -298,6 +305,12 @@ where
         // including the initiator, must call this."
         let (tag, pet_pk_hex, _digest, _) = self.verify_pet_check_request(&ctx).await?;
 
+        let pub_poly = crate::pet::v0::generation::match_bundle::<D::PubPoly>(
+            &bundle,
+            &ctx.public_polynomial,
+            ring_payload.threshold,
+            &pet_pk_hex,
+        )?;
         let threshold = ring_payload.threshold as usize;
         let committee_size = ring_payload.peer_node_keys.len();
         let node_id_opt =
@@ -346,6 +359,7 @@ where
         // ===================== Round 1 — Commit =====================
         let mut commitments: Vec<(u32, [u8; 32])> = Vec::with_capacity(committee_size);
         let mut seen_commit_ids = HashSet::new();
+        let mut commit_generation_mismatch = false;
 
         if let Some(node_id) = node_id_opt {
             let commit_req = CommitRequest {
@@ -354,8 +368,9 @@ where
                 from_node_id: node_id,
                 context: ctx.clone(),
             };
-            if let Ok(Some(response)) = self.handle_commit_request(commit_req, &local_peer_id).await
-            {
+            let local_result = self.handle_commit_request(commit_req, &local_peer_id).await;
+            commit_generation_mismatch |= matches!(local_result, Err(PetError::GenerationMismatch));
+            if let Ok(Some(response)) = local_result {
                 if let PetCommitResponseVerification::Verified {
                     node_id: verified_node_id,
                     commitment,
@@ -453,6 +468,8 @@ where
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            commit_generation_mismatch |=
+                                matches!(error, PetError::GenerationMismatch);
                             tracing::warn!(
                                 peer = %peer_id,
                                 %error,
@@ -511,6 +528,10 @@ where
         }
 
         if commitments.len() < threshold {
+            if commit_generation_mismatch {
+                return Err(PetError::GenerationMismatch);
+            }
+
             return Err(PetError::InsufficientShares {
                 got: commitments.len(),
                 need: threshold,
@@ -531,6 +552,7 @@ where
         // ===================== Round 2 — Reveal =====================
         let mut reveals: Vec<PetBlindSignedReveal> = Vec::with_capacity(threshold);
         let mut seen_reveal_ids = HashSet::new();
+        let mut reveal_generation_mismatch = false;
 
         if let Some(node_id) = node_id_opt {
             if selected_node_ids.contains(&node_id) {
@@ -541,9 +563,10 @@ where
                     all_commitments: all_commitments_wire.clone(),
                     context: ctx.clone(),
                 };
-                if let Ok(Some(response)) =
-                    self.handle_reveal_request(reveal_req, &local_peer_id).await
-                {
+                let local_result = self.handle_reveal_request(reveal_req, &local_peer_id).await;
+                reveal_generation_mismatch |=
+                    matches!(local_result, Err(PetError::GenerationMismatch));
+                if let Ok(Some(response)) = local_result {
                     match verify_reveal_response::<P>(
                         response,
                         &document.ring_id,
@@ -670,6 +693,8 @@ where
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            reveal_generation_mismatch |=
+                                matches!(error, PetError::GenerationMismatch);
                             tracing::warn!(
                                 peer = %peer_id,
                                 %error,
@@ -729,6 +754,10 @@ where
         }
 
         if reveals.len() < threshold {
+            if reveal_generation_mismatch {
+                return Err(PetError::GenerationMismatch);
+            }
+
             // No substitution — the whole attempt is discarded rather than
             // swapping in a different participant, which would mix state
             // across attempts in exactly the way the blinding scheme's
@@ -743,6 +772,7 @@ where
         }
 
         let certificate = PetBlindCertificate {
+            public_polynomial: ctx.public_polynomial.clone(),
             attempt_id: attempt_id.clone(),
             context_digest,
             all_commitments: all_commitments_wire,
@@ -753,6 +783,7 @@ where
             &ring_payload,
             &tag,
             &target_fingerprint,
+            &blind_context,
         )
         .map_err(|e| {
             PetError::Crypto(format!(
@@ -769,24 +800,10 @@ where
         let certificate_digest = certificate.certificate_digest();
 
         // ===================== Round 3 — Decrypt =====================
-        let bundle =
-            RingShareBundle::load_by_pet_ring_key(&self.app_state.local_storage, &document.ring_id)
-                .map_err(|e| {
-                    PetError::Storage(format!("Failed to load PET share bundle: {}", e))
-                })?;
-        let pub_poly_bytes = hex::decode(&bundle.public_polynomial).map_err(|e| {
-            PetError::Deserialization(format!("Failed to decode PET public polynomial hex: {}", e))
-        })?;
-        let pub_poly = <D::PubPoly>::from_bytes(&pub_poly_bytes).map_err(|e| {
-            PetError::Deserialization(format!(
-                "Failed to deserialize PET public polynomial: {}",
-                e
-            ))
-        })?;
-
         let mut shares: Vec<PubShare<G1Affine>> = Vec::with_capacity(threshold);
         let mut decrypt_responses: Vec<PetBlindSignedDecrypt> = Vec::with_capacity(threshold);
         let mut seen_decrypt_ids = HashSet::new();
+        let mut decrypt_generation_mismatch = false;
 
         if let Some(node_id) = node_id_opt {
             let decrypt_req = DecryptRequest {
@@ -796,10 +813,12 @@ where
                 certificate: certificate.clone(),
                 context: ctx.clone(),
             };
-            if let Ok(Some(response)) = self
+            let local_result = self
                 .handle_decrypt_request(decrypt_req, &local_peer_id)
-                .await
-            {
+                .await;
+            decrypt_generation_mismatch |=
+                matches!(local_result, Err(PetError::GenerationMismatch));
+            if let Ok(Some(response)) = local_result {
                 match verify_decrypt_response::<P>(
                     response,
                     &document.ring_id,
@@ -812,6 +831,7 @@ where
                     &aggregate_r_bytes,
                     &aggregate_diff_bytes,
                     &blind_context,
+                    &certificate,
                     &document_evidence,
                     &mut seen_decrypt_ids,
                 ) {
@@ -896,6 +916,7 @@ where
                                 &aggregate_r_bytes,
                                 &aggregate_diff_bytes,
                                 &blind_context,
+                                &certificate,
                                 &document_evidence,
                                 &mut seen_decrypt_ids,
                             ) {
@@ -916,6 +937,8 @@ where
                         }
                         Ok(_) => {}
                         Err(error) => {
+                            decrypt_generation_mismatch |=
+                                matches!(error, PetError::GenerationMismatch);
                             tracing::warn!(
                                 peer = %peer_id,
                                 %error,
@@ -970,6 +993,7 @@ where
                 pub_poly.clone(),
                 context_digest,
                 certificate_digest,
+                certificate.clone(),
                 aggregate_r_bytes.clone(),
                 aggregate_diff_bytes.clone(),
                 blind_context.clone(),
@@ -982,6 +1006,10 @@ where
         }
 
         if shares.len() < threshold {
+            if decrypt_generation_mismatch {
+                return Err(PetError::GenerationMismatch);
+            }
+
             return Err(PetError::InsufficientShares {
                 got: shares.len(),
                 need: threshold,

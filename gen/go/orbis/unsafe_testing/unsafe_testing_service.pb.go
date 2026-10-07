@@ -1478,6 +1478,96 @@ func (*SubmitOrganicInvalidRefreshResultResponse) Descriptor() ([]byte, []int) {
 	return file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDescGZIP(), []int{26}
 }
 
+// Corrupt only the signed decrypt proof for one ring. Stored shares and all
+// authorization/generation checks remain unchanged. Replaces any prior target.
+type SetPetDecryptFaultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RingId        string                 `protobuf:"bytes,1,opt,name=ring_id,json=ringId,proto3" json:"ring_id,omitempty"`
+	Enabled       bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPetDecryptFaultRequest) Reset() {
+	*x = SetPetDecryptFaultRequest{}
+	mi := &file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPetDecryptFaultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPetDecryptFaultRequest) ProtoMessage() {}
+
+func (x *SetPetDecryptFaultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPetDecryptFaultRequest.ProtoReflect.Descriptor instead.
+func (*SetPetDecryptFaultRequest) Descriptor() ([]byte, []int) {
+	return file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *SetPetDecryptFaultRequest) GetRingId() string {
+	if x != nil {
+		return x.RingId
+	}
+	return ""
+}
+
+func (x *SetPetDecryptFaultRequest) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+type SetPetDecryptFaultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetPetDecryptFaultResponse) Reset() {
+	*x = SetPetDecryptFaultResponse{}
+	mi := &file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetPetDecryptFaultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetPetDecryptFaultResponse) ProtoMessage() {}
+
+func (x *SetPetDecryptFaultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetPetDecryptFaultResponse.ProtoReflect.Descriptor instead.
+func (*SetPetDecryptFaultResponse) Descriptor() ([]byte, []int) {
+	return file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDescGZIP(), []int{28}
+}
+
 var File_orbis_unsafe_testing_unsafe_testing_service_proto protoreflect.FileDescriptor
 
 const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
@@ -1561,7 +1651,11 @@ const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"(SubmitOrganicInvalidRefreshResultRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"+\n" +
-	")SubmitOrganicInvalidRefreshResultResponse*\x8b\x02\n" +
+	")SubmitOrganicInvalidRefreshResultResponse\"N\n" +
+	"\x19SetPetDecryptFaultRequest\x12\x17\n" +
+	"\aring_id\x18\x01 \x01(\tR\x06ringId\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\"\x1c\n" +
+	"\x1aSetPetDecryptFaultResponse*\x8b\x02\n" +
 	"\x13LocalStorageKeyType\x12&\n" +
 	"\"LOCAL_STORAGE_KEY_TYPE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!LOCAL_STORAGE_KEY_TYPE_RING_INDEX\x10\x01\x12#\n" +
@@ -1572,7 +1666,7 @@ const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"\x16LocalStorageAccessMode\x12)\n" +
 	"%LOCAL_STORAGE_ACCESS_MODE_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fLOCAL_STORAGE_ACCESS_MODE_PLAIN\x10\x01\x12'\n" +
-	"#LOCAL_STORAGE_ACCESS_MODE_ENCRYPTED\x10\x022\xaf\x0f\n" +
+	"#LOCAL_STORAGE_ACCESS_MODE_ENCRYPTED\x10\x022\xa8\x10\n" +
 	"\x14UnsafeTestingService\x12n\n" +
 	"\x0fGetLocalStorage\x12,.orbis.unsafe_testing.GetLocalStorageRequest\x1a-.orbis.unsafe_testing.GetLocalStorageResponse\x12n\n" +
 	"\x0fSetLocalStorage\x12,.orbis.unsafe_testing.SetLocalStorageRequest\x1a-.orbis.unsafe_testing.SetLocalStorageResponse\x12w\n" +
@@ -1586,7 +1680,8 @@ const file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc = "" +
 	"\"SubmitOrganicConflictingCommitment\x12?.orbis.unsafe_testing.SubmitOrganicConflictingCommitmentRequest\x1a@.orbis.unsafe_testing.SubmitOrganicConflictingCommitmentResponse\x12\xa1\x01\n" +
 	" SubmitOrganicNoncanonicalPrepare\x12=.orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareRequest\x1a>.orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareResponse\x12\xa1\x01\n" +
 	" SubmitOrganicConflictingManifest\x12=.orbis.unsafe_testing.SubmitOrganicConflictingManifestRequest\x1a>.orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse\x12\xa4\x01\n" +
-	"!SubmitOrganicInvalidRefreshResult\x12>.orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest\x1a?.orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponseB\xe1\x01\n" +
+	"!SubmitOrganicInvalidRefreshResult\x12>.orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest\x1a?.orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse\x12w\n" +
+	"\x12SetPetDecryptFault\x12/.orbis.unsafe_testing.SetPetDecryptFaultRequest\x1a0.orbis.unsafe_testing.SetPetDecryptFaultResponseB\xe1\x01\n" +
 	"\x18com.orbis.unsafe_testingB\x19UnsafeTestingServiceProtoP\x01Z=github.com/sourcenetwork/orbis-rs/gen/go/orbis/unsafe_testing\xa2\x02\x03OUX\xaa\x02\x13Orbis.UnsafeTesting\xca\x02\x13Orbis\\UnsafeTesting\xe2\x02\x1fOrbis\\UnsafeTesting\\GPBMetadata\xea\x02\x14Orbis::UnsafeTestingb\x06proto3"
 
 var (
@@ -1602,7 +1697,7 @@ func file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDescGZIP() []byte
 }
 
 var file_orbis_unsafe_testing_unsafe_testing_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes = make([]protoimpl.MessageInfo, 27)
+var file_orbis_unsafe_testing_unsafe_testing_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_orbis_unsafe_testing_unsafe_testing_service_proto_goTypes = []any{
 	(LocalStorageKeyType)(0),                                  // 0: orbis.unsafe_testing.LocalStorageKeyType
 	(LocalStorageAccessMode)(0),                               // 1: orbis.unsafe_testing.LocalStorageAccessMode
@@ -1633,7 +1728,9 @@ var file_orbis_unsafe_testing_unsafe_testing_service_proto_goTypes = []any{
 	(*SubmitOrganicConflictingManifestResponse)(nil),          // 26: orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
 	(*SubmitOrganicInvalidRefreshResultRequest)(nil),          // 27: orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest
 	(*SubmitOrganicInvalidRefreshResultResponse)(nil),         // 28: orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
-	(*pre.InlineDocument)(nil),                                // 29: orbis.v0.pre.InlineDocument
+	(*SetPetDecryptFaultRequest)(nil),                         // 29: orbis.unsafe_testing.SetPetDecryptFaultRequest
+	(*SetPetDecryptFaultResponse)(nil),                        // 30: orbis.unsafe_testing.SetPetDecryptFaultResponse
+	(*pre.InlineDocument)(nil),                                // 31: orbis.v0.pre.InlineDocument
 }
 var file_orbis_unsafe_testing_unsafe_testing_service_proto_depIdxs = []int32{
 	0,  // 0: orbis.unsafe_testing.LocalStorageKey.key_type:type_name -> orbis.unsafe_testing.LocalStorageKeyType
@@ -1642,7 +1739,7 @@ var file_orbis_unsafe_testing_unsafe_testing_service_proto_depIdxs = []int32{
 	2,  // 3: orbis.unsafe_testing.SetLocalStorageRequest.key:type_name -> orbis.unsafe_testing.LocalStorageKey
 	1,  // 4: orbis.unsafe_testing.SetLocalStorageRequest.access_mode:type_name -> orbis.unsafe_testing.LocalStorageAccessMode
 	2,  // 5: orbis.unsafe_testing.DeleteLocalStorageRequest.key:type_name -> orbis.unsafe_testing.LocalStorageKey
-	29, // 6: orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceRequest.inline_document:type_name -> orbis.v0.pre.InlineDocument
+	31, // 6: orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceRequest.inline_document:type_name -> orbis.v0.pre.InlineDocument
 	3,  // 7: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:input_type -> orbis.unsafe_testing.GetLocalStorageRequest
 	5,  // 8: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:input_type -> orbis.unsafe_testing.SetLocalStorageRequest
 	7,  // 9: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:input_type -> orbis.unsafe_testing.DeleteLocalStorageRequest
@@ -1656,21 +1753,23 @@ var file_orbis_unsafe_testing_unsafe_testing_service_proto_depIdxs = []int32{
 	23, // 17: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:input_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareRequest
 	25, // 18: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:input_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestRequest
 	27, // 19: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:input_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultRequest
-	4,  // 20: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:output_type -> orbis.unsafe_testing.GetLocalStorageResponse
-	6,  // 21: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:output_type -> orbis.unsafe_testing.SetLocalStorageResponse
-	8,  // 22: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:output_type -> orbis.unsafe_testing.DeleteLocalStorageResponse
-	10, // 23: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:output_type -> orbis.unsafe_testing.GetActivePssSessionResponse
-	12, // 24: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceResponse
-	14, // 25: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:output_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceResponse
-	16, // 26: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceResponse
-	18, // 27: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:output_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportResponse
-	20, // 28: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:output_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceResponse
-	22, // 29: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentResponse
-	24, // 30: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:output_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareResponse
-	26, // 31: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
-	28, // 32: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:output_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
-	20, // [20:33] is the sub-list for method output_type
-	7,  // [7:20] is the sub-list for method input_type
+	29, // 20: orbis.unsafe_testing.UnsafeTestingService.SetPetDecryptFault:input_type -> orbis.unsafe_testing.SetPetDecryptFaultRequest
+	4,  // 21: orbis.unsafe_testing.UnsafeTestingService.GetLocalStorage:output_type -> orbis.unsafe_testing.GetLocalStorageResponse
+	6,  // 22: orbis.unsafe_testing.UnsafeTestingService.SetLocalStorage:output_type -> orbis.unsafe_testing.SetLocalStorageResponse
+	8,  // 23: orbis.unsafe_testing.UnsafeTestingService.DeleteLocalStorage:output_type -> orbis.unsafe_testing.DeleteLocalStorageResponse
+	10, // 24: orbis.unsafe_testing.UnsafeTestingService.GetActivePssSession:output_type -> orbis.unsafe_testing.GetActivePssSessionResponse
+	12, // 25: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidShareEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidShareEvidenceResponse
+	14, // 26: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgEquivocationEvidence:output_type -> orbis.unsafe_testing.SubmitDkgEquivocationEvidenceResponse
+	16, // 27: orbis.unsafe_testing.UnsafeTestingService.SubmitDkgInvalidRefreshCommitmentEvidence:output_type -> orbis.unsafe_testing.SubmitDkgInvalidRefreshCommitmentEvidenceResponse
+	18, // 28: orbis.unsafe_testing.UnsafeTestingService.SubmitPssStallOfflineReport:output_type -> orbis.unsafe_testing.SubmitPssStallOfflineReportResponse
+	20, // 29: orbis.unsafe_testing.UnsafeTestingService.SubmitUnauthorizedRelayEvidence:output_type -> orbis.unsafe_testing.SubmitUnauthorizedRelayEvidenceResponse
+	22, // 30: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingCommitment:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingCommitmentResponse
+	24, // 31: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicNoncanonicalPrepare:output_type -> orbis.unsafe_testing.SubmitOrganicNoncanonicalPrepareResponse
+	26, // 32: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicConflictingManifest:output_type -> orbis.unsafe_testing.SubmitOrganicConflictingManifestResponse
+	28, // 33: orbis.unsafe_testing.UnsafeTestingService.SubmitOrganicInvalidRefreshResult:output_type -> orbis.unsafe_testing.SubmitOrganicInvalidRefreshResultResponse
+	30, // 34: orbis.unsafe_testing.UnsafeTestingService.SetPetDecryptFault:output_type -> orbis.unsafe_testing.SetPetDecryptFaultResponse
+	21, // [21:35] is the sub-list for method output_type
+	7,  // [7:21] is the sub-list for method input_type
 	7,  // [7:7] is the sub-list for extension type_name
 	7,  // [7:7] is the sub-list for extension extendee
 	0,  // [0:7] is the sub-list for field type_name
@@ -1688,7 +1787,7 @@ func file_orbis_unsafe_testing_unsafe_testing_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc), len(file_orbis_unsafe_testing_unsafe_testing_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   27,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

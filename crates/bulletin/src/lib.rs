@@ -1,6 +1,7 @@
 pub mod error;
 #[cfg(feature = "native")]
 pub mod native;
+pub mod startup;
 pub mod r#trait;
 pub use r#trait::{BulletinKind, BulletinWriteKind};
 

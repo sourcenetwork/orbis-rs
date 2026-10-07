@@ -2643,6 +2643,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Pre {
             statement,
             response_signature,
@@ -2818,6 +2819,7 @@ async fn threshold_signs_invalid_crypto_sign_report_without_accused_node() {
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,
@@ -2992,6 +2994,7 @@ async fn co_signers_refuse_invalid_crypto_sign_report_when_share_verifies() {
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,
