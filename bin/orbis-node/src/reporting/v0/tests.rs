@@ -2548,8 +2548,26 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         .unwrap();
 
     let (reader_sk, rdr_pk) = PreImpl::generate_keypair();
-    let rdr_pk_proof = PreImpl::prove_reader_key(&reader_sk, &rdr_pk).unwrap();
     let rdr_pk_bytes = CryptoSerialize::to_bytes(&rdr_pk).unwrap();
+    let reader_auth_context = crypto::context::ReaderAuthorizationContext {
+        chain_id: "test-chain".to_string(),
+        ring_pk: Vec::new(),
+        jwt_issuer: "did:key:test".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:test".to_string(),
+        jwt_id: "test-jti".to_string(),
+        jwt_issued_time: 0,
+        jwt_expiration_time: u64::MAX,
+        jwt_not_before: None,
+        object_id: object_id.clone(),
+        recipient_pk: rdr_pk_bytes.clone(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
+    };
+    let rdr_pk_signature =
+        PreImpl::sign_reader_authorization(&reader_sk, &rdr_pk, &reader_auth_context).unwrap();
     let charlie_bundle =
         RingShareBundle::load(&network.charlie.app_state.local_storage, &aggregate_pk).unwrap();
     let charlie_share = PriShare::<ScalarField>::from_bytes(&charlie_bundle.share_bytes).unwrap();
@@ -2560,8 +2578,8 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
             },
             &encrypted_secret,
             &rdr_pk,
-            &rdr_pk_proof,
-            None,
+            &reader_auth_context,
+            &rdr_pk_signature,
         )
         .unwrap();
     let share_bytes = CryptoSerialize::to_bytes(&reply.share.v).unwrap();
@@ -2625,6 +2643,7 @@ async fn threshold_signs_invalid_crypto_pre_report_without_accused_node() {
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Pre {
             statement,
             response_signature,
@@ -2800,6 +2819,7 @@ async fn threshold_signs_invalid_crypto_sign_report_without_accused_node() {
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,
@@ -2974,6 +2994,7 @@ async fn co_signers_refuse_invalid_crypto_sign_report_when_share_verifies() {
         observed_at: signed_at - CHAIN_BLOCK_GRACE_SECS,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::Sign {
             statement,
             response_signature,

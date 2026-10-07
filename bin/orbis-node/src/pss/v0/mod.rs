@@ -37,6 +37,9 @@
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(test, feature = "redb"))]
+mod pet_refresh_tests;
+
 mod divergence;
 // Internal glue: `divergence`'s items are `pub(super)` (visible to this module
 // and its descendants); this brings them into scope here so `tests` (a sibling

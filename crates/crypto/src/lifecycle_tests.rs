@@ -7,7 +7,7 @@
 //! The SAME ciphertext is used throughout all three rounds, proving the
 //! shared secret is preserved across key rotations.
 
-use crate::context::CiphertextContext;
+use crate::context::{CiphertextContext, ReaderAuthorizationContext};
 use crate::error::{CryptoError, Result};
 use crate::r#trait::{
     CryptoSerialize, DistKeyShare, DistributedShare, DkgMode, DkgRole, PriShare,
@@ -29,6 +29,28 @@ fn lifecycle_ctx() -> CiphertextContext {
         tier: None,
         timestamp: None,
         salt: None,
+    }
+}
+
+/// Fixed [`ReaderAuthorizationContext`] used for every PRE round in this
+/// lifecycle test — same reader, same object, across all three rotations.
+fn lifecycle_reader_auth_context() -> ReaderAuthorizationContext {
+    ReaderAuthorizationContext {
+        chain_id: "lifecycle-chain".to_string(),
+        ring_pk: b"lifecycle-ring-pk".to_vec(),
+        jwt_issuer: "did:key:lifecycle-issuer".to_string(),
+        jwt_subject: None,
+        resolved_actor: "did:key:lifecycle-issuer".to_string(),
+        jwt_id: "lifecycle-jti".to_string(),
+        jwt_issued_time: 1_700_000_000,
+        jwt_expiration_time: 1_700_003_600,
+        jwt_not_before: None,
+        object_id: "lifecycle-object".to_string(),
+        recipient_pk: b"lifecycle-recipient-pk".to_vec(),
+        derivation: None,
+        salt: None,
+        valid_window: None,
+        audit_target_object_id: None,
     }
 }
 
@@ -62,14 +84,15 @@ where
     PP: PubPolyTrait<PublicKey = PK>,
 {
     let dealer = T::new();
-    let rdr_proof = T::prove_reader_key(rdr_sk, rdr_pk)?;
+    let ctx = lifecycle_reader_auth_context();
+    let signature = T::sign_reader_authorization(rdr_sk, rdr_pk, &ctx)?;
     let mut replies = Vec::new();
 
     for share in shares.iter().take(threshold) {
         let dks = DistKeyShare {
             pri_share: share.clone(),
         };
-        let reply = dealer.reencrypt(&dks, encrypted_secret, rdr_pk, &rdr_proof, None)?;
+        let reply = dealer.reencrypt(&dks, encrypted_secret, rdr_pk, &ctx, &signature)?;
         dealer.verify(rdr_pk, pub_poly, enc_cmt, &reply, None)?;
         replies.push(reply);
     }

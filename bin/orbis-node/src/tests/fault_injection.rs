@@ -38,7 +38,7 @@ use bulletin::BulletinImpl;
 use common::blockchain::{
     events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::{helpers::generate_keypair, CryptoSerialize, DkgImpl, PreImpl, SignImpl};
+use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{FaultNetwork, FaultNetworkController, Network, NetworkImpl};
 use proto::{
@@ -102,7 +102,8 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,
@@ -264,7 +265,11 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 network_ingress: NetworkIngressArgs::default(),
             },
             cors_policy: CorsPolicy::Disabled,
-            node_key,
+            identity: bulletin::startup::NodeIdentity {
+                node_key,
+                public_address: public_address.clone(),
+            },
+            backend_names: ("injected".into(), "injected".into()),
             network,
             local_storage,
             authz,
@@ -611,12 +616,6 @@ async fn test_pre_one_node_down_succeeds() {
     .await
     .expect("set relationship on chain");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-    let reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
-
     // Step 4: Crash charlie (abort its task)
     net.charlie.task.abort();
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -624,16 +623,14 @@ async fn test_pre_one_node_down_succeeds() {
     // Step 5: PRE request — should succeed with alice + bob shares (threshold=2)
     let result = cli_tool::do_pre(
         endpoint.clone(),
+        "vera-localnet".to_string(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id.clone(),
         Some(did.clone()),
         None,
         None,
         None,
         None,
-        false,
     )
     .await
     .expect("PRE should succeed with one node down (threshold=2)");
@@ -727,12 +724,6 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
     .await
     .expect("set relationship on chain");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk"));
-    let reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk"));
-
     // Step 4: Block bob AND charlie on alice's fault controller (network partition)
     net.alice.fault_ctrl.block_peer(&net.bob.peer_hex).await;
     net.alice.fault_ctrl.block_peer(&net.charlie.peer_hex).await;
@@ -744,16 +735,14 @@ async fn test_pre_below_threshold_nodes_down_fails_fast() {
         deadline,
         cli_tool::do_pre(
             endpoint.clone(),
+            "vera-localnet".to_string(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            Some(reader_sk_hex.clone()),
             object_id.clone(),
             Some(did.clone()),
             None,
             None,
             None,
             None,
-            false,
         ),
     )
     .await;

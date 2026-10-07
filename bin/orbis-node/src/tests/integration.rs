@@ -6,6 +6,9 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
+mod pet_dkg;
+#[path = "../../tests/support/pet_dkg_contract.rs"]
+mod pet_dkg_contract;
 mod pet_reshare;
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
@@ -15,9 +18,8 @@ use bulletin::r#trait::{
 use common::blockchain::{
     orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use crypto::helpers::generate_keypair;
 use crypto::r#trait::{EncryptionProof, ThresholdDealer, ThresholdSigner};
-use crypto::{CryptoDeserialize, CryptoSerialize, GroupAffine, PreImpl, SignImpl};
+use crypto::{CryptoDeserialize, GroupAffine, PreImpl, SignImpl};
 use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
@@ -278,14 +280,6 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
         &ring_pk_hex[..40.min(ring_pk_hex.len())],
         &ring_id[..16.min(ring_id.len())],
     );
-
-    // Step 2: Generate reader keypair (uses selected curve impl from crypto crate)
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-
-    let reader_sk_bytes = CryptoSerialize::to_bytes(&reader_sk).expect("serialize reader sk");
-    let reader_pk_bytes = CryptoSerialize::to_bytes(&reader_pk).expect("serialize reader pk");
-    let reader_sk_hex = hex::encode(&reader_sk_bytes);
-    let reader_pk_hex = hex::encode(&reader_pk_bytes);
 
     let resource = "document".to_string();
     let relation = "reader".to_string();
@@ -553,16 +547,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let decrypted = do_pre_expect_success(
         "initial PRE",
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id_service.clone(),
         Some(did_pk_string.clone()),
         None,
         None,
         None,
         None,
-        false,
     )
     .await;
 
@@ -576,16 +568,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let decrypted_derived = do_pre_expect_success(
         "derived PRE",
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
         valid_window_end,
-        false,
     )
     .await;
 
@@ -597,16 +587,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // testing no permission
     let pre_result_no_permission = cli_tool::do_pre(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some("bad_key".to_string().clone()),
         Some(derivation.clone()),
         salt.clone(),
         valid_window_start,
         valid_window_end,
-        false,
     )
     .await;
 
@@ -616,16 +604,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     // testing timestamp out of bounds failure
     let pre_result_derived_failed_timestamp = cli_tool::do_pre(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id_derived.clone(),
         Some(did_pk_string.clone()),
         Some(derivation),
         salt.clone(),
         valid_window_start,
         valid_window_start,
-        false,
     )
     .await;
 
@@ -1057,16 +1043,14 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let pre_result_post_refresh = do_pre_expect_success(
         "post-refresh PRE",
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        Some(reader_sk_hex.clone()),
         object_id_post_refresh.clone(),
         Some(did_pk_string.clone()),
         None,
         None,
         None,
         None,
-        false,
     )
     .await;
 
@@ -1249,61 +1233,9 @@ async fn test_cli_calls_dkg_for_pet_ring() {
         dkg_result.unwrap().session_id
     );
 
-    // Two sequential fresh-DKG ceremonies (main key, then auto-chained PET
-    // key), each with its own up-to-~150s prepare-barrier allowance
-    // (DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE) — a
-    // longer budget than the reference test's single-ceremony 90s wait.
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
-
-    let finalized_ring = controller_client
-        .orbis_read_ring(&ring_id)
-        .await
-        .expect("read finalized ring")
-        .expect("finalized ring should exist");
-    assert!(
-        finalized_ring.requires_pet,
-        "finalized ring should still report requires_pet"
-    );
-    assert_eq!(
-        finalized_ring.ring_pk, ring_pk_hex,
-        "ring_pk mismatch between wait_for_ring_finalized and a fresh read-back"
-    );
-    assert!(
-        finalized_ring.confirmations.is_empty(),
-        "confirmations should be cleared once the ring is fully finalized"
-    );
-    let pet_pk_hex = finalized_ring
-        .pet_pk
-        .clone()
-        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
-    assert_ne!(
-        pet_pk_hex, ring_pk_hex,
-        "the PET key must be independent of the main key"
-    );
-
-    // Both keys must be valid, non-identity curve points, not just opaque hex.
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let _ = GroupAffine::from_bytes(&ring_pk_bytes)
-        .expect("main key should deserialize to a valid point");
-    let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
-    let _ = GroupAffine::from_bytes(&pet_pk_bytes)
-        .expect("PET key should deserialize to a valid point");
-
-    // The main key's local per-node state (share + polynomial) is consistent
-    // across all three nodes — mirrors the reference test's cross-node check.
-    // The PET key has no RingIndex entry of its own (it's stored keyed by the
-    // ring's ring_id, not its own pubkey, since it's never looked up
-    // independently of the main key) so this check only covers the main key;
-    // agreement on pet_pk is instead guaranteed by Vera's FinalizeRing conflict
-    // check, which deletes the ring outright if any two confirmations disagree.
-    wait_for_ring_state_on_all_nodes(
-        &node_endpoints,
-        &ring_pk_hex,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let keys = pet_dkg::verify(&chain_config, &controller_client, &ring_id, &node_endpoints).await;
+    let ring_pk_hex = keys.main;
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
@@ -1405,13 +1337,6 @@ resources:
     )
     .await
     .expect("grant reader relationship for the PET audit target");
-
-    let (pet_reader_sk, pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-    let pet_reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
 
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
@@ -1519,16 +1444,14 @@ resources:
 
     let decrypted = cli_tool::do_pre_with_inline_document(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        pet_reader_pk_hex.clone(),
-        Some(pet_reader_sk_hex.clone()),
         pet_object_id.clone(),
         None,
         None,
         None,
         None,
         None,
-        false,
         inline_document,
         Some(audit_target_object_id.clone()),
     )
@@ -1617,16 +1540,14 @@ resources:
 
     let pre_result_no_tag = cli_tool::do_pre_with_inline_document(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        pet_reader_pk_hex.clone(),
-        Some(pet_reader_sk_hex.clone()),
         no_tag_object_id,
         None,
         None,
         None,
         None,
         None,
-        false,
         inline_document_no_tag,
         Some(audit_target_object_id.clone()),
     )
@@ -2111,13 +2032,6 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-    let pet_reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
-
     // Required noncircular construction order: generate the tag before
     // encrypting the payload, then prove tag knowledge over the
     // now-completed payload.
@@ -2217,16 +2131,14 @@ resources:
 
     let decrypted = cli_tool::do_pre_with_inline_document(
         endpoint.to_string(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.to_string(),
-        pet_reader_pk_hex.clone(),
-        Some(pet_reader_sk_hex.clone()),
         pet_object_id.clone(),
         None,
         None,
         None,
         None,
         None,
-        false,
         inline_document,
         Some(audit_target_object_id.clone()),
     )
@@ -2549,19 +2461,18 @@ async fn do_sign_expect_success(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn do_pre_expect_success(
     context: &str,
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
-    reader_sk: Option<String>,
     object_id: String,
     reader_did_pk: Option<String>,
     derivation: Option<Vec<u8>>,
     salt: Option<String>,
     valid_window_start: Option<u64>,
     valid_window_end: Option<u64>,
-    xnc_only: bool,
 ) -> Vec<u8> {
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut attempt = 1usize;
@@ -2569,16 +2480,14 @@ async fn do_pre_expect_success(
     loop {
         match cli_tool::do_pre(
             endpoint.clone(),
+            chain_id.clone(),
             ring_pk.clone(),
-            reader_pk.clone(),
-            reader_sk.clone(),
             object_id.clone(),
             reader_did_pk.clone(),
             derivation.clone(),
             salt.clone(),
             valid_window_start,
             valid_window_end,
-            xnc_only,
         )
         .await
         {

@@ -1,7 +1,7 @@
 use super::codec::{CryptoDeserialize, CryptoSerialize};
 use super::dkg::PubPoly;
-use super::types::{EncryptionProof, PubShare, ReaderKeyProof};
-use crate::context::CiphertextContext;
+use super::types::{EncryptionProof, PubShare, ReaderAuthorizationSignature};
+use crate::context::{CiphertextContext, ReaderAuthorizationContext};
 use crate::error::Result;
 
 /// Trait for PRE
@@ -18,16 +18,23 @@ pub trait ThresholdDealer {
 
     /// Re-encrypt a secret share using the receiver's public key.
     ///
-    /// `rdr_proof` must be a valid [`ReaderKeyProof`] of knowledge of `rdr_pk`'s
-    /// discrete log (see `prove_reader_key`/`verify_reader_key`); this is checked
-    /// before any computation involving `rdr_pk`. Without it, `rdr_pk` is only
-    /// checked for group membership, and `xnc_ski`'s linearity in `rdr_pk` lets a
-    /// caller who is authorized for one ciphertext redirect the recovered
-    /// commitment toward an unrelated one by submitting a difference of two
-    /// published commitments as `rdr_pk` — see [`ReaderKeyProof`]'s docs.
+    /// `signature` must be a valid [`ReaderAuthorizationSignature`] of knowledge
+    /// of `rdr_pk`'s discrete log, over `context` (see
+    /// `sign_reader_authorization`/`verify_reader_authorization`); this is
+    /// checked before any computation involving `rdr_pk`. Without the
+    /// proof-of-knowledge component, `rdr_pk` is only checked for group
+    /// membership, and `xnc_ski`'s linearity in `rdr_pk` lets a caller who is
+    /// authorized for one ciphertext redirect the recovered commitment toward an
+    /// unrelated one by submitting a difference of two published commitments as
+    /// `rdr_pk`. Without the request-binding component (`context`), a party that
+    /// observes a valid `(rdr_pk, signature)` pair from one authorized request
+    /// could replay it into a different request it controls — see
+    /// [`ReaderAuthorizationSignature`]'s docs for both attacks in full.
     ///
-    /// When derivation is provided, applies the derivation scalar to the share:
-    ///   xnc_ski = d * ski * (xG + rG)  where d = H(DERIVATION_DOMAIN || derivation)
+    /// `derivation` is read from `context.derivation`, not a separate parameter —
+    /// this makes "the context says derivation X but the share is computed under
+    /// derivation Y" structurally impossible rather than merely checked:
+    ///   xnc_ski = d * ski * (xG + rG)  where d = H(DERIVATION_DOMAIN || context.derivation)
     ///
     /// Note: If the wrong derivation is provided, decryption will fail at the user
     /// level (AES-GCM authentication failure). An attacker cannot brute-force the
@@ -37,8 +44,9 @@ pub trait ThresholdDealer {
     ///   dist_key_share - Private share of secret key of DKG.
     ///   scrt           - The encrypted secret (contains enc_cmt = rG).
     ///   rdr_pk  (xG)   - Public key of the reader.
-    ///   rdr_proof      - Proof the caller knows rdr_pk's discrete log.
-    ///   derivation     - Optional capability derivation bytes.
+    ///   context        - The request-bound transcript the signature covers.
+    ///   signature      - Signature proving the caller knows rdr_pk's discrete
+    ///                    log and authorizes exactly this request.
     ///
     /// Output:
     ///   xnc_ski (Ui) - Re-encrypted secret share (with derivation applied if provided).
@@ -49,26 +57,35 @@ pub trait ThresholdDealer {
         dist_key_share: &Self::DistKeyShare,
         scrt: &Self::Secret,
         rdr_pk: &Self::PublicKey,
-        rdr_proof: &ReaderKeyProof,
-        derivation: Option<&[u8]>,
+        context: &ReaderAuthorizationContext,
+        signature: &ReaderAuthorizationSignature,
     ) -> Result<Self::ReencryptReply>;
 
-    /// Prove knowledge of `rdr_sk` for `rdr_pk = rdr_sk*G`.
+    /// Sign knowledge of `rdr_sk` for `rdr_pk = rdr_sk*G`, over `context`.
     ///
     /// Called by the reader when building a PRE request, never by a node. The
-    /// resulting [`ReaderKeyProof`] travels alongside `rdr_pk` on the wire and is
-    /// checked by every responder inside `reencrypt`.
-    fn prove_reader_key(
+    /// resulting [`ReaderAuthorizationSignature`] travels alongside `rdr_pk` on
+    /// the wire; `context` itself never does (every responder independently
+    /// rebuilds it from its own authenticated token and resolved ring/document
+    /// state, and checks the signature against that, never a coordinator-
+    /// supplied context).
+    fn sign_reader_authorization(
         rdr_sk: &Self::ShareValue,
         rdr_pk: &Self::PublicKey,
-    ) -> Result<ReaderKeyProof>;
+        context: &ReaderAuthorizationContext,
+    ) -> Result<ReaderAuthorizationSignature>;
 
-    /// Verify a [`ReaderKeyProof`] against `rdr_pk`.
+    /// Verify a [`ReaderAuthorizationSignature`] against `rdr_pk` and `context`.
     ///
     /// `reencrypt` calls this internally before touching the secret share;
     /// exposed separately so a service layer can fail fast (before a threshold
-    /// round trip) on a malformed or missing proof.
-    fn verify_reader_key(rdr_pk: &Self::PublicKey, proof: &ReaderKeyProof) -> Result<()>;
+    /// round trip) on a malformed or missing signature — using its own
+    /// independently rebuilt `context`, never one supplied by another node.
+    fn verify_reader_authorization(
+        rdr_pk: &Self::PublicKey,
+        context: &ReaderAuthorizationContext,
+        signature: &ReaderAuthorizationSignature,
+    ) -> Result<()>;
 
     /// Verify a re-encryption proof.
     ///

@@ -360,20 +360,22 @@ fn recover_signature(shares: &[PubShare<G2Point>], t: usize, n: usize) -> Result
 
 /// Derive a scalar for multiplicative key tweaking.
 ///
-/// Without metadata: `d = H(SIGN_DERIVATION_DOMAIN || derivation)`
-/// With metadata:    `d = H(SIGN_DERIVATION_DOMAIN || derivation || \x00 || len(metadata) || metadata)`
-///
-/// The null-byte separator guarantees no collision between derivation-only and
-/// derivation+metadata inputs. Backward compatible: passing `None` for metadata
-/// yields the same hash as the previous single-argument form.
+/// The derivation is length-prefixed, then a one-byte presence tag distinguishes
+/// absent metadata from present (including empty) metadata. Present metadata is
+/// also length-prefixed, so variable-length inputs cannot share a transcript —
+/// mirrors the jubjub backend's `derive_sign_scalar`.
 fn derive_sign_scalar(derivation: &[u8], metadata: Option<&[u8]>) -> Fr {
     let mut hasher = Sha512::new();
     hasher.update(SIGN_DERIVATION_DOMAIN);
+    hasher.update((derivation.len() as u64).to_le_bytes());
     hasher.update(derivation);
-    if let Some(meta) = metadata {
-        hasher.update(b"\x00"); // separator — prevents collision with derivation-only path
-        hasher.update((meta.len() as u64).to_le_bytes());
-        hasher.update(meta);
+    match metadata {
+        None => hasher.update([0]),
+        Some(meta) => {
+            hasher.update([1]);
+            hasher.update((meta.len() as u64).to_le_bytes());
+            hasher.update(meta);
+        }
     }
     Fr::from_le_bytes_mod_order(&hasher.finalize())
 }

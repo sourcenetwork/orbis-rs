@@ -167,6 +167,7 @@ mod tests {
             envelope: stub_envelope(),
             inline_document: None,
             pet_blind_context: None,
+            pet_blind_certificate: None,
         }));
         assert!(
             sign_reporting_scopes(&ctx).is_none(),

@@ -41,7 +41,7 @@ use crypto::{DkgImpl, GroupAffine, ScalarField};
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetActivePssSessionRequest,
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
-    SetLocalStorageRequest, SubmitDkgEquivocationEvidenceRequest,
+    SetLocalStorageRequest, SetPetDecryptFaultRequest, SubmitDkgEquivocationEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest, SubmitDkgInvalidShareEvidenceRequest,
     SubmitPssStallOfflineReportRequest, SubmitUnauthorizedRelayEvidenceRequest,
 };
@@ -602,10 +602,6 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
-
     let prepared = cli_tool::prepare_secret(
         b"report-test-secret",
         &ring_pk_hex,
@@ -663,9 +659,8 @@ async fn test_pre_and_sign_offline_triggers_on_chain_report() {
     println!("Triggering PRE (expects success with node3 offline)...");
     let _plaintext = pre_with_retry(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),
     )
@@ -957,7 +952,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
     let pre_reader_pk_bytes =
         CryptoSerialize::to_bytes(&pre_reader_pk).expect("serialize PRE reader public key");
     let pre_jwt_signer = JwtSigner::new();
-    let pre_token = pre_jwt_signer
+    let (pre_token, _) = pre_jwt_signer
         .create_pre_jwt(pre_reader_pk_bytes.clone(), &pre_object_id, None, None)
         .expect("create PRE JWT");
     let pre_actor_is_reader = controller_client
@@ -1285,7 +1280,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let bulletin_reader_pk_bytes =
         CryptoSerialize::to_bytes(&bulletin_reader_pk).expect("serialize PRE reader public key");
     let bulletin_jwt_signer = JwtSigner::new();
-    let bulletin_token = bulletin_jwt_signer
+    let (bulletin_token, _) = bulletin_jwt_signer
         .create_pre_jwt(
             bulletin_reader_pk_bytes.clone(),
             &bulletin_object_id,
@@ -1389,7 +1384,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
     let inline_reader_pk_bytes =
         CryptoSerialize::to_bytes(&inline_reader_pk).expect("serialize PRE reader public key");
     let inline_jwt_signer = JwtSigner::new();
-    let inline_token = inline_jwt_signer
+    let (inline_token, _) = inline_jwt_signer
         .create_pre_jwt(
             inline_reader_pk_bytes.clone(),
             &inline_object_id,
@@ -1606,10 +1601,6 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
-
     let prepared = cli_tool::prepare_secret(
         b"invalid-proof-report-test-secret",
         &ring_pk_hex,
@@ -1719,9 +1710,8 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
             .expect("connect invalid-proof report event subscription");
         let _plaintext = pre_with_retry(
             endpoint.clone(),
+            chain_config.chain_id.clone(),
             ring_pk_hex.clone(),
-            reader_pk_hex.clone(),
-            reader_sk_hex.clone(),
             object_id.clone(),
             did_pk_string.clone(),
         )
@@ -1868,20 +1858,11 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     println!("node3 demerit points after Sign invalid-crypto report: {demerits}");
 }
 
-/// PET blind-equality-test decrypt-phase misbehavior: corrupts node3's stored
-/// PET checking-key share (a distinct storage namespace from the main ring
-/// key — see `RingShareBundle::load_by_pet_ring_key`), which only affects the
-/// decrypt phase (reveal only touches a fresh per-attempt ephemeral blinding
-/// scalar that is never stored, so it cannot be corrupted this way — reveal
-/// misbehavior is covered at the unit level instead, in
-/// `pet::v0::coordinator::verification`'s test suite). Mirrors
-/// `test_invalid_crypto_response_triggers_on_chain_report`'s PRE-share
-/// corruption pattern and setup from
-/// `tests::integration::test_cli_calls_dkg_for_pet_ring`'s PET-gated ring/tag
-/// setup. Decrypt-phase over-asking (unlike FROST Sign's threshold-sized
-/// selection) does not depend on the Sign crypto backend, so — unlike the
-/// PRE/Sign invalid-crypto tests above — this runs under both backends with
-/// no `jubjub` exclusion.
+/// PET decrypt-phase misbehavior: node3 signs an invalid DLEQ proof after
+/// passing normal authorization, certificate and atomic-bundle checks. Its
+/// stored key remains valid, so commit/reveal still succeed on both curves.
+/// Honest decrypt shares keep PRE available while the signed bad response
+/// produces an actual on-chain report and demerit.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pet_invalid_decrypt_share_triggers_on_chain_report() {
@@ -2083,13 +2064,6 @@ resources:
     .await
     .expect("grant reader relationship for the PET audit target");
 
-    let (pet_reader_sk, pet_reader_pk) =
-        generate_keypair().expect("generate PET-test reader keypair");
-    let pet_reader_sk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_sk).expect("serialize reader sk"));
-    let pet_reader_pk_hex =
-        hex::encode(CryptoSerialize::to_bytes(&pet_reader_pk).expect("serialize reader pk"));
-
     println!("Preparing a genuinely PET-tagged document...");
     let secret_message = b"PET decrypt-share report test secret";
     let (generated_tag, tag_r_tag) =
@@ -2190,13 +2164,6 @@ resources:
         }),
     };
 
-    // Corrupt node3's PET checking-key share bundle — a distinct storage
-    // namespace (keyed by ring_id) from the main ring key. Reveal never
-    // touches this share (only a fresh per-attempt ephemeral blinding
-    // scalar, held only in memory), so this specifically targets a
-    // decrypt-phase failure: node3's identity signature on its
-    // `DecryptResponse` stays genuine, but the per-share DLEQ proof no
-    // longer verifies against the ring's real PET public polynomial.
     let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint)
         .await
         .expect("connect unsafe-testing client to node3");
@@ -2213,28 +2180,13 @@ resources:
         .expect("read node3 PET ring share bundle")
         .into_inner();
     assert!(stored.found, "node3 PET ring share bundle should exist");
-    let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse PET ring share bundle");
-    let pri_share = bundle.pri_share().expect("deserialize node3 PET share");
-    let corrupted_share = PriShare {
-        i: pri_share.i,
-        v: pri_share.v + ScalarField::from(1u64),
-    };
-    let corrupted_bundle = RingShareBundle {
-        share_bytes: Zeroizing::new(
-            CryptoSerialize::to_bytes(&corrupted_share).expect("serialize corrupted share"),
-        ),
-        public_polynomial: bundle.public_polynomial.clone(),
-        last_pss: bundle.last_pss,
-    };
     unsafe_client
-        .set_local_storage(SetLocalStorageRequest {
-            key: Some(storage_key),
-            access_mode: LocalStorageAccessMode::Encrypted as i32,
-            value: corrupted_bundle.to_bytes().to_vec(),
+        .set_pet_decrypt_fault(SetPetDecryptFaultRequest {
+            ring_id: ring_id.clone(),
+            enabled: true,
         })
         .await
-        .expect("store corrupted PET ring share bundle");
-    println!("node3 PET checking-key share corrupted.");
+        .expect("enable node3 signed PET decrypt-proof fault");
 
     // Decrypt-phase over-asks the whole committee and only needs `threshold`
     // genuine shares, so PRE still succeeds with node1 + node2 regardless of
@@ -2251,16 +2203,14 @@ resources:
             .expect("connect PET invalid-decrypt report event subscription");
         let decrypted = cli_tool::do_pre_with_inline_document(
             endpoint.clone(),
+            chain_config.chain_id.clone(),
             ring_pk_hex.clone(),
-            pet_reader_pk_hex.clone(),
-            Some(pet_reader_sk_hex.clone()),
             pet_object_id.clone(),
             None,
             None,
             None,
             None,
             None,
-            false,
             inline_document.clone(),
             Some(audit_target_object_id.clone()),
         )
@@ -2324,6 +2274,26 @@ resources:
         "node3 should have exactly 1 demerit after the PET invalid-decrypt report"
     );
     println!("node3 demerit points after PET invalid-decrypt report: {demerits}");
+    unsafe_client
+        .set_pet_decrypt_fault(SetPetDecryptFaultRequest {
+            ring_id: ring_id.clone(),
+            enabled: false,
+        })
+        .await
+        .expect("disable node3 decrypt-proof fault");
+    let after = unsafe_client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(storage_key),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+        })
+        .await
+        .expect("read unchanged node3 PET bundle")
+        .into_inner();
+    assert!(after.found);
+    assert!(
+        after.value == stored.value,
+        "fault must not corrupt persisted key material"
+    );
 }
 
 /// FROST-only variant of the Sign invalid-crypto test. Under jubjub the
@@ -2832,9 +2802,8 @@ async fn store_secret_with_retry(
 
 async fn pre_with_retry(
     endpoint: String,
+    chain_id: String,
     ring_pk: String,
-    reader_pk: String,
-    reader_sk: String,
     object_id: String,
     reader_did_pk: String,
 ) -> Vec<u8> {
@@ -2843,16 +2812,14 @@ async fn pre_with_retry(
     loop {
         match cli_tool::do_pre(
             endpoint.clone(),
+            chain_id.clone(),
             ring_pk.clone(),
-            reader_pk.clone(),
-            Some(reader_sk.clone()),
             object_id.clone(),
             Some(reader_did_pk.clone()),
             None,
             None,
             None,
             None,
-            false,
         )
         .await
         {
@@ -4819,10 +4786,6 @@ async fn test_report_kick_promotes_backup_node() {
         .await
         .expect("add policy");
 
-    let (reader_sk, reader_pk) = generate_keypair().expect("generate reader keypair");
-    let reader_sk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_sk).expect("serialize sk"));
-    let reader_pk_hex = hex::encode(CryptoSerialize::to_bytes(&reader_pk).expect("serialize pk"));
-
     let prepared = cli_tool::prepare_secret(
         b"backup-kick-test-secret",
         &ring_pk_hex,
@@ -4880,9 +4843,8 @@ async fn test_report_kick_promotes_backup_node() {
     println!("Triggering PRE (expects success with node3 offline)...");
     let _plaintext = pre_with_retry(
         endpoint.clone(),
+        chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
-        reader_pk_hex.clone(),
-        reader_sk_hex.clone(),
         object_id.clone(),
         did_pk_string.clone(),
     )

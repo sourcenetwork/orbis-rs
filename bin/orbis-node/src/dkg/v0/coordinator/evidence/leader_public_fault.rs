@@ -87,6 +87,7 @@ where
         observed_at: statement.signed_at.saturating_sub(CHAIN_BLOCK_GRACE_SECS),
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgLeaderPublicFault {
             statement: Box::new(statement),
         },

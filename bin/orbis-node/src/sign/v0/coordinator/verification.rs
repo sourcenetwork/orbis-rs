@@ -202,6 +202,7 @@ where
             // Sign requests never carry an inline document.
             inline_document: None,
             pet_blind_context: None,
+            pet_blind_certificate: None,
         }))
     }
 

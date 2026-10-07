@@ -212,6 +212,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
         threshold: 1,
         pss_interval: 86400,
         current_version: 0,
+        requires_pet: false,
         nonce: [1; 32],
         trusted_auth_relay_dids: None,
         reporting: ReportingConfig::default(),
@@ -397,7 +398,7 @@ async fn native_bulletin_recovers_pending_writes_and_serves_threshold_objects() 
 #[tokio::test]
 #[ignore = "requires a built verad supplied through VERAD_BINARY"]
 async fn native_report_and_reshare_recover_certified_completion() {
-    use bulletin::native::{RingParticipantCommand, RingUpdate};
+    use bulletin::native::{RingParticipantCommand, RingPublicKeys, RingUpdate};
     use bulletin::r#trait::BulletinReportSubmission;
     use vera_client::rings::{CommitteeScope, NodeOffline, ReportEnvelope};
     let deployment = 9072;
@@ -518,6 +519,7 @@ async fn native_report_and_reshare_recover_certified_completion() {
         threshold: 2,
         pss_interval: 86400,
         current_version: 0,
+        requires_pet: false,
         nonce: [4; 32],
         trusted_auth_relay_dids: None,
         reporting: ReportingConfig::default(),
@@ -545,7 +547,10 @@ async fn native_report_and_reshare_recover_certified_completion() {
         writer
             .prepare_ring_participant_request(
                 ring_id.clone(),
-                RingParticipantCommand::Confirm(ring_pk.clone()),
+                RingParticipantCommand::Confirm(RingPublicKeys {
+                    public_key: ring_pk.clone(),
+                    pet_public_key: None,
+                }),
                 now + 300,
             )
             .unwrap();

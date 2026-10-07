@@ -17,10 +17,10 @@ async fn test_get_node_info_reports_zero_managed_ring_count_without_ring_index()
     let db_path = test_db_path(db_name);
     let app_state = create_test_app_state_default(db_name).await;
 
-    // Create and store a node signing key so get_node_signer can retrieve it
+    // Supply the backend-prepared identity independently of information reads.
     let config = ChainConfigBuilder::default().build();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
-    create_and_store_node_key(
+    let signer = create_and_store_node_key(
         app_state.local_storage.clone(),
         config.clone(),
         &runtime_base_path,
@@ -28,7 +28,8 @@ async fn test_get_node_info_reports_zero_managed_ring_count_without_ring_index()
     .expect("Failed to create and store node key");
 
     // Create the info service
-    let service = InfoServiceImpl::<DkgImpl>::new(app_state);
+    let service =
+        InfoServiceImpl::<DkgImpl>::new(app_state, bulletin::startup::cosmos::identity(&signer));
 
     // Create a request
     let request = Request::new(GetNodeInfoRequest {});
@@ -71,7 +72,7 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
 
     let config = ChainConfigBuilder::default().build();
     let runtime_base_path = project_root::get_project_root().expect("resolve project root");
-    create_and_store_node_key(
+    let signer = create_and_store_node_key(
         app_state.local_storage.clone(),
         config.clone(),
         &runtime_base_path,
@@ -98,7 +99,8 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
         )
         .expect("Failed to store ring index");
 
-    let service = InfoServiceImpl::<DkgImpl>::new(app_state);
+    let service =
+        InfoServiceImpl::<DkgImpl>::new(app_state, bulletin::startup::cosmos::identity(&signer));
     let response = service
         .get_node_info(Request::new(GetNodeInfoRequest {}))
         .await
@@ -110,4 +112,41 @@ async fn test_get_node_info_reports_managed_ring_count_from_ring_index() {
     assert_eq!(node_info.supported_protocol_versions, vec![0]);
 
     cleanup_db(&db_path);
+}
+
+#[tokio::test]
+async fn info_uses_prepared_identity_without_decoding_stored_signing_material() {
+    let name = "info_uses_prepared_identity_without_decoding_stored_signing_material";
+    let path = test_db_path(name);
+    let state = create_test_app_state_default(name).await;
+    state
+        .local_storage
+        .set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            zeroize::Zeroizing::new(b"invalid private material".to_vec()),
+        )
+        .unwrap();
+    let identity = bulletin::startup::NodeIdentity {
+        node_key: "prepared-node-key".into(),
+        public_address: "backend-public-address".into(),
+    };
+    let service = InfoServiceImpl::<DkgImpl>::new(state.clone(), identity.clone());
+    let info = service
+        .get_node_info(Request::new(GetNodeInfoRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(info.node_key, identity.node_key);
+    assert_eq!(info.public_address, identity.public_address);
+    assert_eq!(info.managed_ring_count, 0);
+    assert!(
+        state
+            .local_storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .unwrap()
+            .unwrap()
+            .as_slice()
+            == b"invalid private material"
+    );
+    cleanup_db(&path);
 }
