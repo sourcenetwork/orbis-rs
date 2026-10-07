@@ -1442,21 +1442,16 @@ resources:
         }),
     };
 
-    let decrypted = cli_tool::do_pre_with_inline_document(
+    let decrypted = do_pre_inline_expect_success(
+        "PRE against a genuinely PET-tagged document",
         endpoint.clone(),
         chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
         pet_object_id.clone(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        inline_document,
         Some(audit_target_object_id.clone()),
+        inline_document,
     )
-    .await
-    .expect("PRE should succeed against a genuinely PET-tagged document");
+    .await;
     assert_eq!(
         decrypted, secret_message,
         "decrypted secret should match the original"
@@ -2129,21 +2124,16 @@ resources:
         }),
     };
 
-    let decrypted = cli_tool::do_pre_with_inline_document(
+    let decrypted = do_pre_inline_expect_success(
+        "PRE against a genuinely PET-tagged document",
         endpoint.to_string(),
         chain_config.chain_id.clone(),
         ring_pk_hex.to_string(),
         pet_object_id.clone(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        inline_document,
         Some(audit_target_object_id.clone()),
+        inline_document,
     )
-    .await
-    .expect("PRE should succeed against a genuinely PET-tagged document");
+    .await;
     assert_eq!(
         decrypted, secret_message,
         "decrypted secret should match the original"
@@ -2502,6 +2492,59 @@ async fn do_pre_expect_success(
                 );
                 println!(
                     "{} attempt {} failed, retrying after transient PRE race: {}",
+                    context, attempt, e
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+
+/// Same retry contract as [`do_pre_expect_success`] for the inline-document
+/// path: periodic PSS refreshes move the ring generation under an in-flight
+/// request, and the responder rejects it as explicitly retryable.
+async fn do_pre_inline_expect_success(
+    context: &str,
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    audit_target_object_id: Option<String>,
+    inline_document: proto::v0::pre::InlineDocument,
+) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut attempt = 1usize;
+
+    loop {
+        match cli_tool::do_pre_with_inline_document(
+            endpoint.clone(),
+            chain_id.clone(),
+            ring_pk.clone(),
+            object_id.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            inline_document.clone(),
+            audit_target_object_id.clone(),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(e) => {
+                // `{:?}` (anyhow's Debug): the underlying tonic::Status and its
+                // rejection reason only surface through the error's cause chain.
+                assert!(
+                    Instant::now() < deadline,
+                    "{} failed after {} attempts: {:?}",
+                    context,
+                    attempt,
+                    e
+                );
+                println!(
+                    "{} attempt {} failed, retrying after transient PRE race: {:?}",
                     context, attempt, e
                 );
                 attempt += 1;
