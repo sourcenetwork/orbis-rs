@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main", "develop" ]
+    branches: [ "main", "develop", "iverc/**" ]
 
 permissions:
   contents: read
@@ -113,7 +113,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crypto: [bls12-381, decaf377]
+        crypto: [bls12-381, jubjub]
     steps:
     - uses: actions/checkout@v4
       with:

@@ -10,7 +10,7 @@
 //! letting them recover the owner's deterministic fingerprint on every
 //! check regardless of match/mismatch.
 
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use serde::{Deserialize, Serialize};
 

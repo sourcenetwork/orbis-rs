@@ -707,7 +707,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     use ark_ec::{AffineRepr, CurveGroup};
     use crypto::r#trait::{CryptoSerialize, ThresholdDealer};
     use proto::v0::{
-        pre::{pre_service_client::PreServiceClient, ReaderKeyProof, StartPreRequest},
+        pre::{
+            pre_service_client::PreServiceClient, ReaderAuthorizationSignature, StartPreRequest,
+        },
         store_secret::{store_secret_service_client::StoreSecretServiceClient, StoreSecretRequest},
     };
     let plaintext = b"native Vera encrypted document";
@@ -719,6 +721,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         tier: None,
         timestamp: None,
         salt: None,
+        pet_tag: None,
     };
     let (commitment, secret, proof) =
         crypto::PreImpl::encrypt_secret(&public_key, plaintext, None, &context).unwrap();
@@ -752,6 +755,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             with_proof: false,
             tier: None,
             timestamp: None,
+            pet_tag: None,
         },
         &token,
     )
@@ -773,9 +777,36 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     confirmed(&client, registered.transaction_hash, &trusted).await;
     let reader_secret = crypto::ScalarField::from(47u64);
     let reader_public = (crypto::GroupAffine::generator() * reader_secret).into_affine();
-    let reader_proof = crypto::PreImpl::prove_reader_key(&reader_secret, &reader_public).unwrap();
     let reader_bytes = reader_public.to_bytes().unwrap();
+    let chain_id = vera_client::rings::ring_deployment_label(root.0, deployment);
+    let ring_pk_bytes = hex::decode(&ring_pk).unwrap();
     let pre_request = || {
+        let (pre_token, token_metadata) = reader
+            .create_pre_jwt(reader_bytes.clone(), &stored.object_id, None, None)
+            .unwrap();
+        let authorization_context = crypto::context::ReaderAuthorizationContext {
+            chain_id: chain_id.clone(),
+            ring_pk: ring_pk_bytes.clone(),
+            jwt_issuer: reader.did_uri.clone(),
+            jwt_subject: None,
+            resolved_actor: reader.did_uri.clone(),
+            jwt_id: token_metadata.jwt_id,
+            jwt_issued_time: token_metadata.issued_time,
+            jwt_expiration_time: token_metadata.expiration_time,
+            jwt_not_before: token_metadata.not_before,
+            object_id: stored.object_id.clone(),
+            recipient_pk: reader_bytes.clone(),
+            derivation: None,
+            salt: None,
+            valid_window: None,
+            audit_target_object_id: None,
+        };
+        let reader_signature = crypto::PreImpl::sign_reader_authorization(
+            &reader_secret,
+            &reader_public,
+            &authorization_context,
+        )
+        .unwrap();
         create_authenticated_request(
             StartPreRequest {
                 rdr_pk: reader_bytes.clone(),
@@ -784,14 +815,13 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 salt: None,
                 valid_window: None,
                 document: None,
-                rdr_pk_proof: Some(ReaderKeyProof {
-                    challenge: reader_proof.challenge.clone(),
-                    response: reader_proof.response.clone(),
+                audit_target_object_id: None,
+                rdr_pk_signature: Some(ReaderAuthorizationSignature {
+                    challenge: reader_signature.challenge,
+                    response: reader_signature.response,
                 }),
             },
-            &reader
-                .create_pre_jwt(reader_bytes.clone(), &stored.object_id, None, None)
-                .unwrap(),
+            &pre_token,
         )
         .unwrap()
     };

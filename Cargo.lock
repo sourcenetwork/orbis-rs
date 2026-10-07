@@ -81,6 +81,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "addchain"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5665045de74fda906c0abfaec40cf2551f88c34dccea869f3fe950dde7209764"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
 name = "aead"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -819,17 +830,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ark-bls12-377"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfedac3173d12820a5e0d6cd4de31b49719a74f4a41dc09b6652d0276a3b2cd4"
-dependencies = [
- "ark-ec 0.5.0",
- "ark-ff 0.5.0",
- "ark-std 0.5.0",
-]
-
-[[package]]
 name = "ark-bls12-381"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -909,22 +909,10 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b10d901b9ac4b38f9c32beacedfadcdd64e46f8d7f8e88c1ae1060022cf6f6c6"
 dependencies = [
- "ark-bls12-377 0.4.0",
+ "ark-bls12-377",
  "ark-ec 0.4.2",
  "ark-ff 0.4.2",
  "ark-std 0.4.0",
-]
-
-[[package]]
-name = "ark-ed-on-bls12-377"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebbf817b2db27d2787009b2ff76304a5b90b4b01bb16aa8351701fd40f5f37b2"
-dependencies = [
- "ark-bls12-377 0.5.0",
- "ark-ec 0.5.0",
- "ark-ff 0.5.0",
- "ark-std 0.5.0",
 ]
 
 [[package]]
@@ -1962,6 +1950,18 @@ dependencies = [
  "storage",
  "thiserror 2.0.18",
  "tracing",
+]
+
+[[package]]
+name = "bls12_381"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18f887f26229478dcd0e0d063566b51c68fb55a38fba21799c5f3371a74ec61f"
+dependencies = [
+ "ff 0.14.0",
+ "rand_core 0.10.1",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3224,18 +3224,17 @@ dependencies = [
  "anyhow",
  "ark-bls12-381 0.4.0",
  "ark-ec 0.4.2",
- "ark-ec 0.5.0",
  "ark-ff 0.4.2",
- "ark-ff 0.5.0",
  "ark-serialize 0.4.2",
- "ark-serialize 0.5.0",
  "ark-std 0.4.0",
- "ark-std 0.5.0",
+ "blake2",
  "blstrs",
  "criterion 0.5.1",
- "decaf377 0.10.1 (git+https://github.com/mizufinance/decaf377?branch=main)",
+ "ff 0.14.0",
  "group 0.13.0",
+ "group 0.14.0",
  "hkdf 0.12.4",
+ "jubjub",
  "proptest",
  "rand 0.8.6",
  "rand_core 0.6.4",
@@ -3640,33 +3639,12 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2097c5f69d06259112bea2024ddc41095c5001b503448f84ac169efc7cc8fd75"
 dependencies = [
- "ark-bls12-377 0.4.0",
+ "ark-bls12-377",
  "ark-ec 0.4.2",
- "ark-ed-on-bls12-377 0.4.0",
+ "ark-ed-on-bls12-377",
  "ark-ff 0.4.2",
  "ark-serialize 0.4.2",
  "ark-std 0.4.0",
- "cfg-if",
- "hashbrown 0.14.5",
- "hex",
- "num-bigint",
- "once_cell",
- "rand_core 0.6.4",
- "subtle",
- "zeroize",
-]
-
-[[package]]
-name = "decaf377"
-version = "0.10.1"
-source = "git+https://github.com/mizufinance/decaf377?branch=main#d2dea3c1c0e684322a3649b79f1aa367453ac799"
-dependencies = [
- "ark-bls12-377 0.5.0",
- "ark-ec 0.5.0",
- "ark-ed-on-bls12-377 0.5.0",
- "ark-ff 0.5.0",
- "ark-serialize 0.5.0",
- "ark-std 0.5.0",
  "cfg-if",
  "hashbrown 0.14.5",
  "hex",
@@ -4561,8 +4539,25 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1f686ab92a9fb0eaf188f6c6c87b89490baa6fdb0db4544ba4dc47f7942489f"
 dependencies = [
+ "bitvec",
+ "ff_derive",
  "rand_core 0.10.1",
  "subtle",
+]
+
+[[package]]
+name = "ff_derive"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "241afe8c15ffa21933eaefe8a563af36fd9fc98a3e8a044e8f7db52eb1fae3d8"
+dependencies = [
+ "addchain",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6439,6 +6434,31 @@ dependencies = [
  "serde",
  "serde_json",
  "simple_asn1",
+]
+
+[[package]]
+name = "jubjub"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95fdd9a071f72385ed8b17d819f273d73c3887a93d34d2ac1419fca5b25dbbd2"
+dependencies = [
+ "bitvec",
+ "bls12_381",
+ "ff 0.14.0",
+ "group 0.14.0",
+ "rand_core 0.10.1",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "jubjub-wasm"
+version = "0.0.1"
+dependencies = [
+ "group 0.14.0",
+ "jubjub",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -12362,7 +12382,7 @@ dependencies = [
  "base64 0.22.1",
  "blst",
  "borsh",
- "decaf377 0.10.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "decaf377",
  "k256",
  "multibase",
  "serde",

@@ -205,7 +205,12 @@ Build a native-only node with:
 cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
 ```
 
-Select `decaf377` instead of `bls12-381` for the Decaf crypto implementation. Start with
+The native backend supports signing and PRE on rings without PET. PET document
+attachments and PET ring finalization are rejected. PET remains available with the
+default backend. Encrypting Orbis clients and node verifiers must use matching
+ciphertext-context encoding.
+
+Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
 `--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
 The configuration selects native authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap

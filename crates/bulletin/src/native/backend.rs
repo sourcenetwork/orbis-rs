@@ -241,6 +241,9 @@ impl NativeBulletin {
             BulletinWriteKind::Finalize => {
                 let request: RingFinalizationPayload =
                     serde_json::from_slice(payload).map_err(error)?;
+                if request.pet_pk.is_some() {
+                    return Err(error("native Vera does not support PET ring finalization"));
+                }
                 let ring = self.ring(&request.ring_id).await?;
                 match &ring.state {
                     RingState::Active { public_key } if public_key == &request.ring_pk => {
@@ -312,7 +315,20 @@ impl NativeBulletin {
             }
             BulletinWriteKind::Document | BulletinWriteKind::KeyDerivation => {
                 let object = if kind == BulletinWriteKind::Document {
-                    ThresholdObject::Document(serde_json::from_slice(payload).map_err(error)?)
+                    let mut request: serde_json::Value =
+                        serde_json::from_slice(payload).map_err(error)?;
+                    for field in ["pet_tag", "pet_tag_proof"] {
+                        if let Some(value) = request.get(field) {
+                            if !value.is_null() {
+                                return Err(error("native Vera does not support PET documents"));
+                            }
+                            request
+                                .as_object_mut()
+                                .expect("document field")
+                                .remove(field);
+                        }
+                    }
+                    ThresholdObject::Document(serde_json::from_value(request).map_err(error)?)
                 } else {
                     ThresholdObject::KeyDerivation(serde_json::from_slice(payload).map_err(error)?)
                 };

@@ -28,7 +28,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::reporting::v0::error::Result;
+use crate::error::Result;
 
 use super::{
     PET_BLIND_CERTIFICATE_DOMAIN, PET_BLIND_COMMIT_DOMAIN, PET_BLIND_CONTEXT_DOMAIN,

@@ -54,7 +54,7 @@ use crate::reporting::v0::types::{
 };
 use crate::reporting::v0::{queue_report, spawn_error_drain};
 use crate::ring_state::RingShareBundle;
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::{DocumentPayload, RingPayload};
 use crypto::r#trait::{
     CryptoDeserialize, CryptoSerialize, DistKeyShare, Dkg, Pet, PubShare, ThresholdSigner,

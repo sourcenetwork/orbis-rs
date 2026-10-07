@@ -44,7 +44,7 @@ use crate::reporting::v0::types::{
 use crate::ring_state::RingShareBundle;
 use authn::{resolve_jwt_did, BearerToken, PreClaims};
 use authz::r#trait::Authz;
-use authz::vera::{AccessCheckRequest, ValidWindow};
+use authz::request::{AccessCheckRequest, ValidWindow};
 use bulletin::r#trait::Bulletin;
 use common::blockchain::verify_node_message;
 use crypto::context::CiphertextContext;

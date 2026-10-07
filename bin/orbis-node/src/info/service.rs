@@ -176,7 +176,6 @@ fn get_pet_ring_state_response(
     })
 }
 
-/// InfoService used during node bootstrap, before chain funding and bulletin initialization.
 /// InfoService available while backend initialization is in progress.
 pub struct BootstrapInfoServiceImpl {
     pub network: Arc<dyn Network>,
