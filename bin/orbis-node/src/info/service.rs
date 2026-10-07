@@ -1,11 +1,8 @@
 use crate::app_state::AppState;
-#[cfg(any(feature = "cosmos", test))]
-use crate::helpers::launch::get_node_signer;
 use crate::helpers::launch::network_peer_address;
 use crate::info::error::InfoError;
 use crate::ring_state::{RingIndexEntry, RingPolyState};
-#[cfg(any(feature = "cosmos", test))]
-use common::blockchain::ChainConfigBuilder;
+use bulletin::startup::NodeIdentity;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     LocalStorageImpl,
@@ -35,7 +32,7 @@ where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
     pub state: Arc<AppState<D>>,
-    pub(crate) native_identity: Option<String>,
+    pub(crate) identity: NodeIdentity,
 }
 
 impl<D> InfoServiceImpl<D>
@@ -43,10 +40,10 @@ where
     D: crypto::r#trait::Dkg + Clone + 'static,
 {
     /// Create a new InfoServiceImpl with shared application state
-    pub fn new(state: impl Into<Arc<AppState<D>>>) -> Self {
+    pub fn new(state: impl Into<Arc<AppState<D>>>, identity: NodeIdentity) -> Self {
         Self {
             state: state.into(),
-            native_identity: None,
+            identity,
         }
     }
 }
@@ -64,7 +61,7 @@ where
             self.state.network.as_ref(),
             self.state.local_storage.clone(),
             NodeStatus::Ready as i32,
-            self.native_identity.as_deref(),
+            &self.identity,
         )?))
     }
 
@@ -104,7 +101,7 @@ fn get_node_info_response(
     network: &dyn Network,
     local_storage: LocalStorageImpl,
     status: i32,
-    native_identity: Option<&str>,
+    identity: &NodeIdentity,
 ) -> Result<GetNodeInfoResponse, Status> {
     // Get the peer ID from the network
     let peer_id = hex::encode(network.local_peer_id().as_bytes());
@@ -113,26 +110,13 @@ fn get_node_info_response(
 
     let managed_ring_count = managed_ring_count(&local_storage)?;
 
-    let (public_address, node_key) = match native_identity {
-        Some(key) => (key.to_owned(), key.to_owned()),
-        #[cfg(any(feature = "cosmos", test))]
-        None => {
-            let config = ChainConfigBuilder::default().build();
-            let signer = get_node_signer(local_storage, config)
-                .map_err(|e| InfoError::InfoError(format!("Error getting public key: {}", e)))?;
-            (signer.address(), signer.public_key_hex())
-        }
-        #[cfg(not(any(feature = "cosmos", test)))]
-        None => return Err(Status::internal("native node identity is missing")),
-    };
-
     Ok(GetNodeInfoResponse {
-        public_address,
+        public_address: identity.public_address.clone(),
         peer_id,
         p2p_address,
         status,
         managed_ring_count,
-        node_key,
+        node_key: identity.node_key.clone(),
         supported_protocol_versions: network::SUPPORTED_PROTOCOL_VERSIONS.to_vec(),
     })
 }
@@ -181,7 +165,7 @@ pub struct BootstrapInfoServiceImpl {
     pub network: Arc<dyn Network>,
     pub local_storage: LocalStorageImpl,
     pub status: Arc<AtomicI32>,
-    pub(crate) native_identity: Option<String>,
+    pub(crate) identity: NodeIdentity,
 }
 
 impl BootstrapInfoServiceImpl {
@@ -190,12 +174,13 @@ impl BootstrapInfoServiceImpl {
         network: Arc<dyn Network>,
         local_storage: LocalStorageImpl,
         status: Arc<AtomicI32>,
+        identity: NodeIdentity,
     ) -> Self {
         Self {
             network,
             local_storage,
             status,
-            native_identity: None,
+            identity,
         }
     }
 }
@@ -210,7 +195,7 @@ impl InfoService for BootstrapInfoServiceImpl {
             self.network.as_ref(),
             self.local_storage.clone(),
             self.status.load(Ordering::SeqCst),
-            self.native_identity.as_deref(),
+            &self.identity,
         )?))
     }
 

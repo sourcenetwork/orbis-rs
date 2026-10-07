@@ -8,29 +8,15 @@ pub mod acp;
 pub mod bank;
 pub mod bulletin;
 #[cfg(feature = "cosmos")]
-mod client;
-#[cfg(feature = "cosmos")]
-mod config;
+pub mod cosmos;
 mod error;
-#[cfg(feature = "cosmos")]
-pub mod events;
 mod node_signing;
 pub mod orbis;
-#[cfg(feature = "cosmos")]
-mod signer;
 
 #[cfg(feature = "cosmos")]
-pub use client::{AccountInfo, BroadcastResult, VeraClient};
-#[cfg(feature = "cosmos")]
-pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
+pub use cosmos::*;
 pub use error::{BlockchainError, Result};
 pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
-#[cfg(feature = "cosmos")]
-pub use signer::TxSigner;
-
-// Chain configuration and transaction-signing unit tests.
-#[cfg(all(test, feature = "cosmos"))]
-pub mod tests;
 
 // Known test key for the "test" account created in docker-compose-vera-test.yml
 /// This corresponds to the mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
