@@ -7,11 +7,10 @@
 //!
 //! Scoped the same way `CosmosNetwork` is: this brings nodes up and connects
 //! them to the chain, nothing more. Policy/ring/node-authorization setup
-//! (this crate's `BackendAdmin`, wired to native in a later phase) happens
-//! after the network exists, exactly like Cosmos's `test_helpers.rs`
-//! functions run after `CosmosNetwork::builder().build()` returns.
+//! Backend-specific policy/ring/node-authorization setup happens after the
+//! network exists, exactly like Cosmos's `test_helpers.rs` functions run
+//! after `CosmosNetwork::builder().build()` returns.
 
-use crate::admin::{BackendAdmin, DocumentId, PolicyId, RingId, RingKeys, RingSpec, RingView};
 use crate::compose::{
     compose_command, localhost_url, published_port, report_compose_failure, stop_compose,
 };
@@ -19,7 +18,7 @@ use crate::native_network::{self, NativeTestNetwork};
 use std::{fs, time::Duration};
 
 const ORBIS_GRPC_PORT: u16 = 50051;
-const ORBIS_NODE_COUNT: usize = 3;
+const DEFAULT_ORBIS_NODE_COUNT: usize = 3;
 
 fn orbis_service(index: usize) -> &'static str {
     match index {
@@ -38,23 +37,44 @@ struct NativeOrbisNode {
 pub struct NativeNetworkAdapter {
     cluster: NativeTestNetwork,
     orbis_nodes: Vec<NativeOrbisNode>,
-    admin: NativeAdminStub,
     _node_fixtures: tempfile::TempDir,
 }
 
 impl NativeNetworkAdapter {
     pub async fn start(deployment: u64) -> Self {
+        Self::start_configured(deployment, DEFAULT_ORBIS_NODE_COUNT, false, false).await
+    }
+
+    pub async fn start_configured(
+        deployment: u64,
+        node_count: usize,
+        production_node_build: bool,
+        unsafe_testing_runtime_enabled: bool,
+    ) -> Self {
+        assert!(
+            (1..=4).contains(&node_count),
+            "native devnet supports between 1 and 4 orbis nodes"
+        );
+        assert!(
+            !production_node_build || !unsafe_testing_runtime_enabled,
+            "a production native node build cannot expose the unsafe testing service"
+        );
         let cluster = NativeTestNetwork::start(deployment).await;
         let node_fixtures = tempfile::Builder::new()
             .prefix("orbis-native-nodes-")
             .tempdir()
             .expect("native orbis node fixture dir");
-        let orbis_nodes =
-            bring_up_orbis_nodes(&cluster, node_fixtures.path(), ORBIS_NODE_COUNT).await;
+        let orbis_nodes = bring_up_orbis_nodes(
+            &cluster,
+            node_fixtures.path(),
+            node_count,
+            production_node_build,
+            unsafe_testing_runtime_enabled,
+        )
+        .await;
         Self {
             cluster,
             orbis_nodes,
-            admin: NativeAdminStub,
             _node_fixtures: node_fixtures,
         }
     }
@@ -141,10 +161,6 @@ impl NativeNetworkAdapter {
             }),
         )
     }
-
-    pub fn admin(&self) -> &dyn BackendAdmin {
-        &self.admin
-    }
 }
 
 impl Drop for NativeNetworkAdapter {
@@ -159,6 +175,8 @@ async fn bring_up_orbis_nodes(
     cluster: &NativeTestNetwork,
     fixtures: &std::path::Path,
     count: usize,
+    production_node_build: bool,
+    unsafe_testing_runtime_enabled: bool,
 ) -> Vec<NativeOrbisNode> {
     // All three orbis nodes point at the same validator for chain RPC — this
     // mirrors `NativeWorkflow::start_with_network`'s existing convention
@@ -173,6 +191,24 @@ async fn bring_up_orbis_nodes(
 
     let services: Vec<&str> = (0..count).map(orbis_service).collect();
     let reuse_prebuilt = std::env::var_os("ORBIS_NATIVE_IMAGE").is_some();
+    let mut node_env = vec![
+        (
+            "ORBIS_BUILD_INTEGRATION_TEST".to_string(),
+            (!production_node_build).to_string(),
+        ),
+        (
+            "ORBIS_NATIVE_ENABLE_UNSAFE_TESTING".to_string(),
+            unsafe_testing_runtime_enabled.to_string(),
+        ),
+    ];
+    if unsafe_testing_runtime_enabled {
+        if let Some(image) = std::env::var_os("ORBIS_NATIVE_DIAGNOSTIC_IMAGE") {
+            node_env.push((
+                "ORBIS_NATIVE_IMAGE".to_string(),
+                image.to_string_lossy().into_owned(),
+            ));
+        }
+    }
 
     // Same race as the validator build (see `native_network.rs`): every
     // `node{1..4}` service shares one identical `build:` block, so build the
@@ -190,6 +226,9 @@ async fn bring_up_orbis_nodes(
         for (key, value) in cluster.compose_env() {
             build.env(key, value);
         }
+        for (key, value) in &node_env {
+            build.env(key, value);
+        }
         let status = build
             .status()
             .expect("Failed to build native orbis node image");
@@ -203,6 +242,9 @@ async fn bring_up_orbis_nodes(
     let mut command = compose_command(cluster.compose_file(), cluster.project_name());
     command.arg("up").arg("-d");
     for (key, value) in cluster.compose_env() {
+        command.env(key, value);
+    }
+    for (key, value) in &node_env {
         command.env(key, value);
     }
     command.args(&services);
@@ -286,78 +328,4 @@ async fn wait_for_grpc_ready(cluster: &NativeTestNetwork, nodes: &[NativeOrbisNo
         report_compose_failure(cluster.compose_file(), cluster.project_name());
         panic!("native orbis nodes failed to become reachable");
     });
-}
-
-/// Placeholder `BackendAdmin` for the native dispatch arm. The real
-/// implementation (`bin/orbis-node/tests/support/admin.rs`) lives outside
-/// this crate — see `crate::admin`'s doc comment — and isn't wired into the
-/// dispatch wrapper until Phase C gives the shared scenario layer a reason to
-/// call through it. Every method here is reachable but not yet meaningful;
-/// each panics with a specific message rather than a generic one.
-struct NativeAdminStub;
-
-#[async_trait::async_trait]
-impl BackendAdmin for NativeAdminStub {
-    async fn create_policy(&self, _definition: &str) -> PolicyId {
-        unimplemented!(
-            "IntegrationTestNetwork (native): BackendAdmin not yet wired through the dispatch \
-             wrapper — see bin/orbis-node/tests/support/admin.rs::NativeAdmin (Phase C)"
-        )
-    }
-
-    async fn grant(
-        &self,
-        _policy: &PolicyId,
-        _resource: &str,
-        _object_id: &str,
-        _relation: &str,
-        _subject_did: &str,
-    ) {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn revoke(
-        &self,
-        _policy: &PolicyId,
-        _resource: &str,
-        _object_id: &str,
-        _relation: &str,
-        _subject_did: &str,
-    ) {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn register_ring(&self, _spec: RingSpec) -> RingId {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn read_ring(&self, _ring: &RingId) -> Option<RingView> {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn wait_for_finalized(&self, _ring: &RingId, _timeout: Duration) -> RingKeys {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn update_membership(
-        &self,
-        _ring: &RingId,
-        _new_members: Vec<String>,
-        _new_threshold: u32,
-    ) {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn store_document(
-        &self,
-        _ring: &RingId,
-        _payload: &[u8],
-        _reader_dids: &[String],
-    ) -> DocumentId {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
-
-    async fn read_document(&self, _id: &DocumentId) -> Vec<u8> {
-        unimplemented!("see NativeAdminStub::create_policy")
-    }
 }

@@ -11,8 +11,8 @@
 //! - [`vera_container`] — [`VeraTestContainer`], a standalone Vera chain (Cosmos only).
 //! - [`network`] — [`IntegrationTestNetwork`]/[`IntegrationTestNetworkBuilder`],
 //!   dispatching over [`IntegrationBackend`] to either the Cosmos or native Vera
-//!   chain plus orbis-node instances. [`admin::BackendAdmin`] is the shared
-//!   chain-administration surface both backends implement.
+//!   chain plus orbis-node instances. Backend-specific administration remains
+//!   outside this lifecycle wrapper until shared scenarios require it.
 //! - `container` / `native_network` — native containers with explicit stop, crash
 //!   and restart control, enabled with the `native` feature.
 

@@ -369,9 +369,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Read matching native SDK revision
+      - name: Read pinned native Vera revision
         id: vera
-        run: echo "revision=$(python3 scripts/native-vera-ref.py)" >> "$GITHUB_OUTPUT"
+        run: echo "revision=$(cat docker/NATIVE_VERA_REF)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -435,10 +435,13 @@ jobs:
           docker pull "$ORBIS_NATIVE_IMAGE"
           docker pull "$ORBIS_NATIVE_VERA_IMAGE"
           docker pull "$ORBIS_NATIVE_DIAGNOSTIC_IMAGE"
-      - name: Validate bounded diagnostic parser
-        run: python3 scripts/test-native-lifecycle-unit.py
       - name: Native integration suite (${{ matrix.crypto }})
-        run: bash scripts/test-native-integration.sh "${{ matrix.crypto }}"
+        run: |
+          cargo +1.98.0 nextest run --profile ci --release --locked --build-jobs 2 \
+            -p orbis-node --no-default-features \
+            --features "integration-test-native,redb,iroh,${{ matrix.crypto }}" \
+            --test native_startup \
+            -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 
   native-trust-artifacts:
     name: Build native Trust ring artifacts once

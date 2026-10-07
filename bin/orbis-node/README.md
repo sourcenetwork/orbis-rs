@@ -377,12 +377,17 @@ offline reports and live policy checks. Power-loss recovery and other fault
 evidence types require their own checks.
 
 The **Rust** workflow builds Cosmos, normal native and diagnostic native images
-through the existing Docker build. For each curve, `cargo nextest` runs the three
-normal native lifecycle scenarios, followed by the one diagnostic fault-report
-scenario. `test-support` owns the Compose lifecycle, native genesis and private
-stores. The Cosmos integration shards retain their existing features and tests;
-tests that call Cosmos transaction APIs are not compiled as native scenarios.
-BLS native coverage includes the Defra assertions below.
+through the existing Docker build. For each curve, one `cargo nextest` invocation
+selects every `native_startup` scenario by name (startup/restart identity,
+distributed threshold workflows, Defra signing, the paired-DKG lifecycle,
+member replacement, scheduled refresh, and the diagnostic fault-report
+scenario — which switches to the diagnostic image via `ORBIS_NATIVE_DIAGNOSTIC_IMAGE`
+at runtime, since the normal image is compiled without `unsafe-testing`),
+excluding only the still-unqualified Trust-gateway scenario. `test-support`
+owns the Compose lifecycle, native genesis and private stores. The Cosmos
+integration shards retain their existing features and tests; tests that call
+Cosmos transaction APIs are not compiled as native scenarios. BLS native
+coverage includes the Defra assertions below.
 
 The native node image uses normal release features without testing services.
 Its dependency graph rejects Cosmos transport packages. The Vera image revision
@@ -390,11 +395,12 @@ must match every native SDK manifest. Runtime images are built before the test
 harness, with production Argon2 defaults and normal deadlines. The test harness
 gets a fresh build target; only dependency downloads are cached.
 
-On a Linux Docker host, build a matching image pair, then run the same CI command:
+On any Docker host (Compose-driven, not restricted to Linux), build a matching
+image pair, then run the same CI command:
 
 ```sh
 curve=bls12-381 # or jubjub
-vera_ref=$(python3 scripts/native-vera-ref.py)
+vera_ref=$(cat docker/NATIVE_VERA_REF)
 docker build -f docker/Dockerfile.native-vera-integration \
   --build-arg VERA_REF="$vera_ref" -t orbis-vera-native:local .
 docker build -f docker/Dockerfile --build-arg BACKEND=native \
@@ -403,7 +409,11 @@ docker build -f docker/Dockerfile --build-arg BACKEND=native \
 docker build -f docker/Dockerfile --target native-diagnostic \
   --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.98.0-bookworm \
   --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
-bash scripts/test-native-integration.sh "$curve"
+cargo +1.98.0 nextest run --profile ci --release --locked --build-jobs 2 \
+  -p orbis-node --no-default-features \
+  --features "integration-test-native,redb,iroh,$curve" \
+  --test native_startup \
+  -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 ```
 
 The `native-diagnostic` target reuses the normal native builder and adds

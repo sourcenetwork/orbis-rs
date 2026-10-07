@@ -19,7 +19,6 @@ mod native;
 #[cfg(all(unix, feature = "native"))]
 pub use native::NativeNetworkAdapter;
 
-use crate::admin::BackendAdmin;
 use crate::backend::IntegrationBackend;
 
 /// Node info returned from the info endpoint
@@ -100,25 +99,6 @@ impl IntegrationTestNetwork {
             _ => panic!(
                 "IntegrationTestNetwork::native() called on a {:?} backend",
                 self.backend
-            ),
-        }
-    }
-
-    pub fn admin(&self) -> &dyn BackendAdmin {
-        match &self.inner {
-            #[cfg(feature = "cosmos")]
-            NetworkInner::Cosmos(network) => network.admin(),
-            #[cfg(all(unix, feature = "native"))]
-            NetworkInner::Native(network) => network.admin(),
-            // Reachable only when neither backend feature is enabled, in
-            // which case `NetworkInner` has no variants and this crate's
-            // builder can't have produced an `IntegrationTestNetwork` to
-            // call this on in the first place — but the match still needs
-            // an arm for that configuration to typecheck (same rationale as
-            // `.cosmos()`/`.native()`'s fallback arm above).
-            #[allow(unreachable_patterns)]
-            _ => panic!(
-                "test-support built with neither the \"cosmos\" nor \"native\" feature enabled"
             ),
         }
     }
@@ -246,7 +226,13 @@ impl IntegrationTestNetworkBuilder {
     pub async fn build_async(self) -> IntegrationTestNetwork {
         match self.backend {
             IntegrationBackend::NativeVera => {
-                let cluster = NativeNetworkAdapter::start(self.native_deployment_seed).await;
+                let cluster = NativeNetworkAdapter::start_configured(
+                    self.native_deployment_seed,
+                    self.node_count,
+                    self.production_node_build,
+                    self.unsafe_testing_runtime_enabled,
+                )
+                .await;
                 IntegrationTestNetwork {
                     backend: IntegrationBackend::NativeVera,
                     inner: NetworkInner::Native(Box::new(cluster)),

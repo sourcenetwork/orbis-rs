@@ -16,11 +16,6 @@ async fn native_validator_cluster_reaches_height_three() {
 }
 
 #[tokio::test]
-#[ignore = "blocked on a pre-existing glibc mismatch between docker/Dockerfile's \
-            builder (rust:latest) and runtime (debian:bookworm-slim) stages — the \
-            orbis-node binary fails to execute in its own runtime image \
-            (GLIBC_2.38 not found). Affects both backends, not introduced by this \
-            harness; see the Phase B report. Un-ignore once that's fixed."]
 async fn native_full_topology_reaches_healthy() {
     let network = test_support::NativeNetworkAdapter::start(9401).await;
     let endpoints = network.node_endpoints();

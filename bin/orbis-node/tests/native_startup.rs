@@ -285,6 +285,18 @@ fn bring_up_orbis_nodes(
             enable_unsafe_testing.to_string(),
         ),
     ];
+    // CI supplies a production native image and a separately compiled image
+    // containing the unsafe testing service. Enabling the service at runtime
+    // is not enough when the production binary was compiled without it, so
+    // select the diagnostic image for the attributable-fault scenario.
+    if enable_unsafe_testing {
+        if let Some(image) = std::env::var_os("ORBIS_NATIVE_DIAGNOSTIC_IMAGE") {
+            extra_env.push((
+                "ORBIS_NATIVE_IMAGE".to_string(),
+                image.to_string_lossy().into_owned(),
+            ));
+        }
+    }
     for index in 0..count {
         let dir = fixtures.join(format!("node-{index}"));
         fs::create_dir_all(&dir).unwrap();
@@ -360,7 +372,6 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -418,7 +429,6 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -426,7 +436,6 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -434,7 +443,6 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
@@ -445,7 +453,6 @@ async fn native_pet_threshold_workflows() {
 /// Proves `native_pet::dkg_scenario`'s shared finalize-and-verify tail on its
 /// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_dkg() {
     let (_workflow, keys, _baseline) = native_pet::dkg_scenario(9079, false).await;
@@ -460,14 +467,12 @@ async fn native_dkg() {
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_member_replacement() {
     native_pet::run(native_pet::Scenario::MemberReplacement).await;
 }
 
 #[tokio::test]
-#[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
@@ -481,7 +486,6 @@ async fn native_trust_gateway_ring_dkg() {
 }
 
 #[tokio::test]
-#[ignore = "requires native Vera and diagnostic Orbis Docker images on Linux"]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
