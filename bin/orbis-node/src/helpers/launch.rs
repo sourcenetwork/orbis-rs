@@ -8,7 +8,7 @@ use bulletin::{
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
-#[cfg(any(feature = "cosmos", test))]
+#[cfg(any(feature = "harness", test))]
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -889,124 +889,22 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
         .to_string()
 }
 
-#[cfg(any(feature = "cosmos", test))]
+#[cfg(any(feature = "harness", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
     runtime_base_path: &Path,
-) -> Result<TxSigner, String> {
-    fs::create_dir_all(runtime_base_path).map_err(|error| {
-        format!(
-            "Failed to create runtime base directory {}: {}",
-            runtime_base_path.display(),
-            error
-        )
-    })?;
-    let public_key_path = runtime_base_path.join("public_key.txt");
-
-    // Check if a signing key exists in DB
-    let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
-        Ok(Some(key_bytes)) => {
-            // Key exists, use it
-            let hex_key = String::from_utf8(key_bytes.to_vec())
-                .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
-            tracing::info!("Existing signing key loaded from storage");
-            hex_key
-        }
-        Ok(None) => {
-            // No key exists, create one.
-            //
-            // In integration-test builds, ORBIS_SIGNING_KEY may supply a deterministic
-            // private key hex so the public key is known before the chain starts (needed
-            // for genesis injection).  The env var is absent in production.
-            #[cfg(feature = "integration-test")]
-            if let Ok(env_hex) = std::env::var("ORBIS_SIGNING_KEY") {
-                let env_hex = env_hex.trim().to_string();
-                if !env_hex.is_empty() {
-                    tracing::info!("Using ORBIS_SIGNING_KEY for deterministic signing key");
-                    local_storage
-                        .set_encrypted(
-                            LocalStorageKeys::NodeSigningKey,
-                            Zeroizing::new(env_hex.as_bytes().to_vec()),
-                        )
-                        .map_err(|e| format!("Failed to store signing key: {}", e))?;
-                    let signer = TxSigner::from_hex_key(&env_hex, config).map_err(|e| {
-                        format!("Failed to create signer from ORBIS_SIGNING_KEY: {}", e)
-                    })?;
-                    let public_address = signer.address();
-                    tracing::info!(address = %public_address, "Signing key ready");
-                    fs::write(&public_key_path, &public_address)
-                        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
-                    return Ok(signer);
-                }
-            }
-
-            tracing::info!("No signing key found, generating new one");
-            let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes)
-                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
-            let hex_key = hex::encode(key_bytes);
-
-            // Store the key encrypted
-            local_storage
-                .set_encrypted(
-                    LocalStorageKeys::NodeSigningKey,
-                    Zeroizing::new(hex_key.as_bytes().to_vec()),
-                )
-                .map_err(|e| format!("Failed to store signing key: {}", e))?;
-            hex_key
-        }
-        Err(e) => {
-            return Err(format!(
-                "Failed to read signing key from storage: {}. \
-                 Refusing to generate a new key to avoid overwriting an existing identity. \
-                 Check storage health and retry.",
-                e
-            ));
-        }
-    };
-
-    let signer = TxSigner::from_hex_key(&hex_key, config)
-        .map_err(|e| format!("Failed to create signer: {}", e))?;
-
-    let public_address = signer.address();
-    tracing::info!(address = %public_address, "Signing key ready");
-
-    fs::write(&public_key_path, &public_address)
-        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
-
-    tracing::info!(path = %public_key_path.display(), "Public key written to file");
-
-    Ok(signer)
-}
-
-/// Retrieve the node signing key from storage and create a TxSigner.
-///
-/// This function loads the stored secp256k1 signing key and returns a TxSigner
-/// that can be used with `VeraBulletin::with_signer`.
-///
-/// # Arguments
-/// * `local_storage` - The local storage implementation to read from
-/// * `config` - The chain configuration for the signer
-///
-/// # Returns
-/// A TxSigner on success, or an error if the key doesn't exist or is invalid
-#[cfg(any(feature = "cosmos", test))]
-pub fn get_node_signer(
-    local_storage: LocalStorageImpl,
-    config: ChainConfig,
-) -> Result<TxSigner, String> {
-    let key_bytes = local_storage
-        .get_encrypted(LocalStorageKeys::NodeSigningKey)
-        .map_err(|e| format!("Failed to read signing key from storage: {}", e))?
-        .ok_or_else(|| {
-            "No signing key found in storage. Run create_and_store_node_key first.".to_string()
-        })?;
-
-    let hex_key = String::from_utf8(key_bytes.to_vec())
-        .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
-
-    TxSigner::from_hex_key(&hex_key, config).map_err(|e| format!("Failed to create signer: {}", e))
+) -> Result<TxSigner, bulletin::startup::StartupError> {
+    #[cfg(feature = "integration-test")]
+    let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
+    #[cfg(not(feature = "integration-test"))]
+    let initial_key: Option<String> = None;
+    bulletin::startup::cosmos::prepare_signer(
+        &local_storage,
+        config,
+        runtime_base_path,
+        initial_key.as_deref(),
+    )
 }
 
 #[cfg(test)]

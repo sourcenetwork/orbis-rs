@@ -3,8 +3,9 @@ use thiserror::Error;
 /// Authorization related errors
 #[derive(Error, Debug)]
 pub enum AuthZError {
-    #[error("Native authorization: {0}")]
-    Native(String),
+    #[cfg(feature = "native")]
+    #[error(transparent)]
+    Native(#[from] crate::native::Error),
     #[error("Authentication failure")]
     Authentication,
 

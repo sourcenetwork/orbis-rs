@@ -12,8 +12,7 @@ use vera_client::{
 };
 use vera_domain::ConsensusPublicKey;
 
-#[path = "scheduled_store.rs"]
-mod store;
+use super::stored_bundle as store;
 
 pub(super) struct ScheduledRefresh<'a> {
     pub client: &'a VeraClient,

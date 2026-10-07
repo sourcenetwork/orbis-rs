@@ -424,13 +424,10 @@ where
 
     for signed_reveal in &certificate.reveals {
         let statement = &signed_reveal.statement;
-        if statement.domain != crate::reporting::v0::types::PET_BLIND_REVEAL_RESPONSE_DOMAIN
-            || statement.chain_id != blind_context.chain_id
-            || statement.ring_id != blind_context.ring_id
-            || statement.ring_pk != blind_context.ring_pk
-            || statement.ring_state_sha256 != blind_context.ring_state_sha256
-            || statement.protocol_version != blind_context.protocol_version
-        {
+        if !SignedContext::from(statement).matches(
+            crate::reporting::v0::types::PET_BLIND_REVEAL_RESPONSE_DOMAIN,
+            blind_context,
+        ) {
             return Err(PetError::ProtocolError(
                 "PET reveal certificate binding mismatch".into(),
             ));
@@ -501,6 +498,52 @@ where
     Ok((aggregate_r, aggregate_diff))
 }
 
+struct SignedContext<'a> {
+    domain: &'a str,
+    chain_id: &'a str,
+    ring_id: &'a str,
+    ring_pk: &'a str,
+    ring_state_sha256: &'a str,
+    protocol_version: u64,
+}
+
+impl SignedContext<'_> {
+    fn matches(&self, domain: &str, context: &PetBlindContext) -> bool {
+        self.domain == domain
+            && self.chain_id == context.chain_id
+            && self.ring_id == context.ring_id
+            && self.ring_pk == context.ring_pk
+            && self.ring_state_sha256 == context.ring_state_sha256
+            && self.protocol_version == context.protocol_version
+    }
+}
+
+impl<'a> From<&'a PetBlindRevealStatement> for SignedContext<'a> {
+    fn from(statement: &'a PetBlindRevealStatement) -> Self {
+        Self {
+            domain: &statement.domain,
+            chain_id: &statement.chain_id,
+            ring_id: &statement.ring_id,
+            ring_pk: &statement.ring_pk,
+            ring_state_sha256: &statement.ring_state_sha256,
+            protocol_version: statement.protocol_version,
+        }
+    }
+}
+
+impl<'a> From<&'a PetBlindDecryptStatement> for SignedContext<'a> {
+    fn from(statement: &'a PetBlindDecryptStatement) -> Self {
+        Self {
+            domain: &statement.domain,
+            chain_id: &statement.chain_id,
+            ring_id: &statement.ring_id,
+            ring_pk: &statement.ring_pk,
+            ring_state_sha256: &statement.ring_state_sha256,
+            protocol_version: statement.protocol_version,
+        }
+    }
+}
+
 /// One decrypt-phase share, verified against the certificate's own
 /// reconstructed aggregate points. Shared by the live decrypt-phase
 /// collector and PRE admission — both need the exact same checks.
@@ -521,13 +564,10 @@ where
 {
     use ContributionCheckOutcome::{Invalid, NotAttributable, Verified};
 
-    if statement.domain != crate::reporting::v0::types::PET_BLIND_DECRYPT_RESPONSE_DOMAIN
-        || statement.chain_id != blind_context.chain_id
-        || statement.ring_id != blind_context.ring_id
-        || statement.ring_pk != blind_context.ring_pk
-        || statement.ring_state_sha256 != blind_context.ring_state_sha256
-        || statement.protocol_version != blind_context.protocol_version
-    {
+    if !SignedContext::from(statement).matches(
+        crate::reporting::v0::types::PET_BLIND_DECRYPT_RESPONSE_DOMAIN,
+        blind_context,
+    ) {
         return NotAttributable(PetError::ProtocolError(
             "PET decrypt statement binding mismatch".into(),
         ));

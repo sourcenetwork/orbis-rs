@@ -1,10 +1,6 @@
 //! Certified authorization with exact revision anchors and bounded freshness.
 
-use crate::{
-    error::{AuthZError, Result},
-    r#trait::Authz,
-    request::AccessCheckRequest,
-};
+use crate::{error::Result as AuthzResult, r#trait::Authz, request::AccessCheckRequest};
 use async_trait::async_trait;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
@@ -16,6 +12,9 @@ use vera_client::{
 };
 use vera_domain::{ConsensusPublicKey, LightBlock};
 
+pub mod error;
+pub use error::Error;
+
 pub struct NativeAuth {
     client: VeraClient,
     trusted: ConsensusPublicKey,
@@ -24,14 +23,11 @@ pub struct NativeAuth {
     maximum_age: u64,
 }
 
-fn invalid(error: impl std::fmt::Display) -> AuthZError {
-    AuthZError::Native(error.to_string())
-}
-fn now() -> Result<u64> {
+fn now() -> Result<u64, Error> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|t| t.as_secs())
-        .map_err(invalid)
+        .map_err(Error::Clock)
 }
 
 impl NativeAuth {
@@ -41,14 +37,14 @@ impl NativeAuth {
         trusted: ConsensusPublicKey,
         root: [u8; 32],
         maximum_age: u64,
-    ) -> Result<Self> {
+    ) -> Result<Self, Error> {
         if root == [0; 32] || maximum_age == 0 {
-            return Err(invalid("invalid deployment root or freshness bound"));
+            return Err(Error::InvalidConfiguration);
         }
         let first = client
             .read_finalized_revision(1, &trusted)
             .await
-            .map_err(invalid)?;
+            .map_err(Error::ReadDeployment)?;
         let root = hex::encode(root);
         if first
             .parent_hash
@@ -56,9 +52,7 @@ impl NativeAuth {
             .unwrap_or(&first.parent_hash)
             != root
         {
-            return Err(invalid(
-                "consensus proof does not bind the configured deployment",
-            ));
+            return Err(Error::DeploymentMismatch);
         }
         Ok(Self {
             client,
@@ -69,10 +63,10 @@ impl NativeAuth {
         })
     }
 
-    fn observe(&self, requested_minimum: u64, height: u64, timestamp: u64) -> Result<()> {
+    fn observe(&self, requested_minimum: u64, height: u64, timestamp: u64) -> Result<(), Error> {
         check_freshness(timestamp, now()?, self.maximum_age)?;
         if height < requested_minimum {
-            return Err(invalid("authorization revision regressed"));
+            return Err(Error::RevisionRegressed);
         }
         self.minimum.fetch_max(height, Ordering::AcqRel);
         Ok(())
@@ -90,45 +84,43 @@ impl NativeAuth {
         )
     }
 
-    async fn revision(&self, anchor: &str) -> Result<LightBlock> {
+    async fn revision(&self, anchor: &str) -> Result<LightBlock, Error> {
         let (height, hash) = parse_anchor(&self.root, anchor)?;
         let revision = self
             .client
             .read_finalized_revision(height, &self.trusted)
             .await
-            .map_err(invalid)?;
+            .map_err(Error::ReadRevision)?;
         if revision
             .block_hash
             .strip_prefix("0x")
             .unwrap_or(&revision.block_hash)
             != hash
         {
-            return Err(invalid("anchor does not match certified revision"));
+            return Err(Error::AnchorMismatch);
         }
         Ok(revision)
     }
 }
 
-fn check_freshness(timestamp: u64, now: u64, maximum_age: u64) -> Result<()> {
+fn check_freshness(timestamp: u64, now: u64, maximum_age: u64) -> Result<(), Error> {
     if timestamp > now.saturating_add(15) || now.saturating_sub(timestamp) > maximum_age {
-        return Err(invalid(
-            "authorization evidence is stale or from the future",
-        ));
+        return Err(Error::StaleEvidence);
     }
     Ok(())
 }
 
-fn parse_anchor<'a>(root: &str, anchor: &'a str) -> Result<(u64, &'a str)> {
+fn parse_anchor<'a>(root: &str, anchor: &'a str) -> Result<(u64, &'a str), Error> {
     if anchor.len() > 160 {
-        return Err(invalid("oversized revision anchor"));
+        return Err(Error::AnchorTooLarge);
     }
     let mut fields = anchor.split(':');
     let (Some(deployment), Some(height), Some(hash)) =
         (fields.next(), fields.next(), fields.next())
     else {
-        return Err(invalid("invalid revision anchor"));
+        return Err(Error::InvalidAnchor);
     };
-    let number: u64 = height.parse().map_err(invalid)?;
+    let number: u64 = height.parse().map_err(Error::AnchorHeight)?;
     if deployment != root
         || number == 0
         || number.to_string() != height
@@ -138,33 +130,30 @@ fn parse_anchor<'a>(root: &str, anchor: &'a str) -> Result<(u64, &'a str)> {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        return Err(invalid("invalid revision anchor"));
+        return Err(Error::InvalidAnchor);
     }
     Ok((number, hash))
 }
 
-fn request(bytes: &[u8], subject: &str) -> Result<Option<(String, AccessRequest)>> {
+fn request(bytes: &[u8], subject: &str) -> Result<Option<(String, AccessRequest)>, Error> {
     if bytes.len() > 64 << 10 || subject.len() > 512 {
-        return Err(invalid("authorization request exceeds byte limit"));
+        return Err(Error::RequestTooLarge);
     }
-    let request = AccessCheckRequest::from_bytes(bytes)?;
+    let request: AccessCheckRequest =
+        serde_json::from_slice(bytes).map_err(Error::RequestDecode)?;
     match (&request.valid_window, request.timestamp) {
         (Some(window), Some(timestamp)) => {
             if window.start > window.end {
-                return Err(invalid("invalid authorization window"));
+                return Err(Error::InvalidWindow);
             }
             if timestamp < window.start || timestamp > window.end {
                 return Ok(None);
             }
         }
         (None, None) => {}
-        _ => {
-            return Err(invalid(
-                "timestamp and validity window must be provided together",
-            ))
-        }
+        _ => return Err(Error::IncompleteWindow),
     }
-    let actor = Actor(subject.parse().map_err(invalid)?);
+    let actor = Actor(subject.parse().map_err(Error::Subject)?);
     Ok(Some((
         request.policy_id,
         AccessRequest {
@@ -182,7 +171,7 @@ fn request(bytes: &[u8], subject: &str) -> Result<Option<(String, AccessRequest)
 
 #[async_trait]
 impl Authz for NativeAuth {
-    async fn check(&self, permission: Vec<u8>, subject: &str) -> Result<bool> {
+    async fn check(&self, permission: Vec<u8>, subject: &str) -> AuthzResult<bool> {
         let Some((policy, request)) = request(&permission, subject)? else {
             return Ok(false);
         };
@@ -197,16 +186,22 @@ impl Authz for NativeAuth {
                 PERMISSION_LIMITS,
             )
             .await
-            .map_err(invalid)?;
+            .map_err(Error::VerifyCurrentAccess)?;
         self.observe(requested_minimum, revision.height, revision.timestamp)?;
         Ok(allowed)
     }
-    async fn check_at(&self, permission: Vec<u8>, subject: &str, anchor: &str) -> Result<bool> {
+    async fn check_at(
+        &self,
+        permission: Vec<u8>,
+        subject: &str,
+        anchor: &str,
+    ) -> AuthzResult<bool> {
         let Some((policy, request)) = request(&permission, subject)? else {
             return Ok(false);
         };
         let revision = self.revision(anchor).await?;
-        self.client
+        Ok(self
+            .client
             .verify_access_at(
                 &policy,
                 &request,
@@ -215,9 +210,9 @@ impl Authz for NativeAuth {
                 PERMISSION_LIMITS,
             )
             .await
-            .map_err(invalid)
+            .map_err(Error::VerifyAnchoredAccess)?)
     }
-    async fn current_anchor(&self) -> Result<String> {
+    async fn current_anchor(&self) -> AuthzResult<String> {
         let requested_minimum = self.minimum.load(Ordering::Acquire);
         let response = self
             .client
@@ -229,7 +224,7 @@ impl Authz for NativeAuth {
                 RECORD_PROOF_BYTES,
             )
             .await
-            .map_err(invalid)?;
+            .map_err(Error::ReadCurrentAnchor)?;
         self.observe(
             requested_minimum,
             response.revision.height,
@@ -237,7 +232,7 @@ impl Authz for NativeAuth {
         )?;
         Ok(self.anchor(&response.revision))
     }
-    async fn anchor_time(&self, anchor: &str) -> Result<u64> {
+    async fn anchor_time(&self, anchor: &str) -> AuthzResult<u64> {
         Ok(self.revision(anchor).await?.timestamp)
     }
 }
@@ -246,6 +241,36 @@ impl Authz for NativeAuth {
 mod tests {
     use super::*;
     use crate::request::ValidWindow;
+
+    #[test]
+    fn native_request_validation_preserves_decode_and_identity_sources() {
+        use std::error::Error as _;
+
+        let error = request(b"{", "did:key:reader").unwrap_err();
+        assert!(matches!(error, Error::RequestDecode(_)));
+        assert!(error.source().unwrap().is::<serde_json::Error>());
+
+        let permission = AccessCheckRequest::new(
+            "11".repeat(32),
+            "document".into(),
+            "doc".into(),
+            "read".into(),
+            None,
+            None,
+            None,
+        );
+        let error = request(&permission.to_bytes().unwrap(), "not-a-did").unwrap_err();
+        assert!(matches!(error, Error::Subject(_)));
+        assert!(error.source().unwrap().is::<vera_identity::Error>());
+        assert!(matches!(
+            request(&vec![b' '; (64 << 10) + 1], "did:key:reader"),
+            Err(Error::RequestTooLarge)
+        ));
+        assert!(matches!(
+            request(&permission.to_bytes().unwrap(), &"x".repeat(513)),
+            Err(Error::RequestTooLarge)
+        ));
+    }
 
     #[test]
     fn overlapping_authorization_reads_preserve_the_minimum() {
