@@ -6570,7 +6570,7 @@ checksum = "1bff8c25bed5ebe9a20fde7a01d7fb04387ad69d70834ba990a3919b17db3b95"
 dependencies = [
  "kovan",
  "kovan-map",
- "parking_lot 0.12.5",
+ "parking_lot",
  "uuid",
 ]
 

@@ -136,6 +136,8 @@ jobs:
     - name: Check native node and bulletin
       run: |
         cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
+    - name: Compile native lifecycle scenarios
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing

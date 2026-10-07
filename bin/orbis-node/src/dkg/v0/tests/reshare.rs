@@ -3,7 +3,9 @@ use crate::dkg::v0::service::DkgServiceImpl;
 use crate::dkg::v0::{
     coordinator::DkgCoordinator,
     error::DkgError,
-    helpers::{derive_reshare_pet_session_id, derive_reshare_session_id},
+    helpers::{
+        derive_fresh_pet_dkg_session_id, derive_reshare_pet_session_id, derive_reshare_session_id,
+    },
     messages::SessionKind,
     network::{coordinate_reshare_pet, start_reshare, ReshareStartOutcome},
     session_state::{RingPssClaimOutcome, SessionStateManager},
@@ -2484,24 +2486,61 @@ fn require_pet_on_fresh_dkg_ring(bulletin: &DummyBulletin, peer_node_keys: Vec<S
         .expect("flip fresh DKG ring to requires_pet");
 }
 
-/// Poll the bulletin until the combined main-key + PET-key finalize lands
-/// (see `phase4.rs`'s `requires_pet` branch — both are submitted together in
-/// one `MsgFinalizeRing`). Returns `(pet_pk_hex, pet_pk_bytes)`.
-async fn wait_for_pet_dkg_complete_on_bulletin(bulletin: &DummyBulletin) -> (String, Vec<u8>) {
+/// Wait for the paired keys and every original member's FreshPet cleanup.
+/// Bulletin visibility can precede other members' finalization readback; a
+/// reshare announcement must not race their still-held PSS claims.
+async fn wait_for_pet_dkg_complete(
+    bulletin: &DummyBulletin,
+    states: &[&crate::app_state::AppState<DkgImpl>],
+) -> (String, Vec<u8>) {
+    let session_id =
+        derive_fresh_pet_dkg_session_id(TEST_FRESH_DKG_RING_ID).expect("FreshPet session id");
     let start = Instant::now();
     let max_wait = Duration::from_secs(90);
     loop {
+        let mut pending = Vec::new();
+        for (node, state) in states.iter().enumerate() {
+            let claim = state
+                .dkg_session_state
+                .active_ring_pss_session(TEST_FRESH_DKG_RING_ID)
+                .await;
+            let phase = state
+                .dkg_session_state
+                .with_state(&session_id, |session| session.phase)
+                .await;
+            if claim.is_some() || phase.is_some() {
+                pending.push((node, claim, phase));
+            }
+        }
         let post = get_test_ring_post(bulletin);
         if !post.payload.is_empty() {
             let ring_payload: RingPayload = post.try_into().expect("parse RingPayload");
-            if let Some(pet_pk_hex) = ring_payload.pet_pk {
+            if let Some(pet_pk_hex) = ring_payload.pet_pk.filter(|_| pending.is_empty()) {
                 let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
+                for (node, state) in states.iter().enumerate() {
+                    let bundle = RingShareBundle::load_by_pet_ring_key(
+                        &state.local_storage,
+                        TEST_FRESH_DKG_RING_ID,
+                    )
+                    .unwrap_or_else(|error| panic!("node {node}: completed PET bundle: {error}"));
+                    let polynomial = hex::decode(&bundle.public_polynomial)
+                        .expect("decode completed PET polynomial");
+                    let polynomial = <DkgImpl as Dkg>::PubPoly::from_bytes(&polynomial)
+                        .expect("parse completed PET polynomial");
+                    assert_eq!(
+                        CryptoSerialize::to_bytes(&polynomial.eval(0))
+                            .expect("serialize completed PET public key"),
+                        pet_pk_bytes,
+                        "node {node}: completed local PET key must match the finalized key"
+                    );
+                }
                 return (pet_pk_hex, pet_pk_bytes);
             }
         }
         assert!(
             start.elapsed() < max_wait,
-            "combined ring+PET finalize did not land on the bulletin within 90s"
+            "paired finalization/FreshPet cleanup incomplete after 90s; \
+             pending (node, PSS claim, phase): {pending:?}"
         );
         sleep(Duration::from_millis(500)).await;
     }
@@ -2685,15 +2724,15 @@ async fn test_reshare_pet_full_rotation() {
     let (key_string, ring_pk_hex, _ring_pk_bytes) =
         wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
     println!("Main DKG complete. key_string={}", key_string);
-    let (pet_pk_hex, original_pet_pk_bytes) =
-        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
-    println!("PET DKG complete. pet_pk={}", pet_pk_hex);
-
     let old_states = [
         &network.alice.app_state,
         &network.bob.app_state,
         &network.charlie.app_state,
     ];
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete(&dummy_bulletin, &old_states).await;
+    println!("PET DKG complete. pet_pk={}", pet_pk_hex);
+
     let old_pet_bundles_before: Vec<_> = old_states
         .iter()
         .map(|state| {
@@ -2839,14 +2878,14 @@ async fn test_reshare_pet_same_committee_threshold_lowered() {
     let (key_string, ring_pk_hex, _ring_pk_bytes) =
         wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
     println!("Main DKG complete. key_string={}", key_string);
-    let (pet_pk_hex, original_pet_pk_bytes) =
-        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
-
     let old_states = [
         &network.alice.app_state,
         &network.bob.app_state,
         &network.charlie.app_state,
     ];
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete(&dummy_bulletin, &old_states).await;
+
     let pet_shares_before: Vec<_> = old_states
         .iter()
         .map(|state| {
@@ -3202,14 +3241,14 @@ async fn test_reshare_pet_atomic_via_main_reshare_alone() {
     let (key_string, ring_pk_hex, original_pk_bytes) =
         wait_for_dkg_complete_on_bulletin(&dummy_bulletin).await;
     println!("Main DKG complete. key_string={}", key_string);
-    let (pet_pk_hex, original_pet_pk_bytes) =
-        wait_for_pet_dkg_complete_on_bulletin(&dummy_bulletin).await;
-
     let old_states = [
         &network.alice.app_state,
         &network.bob.app_state,
         &network.charlie.app_state,
     ];
+    let (pet_pk_hex, original_pet_pk_bytes) =
+        wait_for_pet_dkg_complete(&dummy_bulletin, &old_states).await;
+
     let pet_shares_before: Vec<_> = old_states
         .iter()
         .map(|state| {
