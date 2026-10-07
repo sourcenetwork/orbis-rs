@@ -12,6 +12,8 @@ mod pet_dkg_contract;
 mod pet_reshare;
 #[path = "../../tests/support/pre_scenario.rs"]
 mod pre_scenario;
+#[path = "../../tests/support/sign_scenario.rs"]
+mod sign_scenario;
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
@@ -1159,13 +1161,14 @@ async fn cosmos_dkg() {
 #[tokio::test]
 #[serial_test::serial]
 async fn cosmos_dkg_and_pre() {
-    let (_backend, keys, _local_state, outcome) =
+    let (backend, keys, _local_state, outcome) =
         pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
             ring_id: PRE_SCENARIO_RING_ID,
             expected_policy_id: RING_GOVERNANCE_POLICY_ID,
             mode: pet_dkg_contract::DkgMode::Standard,
         })
         .await;
+    let sign = sign_scenario::run(&backend, &keys, &outcome.policy_id).await;
     assert!(
         keys.pet.is_none(),
         "standard DKG must not produce a PET key"
@@ -1173,6 +1176,10 @@ async fn cosmos_dkg_and_pre() {
     assert!(
         !outcome.object_id.is_empty(),
         "the shared PRE scenario must store a document"
+    );
+    assert!(
+        !sign.derivation_id.is_empty(),
+        "the shared Sign scenario must store a key derivation"
     );
 }
 

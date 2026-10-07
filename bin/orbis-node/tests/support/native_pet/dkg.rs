@@ -1,9 +1,17 @@
-use super::{endpoint, pet_dkg_contract, pre_scenario, read_ring, wait_polynomials, Polynomials};
-use alloy_primitives::B256;
+use super::{
+    endpoint, pet_dkg_contract, pre_scenario, read_ring, sign_scenario, wait_polynomials,
+    Polynomials,
+};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, ThresholdSigner};
 use proto::info_service::{info_service_client::InfoServiceClient, GetRingStateRequest};
 use proto::v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest};
 use std::time::Duration;
-use vera_client::rings::{RingPublicKeys, RingState};
+use vera_client::{
+    create_scoped_bearer_token,
+    rings::{RingPublicKeys, RingState},
+    threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
+    DelegationScope,
+};
 
 struct Native {
     workflow: super::super::native_workflow::NativeWorkflow,
@@ -123,19 +131,29 @@ impl pre_scenario::Backend for Native {
         self.workflow.policy.clone()
     }
 
-    async fn authorize_reader(&self, policy_id: &str, object_id: &str, reader_did: &str) {
+    async fn authorize_object(
+        &self,
+        policy_id: &str,
+        object_id: &str,
+        resource: &str,
+        relation: &str,
+        actor_did: &str,
+    ) {
         assert_eq!(
             policy_id, self.workflow.policy,
-            "shared PRE must use the workflow's policy"
+            "shared scenario must use the workflow's policy"
         );
-        let policy =
-            B256::from_slice(&hex::decode(policy_id).expect("native policy id must be hex"));
         let registered = self
             .workflow
             .client
-            .native_register_object(&self.workflow.worker, policy, object_id, "document")
+            .native_register_object(
+                &self.workflow.worker,
+                self.workflow.policy_bytes,
+                object_id,
+                resource,
+            )
             .await
-            .expect("register shared PRE document");
+            .expect("register shared scenario object");
         super::super::confirmed(
             &self.workflow.client,
             registered.transaction_hash,
@@ -147,20 +165,97 @@ impl pre_scenario::Backend for Native {
             .client
             .native_set_relationship(
                 &self.workflow.worker,
-                policy,
-                "document",
+                self.workflow.policy_bytes,
+                resource,
                 object_id,
-                "reader",
-                reader_did,
+                relation,
+                actor_did,
             )
             .await
-            .expect("grant shared PRE reader");
+            .expect("grant shared scenario actor");
         super::super::confirmed(
             &self.workflow.client,
             granted.transaction_hash,
             &self.workflow.trusted,
         )
         .await;
+    }
+
+    async fn read_document(&self, object_id: &str) -> Vec<u8> {
+        let record = self
+            .workflow
+            .client
+            .read_threshold_object(ObjectKind::Document, object_id, 1, &self.workflow.trusted)
+            .await
+            .expect("read shared scenario native document")
+            .record
+            .expect("shared scenario native document must exist");
+        let ThresholdObject::Document(document) = record.object else {
+            panic!("document lookup returned a key derivation")
+        };
+        serde_json::to_vec(&document).expect("serialize authoritative native document")
+    }
+}
+
+impl sign_scenario::Backend for Native {
+    async fn post_key_derivation(
+        &self,
+        policy_id: &str,
+        derivation: &str,
+        resource: &str,
+        permission: &str,
+        ring_pk: &str,
+    ) -> (String, String) {
+        assert_eq!(
+            policy_id, self.workflow.policy,
+            "shared Sign must use the workflow's policy"
+        );
+        let derivation = KeyDerivation {
+            ring_id: self.workflow.ring_id.clone(),
+            derivation: derivation.to_string(),
+            policy_id: policy_id.to_string(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+        };
+        let object = ThresholdObject::KeyDerivation(derivation.clone());
+        let derivation_id = object.id().expect("derive native key-derivation id");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_secs();
+        let token = create_scoped_bearer_token(
+            &self.workflow.controller,
+            self.workflow.worker.did(),
+            self.workflow.deployment,
+            now,
+            now + 300,
+            DelegationScope::StoreThresholdObject,
+        )
+        .expect("create native key-derivation delegation");
+        super::super::submit(
+            &self.workflow.client,
+            &self.workflow.worker,
+            &self.workflow.trusted,
+            encode_threshold_object(&object, &token).expect("encode native key derivation"),
+            "store shared Sign key derivation",
+            &self.workflow.cluster,
+        )
+        .await;
+
+        let ring_pk =
+            crypto::GroupAffine::from_bytes(&hex::decode(ring_pk).expect("ring public key is hex"))
+                .expect("ring public key must decode");
+        let metadata = crypto::SignImpl::encode_metadata(policy_id, resource, permission);
+        let derived_pk = crypto::SignImpl::derive_public_key(
+            &ring_pk,
+            derivation.derivation.as_bytes(),
+            Some(&metadata),
+        )
+        .expect("derive shared Sign public key");
+        (
+            derivation_id,
+            hex::encode(derived_pk.to_bytes().expect("serialize derived public key")),
+        )
     }
 }
 
@@ -185,14 +280,15 @@ pub(super) async fn run(
     )
 }
 
-pub(super) async fn run_pre(deployment: u64) -> String {
-    let (_native, keys, _local_state, outcome) =
+pub(super) async fn run_pre(deployment: u64) -> (String, String) {
+    let (native, keys, _local_state, outcome) =
         pre_scenario::run::<Native>((deployment, false, pet_dkg_contract::DkgMode::Standard)).await;
     assert!(
         keys.pet.is_none(),
         "standard DKG must not produce a PET key"
     );
-    outcome.object_id
+    let sign = sign_scenario::run(&native, &keys, &outcome.policy_id).await;
+    (outcome.object_id, sign.derivation_id)
 }
 
 async fn wait_main_polynomials(addresses: &[String], ring_pk: &str) -> Vec<Polynomials> {

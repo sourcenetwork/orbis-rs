@@ -1,7 +1,9 @@
 use super::{
-    pet_dkg_contract, pre_scenario, reporting_genesis_json, wait_for_node_info_on_chain,
-    wait_for_ring_state_on_all_nodes, RingStateSnapshot, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3,
+    pet_dkg_contract, pre_scenario, reporting_genesis_json, sign_scenario,
+    wait_for_node_info_on_chain, wait_for_ring_state_on_all_nodes, RingStateSnapshot, NODE_KEY_1,
+    NODE_KEY_2, NODE_KEY_3,
 };
+use bulletin::r#trait::{BulletinKind, BulletinWriteKind};
 use common::blockchain::{
     orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
@@ -26,6 +28,7 @@ pub(super) struct Cosmos {
     pub ring_id: String,
     mode: pet_dkg_contract::DkgMode,
     node_endpoints: [String; 3],
+    store_signer_address: String,
 }
 
 impl pet_dkg_contract::ScenarioBackend for Cosmos {
@@ -162,6 +165,7 @@ impl pet_dkg_contract::ScenarioBackend for Cosmos {
             ring_id: config.ring_id.to_string(),
             mode: config.mode,
             node_endpoints,
+            store_signer_address: node1_info.public_address,
         }
     }
 
@@ -240,11 +244,18 @@ impl pre_scenario::Backend for Cosmos {
             .expect("create shared PRE document policy")
     }
 
-    async fn authorize_reader(&self, policy_id: &str, object_id: &str, reader_did: &str) {
+    async fn authorize_object(
+        &self,
+        policy_id: &str,
+        object_id: &str,
+        resource: &str,
+        relation: &str,
+        actor_did: &str,
+    ) {
         cli_tool::register_object_to_chain_with_config(
             policy_id.to_string(),
             object_id.to_string(),
-            "document".to_string(),
+            resource.to_string(),
             self.chain_config.clone(),
         )
         .await
@@ -252,14 +263,69 @@ impl pre_scenario::Backend for Cosmos {
         cli_tool::set_relationship_on_chain(
             policy_id.to_string(),
             object_id.to_string(),
-            "document".to_string(),
-            "reader".to_string(),
-            reader_did.to_string(),
+            resource.to_string(),
+            relation.to_string(),
+            actor_did.to_string(),
             self.chain_config.clone(),
             TEST_ACCOUNT_HEX_KEY,
         )
         .await
-        .expect("grant shared PRE reader");
+        .expect("grant shared scenario actor");
+    }
+
+    async fn read_document(&self, object_id: &str) -> Vec<u8> {
+        cli_tool::read_bulletin_post_with_config(
+            object_id.to_string(),
+            BulletinKind::Document,
+            self.chain_config.clone(),
+        )
+        .await
+        .expect("read shared scenario document")
+    }
+
+    async fn store_write_marker(&self) -> pre_scenario::Capability<u64> {
+        pre_scenario::Capability::Supported(
+            cli_tool::get_account_sequence_with_config(
+                &self.store_signer_address,
+                self.chain_config.clone(),
+            )
+            .await
+            .expect("read StoreSecret submitting account sequence"),
+        )
+    }
+
+    async fn post_document_direct(&self, payload: Vec<u8>) -> pre_scenario::Capability<String> {
+        pre_scenario::Capability::Supported(
+            cli_tool::create_bulletin_post_with_config(
+                BulletinWriteKind::Document,
+                payload,
+                self.chain_config.clone(),
+            )
+            .await
+            .expect("post shared scenario document directly"),
+        )
+    }
+}
+
+impl sign_scenario::Backend for Cosmos {
+    async fn post_key_derivation(
+        &self,
+        policy_id: &str,
+        derivation: &str,
+        resource: &str,
+        permission: &str,
+        _ring_pk: &str,
+    ) -> (String, String) {
+        cli_tool::post_key_derivation_with_config(
+            self.ring_id.clone(),
+            derivation.to_string(),
+            policy_id.to_string(),
+            resource.to_string(),
+            permission.to_string(),
+            self.chain_config.clone(),
+        )
+        .await
+        .expect("post shared Sign key derivation")
     }
 }
 

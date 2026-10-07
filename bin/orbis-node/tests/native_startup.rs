@@ -471,10 +471,14 @@ async fn native_dkg() {
 #[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_dkg_and_pre() {
-    let object_id = native_pet::dkg_and_pre_scenario(9080).await;
+    let (object_id, derivation_id) = native_pet::dkg_pre_and_sign_scenario(9080).await;
     assert!(
         !object_id.is_empty(),
         "the shared PRE scenario must store a document"
+    );
+    assert!(
+        !derivation_id.is_empty(),
+        "the shared Sign scenario must store a key derivation"
     );
 }
 

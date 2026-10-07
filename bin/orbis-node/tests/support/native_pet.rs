@@ -20,6 +20,8 @@ mod dkg;
 mod pet_dkg_contract;
 #[path = "pre_scenario.rs"]
 mod pre_scenario;
+#[path = "sign_scenario.rs"]
+mod sign_scenario;
 
 #[path = "native_pet/document.rs"]
 mod document;
@@ -66,7 +68,7 @@ pub async fn dkg_scenario(
 /// Run the same standard-DKG → StoreSecret → authorized PRE scenario as the
 /// Cosmos integration suite, differing only in backend provisioning and ACP
 /// writes.
-pub async fn dkg_and_pre_scenario(deployment: u64) -> String {
+pub async fn dkg_pre_and_sign_scenario(deployment: u64) -> (String, String) {
     dkg::run_pre(deployment).await
 }
 
