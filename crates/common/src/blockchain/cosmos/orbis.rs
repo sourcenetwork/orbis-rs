@@ -1,9 +1,6 @@
 //! `VeraClient` extension methods for x/orbis: transaction submission and queries.
 
-use super::decode::{
-    decode_create_ring_id, decode_store_document_id, decode_store_key_derivation_id,
-};
-use super::types::*;
+use crate::blockchain::orbis::*;
 use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 

@@ -20,18 +20,20 @@ tokio = { workspace = true }
 
 commonware-codec = { version = "2026.9.0", optional = true }
 url = { version = "2.5", optional = true }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6", optional = true }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
 alloy-primitives = { version = "1", optional = true }
 k256 = { workspace = true, optional = true }
-local-storage = { path = "../local-storage", optional = true }
+local-storage = { path = "../local-storage", optional = true, default-features = false }
+getrandom = { version = "0.2", features = ["std"], optional = true }
 zeroize = { workspace = true, optional = true }
 
 [features]
 default = ["vera"]
-vera = ["common/cosmos"]
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize"]
+vera = ["cosmos-identity"]
+cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
+native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "local-storage/redb", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's
 # what actually compiles the module this re-exports.
@@ -50,7 +52,7 @@ name = "native_service"
 required-features = ["native"]
 
 [dev-dependencies]
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "a1cbace66f2f88afaa0ee87148cdbfb7158db9a6" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c" }
 blst = "0.3"
 commonware-math = "2026.9.0"
 tempfile.workspace = true

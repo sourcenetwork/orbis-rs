@@ -6,8 +6,9 @@ mod config;
 mod pet_tests;
 #[cfg(test)]
 mod reshare_tests;
+pub mod startup;
 pub use backend::NativeBulletin;
-pub use config::NativeConfig;
+pub use config::{ConfigError, NativeConfig};
 
 use std::path::Path;
 

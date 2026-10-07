@@ -1,8 +1,8 @@
 use alloy_primitives::{Bytes, B256};
 use std::time::Duration;
+use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{BlsSigner, VeraClient};
 use vera_domain::{ConsensusPublicKey, NativeTx, Tx};
-use vera_harness::cluster::TestCluster;
 
 pub async fn confirmed(client: &VeraClient, id: B256, trusted: &ConsensusPublicKey) {
     wait(client, id, trusted, "native receipt", None, None).await;
