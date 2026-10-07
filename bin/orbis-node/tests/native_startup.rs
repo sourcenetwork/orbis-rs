@@ -450,7 +450,7 @@ async fn native_pet_threshold_workflows() {
 
 /// Native half of the `cosmos_*`/`native_*` scenario pair the harness-unification
 /// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
-/// Proves `native_pet::dkg_scenario`'s shared finalize-and-verify tail on its
+/// Proves the shared provision-trigger-finalize-verify scenario on its
 /// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
 #[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
@@ -463,6 +463,18 @@ async fn native_dkg() {
     assert!(
         keys.pet_public_key.is_some_and(|pet| !pet.is_empty()),
         "DKG must finalize the PET key"
+    );
+}
+
+/// Native adapter for the shared standard-DKG → StoreSecret → authorized PRE
+/// scenario. The scenario body is identical to `cosmos_dkg_and_pre`.
+#[tokio::test]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_dkg_and_pre() {
+    let object_id = native_pet::dkg_and_pre_scenario(9080).await;
+    assert!(
+        !object_id.is_empty(),
+        "the shared PRE scenario must store a document"
     );
 }
 

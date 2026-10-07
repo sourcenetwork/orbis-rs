@@ -10,6 +10,8 @@ mod pet_dkg;
 #[path = "../../tests/support/pet_dkg_contract.rs"]
 mod pet_dkg_contract;
 mod pet_reshare;
+#[path = "../../tests/support/pre_scenario.rs"]
+mod pre_scenario;
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
@@ -1089,6 +1091,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 /// release) doesn't exist yet, so this test stops at "both keys finalized" —
 /// it does not attempt PRE against a PET-gated document.
 struct DkgScenarioOutcome {
+    _network: IntegrationTestNetwork,
     chain_config: ChainConfig,
     controller_client: VeraClient,
     endpoint: String,
@@ -1098,161 +1101,28 @@ struct DkgScenarioOutcome {
     keys: pet_dkg_contract::Keys,
 }
 
-/// Bring up ACP governance for a genesis-seeded PET ring, register each
-/// node's peer address + ring whitelist, trigger DKG, and verify the
-/// finalized ring + local polynomial state via the shared
-/// `pet_dkg_contract` pattern (see that module and its native counterpart,
-/// `tests/support/native_pet/dkg.rs`).
+/// Run the shared paired-DKG scenario through the Cosmos adapter and retain
+/// its fixture for callers that continue into PET/PRE behavior.
 ///
 /// Shared by `test_cli_calls_dkg_for_pet_ring` (which continues on to
 /// PET-gated PRE assertions) and `cosmos_dkg` (which only proves this shared
 /// tail — the direct Cosmos counterpart to native's `native_dkg`). Bring-up
-/// and the DKG-trigger call itself stay backend-specific rather than forced
-/// into one cross-backend function: Cosmos's ring here is genesis-seeded
-/// (not created via a chain tx — `register_ring` isn't implemented for
-/// `CosmosAdmin` for exactly this reason) and `cli_tool::do_dkg` wraps the
-/// trigger in JWT auth + a 3-attempt retry loop that native's equivalent
-/// (a plain `DkgServiceClient::start_dkg` call — native authorizes nodes at
-/// the chain level during bring-up instead) doesn't have. Only the
-/// finalize-and-verify tail (`pet_dkg_contract::verify`) is genuinely
-/// identical shape across backends today.
+/// Provisioning and trigger mechanics remain backend-specific implementations
+/// of `pet_dkg_contract::ScenarioBackend`; their ordering and all behavioral
+/// assertions live in the common runner used by both Cosmos and native.
 async fn dkg_scenario(
-    network: &IntegrationTestNetwork,
-    ring_id: &str,
-    expected_policy_id: &str,
+    ring_id: &'static str,
+    expected_policy_id: &'static str,
 ) -> DkgScenarioOutcome {
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
-
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
-    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
-        .await
-        .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
-        .await
-        .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
-        .await
-        .expect("Failed to query node3 info");
-
-    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_SERVICE,
-    );
-    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_SERVICE,
-    );
-    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_SERVICE,
-    );
-
-    let threshold = 2u32;
-    let endpoint = endpoints[0].to_string();
-    let node_endpoints = [
-        endpoints[0].to_string(),
-        endpoints[1].to_string(),
-        endpoints[2].to_string(),
-    ];
-
-    let node_keys = [
-        node1_info.node_key.clone(),
-        node2_info.node_key.clone(),
-        node3_info.node_key.clone(),
-    ];
-    assert_eq!(
-        node_keys[0], NODE_KEY_1,
-        "node1 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[1], NODE_KEY_2,
-        "node2 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[2], NODE_KEY_3,
-        "node3 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
-
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
-
-    // Must be the first CreatePolicy tx (counter=0) so the returned ID matches
-    // the expected policy ID baked into genesis — see this fn's callers.
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        ring_id,
-        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-    )
-    .await;
-    assert_eq!(
-        governance_policy_id, expected_policy_id,
-        "ACP policy ID mismatch — acp_core may have changed. \
-         Update the expected policy ID to: {governance_policy_id}"
-    );
-
-    let ring_id = ring_id.to_string();
-
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
-        wait_for_node_info_on_chain(
-            &controller_client,
-            node_key,
-            Duration::from_secs(60),
-            Duration::from_millis(500),
-        )
-        .await;
-        let peer_update = controller_client
-            .orbis_update_node_peer_id(node_key, peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
-
-        let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
-            .await
-            .expect("add ring to NodeInfo whitelist");
-        assert_eq!(
-            whitelist_update.code, 0,
-            "add ring to NodeInfo whitelist tx failed: {}",
-            whitelist_update.log
-        );
-    }
-
-    println!("Starting DKG for PET-enabled ring {}...", ring_id);
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
-    assert!(
-        dkg_result.is_ok(),
-        "DKG should succeed: {:?}",
-        dkg_result.err()
-    );
-
-    println!(
-        "DKG initiated (session_id: {}), waiting for combined ring+PET finalization...",
-        dkg_result.unwrap().session_id
-    );
-
-    let keys = pet_dkg::verify(&chain_config, &controller_client, &ring_id, &node_endpoints).await;
-
+    let (scenario, keys, _local_state) = pet_dkg::run(ring_id, expected_policy_id).await;
     DkgScenarioOutcome {
-        chain_config,
-        controller_client,
-        endpoint,
-        node_keys,
-        threshold,
-        ring_id,
+        _network: scenario.network,
+        chain_config: scenario.chain_config,
+        controller_client: scenario.controller_client,
+        endpoint: scenario.endpoint,
+        node_keys: scenario.node_keys,
+        threshold: scenario.threshold,
+        ring_id: scenario.ring_id,
         keys,
     }
 }
@@ -1262,41 +1132,47 @@ async fn dkg_scenario(
 /// two tests' genesis fixtures never collide (each gets its own freshly
 /// started chain, but both are baked into this same file's constants).
 const DKG_SCENARIO_RING_ID: &str = "integration-test-dkg-scenario-ring";
+const PRE_SCENARIO_RING_ID: &str = "integration-test-pre-scenario-ring";
 
 /// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
 /// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
-/// Proves `dkg_scenario`'s shared finalize-and-verify tail on its own, without
+/// Proves the shared provision-trigger-finalize-verify scenario on its own, without
 /// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
 /// layers on top.
 #[tokio::test]
 #[serial_test::serial]
 async fn cosmos_dkg() {
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": DKG_SCENARIO_RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3),
-                    "requires_pet": true
-                }]
-            }),
-        )
-        .build();
-
-    let outcome = dkg_scenario(&network, DKG_SCENARIO_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    let outcome = dkg_scenario(DKG_SCENARIO_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
     assert!(
         !outcome.keys.main.is_empty(),
         "DKG must finalize the main key"
     );
     assert!(
-        !outcome.keys.pet.is_empty(),
+        outcome.keys.pet.as_ref().is_some_and(|pet| !pet.is_empty()),
         "DKG must finalize the PET key"
+    );
+}
+
+/// Cosmos adapter for the shared standard-DKG → StoreSecret → authorized PRE
+/// scenario. Its native counterpart runs the same scenario body below the
+/// backend boundary in `native_startup.rs`.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_dkg_and_pre() {
+    let (_backend, keys, _local_state, outcome) =
+        pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
+            ring_id: PRE_SCENARIO_RING_ID,
+            expected_policy_id: RING_GOVERNANCE_POLICY_ID,
+            mode: pet_dkg_contract::DkgMode::Standard,
+        })
+        .await;
+    assert!(
+        keys.pet.is_none(),
+        "standard DKG must not produce a PET key"
+    );
+    assert!(
+        !outcome.object_id.is_empty(),
+        "the shared PRE scenario must store a document"
     );
 }
 
@@ -1305,25 +1181,8 @@ async fn cosmos_dkg() {
 async fn test_cli_calls_dkg_for_pet_ring() {
     println!("Starting Docker-based PET integration test...");
 
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": PET_RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3),
-                    "requires_pet": true
-                }]
-            }),
-        )
-        .build();
-
     let DkgScenarioOutcome {
+        _network,
         chain_config,
         controller_client,
         endpoint,
@@ -1331,9 +1190,9 @@ async fn test_cli_calls_dkg_for_pet_ring() {
         threshold,
         ring_id,
         keys,
-    } = dkg_scenario(&network, PET_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    } = dkg_scenario(PET_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
     let ring_pk_hex = keys.main;
-    let pet_pk_hex = keys.pet;
+    let pet_pk_hex = keys.pet.expect("PET DKG must return a PET key");
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",

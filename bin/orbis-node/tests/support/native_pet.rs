@@ -1,11 +1,8 @@
 use super::{add_orbis_node4, confirmed, submit, Node};
 use alloy_primitives::B256;
 use alloy_sol_types::SolCall;
-use proto::{
-    info_service::{
-        info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
-    },
-    v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest},
+use proto::info_service::{
+    info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
 };
 use std::time::Duration;
 use tonic::transport::Endpoint;
@@ -21,6 +18,8 @@ use vera_domain::ConsensusPublicKey;
 mod dkg;
 #[path = "pet_dkg_contract.rs"]
 mod pet_dkg_contract;
+#[path = "pre_scenario.rs"]
+mod pre_scenario;
 
 #[path = "native_pet/document.rs"]
 mod document;
@@ -47,15 +46,10 @@ pub enum Scenario {
     ReportFault,
 }
 
-/// Bring up a native Vera cluster through `NativeWorkflow::start` (cluster +
-/// policy + ring + node authorization — genuinely backend-specific, see
-/// `bin/orbis-node/src/tests/integration.rs`'s `dkg_scenario` doc comment for
-/// why Cosmos's bring-up can't share this), trigger DKG, and verify the
-/// finalized ring + local polynomial state via the shared `pet_dkg_contract`
-/// pattern. Shared by every `Scenario` variant in `run` below (all need a
-/// finalized paired-DKG ring before their own scenario-specific logic) and by
-/// `native_dkg` (`bin/orbis-node/tests/native_startup.rs`), which only proves
-/// this shared tail — the direct native counterpart to Cosmos's `cosmos_dkg`.
+/// Run the shared paired-DKG scenario through the native adapter. The adapter
+/// owns native-specific provisioning and gRPC triggering; the common runner
+/// owns their ordering and the finalized/local-state assertions. Shared by
+/// every `Scenario` variant below and by the standalone `native_dkg` test.
 pub async fn dkg_scenario(
     deployment: u64,
     report_fault: bool,
@@ -64,27 +58,16 @@ pub async fn dkg_scenario(
     RingPublicKeys,
     Vec<Polynomials>,
 ) {
-    let workflow =
-        super::native_workflow::NativeWorkflow::start(deployment, true, report_fault).await;
-    let response = DkgServiceClient::connect(endpoint(&workflow.addresses[0]))
-        .await
-        .unwrap()
-        .start_dkg(StartDkgRequest {
-            ring_id: workflow.ring_id.clone(),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(!response.session_id.is_empty());
-    let (keys, baseline) = dkg::verify(
-        &workflow.client,
-        &workflow.trusted,
-        &workflow.ring_id,
-        &workflow.addresses,
-    )
-    .await;
+    let (workflow, keys, baseline) = dkg::run(deployment, report_fault).await;
     eprintln!("native PET phase=paired-dkg members=3 threshold=2");
     (workflow, keys, baseline)
+}
+
+/// Run the same standard-DKG → StoreSecret → authorized PRE scenario as the
+/// Cosmos integration suite, differing only in backend provisioning and ACP
+/// writes.
+pub async fn dkg_and_pre_scenario(deployment: u64) -> String {
+    dkg::run_pre(deployment).await
 }
 
 pub async fn run(scenario: Scenario) {

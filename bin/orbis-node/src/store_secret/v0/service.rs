@@ -9,7 +9,7 @@ use crate::sign::v0::coordinator::{SignCoordinator, SignResponse, SigningOptions
 use crate::sign::v0::messages::SignContext;
 use crate::store_secret::v0::error::StoreSecretError;
 use authn::{extract_bearer_token, resolve_jwt_did, BearerToken, StoreSecretClaims};
-use bulletin::r#trait::{BulletinPost, BulletinWriteKind, DocumentPayload};
+use bulletin::r#trait::{BulletinKind, BulletinWriteKind, DocumentPayload};
 use crypto::r#trait::{Dkg, EncryptionProof};
 use proto::v0::store_secret::{
     store_secret_service_server::StoreSecretService, StoreSecretRequest, StoreSecretResponse,
@@ -207,11 +207,20 @@ where
         let mut signature = "".to_string();
 
         if req.with_proof {
-            // Construct the BulletinPost that was stored
-            let bulletin_post = BulletinPost {
-                id: object_id.clone(),
-                payload: payload_bytes.clone(),
-            };
+            // Sign the bulletin's authoritative representation. Backends are
+            // allowed to deserialize and canonically reserialize a document
+            // while storing it, so the caller-side bytes above are not
+            // necessarily byte-identical to what signing peers will read.
+            let bulletin_post = self
+                .state
+                .bulletin
+                .read(object_id.clone(), BulletinKind::Document)
+                .await
+                .map_err(|e| {
+                    StoreSecretError::Storage(format!(
+                        "Failed to read stored document for signing: {e}"
+                    ))
+                })?;
 
             // Serialize BulletinPost to bytes for signing
             let message_to_sign: Vec<u8> = bulletin_post.try_into().map_err(|e| {
