@@ -2,9 +2,6 @@ name: Upgrade Compatibility
 
 on:
   pull_request:
-    branches:
-      - develop
-      - "iverc/**"
   workflow_dispatch:
     inputs:
       to_ref:

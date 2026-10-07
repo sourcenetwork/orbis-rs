@@ -3,6 +3,7 @@ use alloy_primitives::B256;
 use commonware_codec::Encode;
 use proto::info_service::GetNodeInfoResponse;
 use std::{fs, net::TcpListener, path::PathBuf, time::Duration};
+use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{
     create_scoped_bearer_token,
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
@@ -10,7 +11,7 @@ use vera_client::{
     BlsSigner, DelegationScope, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
-use vera_harness::cluster::{ConsensusPreset, GenesisBuilder, KeySet, TestCluster};
+use vera_harness::cluster::KeySet;
 
 pub(super) struct NativeWorkflow {
     pub cluster: TestCluster,
@@ -34,7 +35,17 @@ pub(super) struct NativeWorkflow {
 }
 
 impl NativeWorkflow {
-    pub async fn start(deployment: u64, requires_pet: bool) -> Self {
+    pub async fn start(deployment: u64, requires_pet: bool, report_fault: bool) -> Self {
+        let cluster = TestCluster::start(deployment).await;
+        Self::start_with_network(deployment, requires_pet, report_fault, cluster).await
+    }
+
+    pub async fn start_with_network(
+        deployment: u64,
+        requires_pet: bool,
+        report_fault: bool,
+        cluster: TestCluster,
+    ) -> Self {
         let trusted = *KeySet::builder()
             .seed(deployment)
             .build()
@@ -43,25 +54,6 @@ impl NativeWorkflow {
             .output
             .public()
             .public();
-        let cluster = TestCluster::builder()
-            .nodes(4)
-            .seed(deployment)
-            .chain_id(deployment)
-            .genesis(
-                GenesisBuilder::devnet()
-                    .blocks_per_epoch(192)
-                    .simplex(Default::default()),
-            )
-            .preset(ConsensusPreset::Normal)
-            .build()
-            .await
-            .unwrap();
-        cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
-        cluster
-            .observe(Duration::from_millis(100))
-            .wait_for_height(3, Duration::from_secs(30))
-            .await
-            .unwrap();
         let url = cluster.node(0).rpc_url();
         let client = VeraClient::new(&url);
         let first = client.read_finalized_revision(1, &trusted).await.unwrap();
@@ -108,7 +100,14 @@ impl NativeWorkflow {
             let addr = listener.local_addr().unwrap().to_string();
             drop(listener);
             let log = directory.join("node.log");
-            nodes.push(Node::start(&directory, &addr, &controller_key, &log));
+            nodes.push(Node::start_configured(
+                &directory,
+                &addr,
+                &controller_key,
+                &log,
+                "127.0.0.1:0",
+                report_fault,
+            ));
             addresses.push(addr);
             logs.push(log);
         }

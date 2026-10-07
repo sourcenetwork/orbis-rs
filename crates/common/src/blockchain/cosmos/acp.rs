@@ -1,6 +1,6 @@
 //! `VeraClient` extension methods for x/acp: policy transactions and queries.
 
-use super::types::*;
+use crate::blockchain::acp::*;
 use crate::blockchain::{BlockchainError, BroadcastResult, Result, VeraClient};
 use prost::Message;
 

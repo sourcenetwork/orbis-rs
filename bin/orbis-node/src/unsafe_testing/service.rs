@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::pet_fault::PetFaultControl;
 use crate::app_state::AppState;
 use crate::constants::RELAY_CHECK_MAX_DRIFT_SECS;
 use crate::dkg::v0::coordinator::evidence::{
@@ -61,6 +62,7 @@ use zeroize::Zeroizing;
 pub struct UnsafeTestingServiceImpl {
     local_storage: LocalStorageImpl,
     app_state: Option<Arc<AppState<DkgImpl>>>,
+    pet_fault: Option<Arc<PetFaultControl>>,
 }
 
 impl UnsafeTestingServiceImpl {
@@ -69,13 +71,18 @@ impl UnsafeTestingServiceImpl {
         Self {
             local_storage,
             app_state: None,
+            pet_fault: None,
         }
     }
 
-    pub fn with_app_state(app_state: Arc<AppState<DkgImpl>>) -> Self {
+    pub(crate) fn with_app_state(
+        app_state: Arc<AppState<DkgImpl>>,
+        pet_fault: Arc<PetFaultControl>,
+    ) -> Self {
         Self {
             local_storage: app_state.local_storage.clone(),
             app_state: Some(app_state),
+            pet_fault: Some(pet_fault),
         }
     }
 }
@@ -227,16 +234,10 @@ impl UnsafeTestingService for UnsafeTestingServiceImpl {
                 "ring_id must contain 1..=1024 bytes",
             ));
         }
-        let state = self
-            .app_state
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("unsafe PET fault requires app state"))?;
-        let mut target = state.pet_decrypt_fault.lock().await;
-        if request.enabled {
-            *target = Some(request.ring_id);
-        } else if target.as_deref() == Some(request.ring_id.as_str()) {
-            *target = None;
-        }
+        let control = self.pet_fault.as_ref().ok_or_else(|| {
+            Status::failed_precondition("unsafe PET fault requires a testing protocol handler")
+        })?;
+        control.set(request.ring_id, request.enabled).await;
         Ok(Response::new(SetPetDecryptFaultResponse {}))
     }
 

@@ -526,20 +526,6 @@ where
         };
         let reply = P::partial_pet_check(&pri_share.v, node_id, &synthetic_tag)
             .map_err(|e| PetError::Crypto(format!("Failed to compute PET decrypt share: {}", e)))?;
-        // The unsafe-testing service targets a ring without changing its stored
-        // bundle. All normal authorization, certificate and share checks above
-        // still run. Sign the faulty proof so the report tests exercise genuine
-        // attributable misbehavior rather than an invalid identity signature.
-        #[cfg(feature = "unsafe-testing")]
-        let reply = {
-            let mut reply = reply;
-            if self.app_state.pet_decrypt_fault.lock().await.as_deref()
-                == Some(ctx.document.ring_id.as_str())
-            {
-                reply.proof += Fr::from(1u64);
-            }
-            reply
-        };
         let partial_bytes = CryptoSerialize::to_bytes(&reply.partial.v)
             .map_err(|e| PetError::Serialization(format!("Failed to serialize partial: {}", e)))?;
         let challenge_bytes = CryptoSerialize::to_bytes(&reply.challenge).map_err(|e| {

@@ -4,6 +4,25 @@ A small async abstraction over typed Orbis bulletin objects: **read** rings by a
 
 The default backend is Vera `x/orbis`; an in-memory **dummy** implementation ships for tests and local development.
 
+## Node startup
+
+`startup::PreparedBulletin` separates local identity preparation from backend
+connection. Each implementation reads or creates its encrypted signing identity
+and returns a public `NodeIdentity` with the node key and public address. A failed
+storage read or malformed existing key never generates a replacement identity.
+
+The node passes that identity to its bootstrap and ready information services;
+neither service decodes signing material or selects a bulletin backend.
+Authorization is constructed separately through `Authz`. The prepared bulletin
+then connects through the `Bulletin` trait before node registration and readiness.
+
+`native::startup::PreparedNativeBulletin` owns native worker initialization and the
+deployment-scoped journal. `vera::startup::PreparedVeraBulletin` owns the legacy
+signer, fee-granter and minimum-balance setup. Connection phases preserve the
+bootstrap funding status; integration account funding remains in node composition.
+The `cosmos-identity` feature exposes identity helpers without selecting that
+bulletin implementation or requiring Redb.
+
 ## Native service client
 
 The `native` feature exposes `native::NativeVeraClient` for signed

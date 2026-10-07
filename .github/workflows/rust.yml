@@ -4,7 +4,18 @@ on:
   push:
     branches: [ "main", "develop" ]
   pull_request:
-    branches: [ "main", "develop", "iverc/**" ]
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: Qualification scope
+        type: choice
+        options: [full, common, gateway]
+        default: full
+        required: true
+      trust_revision:
+        description: Immutable Trust native ring fixture revision for gateway scope
+        type: string
+        default: 11630c1a0b3241bed2799a6c162c4c8e16a4e502
 
 permissions:
   contents: read
@@ -12,7 +23,7 @@ permissions:
 
 # A newer push to the same branch / PR cancels the superseded run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.scope == 'gateway' && '-native-trust' || '' }}
   cancel-in-progress: true
 
 env:
@@ -48,7 +59,28 @@ env:
     | test(/^unsafe_testing::tests::/)))
 
 jobs:
+  common:
+    name: Common backend boundary
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'common'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: common-backend-boundary
+      - name: Qualify both Common feature modes
+        run: bash scripts/test-common-backend.sh
+
   lint:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -79,6 +111,7 @@ jobs:
       run: cargo build --release --target wasm32-unknown-unknown -p jubjub-wasm
 
   clippy:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
@@ -106,6 +139,7 @@ jobs:
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
   native:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     name: Native backend (${{ matrix.crypto }})
     runs-on: ubuntu-latest
     env:
@@ -150,11 +184,14 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         crypto: [bls12-381, jubjub]
+        backend: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' && fromJSON('["native"]') || fromJSON('["cosmos", "native"]') }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -171,16 +208,42 @@ jobs:
         context: .
         file: docker/Dockerfile
         push: true
-        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-${{ matrix.crypto }}
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}${{ matrix.backend == 'native' && '-native' || '' }}-${{ matrix.crypto }}
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+          io.sourcenetwork.orbis.backend=${{ matrix.backend }}
+          io.sourcenetwork.orbis.curve=${{ matrix.crypto }}
+          io.sourcenetwork.orbis.integration-features=${{ matrix.backend == 'native' && 'false' || 'true' }}
         build-args: |
-          ENABLE_INTEGRATION_TEST=true
+          ENABLE_INTEGRATION_TEST=${{ matrix.backend == 'native' && 'false' || 'true' }}
+          BACKEND=${{ matrix.backend }}
+          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
           CRYPTO_FEATURE=${{ matrix.crypto }}
-        cache-from: type=gha,scope=integ-${{ matrix.crypto }}
-        cache-to: type=gha,scope=integ-${{ matrix.crypto }},mode=max
+        cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
+    - name: Build + push native fault-report image (${{ matrix.crypto }})
+      if: matrix.backend == 'native' && inputs.scope != 'gateway'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        target: native-diagnostic
+        push: true
+        tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
+        build-args: |
+          ENABLE_INTEGRATION_TEST=false
+          BACKEND=native
+          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
+          CRYPTO_FEATURE=${{ matrix.crypto }}
+        cache-from: |
+          type=gha,scope=integ-native-${{ matrix.crypto }}
+          type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }}
+        cache-to: type=gha,scope=integ-native-diagnostic-${{ matrix.crypto }},mode=max
 
   # Compile every test binary once per crypto and save the shared cache the
   # `unit` / `integration` jobs restore.
   compile:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
@@ -213,6 +276,7 @@ jobs:
       run: cargo nextest run --no-run --profile ci ${{ matrix.cargo_flags }}
 
   unit:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: compile
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
@@ -247,6 +311,7 @@ jobs:
       run: cargo nextest run --profile ci ${{ matrix.cargo_flags }} -E "not (${{ env.DOCKER_TESTS }})"
 
   integration:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: [compile, image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
       spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
@@ -295,3 +360,204 @@ jobs:
         cargo nextest run --profile ci ${{ matrix.cargo_flags }}
         -E "${{ env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
+
+  native-vera-image:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read matching native SDK revision
+        id: vera
+        run: echo "revision=$(python3 scripts/native-vera-ref.py)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native Vera image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.native-vera-integration
+          push: true
+          tags: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+          build-args: VERA_REF=${{ steps.vera.outputs.revision }}
+          cache-from: type=gha,scope=native-vera
+          cache-to: type=gha,scope=native-vera,mode=max
+
+  native-lifecycle:
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
+    name: Native lifecycle (${{ matrix.crypto }})
+    needs: [image, native-vera-image]
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
+      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      ORBIS_NATIVE_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-${{ matrix.crypto }}
+      ORBIS_NATIVE_DIAGNOSTIC_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
+      ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
+      - name: Install qualified toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Cache dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: native-lifecycle-${{ runner.os }}-${{ matrix.crypto }}-
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull exact native runtime images
+        run: |
+          docker pull "$ORBIS_NATIVE_IMAGE"
+          docker pull "$ORBIS_NATIVE_VERA_IMAGE"
+          docker pull "$ORBIS_NATIVE_DIAGNOSTIC_IMAGE"
+      - name: Validate bounded diagnostic parser
+        run: python3 scripts/test-native-lifecycle-unit.py
+      - name: Native integration suite (${{ matrix.crypto }})
+        run: bash scripts/test-native-integration.sh "${{ matrix.crypto }}"
+
+  native-trust-artifacts:
+    name: Build native Trust ring artifacts once
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      artifact: ${{ steps.archive.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate immutable fixture input
+        env:
+          TRUST_REVISION: ${{ inputs.trust_revision }}
+        run: python3 scripts/native_trust_hosted.py validate --trust-ref "$TRUST_REVISION"
+      - uses: actions/checkout@v4
+        with:
+          repository: sourcenetwork/trust-api
+          ref: ${{ inputs.trust_revision }}
+          path: .native/trust
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: sourcenetwork/vera.rs
+          ref: 1dab0c4562da551b1a7f00fcea643b914769891c
+          path: .native/vera
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: sourcenetwork/defradb.rs
+          ref: 88e148a7387e00d9dd6fbf6ab78701d6e2bef452
+          path: .native/defra
+          persist-credentials: false
+      - name: Install qualified native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+          rustup toolchain install 1.98.0 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-trust-artifacts-${{ runner.os }}-88e148a7
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate private orchestration guards
+        run: python3 scripts/test-native-trust-hosted.py
+      - name: Stage normal runtimes and focused Go driver
+        env:
+          TRUST_REVISION: ${{ inputs.trust_revision }}
+          TRUST_IMAGE: ghcr.io/${{ github.repository }}/trust-native:${{ github.sha }}-${{ inputs.trust_revision }}
+        run: |
+          python3 scripts/native_trust_hosted.py build --trust-ref "$TRUST_REVISION" \
+            --trust .native/trust --vera .native/vera --defra .native/defra \
+            --image "$TRUST_IMAGE" --output "$RUNNER_TEMP/native-trust-build"
+      - name: Transfer immutable binaries and hashes only
+        id: archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-trust-artifacts-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-trust-build/native-trust-artifacts.tar
+            ${{ runner.temp }}/native-trust-build/native-trust-artifacts.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  native-trust-ring:
+    name: Native Trust ring (${{ matrix.crypto }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' }}
+    needs: [image, native-vera-image, native-trust-artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      ORBIS_NATIVE_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-${{ matrix.crypto }}
+      ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install qualified native fixture dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+          rustup toolchain install 1.98.0 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: native-trust-ring-${{ runner.os }}-${{ matrix.crypto }}-
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.native-trust-artifacts.outputs.artifact }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/native-trust-download
+      - name: Verify executable and container ring/DKG contracts
+        env:
+          TRUST_REVISION: ${{ inputs.trust_revision }}
+        run: |
+          python3 scripts/native_trust_hosted.py run --trust-ref "$TRUST_REVISION" \
+            --curve "${{ matrix.crypto }}" --artifacts "$RUNNER_TEMP/native-trust-download" \
+            --output "$RUNNER_TEMP/native-trust-run"
