@@ -9,6 +9,10 @@ use native_confirmation::{confirmed, submit};
 mod policy_generations;
 
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/admin.rs"]
+mod admin;
+
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[path = "support/native_workflow.rs"]
 mod native_workflow;
 
@@ -230,6 +234,25 @@ async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
 }
 
+/// Native half of the `cosmos_*`/`native_*` scenario pair the harness-unification
+/// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
+/// Proves `native_pet::dkg_scenario`'s shared finalize-and-verify tail on its
+/// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
+#[tokio::test]
+#[ignore = "requires native integration Docker images on Linux"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_dkg() {
+    let (_workflow, keys, _baseline) = native_pet::dkg_scenario(9079, false).await;
+    assert!(
+        !keys.public_key.is_empty(),
+        "DKG must finalize the main key"
+    );
+    assert!(
+        keys.pet_public_key.is_some_and(|pet| !pet.is_empty()),
+        "DKG must finalize the PET key"
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires native integration Docker images on Linux"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
@@ -300,6 +323,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         ring_id,
         now,
         headers: _headers,
+        deployment: _,
     } = native_workflow::NativeWorkflow::start(deployment, false, false).await;
     let response = DkgServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[0]))

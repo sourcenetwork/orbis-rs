@@ -47,6 +47,46 @@ pub enum Scenario {
     ReportFault,
 }
 
+/// Bring up a native Vera cluster through `NativeWorkflow::start` (cluster +
+/// policy + ring + node authorization — genuinely backend-specific, see
+/// `bin/orbis-node/src/tests/integration.rs`'s `dkg_scenario` doc comment for
+/// why Cosmos's bring-up can't share this), trigger DKG, and verify the
+/// finalized ring + local polynomial state via the shared `pet_dkg_contract`
+/// pattern. Shared by every `Scenario` variant in `run` below (all need a
+/// finalized paired-DKG ring before their own scenario-specific logic) and by
+/// `native_dkg` (`bin/orbis-node/tests/native_startup.rs`), which only proves
+/// this shared tail — the direct native counterpart to Cosmos's `cosmos_dkg`.
+pub async fn dkg_scenario(
+    deployment: u64,
+    report_fault: bool,
+) -> (
+    super::native_workflow::NativeWorkflow,
+    RingPublicKeys,
+    Vec<Polynomials>,
+) {
+    let workflow =
+        super::native_workflow::NativeWorkflow::start(deployment, true, report_fault).await;
+    let response = DkgServiceClient::connect(endpoint(&workflow.addresses[0]))
+        .await
+        .unwrap()
+        .start_dkg(StartDkgRequest {
+            ring_id: workflow.ring_id.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(!response.session_id.is_empty());
+    let (keys, baseline) = dkg::verify(
+        &workflow.client,
+        &workflow.trusted,
+        &workflow.ring_id,
+        &workflow.addresses,
+    )
+    .await;
+    eprintln!("native PET phase=paired-dkg members=3 threshold=2");
+    (workflow, keys, baseline)
+}
+
 pub async fn run(scenario: Scenario) {
     let (deployment, report_fault) = match scenario {
         Scenario::Lifecycle => (9075, false),
@@ -55,6 +95,7 @@ pub async fn run(scenario: Scenario) {
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
+    let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
     let super::native_workflow::NativeWorkflow {
         cluster,
         client,
@@ -73,19 +114,7 @@ pub async fn run(scenario: Scenario) {
         ring_id,
         headers: _headers,
         ..
-    } = super::native_workflow::NativeWorkflow::start(deployment, true, report_fault).await;
-    let response = DkgServiceClient::connect(endpoint(&addresses[0]))
-        .await
-        .unwrap()
-        .start_dkg(StartDkgRequest {
-            ring_id: ring_id.clone(),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(!response.session_id.is_empty());
-    let (keys, baseline) = dkg::verify(&client, &trusted, &ring_id, &addresses).await;
-    eprintln!("native PET phase=paired-dkg members=3 threshold=2");
+    } = workflow;
 
     let reader = Reader::new(vera_client::rings::ring_deployment_label(
         root.0, deployment,
@@ -441,7 +470,7 @@ impl Permissions<'_> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Polynomials {
+pub(crate) struct Polynomials {
     main: String,
     pet: String,
 }

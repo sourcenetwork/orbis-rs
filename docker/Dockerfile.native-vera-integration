@@ -13,7 +13,7 @@ WORKDIR /source
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release --locked -j2 -p verad --bin verad
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /source/target/release/verad /usr/local/bin/verad
 ARG VERA_REF

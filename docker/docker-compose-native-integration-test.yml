@@ -1,0 +1,282 @@
+# Docker Compose for native-Vera-backend integration tests
+# Spins up a 4-validator native Vera devnet + 3 orbis nodes (native backend),
+# all on service-name networking (no network_mode: host) with health checks.
+#
+# Unlike docker-compose-integration-test.yml (the Cosmos/SourceHub backend),
+# every port here is a FIXED container-internal port: each service runs in its
+# own network namespace (bridge networking), so there is no shared port space
+# to avoid collisions in — unlike the old ContainerNode-per-validator harness,
+# which used `network_mode: host` and therefore needed unique ephemeral ports
+# reserved up front. Host-side access (for the test process) still goes
+# through Docker's own ephemeral published-port mapping, same as the Cosmos
+# file.
+#
+# To pin a different native Vera chain revision or crypto feature:
+#   VERA_REF=<40-char sha> ORBIS_INTEGRATION_CRYPTO=jubjub \
+#     docker compose -f docker/docker-compose-native-integration-test.yml up --build -d
+# Defaults match docker/VERA_REF and bls12-381.
+#
+# `ORBIS_NATIVE_VERA{1..4}_DIR` / `ORBIS_NATIVE_NODE{1..4}_DIR` / `ORBIS_NATIVE_DEPLOYMENT`
+# are set by crates/test-support/src/native_network.rs before bringing the
+# stack up; they point at host directories the driver populates with
+# genesis/config/peers (validators) or vera.json/password (orbis nodes).
+#
+# Validators are addressed by IP, not Compose service-name DNS: `verad`'s
+# peers.json parses bootstrapper addresses with Rust's strict
+# `SocketAddr::parse` (crates/vera-node/src/config.rs's `load_peers`) — no DNS
+# resolution, so a hostname there is a hard parse error at validator startup.
+# crates/test-support/src/native_network.rs creates the 4 validator
+# containers first (assigning them IPs on Docker's own auto-allocated,
+# per-project network — no fixed subnet here, so parallel test runs never
+# collide), discovers those IPs, writes genesis.json/peers.json referencing
+# them, and only then starts the containers.
+services:
+  vera1:
+    image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.native-vera-integration
+      args:
+        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_NATIVE_VERA1_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_VERA1_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera2:
+    image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.native-vera-integration
+      args:
+        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_NATIVE_VERA2_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_VERA2_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera3:
+    image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.native-vera-integration
+      args:
+        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_NATIVE_VERA3_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_VERA3_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  vera4:
+    image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.native-vera-integration
+      args:
+        VERA_REF: ${VERA_REF:-79cc33186eb9dddb1a9bdfb8333e98dabd07e528}
+    entrypoint: ["verad"]
+    working_dir: /data
+    command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
+    volumes:
+      - ${ORBIS_NATIVE_VERA4_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::8645"
+    networks:
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_VERA4_IP}
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8645 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node1:
+    image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: native
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - RUST_LOG=info
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_NATIVE_NODE1_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      - orbis-native-integration-network
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node2:
+    image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: native
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - RUST_LOG=info
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_NATIVE_NODE2_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      - orbis-native-integration-network
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node3:
+    image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: native
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - RUST_LOG=info
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_NATIVE_NODE3_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      - orbis-native-integration-network
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  node4:
+    profiles: ["node4"]
+    image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        BACKEND: native
+        ENABLE_INTEGRATION_TEST: "${ORBIS_BUILD_INTEGRATION_TEST:-true}"
+        CRYPTO_FEATURE: "${ORBIS_INTEGRATION_CRYPTO:-bls12-381}"
+    working_dir: /data
+    environment:
+      - ORBIS_PASSWORD_FILE=password
+      - RUST_LOG=info
+    command: ["--vera-config", "/data/vera.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "5", "--runtime-base-path", "/data"]
+    volumes:
+      - ${ORBIS_NATIVE_NODE4_DIR:-/dev/null}:/data
+    ports:
+      - "127.0.0.1::50051"
+    networks:
+      - orbis-native-integration-network
+    depends_on:
+      vera1:
+        condition: service_healthy
+      vera2:
+        condition: service_healthy
+      vera3:
+        condition: service_healthy
+      vera4:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+networks:
+  # Pre-created by crates/test-support/src/native_network.rs (plain `docker
+  # network create`, letting Docker pick a non-colliding subnet) so validator
+  # IPs are known before any container exists — see that file's module doc
+  # comment. Compose only joins it; it never creates or removes it.
+  orbis-native-integration-network:
+    external: true
+    name: ${ORBIS_NATIVE_NETWORK_NAME}
