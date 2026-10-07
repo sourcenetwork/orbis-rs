@@ -1,7 +1,8 @@
 use super::{
-    pet_dkg_contract, pre_scenario, reporting_genesis_json, sign_scenario,
-    wait_for_node_info_on_chain, wait_for_ring_state_on_all_nodes, RingStateSnapshot, NODE_KEY_1,
-    NODE_KEY_2, NODE_KEY_3,
+    pet_dkg_contract, pre_scenario, refresh_scenario, reporting_genesis_json, reshare_scenario,
+    sign_scenario, wait_for_node_info_on_chain, wait_for_pss_refresh_on_all_nodes,
+    wait_for_reshare_bulletin_completion, wait_for_ring_state_on_all_nodes, RingStateSnapshot,
+    NODE_KEY_1, NODE_KEY_2, NODE_KEY_3,
 };
 use bulletin::r#trait::{BulletinKind, BulletinWriteKind};
 use common::blockchain::{
@@ -9,6 +10,7 @@ use common::blockchain::{
 };
 use std::time::Duration;
 use test_support::IntegrationTestNetwork;
+use tonic_prost::prost::Message;
 
 pub(super) struct Config {
     pub ring_id: &'static str,
@@ -326,6 +328,112 @@ impl sign_scenario::Backend for Cosmos {
         )
         .await
         .expect("post shared Sign key derivation")
+    }
+}
+
+impl refresh_scenario::Backend for Cosmos {
+    async fn rotate_local_shares(
+        &mut self,
+        keys: &pet_dkg_contract::Keys,
+        baseline: &<Self as pet_dkg_contract::Backend>::LocalState,
+    ) {
+        let certified_before = self
+            .controller_client
+            .orbis_read_ring(&self.ring_id)
+            .await
+            .expect("read ring before shared refresh")
+            .expect("shared refresh ring must exist");
+        let refreshed = wait_for_pss_refresh_on_all_nodes(
+            &self.node_endpoints,
+            &keys.main,
+            baseline,
+            Duration::from_secs(300),
+            Duration::from_secs(2),
+        )
+        .await;
+        for state in &refreshed {
+            pet_dkg_contract::assert_polynomial(&state.public_polynomial, &keys.main);
+        }
+        let certified_after = self
+            .controller_client
+            .orbis_read_ring(&self.ring_id)
+            .await
+            .expect("read ring after shared refresh")
+            .expect("shared refresh ring must remain present");
+        assert_eq!(
+            certified_after.encode_to_vec(),
+            certified_before.encode_to_vec(),
+            "Cosmos PSS refresh must not change the certified ring"
+        );
+    }
+}
+
+impl reshare_scenario::Backend for Cosmos {
+    async fn reshare_committee(&mut self, keys: &pet_dkg_contract::Keys) {
+        let certified_before = self
+            .controller_client
+            .orbis_read_ring(&self.ring_id)
+            .await
+            .expect("read ring before shared reshare")
+            .expect("shared reshare ring must exist");
+        let target = self.node_keys[..2].to_vec();
+        let threshold = 2;
+        let baselines = wait_for_ring_state_on_all_nodes(
+            &self.node_endpoints[..2],
+            &keys.main,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        )
+        .await;
+
+        cli_tool::start_ring_reshare_by_acp_with_config(
+            self.ring_id.clone(),
+            target.clone(),
+            Some(threshold),
+            self.chain_config.clone(),
+        )
+        .await
+        .expect("announce shared Cosmos reshare");
+        let completed = wait_for_reshare_bulletin_completion(
+            &self.chain_config,
+            &self.ring_id,
+            &keys.main,
+            &target,
+            threshold,
+            Duration::from_secs(300),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(completed.ring_pk, keys.main);
+
+        let reshared = wait_for_pss_refresh_on_all_nodes(
+            &self.node_endpoints[..2],
+            &keys.main,
+            &baselines,
+            Duration::from_secs(120),
+            Duration::from_secs(2),
+        )
+        .await;
+        for state in &reshared {
+            pet_dkg_contract::assert_polynomial(&state.public_polynomial, &keys.main);
+        }
+
+        let certified_after = self
+            .controller_client
+            .orbis_read_ring(&self.ring_id)
+            .await
+            .expect("read ring after shared reshare")
+            .expect("shared reshare ring must remain present");
+        assert_eq!(certified_after.id, certified_before.id);
+        assert_eq!(certified_after.ring_pk, certified_before.ring_pk);
+        assert_eq!(certified_after.creator_did, certified_before.creator_did);
+        assert_eq!(certified_after.policy_id, certified_before.policy_id);
+        let mut certified_target = certified_after.peer_node_keys.clone();
+        certified_target.sort();
+        assert_eq!(certified_target, target);
+        assert_eq!(certified_after.threshold, threshold);
+        assert!(certified_after.new_peer_node_keys.is_empty());
+        assert!(certified_after.new_threshold.is_none());
     }
 }
 

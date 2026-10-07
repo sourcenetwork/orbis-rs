@@ -24,6 +24,10 @@ impl Bundle {
             .get_encrypted(key)
             .unwrap()
             .expect("persisted ring bundle");
+        Self::decode(bytes, public_key, member)
+    }
+
+    fn decode(bytes: Zeroizing<Vec<u8>>, public_key: &str, member: u32) -> Self {
         // Version 1: share length/data, polynomial length/hex, then the LE timestamp.
         assert!(
             (17..=65_536).contains(&bytes.len()),
@@ -71,14 +75,34 @@ impl Bundle {
         }
     }
 
+    pub fn backdated(bytes: Vec<u8>, public_key: &str, member: u32) -> Vec<u8> {
+        let bundle = Self::decode(Zeroizing::new(bytes), public_key, member);
+        bundle.due_bytes().to_vec()
+    }
+
+    pub fn polynomial(bytes: &[u8], public_key: &str, member: u32) -> String {
+        Self::decode(Zeroizing::new(bytes.to_vec()), public_key, member).polynomial
+    }
+
     pub fn share(&self) -> &[u8] {
         &self.bytes[self.share.clone()]
     }
 
     pub fn make_due(&self, storage: &LocalStorageImpl, ring_id: &str) {
+        self.make_due_at(storage, LocalStorageKeys::PetRingKey(ring_id.into()));
+    }
+
+    fn make_due_at(&self, storage: &LocalStorageImpl, key: LocalStorageKeys) {
+        let due = self.due_bytes();
+        storage.set_encrypted(key.clone(), due.clone()).unwrap();
+        let persisted = storage.get_encrypted(key).unwrap().unwrap();
+        assert!(persisted == due, "persisted backdated bundle differs");
+    }
+
+    fn due_bytes(&self) -> Zeroizing<Vec<u8>> {
         assert!(
             self.last_pss > 0,
-            "initial PET bundle has no completion timestamp"
+            "initial ring bundle has no completion timestamp"
         );
         let mut due = self.bytes.clone();
         let timestamp = due.len() - 8;
@@ -87,14 +111,7 @@ impl Bundle {
             due[..timestamp] == self.bytes[..timestamp],
             "backdating changed bundle material"
         );
-        storage
-            .set_encrypted(LocalStorageKeys::PetRingKey(ring_id.into()), due.clone())
-            .unwrap();
-        let persisted = storage
-            .get_encrypted(LocalStorageKeys::PetRingKey(ring_id.into()))
-            .unwrap()
-            .unwrap();
-        assert!(persisted == due, "persisted backdated bundle differs");
+        due
     }
 }
 

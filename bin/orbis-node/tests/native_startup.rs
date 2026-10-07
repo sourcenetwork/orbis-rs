@@ -466,10 +466,14 @@ async fn native_dkg() {
     );
 }
 
-/// Native adapter for the shared standard-DKG → StoreSecret → authorized PRE
-/// scenario. The scenario body is identical to `cosmos_dkg_and_pre`.
+/// Native adapter for the shared standard-DKG lifecycle: StoreSecret,
+/// authorized PRE, derived-key signing, refresh, and committee reshare. The
+/// scenario body is identical to `cosmos_dkg_and_pre`.
 #[tokio::test]
-#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
 async fn native_dkg_and_pre() {
     let (object_id, derivation_id) = native_pet::dkg_pre_and_sign_scenario(9080).await;
     assert!(

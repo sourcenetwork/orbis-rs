@@ -12,6 +12,10 @@ mod pet_dkg_contract;
 mod pet_reshare;
 #[path = "../../tests/support/pre_scenario.rs"]
 mod pre_scenario;
+#[path = "../../tests/support/refresh_scenario.rs"]
+mod refresh_scenario;
+#[path = "../../tests/support/reshare_scenario.rs"]
+mod reshare_scenario;
 #[path = "../../tests/support/sign_scenario.rs"]
 mod sign_scenario;
 
@@ -1155,13 +1159,14 @@ async fn cosmos_dkg() {
     );
 }
 
-/// Cosmos adapter for the shared standard-DKG → StoreSecret → authorized PRE
-/// scenario. Its native counterpart runs the same scenario body below the
-/// backend boundary in `native_startup.rs`.
+/// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
+/// authorized PRE, derived-key signing, refresh, and committee reshare. Its
+/// native counterpart runs the same scenario body below the backend boundary
+/// in `native_startup.rs`.
 #[tokio::test]
 #[serial_test::serial]
 async fn cosmos_dkg_and_pre() {
-    let (backend, keys, _local_state, outcome) =
+    let (mut backend, keys, local_state, outcome) =
         pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
             ring_id: PRE_SCENARIO_RING_ID,
             expected_policy_id: RING_GOVERNANCE_POLICY_ID,
@@ -1169,6 +1174,8 @@ async fn cosmos_dkg_and_pre() {
         })
         .await;
     let sign = sign_scenario::run(&backend, &keys, &outcome.policy_id).await;
+    refresh_scenario::run(&mut backend, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&mut backend, &keys, &outcome, &sign).await;
     assert!(
         keys.pet.is_none(),
         "standard DKG must not produce a PET key"

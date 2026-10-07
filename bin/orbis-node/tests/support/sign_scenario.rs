@@ -12,6 +12,7 @@ const MESSAGE: &[u8] = b"shared backend threshold signing";
 
 pub(super) struct Outcome {
     pub derivation_id: String,
+    derived_pk: String,
 }
 
 pub(super) trait Backend: pre_scenario::Backend {
@@ -63,13 +64,33 @@ pub(super) async fn run<B: Backend>(backend: &B, keys: &Keys, policy_id: &str) -
         )
         .await;
 
-    let signed = sign_with_retry(backend, &derivation_id).await;
+    verify_signature(backend, keys, &derivation_id, &derived_pk).await;
+
+    Outcome {
+        derivation_id,
+        derived_pk,
+    }
+}
+
+/// Reuse the derivation object created before a share-generation transition
+/// and verify that a new signature still uses the same derived public key.
+pub(super) async fn verify_existing<B: Backend>(backend: &B, keys: &Keys, outcome: &Outcome) {
+    verify_signature(backend, keys, &outcome.derivation_id, &outcome.derived_pk).await;
+}
+
+async fn verify_signature<B: Backend>(
+    backend: &B,
+    keys: &Keys,
+    derivation_id: &str,
+    derived_pk: &str,
+) {
+    let signed = sign_with_retry(backend, derivation_id).await;
     let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(
         &hex::decode(&signed.signature).expect("Sign signature is hex"),
     )
     .expect("Sign signature must decode");
     let derived_pk =
-        GroupAffine::from_bytes(&hex::decode(&derived_pk).expect("derived public key is hex"))
+        GroupAffine::from_bytes(&hex::decode(derived_pk).expect("derived public key is hex"))
             .expect("derived public key must decode");
     SignImpl::new()
         .verify(&derived_pk, MESSAGE, &signature)
@@ -83,8 +104,6 @@ pub(super) async fn run<B: Backend>(backend: &B, keys: &Keys, policy_id: &str) -
             .is_err(),
         "a derived-key signature must not verify against the bare ring key"
     );
-
-    Outcome { derivation_id }
 }
 
 async fn sign_with_retry<B: Backend>(backend: &B, derivation_id: &str) -> cli_tool::SignResult {

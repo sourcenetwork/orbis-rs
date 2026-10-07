@@ -20,6 +20,10 @@ mod dkg;
 mod pet_dkg_contract;
 #[path = "pre_scenario.rs"]
 mod pre_scenario;
+#[path = "refresh_scenario.rs"]
+mod refresh_scenario;
+#[path = "reshare_scenario.rs"]
+mod reshare_scenario;
 #[path = "sign_scenario.rs"]
 mod sign_scenario;
 
@@ -65,9 +69,9 @@ pub async fn dkg_scenario(
     (workflow, keys, baseline)
 }
 
-/// Run the same standard-DKG → StoreSecret → authorized PRE scenario as the
-/// Cosmos integration suite, differing only in backend provisioning and ACP
-/// writes.
+/// Run the same standard-DKG lifecycle as the Cosmos integration suite,
+/// including PRE, signing, refresh, and committee reshare. Only backend
+/// provisioning and bulletin/ACP mechanisms differ.
 pub async fn dkg_pre_and_sign_scenario(deployment: u64) -> (String, String) {
     dkg::run_pre(deployment).await
 }

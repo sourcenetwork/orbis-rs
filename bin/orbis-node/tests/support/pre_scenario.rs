@@ -190,6 +190,28 @@ pub(super) async fn run<B: Backend>(config: B::Config) -> (B, Keys, B::LocalStat
     )
 }
 
+/// Re-run the successful, policy-authorized PRE operation against the object
+/// created before a share-generation transition. This is intentionally a
+/// separate contract from `run`: refresh and reshare tests must prove an
+/// existing object remains usable, not merely that a newly-created one works.
+pub(super) async fn verify_existing<B: Backend>(backend: &B, keys: &Keys, outcome: &Outcome) {
+    let decrypted = pre_with_retry(
+        backend,
+        &keys.main,
+        &outcome.object_id,
+        READER_SEED,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        decrypted, PLAINTEXT,
+        "PRE must keep decrypting an existing document after a share-generation transition"
+    );
+}
+
 fn prepare(
     plaintext: &[u8],
     ring_pk: &str,
