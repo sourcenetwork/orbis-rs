@@ -691,6 +691,7 @@ pub async fn fund(address: String, config: ChainConfig) -> common::blockchain::R
 
 /// Ensure an integration account has at least `minimum` tokens without
 /// submitting another transfer when the fixture funded it in genesis.
+#[allow(dead_code)]
 pub async fn ensure_funded(
     address: String,
     config: ChainConfig,
