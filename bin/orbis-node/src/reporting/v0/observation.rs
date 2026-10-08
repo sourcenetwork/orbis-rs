@@ -38,6 +38,7 @@ pub struct InvalidCryptoResponseObservation {
     /// co-signers via `ReportSigningContext`, never the threshold-signed envelope, so the audit
     /// target is never published on chain. `None` for every non-PET evidence kind.
     pub pet_blind_context: Option<PetBlindContext>,
+    pub pet_blind_certificate: Option<crate::reporting::v0::types::PetBlindCertificate>,
 }
 
 /// A relayed Sign/PRE request whose ACP re-check failed on this node, attributing the relayer.

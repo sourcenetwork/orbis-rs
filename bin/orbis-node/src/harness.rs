@@ -177,6 +177,7 @@ pub async fn spawn_harness_node(
     let peer_addr = format!("{local_address}@{p2p_socket}");
 
     let args = Args {
+        vera_config: None,
         addr: params.grpc_addr.clone(),
         cors_allow_origins: vec![],
         cors_permissive: false,
@@ -195,6 +196,7 @@ pub async fn spawn_harness_node(
         runtime_base_path: None,
         reshare_interval_secs: params.pss_poll_interval_secs,
         network_private_routes_only: false,
+        network_bind_addr: None,
         node_controller_key: params.node_controller_key,
         node_peer_id: None,
         node_whitelisted_policy_ids: vec![params.policy_id],
@@ -217,7 +219,8 @@ pub async fn spawn_harness_node(
     let config = NodeConfig {
         args,
         cors_policy: CorsPolicy::Disabled,
-        node_key: node_key.clone(),
+        identity: bulletin::startup::cosmos::identity(&signer),
+        backend_names: ("injected".into(), "injected".into()),
         network,
         local_storage,
         authz,
@@ -243,7 +246,8 @@ pub async fn spawn_harness_node(
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,

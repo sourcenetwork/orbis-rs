@@ -134,6 +134,7 @@ where
                     }
                 }
             }
+            PetMessage::GenerationMismatch { .. } => Err(PetError::GenerationMismatch),
             PetMessage::Error { error, .. } => {
                 tracing::warn!(
                     peer = %peer_id_str,

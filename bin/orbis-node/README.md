@@ -88,9 +88,9 @@ storage and the node network identity key. Treat both as production secrets.
   node identity change must be reflected in bulletin committee metadata before
   peers will treat it as the same operational participant.
 
-## Chain endpoint trust (hard requirement)
+## Cosmos endpoint trust
 
-The node **fully trusts** the Vera endpoints it is configured with
+In Cosmos mode, the node **fully trusts** the Vera endpoints it is configured with
 (`--chain-rpc`, `--chain-rest`, `--bulletin-grpc`, `--authz-grpc`). Bulletin
 reads are plain RPC responses — there is **no light-client or Merkle-proof
 verification**. Everything security-critical flows from those reads: ring
@@ -189,3 +189,272 @@ cargo test -p orbis-node
 ```
 
 Integration tests may require Docker (see **`common`** crate **`IntegrationTestNetwork`**). **`fault-injection`** tests exercise blocked peers.
+
+## Native Vera service
+
+The native integration is under qualification. Vera verifies the selected BLS or
+Jubjub signature scheme; Defra uses Orbis's augmented BLS suite. Legacy basic-BLS
+signature types and verification paths are removed. Local process fixtures cover Defra
+signing and replication, permission revocation, PRE, graceful restart, and
+committee replacement. Deployment qualification still requires sustained load,
+multi-host networks, crash/power-loss recovery, and operational security review.
+
+Native ACP uses `relationship/v5/` keys with `v3` incarnation-qualified suffixes.
+Deploy the matching Vera validator and proof consumers together. Policy catalogs,
+relation identities and target-object incarnations are authenticated at the same
+revision. Archiving retires existing non-owner grants; unarchiving does not revive
+them. Owners retain incarnation zero. Specialized relationship proofs require
+same-root object-state witnesses for non-owner rows: certified absence means
+initial incarnation zero, while missing evidence is an error. This is a fresh-state
+cutover without older namespace or proof-shape fallback. See
+[security assumptions](../../SECURITY.md) for native proof freshness and
+consensus-key provisioning.
+
+Build a native-only node with:
+
+```sh
+cargo build --locked -p orbis-node --no-default-features --features native,bls12-381,iroh --bin orbis-node
+```
+
+The native backend supports signing, ordinary PRE and PET-backed PRE on BLS12-381
+and Jubjub rings. PET rings preserve their main/PET key pair and document tag/proof
+attachments through native Vera. `requires_pet` is mandatory and immutable. Deploy
+the pinned Vera validator, SDK consumers and PET v2 participants together on fresh
+state with a new deployment root; old ring state, pending worker journals and
+signed requests cannot be reused. Encrypting clients and node verifiers must use
+matching ciphertext-context encoding.
+
+Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
+`--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
+The configuration selects native authorization and bulletin operations through the
+existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
+handoff, node initialization, request handlers and shutdown path. Backend setup
+provides the identity and service adapters. This build excludes the Cosmos SDK and
+CometBFT transport dependencies. Default builds retain the existing backend; adding
+`--features native` to a default build includes both. Native-only startup requires
+`--vera-config` and reports a missing configuration before opening node state.
+The separate `harness` and `integration-test` features retain the dependencies used
+by their existing test identities and fixtures.
+
+Supply the controller public key as 33 hex-encoded bytes. Existing connection and
+fee options cannot be combined with `--vera-config`.
+
+```json
+{
+  "endpoint": "http://127.0.0.1:8545",
+  "deployment_id": 9001,
+  "deployment_root": "<32-byte genesis digest, hex without prefix>",
+  "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
+  "max_evidence_age_secs": 30,
+  "request_timeout_secs": 30
+}
+```
+
+Provision the deployment ID, genesis digest and consensus key through the operator's
+trusted deployment configuration. The consensus key is separate from Orbis's node
+and threshold service keys. Startup verifies the first certified revision against
+the configured genesis digest before opening the submission journal. Current reads
+reject stale evidence; the two time bounds default to 30 seconds. Configurations
+reject unknown and duplicate fields and are limited to 16 KiB.
+
+Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
+file holding its encryption password. Node signing keys use 64 hex characters in
+the encrypted key slot. Startup preserves existing keys and rejects raw, prefixed
+or invalid key bytes without replacing them. New keys are generated once. Keep the encrypted database and its `native-vera/<deployment-root>`
+worker journal together when backing up or restoring a node. Native worker keys use
+their own storage slots; ring history and pending reshare records retain their existing
+slots. The journal retains
+uncertain submissions for recovery on the next write.
+
+Native startup registers the node with Vera or verifies the existing controller and
+peer identity. Controller-owned allow-list changes require explicit authenticated
+updates. Startup does not wait for funding. `public_key.txt` and the info service's
+`public_address` field contain the compressed node public key in native mode.
+
+The focused startup fixture launches the Orbis image against four native Vera
+containers through `test-support`. It checks certified registration and
+identity/journal persistence across restart. Native container fixtures require
+Linux host networking; build the images described below first.
+
+```sh
+cargo test -p orbis-node --release --locked --no-default-features \
+  --features native,redb,iroh,bls12-381 --test native_startup \
+  native_startup_registers_and_preserves_identity_on_restart -- --ignored --exact
+```
+
+This fixture does not qualify distributed DKG, signing, or decryption. Migration of
+existing ring and encrypted-record identifiers requires a separate migration plan.
+
+For a group using direct peer routes, bind each node to a reachable local IPv4
+interface with `--network-bind-addr <ip:port>`. Local development can use
+`--network-bind-addr 127.0.0.1:0`. The info service includes a bound socket in
+`p2p_address` only when its IP is concrete; a wildcard bind returns the peer
+identity alone. An operator must publish the reachable route through the node's
+authenticated controller update. Binding an interface does not configure NAT
+forwarding or make a private address reachable from other networks.
+
+The distributed threshold fixture uses three separate Orbis processes and a 2-of-3
+BLS or Jubjub ring. It completes DKG through native Vera, abruptly restarts every node
+with the same encrypted store and peer binding, and checks the recovered public
+polynomials and identities. It then verifies a threshold signature, stores an
+encrypted document, and decrypts it through PRE. Signing and decryption are denied
+before their respective ACP grants and after revocation. Removing and recreating
+the signer or reader relation must keep access denied until a fresh grant. The
+signing path also restarts an Orbis process between policy edits and checks that
+Defra cannot create a new signed document while authorization is revoked. Verified
+relationship enumeration follows every continuation, including an empty page
+while retired records await cleanup. The fixture then admits
+a new participant through authenticated controller and policy updates. Scheduled
+resharing replaces a member while retaining the ring public key. With only two
+members online, the incoming share must participate in signing and decrypting the
+document stored before the transition.
+The remaining members also co-sign an offline report. A certified fault-score
+query verifies its effect on the unavailable member and the absence of penalties
+for healthy members.
+
+```sh
+cargo test -p orbis-node --release --locked --no-default-features \
+  --features native,redb,iroh,bls12-381 --test native_startup \
+  native_distributed_threshold_workflows -- --ignored --exact
+```
+
+The ignored `native_pet_scheduled_refresh_after_restart` scenario uses normal
+native binaries and the ring's unchanged 86,400-second refresh interval. With all
+three nodes stopped, it backdates only the persisted PET completion timestamp,
+then restarts the same identities and lets their background schedulers rotate the
+PET shares. It checks the persisted ring index, main bundles, certified key pair,
+and document tags remain unchanged, and both stored and inline PRE still return
+the exact plaintext. The fixture polls every second; this is synthetic overdue
+state coverage, not a 24-hour soak or the production one-hour polling cadence.
+
+```sh
+cargo test -p orbis-node --release --locked --no-default-features \
+  --features native,redb,iroh,bls12-381 --test native_startup \
+  native_pet_scheduled_refresh_after_restart -- --ignored --exact
+```
+
+The ignored `native_pet_member_replacement` scenario admits a fresh fourth node,
+then replaces one member of a 2-of-3 PET ring without changing either certified
+public key. It requires both new polynomials to converge, keeps the departed node
+running until its scheduler removes the paired material, and checks its stopped
+store has no main/PET secret, pending reshare record or ring-index entry. With
+another current member stopped, the incoming member must participate in stored
+and inline PRE before and after abrupt restart. Reopened current shares must match
+the new committee indices and polynomials. Cleanup means logical record absence;
+it does not erase copied secrets or revoke a previously recovered threshold
+secret. Public RPC coordination is allowed for nonmembers, so this fixture does
+not assert blanket RPC rejection. Use the scheduled-refresh command above with
+`native_pet_member_replacement` as the exact selector.
+
+The ignored `native_pet_fault_reports` scenario uses a separate diagnostic image
+built with `native,redb,iroh,unsafe-testing` and either `bls12-381` or `jubjub`.
+It enables the existing testing service only on that scenario's child processes,
+injects one ring-scoped signed PET decrypt-proof fault, and requires successful
+PRE plus certified report retention and exactly one accused-member demerit.
+The retained signed transaction and verified receipt must bind that report ID to
+v2 PET decrypt evidence. Encrypted main/PET bundles must remain unchanged. After
+all three nodes stop, the fixture reopens their stores through local-storage and
+reads the persisted KDF headers: 262,144 KiB, three passes, one lane and version
+0x13. This scenario uses the diagnostic image; it does not run reshare phases.
+
+```sh
+ORBIS_NATIVE_DIAGNOSTIC_IMAGE=orbis-node-native-diagnostic:local \
+  cargo test -p orbis-node --release --locked --no-default-features \
+  --features native,redb,iroh,bls12-381,unsafe-testing \
+  --test native_startup native_pet_fault_reports -- --ignored --exact
+```
+
+Signing and PRE apply their 10-second peer deadline to connection setup, sending
+and receiving together. This keeps unresponsive peers within the background
+collection window so timeout observations reach reporting.
+
+`HubClient::read_threshold_node_demerits` returns the stored score or certified
+absence with its revision and timestamp. Apply the ring's configured reset
+interval with `NodeDemerits::effective_points` when displaying the current score.
+
+Both curve variants cover fresh ordinary rings, abrupt restart, member replacement,
+offline reports and live policy checks. Power-loss recovery and other fault
+evidence types require their own checks.
+
+The **Rust** workflow builds Cosmos, normal native and diagnostic native images
+through the existing Docker build. For each curve, one `cargo nextest` invocation
+selects every `native_startup` scenario by name (startup/restart identity,
+distributed threshold workflows, Defra signing, the paired-DKG lifecycle,
+member replacement, scheduled refresh, and the diagnostic fault-report
+scenario — which switches to the diagnostic image via `ORBIS_NATIVE_DIAGNOSTIC_IMAGE`
+at runtime, since the normal image is compiled without `unsafe-testing`),
+excluding only the still-unqualified Trust-gateway scenario. `test-support`
+owns the Compose lifecycle, native genesis and private stores. The Cosmos
+integration shards retain their existing features and tests; tests that call
+Cosmos transaction APIs are not compiled as native scenarios. BLS native
+coverage includes the Defra assertions below.
+
+The native node image uses normal release features without testing services.
+Its dependency graph rejects Cosmos transport packages. The Vera image revision
+must match every native SDK manifest. Runtime images are built before the test
+harness, with production Argon2 defaults and normal deadlines. The test harness
+gets a fresh build target; only dependency downloads are cached.
+
+On any Docker host (Compose-driven, not restricted to Linux), build a matching
+image pair, then run the same CI command:
+
+```sh
+curve=bls12-381 # or jubjub
+vera_ref=$(cat docker/NATIVE_VERA_REF)
+docker build -f docker/Dockerfile.native-vera-integration \
+  --build-arg VERA_REF="$vera_ref" -t orbis-vera-native:local .
+docker build -f docker/Dockerfile --build-arg BACKEND=native \
+  --build-arg RUST_IMAGE=rust:1.98.0-bookworm --build-arg CRYPTO_FEATURE="$curve" \
+  -t orbis-node-native:local .
+docker build -f docker/Dockerfile --target native-diagnostic \
+  --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.98.0-bookworm \
+  --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
+cargo +1.98.0 nextest run --profile ci --release --locked --build-jobs 2 \
+  -p orbis-node --no-default-features \
+  --features "integration-test-native,redb,iroh,$curve" \
+  --test native_startup \
+  -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
+```
+
+The `native-diagnostic` target reuses the normal native builder and adds
+`unsafe-testing`. It uses the `orbis-node-native-diagnostic:local` tag; only the
+separate `native_pet_fault_reports` selector uses it. `ORBIS_NATIVE_IMAGE`,
+`ORBIS_NATIVE_VERA_IMAGE` and `ORBIS_NATIVE_DIAGNOSTIC_IMAGE` override these tags.
+Build the matching curve before each run.
+
+The native CI command selects exactly `native_pet_threshold_workflows`,
+`native_distributed_threshold_workflows` and `native_pet_member_replacement`,
+runs them serially without retries, and requires the PET lifecycle and replacement
+completion markers. It then selects exactly `native_pet_fault_reports` with
+`unsafe-testing` and requires its certified report marker. This diagnostic test
+also runs without retries. Command logs and Vera/Orbis stores remain private under
+`RUNNER_TEMP`; Compose control files remain in private temporary directories.
+No runtime evidence is uploaded. CI emits only allowlisted numeric diagnostics,
+fixed phase/file labels and compiler error codes. Raw messages, paths, environment
+values and source snippets remain private. PET phase bits 0–3 mean paired DKG,
+permissions/revoke/regrant, reshare and restart respectively. Marker counts do not
+diagnose the cause of a failure.
+
+The PET scenario checks paired DKG, stored and inline PRE, document/audit denial
+and revoke/regrant, committee shrink with both share polynomials rotated, and
+recovery after abrupt restart. These bounded container scenarios do not cover
+the 24-hour scheduled refresh, production capacity or power-loss recovery.
+
+The Defra signing scenario uses the actual Defra client against three Orbis
+processes and native Vera. It checks denial before an ACP grant, signed-document
+creation in Regolith after the grant, persisted signature verification after
+reopening the database, and rejection of new documents after revocation. A second
+store rejects a forged signature with recomputed content IDs, merges the genuine
+document, and preserves its queried contents and signature after reopen. Blocks
+are transferred directly to the merge handler for the forgery check. Two embedded
+Defra nodes also replicate an Orbis-signed GraphQL mutation over loopback Iroh/QUIC,
+verify the received history signatures, and reject a new mutation after revocation.
+Relay and discovery are disabled for this local transport scenario.
+It shares the
+DKG setup and stops before the PRE and resharing portions of the broader fixture.
+
+```sh
+cargo test -p orbis-node --release --locked --no-default-features \
+  --features native,redb,iroh,bls12-381 --test native_startup \
+  native_defra_signing -- --ignored --exact
+```

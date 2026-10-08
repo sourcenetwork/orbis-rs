@@ -277,6 +277,14 @@ pub trait Network: Send + Sync {
         Vec::new() // Default implementation returns empty
     }
 
+    /// Concrete direct routes discovered for this endpoint, excluding wildcard binds.
+    fn direct_addresses(&self) -> Vec<std::net::SocketAddr> {
+        self.bound_addresses()
+            .into_iter()
+            .filter(|addr| !addr.ip().is_unspecified())
+            .collect()
+    }
+
     /// Return the authenticated pub-sub transport, when supported by this backend.
     ///
     /// Pub-sub is deliberately a separate capability from point-to-point streams so

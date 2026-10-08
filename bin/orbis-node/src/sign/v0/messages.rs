@@ -4,7 +4,7 @@
 //! protocol communication between nodes over the network.
 
 use crate::reporting::v0::types::{RelayRequestStatement, ReportSigningContext};
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::KeyDerivation;
 use common::blockchain::orbis::RING_RESHARE_FINALIZE_SIGN_DOC_DOMAIN;
 use serde::{Deserialize, Serialize};

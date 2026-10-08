@@ -8,6 +8,7 @@ use bulletin::{
     r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
 };
 use clap::{Parser, ValueEnum};
+#[cfg(any(feature = "harness", test))]
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
@@ -201,6 +202,9 @@ impl CorsPolicy {
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
 pub struct Args {
+    /// Native Vera endpoint and independently provisioned deployment trust (JSON file).
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["authz_grpc", "bulletin_grpc", "chain_rpc", "chain_rest", "chain_id", "denom", "fee_granter", "chain_gas_multiplier", "allow_insecure_rpc"])]
+    pub vera_config: Option<PathBuf>,
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
@@ -283,6 +287,9 @@ pub struct Args {
     /// supplying an address does not guarantee that address is dialable.
     #[arg(long, default_value_t = false)]
     pub network_private_routes_only: bool,
+    /// Bind the peer UDP socket to a specific local IPv4 address and port.
+    #[arg(long)]
+    pub network_bind_addr: Option<std::net::SocketAddrV4>,
     /// Hex-encoded public key of the external controller allowed to update node info.
     #[arg(long)]
     pub node_controller_key: String,
@@ -639,6 +646,18 @@ pub fn derive_secret_key_bytes(input: &str) -> Result<[u8; 32], String> {
     Ok(hash.into())
 }
 
+/// Prefer concrete binds, then discovered direct routes; never advertise wildcard sockets.
+pub(crate) fn network_peer_address(network: &dyn Network) -> String {
+    let peer = hex::encode(network.local_peer_id().as_bytes());
+    network
+        .bound_addresses()
+        .into_iter()
+        .chain(network.direct_addresses())
+        .filter(|addr| !addr.ip().is_unspecified())
+        .min_by_key(|addr| !addr.is_ipv4())
+        .map_or_else(|| peer.clone(), |addr| format!("{peer}@{addr}"))
+}
+
 pub fn get_network_key_secret(
     custom_file_path: Option<PathBuf>,
     local_storage: LocalStorageImpl,
@@ -870,128 +889,55 @@ pub fn db_path(runtime_base_path: &Path, name: &str) -> String {
         .to_string()
 }
 
+#[cfg(any(feature = "harness", test))]
 pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
     runtime_base_path: &Path,
-) -> Result<TxSigner, String> {
-    fs::create_dir_all(runtime_base_path).map_err(|error| {
-        format!(
-            "Failed to create runtime base directory {}: {}",
-            runtime_base_path.display(),
-            error
-        )
-    })?;
-    let public_key_path = runtime_base_path.join("public_key.txt");
-
-    // Check if a signing key exists in DB
-    let hex_key = match local_storage.get_encrypted(LocalStorageKeys::NodeSigningKey) {
-        Ok(Some(key_bytes)) => {
-            // Key exists, use it
-            let hex_key = String::from_utf8(key_bytes.to_vec())
-                .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
-            tracing::info!("Existing signing key loaded from storage");
-            hex_key
-        }
-        Ok(None) => {
-            // No key exists, create one.
-            //
-            // In integration-test builds, ORBIS_SIGNING_KEY may supply a deterministic
-            // private key hex so the public key is known before the chain starts (needed
-            // for genesis injection).  The env var is absent in production.
-            #[cfg(feature = "integration-test")]
-            if let Ok(env_hex) = std::env::var("ORBIS_SIGNING_KEY") {
-                let env_hex = env_hex.trim().to_string();
-                if !env_hex.is_empty() {
-                    tracing::info!("Using ORBIS_SIGNING_KEY for deterministic signing key");
-                    local_storage
-                        .set_encrypted(
-                            LocalStorageKeys::NodeSigningKey,
-                            Zeroizing::new(env_hex.as_bytes().to_vec()),
-                        )
-                        .map_err(|e| format!("Failed to store signing key: {}", e))?;
-                    let signer = TxSigner::from_hex_key(&env_hex, config).map_err(|e| {
-                        format!("Failed to create signer from ORBIS_SIGNING_KEY: {}", e)
-                    })?;
-                    let public_address = signer.address();
-                    tracing::info!(address = %public_address, "Signing key ready");
-                    fs::write(&public_key_path, &public_address)
-                        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
-                    return Ok(signer);
-                }
-            }
-
-            tracing::info!("No signing key found, generating new one");
-            let mut key_bytes = [0u8; 32];
-            getrandom::getrandom(&mut key_bytes)
-                .map_err(|e| format!("Failed to generate random bytes: {}", e))?;
-            let hex_key = hex::encode(key_bytes);
-
-            // Store the key encrypted
-            local_storage
-                .set_encrypted(
-                    LocalStorageKeys::NodeSigningKey,
-                    Zeroizing::new(hex_key.as_bytes().to_vec()),
-                )
-                .map_err(|e| format!("Failed to store signing key: {}", e))?;
-            hex_key
-        }
-        Err(e) => {
-            return Err(format!(
-                "Failed to read signing key from storage: {}. \
-                 Refusing to generate a new key to avoid overwriting an existing identity. \
-                 Check storage health and retry.",
-                e
-            ));
-        }
-    };
-
-    let signer = TxSigner::from_hex_key(&hex_key, config)
-        .map_err(|e| format!("Failed to create signer: {}", e))?;
-
-    let public_address = signer.address();
-    tracing::info!(address = %public_address, "Signing key ready");
-
-    fs::write(&public_key_path, &public_address)
-        .map_err(|e| format!("Failed to write public key to file: {}", e))?;
-
-    tracing::info!(path = %public_key_path.display(), "Public key written to file");
-
-    Ok(signer)
-}
-
-/// Retrieve the node signing key from storage and create a TxSigner.
-///
-/// This function loads the stored secp256k1 signing key and returns a TxSigner
-/// that can be used with `VeraBulletin::with_signer`.
-///
-/// # Arguments
-/// * `local_storage` - The local storage implementation to read from
-/// * `config` - The chain configuration for the signer
-///
-/// # Returns
-/// A TxSigner on success, or an error if the key doesn't exist or is invalid
-pub fn get_node_signer(
-    local_storage: LocalStorageImpl,
-    config: ChainConfig,
-) -> Result<TxSigner, String> {
-    let key_bytes = local_storage
-        .get_encrypted(LocalStorageKeys::NodeSigningKey)
-        .map_err(|e| format!("Failed to read signing key from storage: {}", e))?
-        .ok_or_else(|| {
-            "No signing key found in storage. Run create_and_store_node_key first.".to_string()
-        })?;
-
-    let hex_key = String::from_utf8(key_bytes.to_vec())
-        .map_err(|e| format!("Failed to parse stored key as UTF-8: {}", e))?;
-
-    TxSigner::from_hex_key(&hex_key, config).map_err(|e| format!("Failed to create signer: {}", e))
+) -> Result<TxSigner, bulletin::startup::StartupError> {
+    #[cfg(feature = "integration-test")]
+    let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
+    #[cfg(not(feature = "integration-test"))]
+    let initial_key: Option<String> = None;
+    bulletin::startup::cosmos::prepare_signer(
+        &local_storage,
+        config,
+        runtime_base_path,
+        initial_key.as_deref(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::{error::ErrorKind, Parser};
+
+    #[tokio::test]
+    async fn peer_route_omits_wildcard_and_reports_concrete_bind() {
+        for ip in [
+            std::net::Ipv4Addr::UNSPECIFIED,
+            std::net::Ipv4Addr::LOCALHOST,
+        ] {
+            let network = network::NetworkImpl::builder()
+                .bind_addr_v4(std::net::SocketAddrV4::new(ip, 0))
+                .private_routes_only()
+                .build()
+                .await
+                .unwrap();
+            let route = network_peer_address(&network);
+            let peer = hex::encode(network.local_peer_id().as_bytes());
+            let socket: std::net::SocketAddr = route
+                .strip_prefix(&format!("{peer}@"))
+                .expect("bound endpoint must advertise a concrete route")
+                .parse()
+                .unwrap();
+            assert!(!socket.ip().is_unspecified());
+            assert_ne!(socket.port(), 0);
+            if !ip.is_unspecified() {
+                assert_eq!(socket.ip(), ip);
+            }
+        }
+    }
 
     fn minimal_args() -> Args {
         Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])

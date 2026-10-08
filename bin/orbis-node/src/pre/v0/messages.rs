@@ -4,7 +4,7 @@
 //! protocol communication between nodes over the iroh network.
 
 use crate::pet::v0::attestation::PetBlindEvidence;
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use crypto::r#trait::ReaderAuthorizationSignature;
 use serde::{Deserialize, Serialize};
 

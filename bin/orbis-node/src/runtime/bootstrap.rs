@@ -5,6 +5,7 @@ use super::{wait_for_shutdown, InitializedNode};
 use crate::constants;
 use crate::helpers::launch::CorsPolicy;
 use crate::info::BootstrapInfoServiceImpl;
+use bulletin::startup::NodeIdentity;
 use local_storage::LocalStorageImpl;
 use network::Network;
 use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
@@ -60,17 +61,36 @@ impl BootstrapInfoServer {
 }
 
 /// Start an info-only gRPC server before the full node is ready.
+#[cfg(test)]
 pub(crate) fn start_bootstrap_info_server(
     grpc_addr: SocketAddr,
     network: Arc<dyn Network>,
     local_storage: LocalStorageImpl,
     cors_policy: CorsPolicy,
+    identity: NodeIdentity,
+) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
+    start_bootstrap_info_server_with_identity(
+        grpc_addr,
+        network,
+        local_storage,
+        cors_policy,
+        identity,
+    )
+}
+
+pub(super) fn start_bootstrap_info_server_with_identity(
+    grpc_addr: SocketAddr,
+    network: Arc<dyn Network>,
+    local_storage: LocalStorageImpl,
+    cors_policy: CorsPolicy,
+    identity: NodeIdentity,
 ) -> Result<BootstrapInfoServer, Box<dyn std::error::Error>> {
     let incoming = tonic::transport::server::TcpIncoming::bind(grpc_addr)?;
     let local_addr = incoming.local_addr()?;
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let status = BootstrapStatus::new(NodeStatus::Bootstrapping);
-    let info_service = BootstrapInfoServiceImpl::new(network, local_storage, status.shared());
+    let info_service =
+        BootstrapInfoServiceImpl::new(network, local_storage, status.shared(), identity);
 
     let task = tokio::spawn(async move {
         tonic::transport::Server::builder()
@@ -100,9 +120,7 @@ pub(crate) async fn shutdown_bootstrap_after_init(
     init_result: Result<InitializedNode, Box<dyn std::error::Error>>,
 ) -> Result<InitializedNode, Box<dyn std::error::Error>> {
     if init_result.is_ok() {
-        tracing::info!(
-            "Funding and bulletin initialization complete; stopping bootstrap info service"
-        );
+        tracing::info!("Backend initialization complete; stopping bootstrap info service");
     } else {
         tracing::info!("Node initialization failed; stopping bootstrap info service");
     }

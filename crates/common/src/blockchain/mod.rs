@@ -1,32 +1,22 @@
-//! Blockchain client module for interacting with Vera (Cosmos SDK / Tendermint chain).
+//! Shared Orbis wire types, object IDs, and node message signatures.
 //!
-//! This module provides:
-//! - `ChainConfig` - Configuration for connecting to the chain
-//! - `VeraClient` - Client for queries and transaction broadcasting
-//! - `TxSigner` - Transaction signing using secp256k1
-//! - `acp` - Access Control Policy module types and operations
-//! - `bulletin` - Bulletin board module types and operations
+//! The default `cosmos` feature also provides `ChainConfig`, `VeraClient`,
+//! `TxSigner`, and Cosmos SDK / CometBFT queries, transactions, and subscriptions.
+//! Disable default features to use the shared encodings without chain transport.
 
 pub mod acp;
 pub mod bank;
 pub mod bulletin;
-mod client;
-mod config;
+#[cfg(feature = "cosmos")]
+pub mod cosmos;
 mod error;
-pub mod events;
+mod node_signing;
 pub mod orbis;
-mod signer;
 
-pub use client::{AccountInfo, BroadcastResult, VeraClient};
-pub use config::{ChainConfig, ChainConfigBuilder, GasPrice};
+#[cfg(feature = "cosmos")]
+pub use cosmos::*;
 pub use error::{BlockchainError, Result};
-pub use signer::{sign_node_message_with_hex_key, verify_node_message, TxSigner};
-
-// Docker/Vera integration tests — need `docker` + `curl` on PATH (see the
-// `test-support` dev-dependency). Compiled under `cargo test`; they fail fast
-// without Docker. The CI job split runs them only in the "slow" lane.
-#[cfg(test)]
-pub mod tests;
+pub use node_signing::{sign_node_message_with_hex_key, verify_node_message};
 
 // Known test key for the "test" account created in docker-compose-vera-test.yml
 /// This corresponds to the mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"

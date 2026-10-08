@@ -4,9 +4,9 @@
 //! which manages access control policies for applications.
 //!
 //! - [`types`] — message, query, and domain types.
-//! - [`client`] — `VeraClient` extension methods (`acp_*`) that call the chain.
+//!
+//! Cosmos client operations are provided by the `cosmos` feature.
 
-mod client;
 mod types;
 
 pub use types::*;

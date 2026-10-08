@@ -309,6 +309,7 @@ where
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgInvalidRefreshCommitment {
             statement: Box::new(commitment.statement),
             response_signature: commitment.signature,
@@ -356,6 +357,7 @@ where
         observed_at,
         inline_document: None,
         pet_blind_context: None,
+        pet_blind_certificate: None,
         evidence: InvalidCryptoResponse::DkgEquivocation {
             commitment_a: Box::new(commitment_a),
             commitment_b: Box::new(commitment_b),

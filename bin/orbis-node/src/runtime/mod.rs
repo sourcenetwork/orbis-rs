@@ -1,29 +1,24 @@
+mod backend;
 mod bootstrap;
-// `shutdown_bootstrap_after_init` isn't called directly in this file (only by
-// `bootstrap::complete_initialization_or_shutdown` internally) — re-exported
-// here purely so `lib.rs` can re-export it in turn for `tests/node.rs`.
-#[allow(unused_imports)]
-pub(crate) use bootstrap::{
-    complete_initialization_or_shutdown, shutdown_bootstrap_after_init, start_bootstrap_info_server,
-};
+pub(crate) use bootstrap::complete_initialization_or_shutdown;
+#[cfg(test)]
+pub(crate) use bootstrap::{shutdown_bootstrap_after_init, start_bootstrap_info_server};
 
 use crate::app_state::AppState;
-use crate::constants::{self, MIN_NODE_BALANCE};
+use crate::constants;
 use crate::dkg::v0::coordinator::reporting::spawn_pss_stall_reporter;
 use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::authorized_peers::{spawn_authorized_peer_refresh, RingAuthorizedPeers};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
-    create_and_store_node_key, db_path, derive_secret_key_bytes, ensure_node_info,
-    get_network_key_secret, get_password, resolve_runtime_base_path, Args, CorsPolicy,
+    db_path, derive_secret_key_bytes, ensure_node_info, get_network_key_secret, get_password,
+    network_peer_address, resolve_runtime_base_path, Args, CorsPolicy,
 };
 use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
 use crate::{dkg, metrics, pre, pss, sign};
 use authz::r#trait::Authz;
-use authz::AuthzImpl;
-use bulletin::{r#trait::Bulletin, BulletinImpl};
-use common::blockchain::ChainConfigBuilder;
+use bulletin::{r#trait::Bulletin, startup::NodeIdentity};
 use crypto::r#trait::{ThresholdDealer, ThresholdSigner};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl, Router};
@@ -35,7 +30,7 @@ use crypto::{DkgImpl, PreImpl, SignImpl};
 use tracing::Instrument;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use proto::info_service::{info_service_server::InfoServiceServer, NodeStatus};
+use proto::info_service::info_service_server::InfoServiceServer;
 
 use proto::v0::dkg::dkg_service_server::DkgServiceServer;
 use proto::v0::pre::pre_service_server::PreServiceServer;
@@ -46,7 +41,8 @@ use proto::v0::store_secret::store_secret_service_server::StoreSecretServiceServ
 pub(crate) struct NodeConfig {
     pub(crate) args: Args,
     pub(crate) cors_policy: CorsPolicy,
-    pub(crate) node_key: String,
+    pub(crate) identity: NodeIdentity,
+    pub(crate) backend_names: (String, String),
     pub(crate) network: Arc<dyn Network>,
     pub(crate) local_storage: LocalStorageImpl,
     pub(crate) authz: Arc<dyn Authz>,
@@ -58,6 +54,10 @@ pub(crate) struct NodeConfig {
 
 /// Result of initializing the node (before starting the server)
 pub(crate) struct InitializedNode {
+    #[cfg(feature = "unsafe-testing")]
+    pet_fault: Option<Arc<crate::unsafe_testing::pet_fault::PetFaultControl>>,
+    pub(crate) identity: NodeIdentity,
+    backend_names: (String, String),
     pub(crate) app_state: Arc<AppState<DkgImpl>>,
     pub(crate) router: Box<dyn Router>,
     pub(crate) grpc_addr: SocketAddr,
@@ -73,6 +73,8 @@ pub(crate) struct InitializedNode {
 
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
+    let backend = backend::Configuration::load(&args)?;
+    let (authz_name, bulletin_name) = backend.names();
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -89,8 +91,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         pre_impl = PreImpl::name(),
         sign_impl = SignImpl::name(),
         local_storage_impl = LocalStorageImpl::name(),
-        authz_impl = AuthzImpl::name(),
-        bulletin_impl = BulletinImpl::name(),
+        authz_impl = authz_name,
+        bulletin_impl = bulletin_name,
         network_impl = NetworkImpl::name(),
     );
 
@@ -114,8 +116,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Crypto PRE implementation: {}", PreImpl::name());
         tracing::info!("Crypto Sign implementation: {}", SignImpl::name());
         tracing::info!("Local-storage implementation: {}", LocalStorageImpl::name());
-        tracing::info!("Authz implementation: {}", AuthzImpl::name());
-        tracing::info!("Bulletin implementation: {}", BulletinImpl::name());
+        tracing::info!("Authz implementation: {}", authz_name);
+        tracing::info!("Bulletin implementation: {}", bulletin_name);
         tracing::info!("Network implementation: {}", NetworkImpl::name());
 
         // Get password for encrypting ring key shares.
@@ -158,6 +160,9 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .max_message_size(constants::NETWORK_MAX_MESSAGE_SIZE)
                 .authorized_peers(authorized_peers.clone()),
         );
+        if let Some(addr) = args.network_bind_addr {
+            network_builder = network_builder.bind_addr_v4(addr);
+        }
         if args.network_private_routes_only {
             tracing::info!(
                 "Public Iroh relay and default discovery disabled; \
@@ -171,101 +176,43 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
-        let authz_chain_config = ChainConfigBuilder::default()
-            .chain_id(args.chain_id.clone())
-            .grpc_url(args.authz_grpc.clone())
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier)
-            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
-
-        let authz: Arc<dyn Authz> = Arc::new(
-            AuthzImpl::new(authz_chain_config)
-                .await
-                .map_err(|e| format!("Failed to initialize authz: {}", e))?,
-        );
-
-        let bulletin_chain_config = ChainConfigBuilder::default()
-            .chain_id(args.chain_id.clone())
-            .grpc_url(args.bulletin_grpc.clone())
-            .rpc_url(args.chain_rpc.clone())
-            .rest_url(args.chain_rest.clone())
-            .denom(args.denom.clone())
-            .gas_multiplier(args.chain_gas_multiplier)
-            .allow_insecure_rpc(Some(args.allow_insecure_rpc));
-        let chain_config = bulletin_chain_config.clone().build();
-        let signer =
-            create_and_store_node_key(local_storage.clone(), chain_config, &runtime_base_path)
-                .map_err(|e| format!("Failed to create or store node key: {}", e))?;
-        let signer = match args.fee_granter.as_deref() {
-            Some(granter) => {
-                tracing::info!(
-                    granter,
-                    "Transactions will request a fee grant from this address"
-                );
-                signer
-                    .with_fee_granter(granter)
-                    .map_err(|e| format!("Invalid --fee-granter address: {}", e))?
-            }
-            None => signer,
-        };
-        let node_key = signer.public_key_hex();
-
-        let grpc_addr: SocketAddr = args.addr.parse()?;
-        let bootstrap_info_server = start_bootstrap_info_server(
-            grpc_addr,
+        let backend = backend
+            .prepare(&args, &local_storage, &runtime_base_path)
+            .await?;
+        let identity = backend.identity.clone();
+        let bootstrap_info_server = bootstrap::start_bootstrap_info_server_with_identity(
+            args.addr.parse()?,
             network.clone(),
             local_storage.clone(),
             cors_policy.clone(),
+            identity.clone(),
         )?;
         tracing::info!(
             grpc_addr = %bootstrap_info_server.local_addr(),
-            "Bootstrap info service started while waiting for funding"
+            "Bootstrap info service started while connecting to backend"
         );
 
         let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
-            bootstrap_status.set_status(NodeStatus::ConnectingToChain);
-
-            // For integration tests, this funds the account, this is handled differently live
-            // Only fund if both the feature is enabled AND we're in the integration test network
-            #[cfg(feature = "integration-test")]
-            {
-                bootstrap_status.set_status(NodeStatus::WaitingForFunding);
-                // Build chain config with the provided RPC/REST URLs
-                let fund_config = ChainConfigBuilder::default()
-                    .chain_id(args.chain_id.clone())
-                    .rpc_url(args.chain_rpc.clone())
-                    .rest_url(args.chain_rest.clone())
-                    .grpc_url(args.bulletin_grpc.clone())
-                    .gas_multiplier(args.chain_gas_multiplier)
-                    .allow_insecure_rpc(Some(args.allow_insecure_rpc))
-                    .build();
-                cli_tool::fund(signer.address(), fund_config)
-                    .await
-                    .map_err(|e| format!("Failed to fund node account: {}", e))?;
-                bootstrap_status.set_status(NodeStatus::Funded);
-            }
-
-            // TODO: consider checking that you have connected to the chain succefully and not break tests (here or in impl)
-            #[cfg(not(feature = "integration-test"))]
-            bootstrap_status.set_status(NodeStatus::WaitingForFunding);
-            let bulletin: Arc<BulletinImpl> = Arc::new(
-                BulletinImpl::with_signer(bulletin_chain_config, signer, Some(MIN_NODE_BALANCE))
-                    .await
-                    .map_err(|e| format!("Failed to initialize bulletin: {}", e))?,
-            );
-            ensure_node_info(bulletin.as_ref(), &node_key, network.as_ref(), &args)
-                .await
-                .map_err(|e| format!("Failed to ensure node info: {}", e))?;
-            #[cfg(not(feature = "integration-test"))]
-            bootstrap_status.set_status(NodeStatus::Funded);
+            let services = backend.connect(&bootstrap_status).await?;
+            ensure_node_info(
+                services.bulletin.as_ref(),
+                &identity.node_key,
+                network.as_ref(),
+                &args,
+            )
+            .await
+            .map_err(|e| format!("Failed to ensure node info: {e}"))?;
+            services.registration_complete(&bootstrap_status);
+            let backend::Services {
+                authz, bulletin, ..
+            } = services;
 
             let config = NodeConfig {
                 args,
                 cors_policy,
-                node_key,
+                identity,
+                backend_names: (authz_name.clone(), bulletin_name.clone()),
                 network,
                 local_storage,
                 authz,
@@ -330,27 +277,18 @@ pub(crate) async fn init_node(
         .transpose()?;
 
     // Get the local peer ID and address
-    let local_peer_id = config.network.local_peer_id();
     let local_address = config
         .network
         .local_address()
         .map_err(|e| format!("Failed to get local address: {}", e))?;
 
-    // Get the bound socket address (host:port) for the connection string
-    let bound_addrs = config.network.bound_addresses();
-    let socket_addr = bound_addrs
-        .first()
-        .map(|addr| addr.to_string())
-        .unwrap_or_else(|| "127.0.0.1:0".to_string());
-
     tracing::info!("Network initialized");
-    let peer_id_hex = hex::encode(local_peer_id.as_bytes());
-    let connection_string = format!("{}@{}", peer_id_hex, socket_addr);
-    tracing::info!(connection = %connection_string, "Iroh connection string (peer_id@host:port)");
+    let connection_string = network_peer_address(config.network.as_ref());
+    tracing::info!(connection = %connection_string, "Iroh peer route");
 
     // Create shared application state (needed for router)
     let app_state = AppState::<DkgImpl>::new(
-        config.node_key.clone(),
+        config.identity.node_key.clone(),
         config.network.clone(),
         config.local_storage,
         config.authz,
@@ -359,17 +297,50 @@ pub(crate) async fn init_node(
     let app_state_arc = Arc::new(app_state);
 
     // Start the router in the background with DKG, PRE, and Sign protocol handlers
+    #[cfg(feature = "unsafe-testing")]
+    let pet_fault = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
+        .is_ok_and(|value| value == "true")
+        .then(|| Arc::new(crate::unsafe_testing::pet_fault::PetFaultControl::default()));
+    #[cfg(feature = "unsafe-testing")]
+    let router = if let Some(control) = &pet_fault {
+        use crate::helpers::create_routers::create_router_with_pet_handler;
+        use crate::helpers::protocol_handler::GenericProtocolHandler;
+        use crate::pet::v0::coordinator::PetCoordinator;
+        use crate::unsafe_testing::pet_fault::PetFaultCoordinator;
+        create_router_with_pet_handler::<DkgImpl, PreImpl, SignImpl>(
+            &config.network,
+            app_state_arc.clone(),
+            |state, routes| {
+                Arc::new(GenericProtocolHandler::new(Arc::new(
+                    PetFaultCoordinator::new(
+                        PetCoordinator::with_routes(state, routes),
+                        control.clone(),
+                    ),
+                )))
+            },
+        )
+    } else {
+        create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
+            &config.network,
+            app_state_arc.clone(),
+        )
+    };
+    #[cfg(not(feature = "unsafe-testing"))]
     let router = create_router_with_all_handlers::<DkgImpl, PreImpl, SignImpl>(
         &config.network,
         app_state_arc.clone(),
-    )
-    .map_err(|e| format!("Failed to create router: {}", e))?;
+    );
+    let router = router.map_err(|e| format!("Failed to create router: {}", e))?;
 
     tracing::info!(
         "Router started with DKG, PRE, and Sign protocol handlers and ready to accept connections"
     );
 
     Ok(InitializedNode {
+        #[cfg(feature = "unsafe-testing")]
+        pet_fault,
+        identity: config.identity,
+        backend_names: config.backend_names,
         app_state: app_state_arc,
         router,
         grpc_addr,
@@ -391,12 +362,13 @@ async fn run_server(
     // Initialize metrics eagerly so registration panics surface here, not in a spawned task
     metrics::init();
     network::metrics::init();
+    let (authz_name, bulletin_name) = &node.backend_names;
     metrics::record_build_info(
         &PreImpl::name(),
         &SignImpl::name(),
         &LocalStorageImpl::name(),
-        &AuthzImpl::name(),
-        &BulletinImpl::name(),
+        authz_name,
+        bulletin_name,
         &NetworkImpl::name(),
     );
 
@@ -456,7 +428,7 @@ async fn run_server(
     }
 
     // The info service is version-independent.
-    let info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone());
+    let info_service = InfoServiceImpl::<DkgImpl>::new(node.app_state.clone(), node.identity);
 
     // Start gRPC server. One set of services is registered per supported protocol version.
     // When v1 is added: add a `1 => { ... }` arm below and the v1 endpoints appear automatically.
@@ -476,13 +448,10 @@ async fn run_server(
         use crate::unsafe_testing::service::UnsafeTestingServiceImpl;
         use proto::unsafe_testing::unsafe_testing_service_server::UnsafeTestingServiceServer;
 
-        let unsafe_testing_enabled = std::env::var("ORBIS_ENABLE_INTEGRATION_TEST")
-            .map(|value| matches!(value.as_str(), "true"))
-            .unwrap_or(false);
-        if unsafe_testing_enabled {
+        if let Some(control) = node.pet_fault {
             tracing::warn!("Unsafe testing gRPC service is enabled");
             let unsafe_testing_service =
-                UnsafeTestingServiceImpl::with_app_state(node.app_state.clone());
+                UnsafeTestingServiceImpl::with_app_state(node.app_state.clone(), control);
             grpc_server = grpc_server.add_service(
                 UnsafeTestingServiceServer::new(unsafe_testing_service)
                     .max_decoding_message_size(constants::MAX_SIGN_REQUEST_BYTES),

@@ -102,7 +102,8 @@ fn spawn_test_grpc_server(node: crate::InitializedNode) -> tokio::task::JoinHand
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,
@@ -235,6 +236,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
+                vera_config: None,
                 addr: grpc_bind.clone(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
@@ -253,6 +255,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 runtime_base_path: None,
                 reshare_interval_secs,
                 network_private_routes_only: false,
+                network_bind_addr: None,
                 node_controller_key: node_key.clone(),
                 node_peer_id: None,
                 node_whitelisted_policy_ids: vec![policy_id.clone()],
@@ -262,7 +265,11 @@ async fn setup_fault_three_node_network_with_reshare_interval(
                 network_ingress: NetworkIngressArgs::default(),
             },
             cors_policy: CorsPolicy::Disabled,
-            node_key,
+            identity: bulletin::startup::NodeIdentity {
+                node_key,
+                public_address: public_address.clone(),
+            },
+            backend_names: ("injected".into(), "injected".into()),
             network,
             local_storage,
             authz,

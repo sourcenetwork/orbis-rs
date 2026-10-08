@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+FROM rust:1.98.0-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler git \
+    && rm -rf /var/lib/apt/lists/*
+ARG VERA_REF
+RUN test "${#VERA_REF}" = 40 && \
+    git init /source && git -C /source remote add origin https://github.com/sourcenetwork/vera.rs.git && \
+    git -C /source fetch --depth 1 origin "$VERA_REF" && \
+    git -C /source checkout --detach FETCH_HEAD && \
+    test "$(git -C /source rev-parse HEAD)" = "$VERA_REF"
+WORKDIR /source
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    cargo build --release --locked -j2 -p verad --bin verad
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /source/target/release/verad /usr/local/bin/verad
+ARG VERA_REF
+LABEL org.opencontainers.image.revision=$VERA_REF
+ENTRYPOINT ["verad"]

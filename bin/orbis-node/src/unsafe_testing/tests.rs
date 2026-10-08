@@ -1,7 +1,7 @@
 use super::service::UnsafeTestingServiceImpl;
 use crate::helpers::test_helpers::{cleanup_db, test_db_path};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 use proto::unsafe_testing::unsafe_testing_service_client::UnsafeTestingServiceClient;
 use proto::unsafe_testing::{
     unsafe_testing_service_server::UnsafeTestingService, DeleteLocalStorageRequest,
@@ -178,7 +178,7 @@ async fn rejects_invalid_keys_and_access_modes() {
     cleanup_db(&path);
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 #[tokio::test]
 #[serial_test::serial]
 async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
@@ -242,7 +242,7 @@ async fn production_docker_nodes_do_not_expose_unsafe_testing_service() {
     );
 }
 
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 #[tokio::test]
 #[serial_test::serial]
 async fn unsafe_testing_docker_nodes_require_runtime_opt_in() {

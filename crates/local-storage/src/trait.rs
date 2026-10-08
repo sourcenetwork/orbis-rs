@@ -2,6 +2,7 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+// Variant order is persisted by bincode. Append new variants; never reorder.
 #[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
 pub enum LocalStorageKeys {
     /// Encrypted `RingShareBundle` for one ring, keyed by `aggregate_pk.to_string()`.
@@ -51,6 +52,8 @@ pub enum LocalStorageKeys {
     /// `ring_id` and a main key's `aggregate_pk.to_string()` share no
     /// structural guarantee against collision.
     PendingResharePetBundle(String),
+    /// Independent native submission key, encrypted at rest.
+    NativeWorkerKey(String),
 }
 
 pub trait LocalStorage {

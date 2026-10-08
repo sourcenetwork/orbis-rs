@@ -150,7 +150,7 @@ pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 /// reshare finalization. Deliberately decoupled from `DKG_ATTEMPT_TIMEOUT` so
 /// shortening the stall-detection deadline under test doesn't tighten this
 /// unrelated wait.
-#[cfg(all(test, feature = "integration-test"))]
+#[cfg(all(test, feature = "integration-test-cosmos"))]
 pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Deadline for prepare/join/topology-probe coordination.
@@ -607,18 +607,16 @@ pub const SECRET_KEY_ENV_VAR: &str = "ORBIS_SECRET_KEY";
 // ============================================================================
 
 /// The minimum amount a node can have in chain balance to start the node
+#[cfg(all(feature = "authz-vera", feature = "bulletin-vera"))]
 pub const MIN_NODE_BALANCE: u64 = 1_000_000u64;
 
 // ============================================================================
 // Network Timeout Constants
 // ============================================================================
 
-/// Timeout for waiting on peer responses during signing and PRE operations
-///
-/// When a node sends a request to a peer and waits for a response, this timeout
-/// prevents indefinite blocking if the peer stalls or becomes unresponsive.
-/// Set to 10 seconds, which provides reasonable time for cryptographic operations
-/// while ensuring the signing flow doesn't hang indefinitely.
+/// Total connection, send and receive budget for one signing or PRE peer exchange.
+/// Expiry reaches the collector as a timeout so offline reporting can run before
+/// the background response drain ends.
 pub const PEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Overall timeout for collecting re-encryption shares from all peers.

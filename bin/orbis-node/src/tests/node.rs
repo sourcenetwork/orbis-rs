@@ -97,6 +97,7 @@ async fn make_test_node_config(
     );
     let config = NodeConfig {
         args: Args {
+            vera_config: None,
             addr: addr.to_string(),
             cors_allow_origins: vec![],
             cors_permissive: false,
@@ -115,6 +116,7 @@ async fn make_test_node_config(
             runtime_base_path: None,
             reshare_interval_secs: 0, // disabled in tests
             network_private_routes_only: false,
+            network_bind_addr: None,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
@@ -124,7 +126,11 @@ async fn make_test_node_config(
             network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy: CorsPolicy::Disabled,
-        node_key: "test-node-key".to_string(),
+        identity: bulletin::startup::NodeIdentity {
+            node_key: "test-node-key".into(),
+            public_address: "test-address".into(),
+        },
+        backend_names: ("injected".into(), "injected".into()),
         network,
         local_storage: LocalStorageImpl::new(
             password.unwrap_or_else(|| "test-password".to_string()),
@@ -140,7 +146,12 @@ async fn make_test_node_config(
 
 async fn make_bootstrap_identity(
     test_name: &str,
-) -> (Arc<dyn Network>, LocalStorageImpl, String, String) {
+) -> (
+    Arc<dyn Network>,
+    LocalStorageImpl,
+    String,
+    bulletin::startup::NodeIdentity,
+) {
     let db_path = test_db_path(test_name);
     cleanup_db(&db_path);
 
@@ -155,7 +166,12 @@ async fn make_bootstrap_identity(
     .expect("Failed to create and store node key");
     let network: Arc<dyn Network> = Arc::new(make_loopback_test_network().await);
 
-    (network, local_storage, db_path, signer.address())
+    (
+        network,
+        local_storage,
+        db_path,
+        bulletin::startup::cosmos::identity(&signer),
+    )
 }
 
 fn node_info_test_args(
@@ -165,6 +181,7 @@ fn node_info_test_args(
     ring_ids: Vec<&str>,
 ) -> Args {
     Args {
+        vera_config: None,
         addr: "127.0.0.1:0".to_string(),
         cors_allow_origins: vec![],
         cors_permissive: false,
@@ -183,6 +200,7 @@ fn node_info_test_args(
         runtime_base_path: None,
         reshare_interval_secs: 0,
         network_private_routes_only: false,
+        network_bind_addr: None,
         node_controller_key: controller_key.to_string(),
         node_peer_id,
         node_whitelisted_policy_ids: policy_ids.into_iter().map(str::to_string).collect(),
@@ -204,7 +222,8 @@ fn spawn_full_test_grpc_server(
     let dkg_service = DkgServiceImpl::<DkgImpl>::with_routes(node.app_state.clone(), &network::V0);
     let pre_service =
         PreServiceImpl::<DkgImpl, PreImpl>::with_routes(node.app_state.clone(), &network::V0);
-    let info_service = InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone());
+    let info_service =
+        InfoServiceImpl::<DkgImpl>::new((*node.app_state).clone(), node.identity.clone());
     let store_secret_service = StoreSecretServiceImpl::<DkgImpl, SignImpl>::with_routes(
         node.app_state.clone(),
         &network::V0,
@@ -572,6 +591,7 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
         None,
     )
     .await;
+    let expected_identity = config.identity.clone();
     let node = init_node(config).await.expect("initialize test node");
     let (addr, shutdown_tx, task) = spawn_full_test_grpc_server(node);
 
@@ -587,20 +607,16 @@ async fn test_full_grpc_server_denies_browser_cors_by_default_but_allows_native_
     let mut info_client = InfoServiceClient::connect(endpoint)
         .await
         .expect("connect native gRPC client with CORS disabled");
-    let status = info_client
+    let info = info_client
         .get_node_info(GetNodeInfoRequest {})
         .await
-        .expect_err("test storage intentionally has no node signing key");
-    assert_eq!(
-        status.code(),
-        Code::Internal,
-        "native gRPC request should reach the service with CORS disabled"
-    );
-    assert!(status.message().contains("No signing key found"));
+        .expect("native gRPC request should reach the service with CORS disabled")
+        .into_inner();
+    assert_eq!(info.node_key, expected_identity.node_key);
+    assert_eq!(info.public_address, expected_identity.public_address);
+    assert_eq!(info.status(), NodeStatus::Ready);
 
-    // Dashboard content doesn't depend on the node's signing key, so it
-    // should succeed via the full (non-bootstrap) InfoServiceImpl even
-    // though get_node_info fails above.
+    // The full info service also exposes the dashboard through native gRPC.
     let dashboard = info_client
         .get_dashboard(GetDashboardRequest {})
         .await
@@ -739,13 +755,14 @@ async fn test_init_node_success() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bootstrap_info_server_exposes_only_info() {
-    let (network, local_storage, db_path, expected_address) =
+    let (network, local_storage, db_path, identity) =
         make_bootstrap_identity("test_bootstrap_info_server_exposes_only_info").await;
     let bootstrap = start_bootstrap_info_server(
         "127.0.0.1:0".parse().expect("bootstrap bind addr"),
         network,
         local_storage,
         CorsPolicy::Disabled,
+        identity.clone(),
     )
     .expect("start bootstrap info server");
     let endpoint = format!("http://{}", bootstrap.local_addr());
@@ -759,7 +776,8 @@ async fn test_bootstrap_info_server_exposes_only_info() {
         .expect("get node info during bootstrap")
         .into_inner();
 
-    assert_eq!(node_info.public_address, expected_address);
+    assert_eq!(node_info.public_address, identity.public_address);
+    assert_eq!(node_info.node_key, identity.node_key);
     assert_eq!(node_info.status, NodeStatus::Bootstrapping as i32);
     assert_eq!(node_info.managed_ring_count, 0);
     assert_eq!(node_info.supported_protocol_versions, vec![0]);
@@ -812,7 +830,7 @@ async fn test_bootstrap_info_server_exposes_only_info() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
-    let (network, local_storage, db_path, expected_address) =
+    let (network, local_storage, db_path, identity) =
         make_bootstrap_identity("test_bootstrap_info_server_hands_off_to_full_server_on_same_port")
             .await;
     let cors_policy = CorsPolicy::AllowOrigins(vec!["http://localhost:5173"
@@ -823,6 +841,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         network.clone(),
         local_storage.clone(),
         cors_policy.clone(),
+        identity.clone(),
     )
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();
@@ -859,6 +878,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     );
     let config = NodeConfig {
         args: Args {
+            vera_config: None,
             addr: grpc_addr.to_string(),
             cors_allow_origins: vec!["http://localhost:5173".to_string()],
             cors_permissive: false,
@@ -877,6 +897,7 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             runtime_base_path: None,
             reshare_interval_secs: 0,
             network_private_routes_only: false,
+            network_bind_addr: None,
             node_controller_key: "test-controller-key".to_string(),
             node_peer_id: None,
             node_whitelisted_policy_ids: vec![],
@@ -886,7 +907,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
             network_ingress: NetworkIngressArgs::default(),
         },
         cors_policy,
-        node_key: "test-node-key".to_string(),
+        identity: identity.clone(),
+        backend_names: ("injected".into(), "injected".into()),
         network,
         local_storage,
         authz,
@@ -921,7 +943,8 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
         .await
         .expect("get node info after full server starts")
         .into_inner();
-    assert_eq!(node_info.public_address, expected_address);
+    assert_eq!(node_info.public_address, identity.public_address);
+    assert_eq!(node_info.node_key, identity.node_key);
     assert_eq!(node_info.status, NodeStatus::Ready as i32);
     assert_eq!(node_info.managed_ring_count, 0);
     assert_eq!(node_info.supported_protocol_versions, vec![0]);
@@ -971,13 +994,14 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_bootstrap_info_server_shutdown_on_init_error() {
-    let (network, local_storage, db_path, _) =
+    let (network, local_storage, db_path, identity) =
         make_bootstrap_identity("test_bootstrap_info_server_shutdown_on_init_error").await;
     let bootstrap = start_bootstrap_info_server(
         "127.0.0.1:0".parse().expect("bootstrap bind addr"),
         network,
         local_storage,
         CorsPolicy::Disabled,
+        identity.clone(),
     )
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();
@@ -999,7 +1023,7 @@ async fn test_bootstrap_info_server_shutdown_on_init_error() {
 #[tokio::test]
 #[serial_test::serial]
 async fn test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port() {
-    let (network, local_storage, db_path, _) = make_bootstrap_identity(
+    let (network, local_storage, db_path, identity) = make_bootstrap_identity(
         "test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_port",
     )
     .await;
@@ -1008,6 +1032,7 @@ async fn test_shutdown_interrupts_pending_initialization_and_releases_bootstrap_
         network,
         local_storage,
         CorsPolicy::Disabled,
+        identity.clone(),
     )
     .expect("start bootstrap info server");
     let grpc_addr = bootstrap.local_addr();

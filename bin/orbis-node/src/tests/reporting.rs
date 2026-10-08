@@ -41,7 +41,7 @@ use crypto::{DkgImpl, GroupAffine, ScalarField};
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetActivePssSessionRequest,
     GetLocalStorageRequest, LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType,
-    SetLocalStorageRequest, SubmitDkgEquivocationEvidenceRequest,
+    SetLocalStorageRequest, SetPetDecryptFaultRequest, SubmitDkgEquivocationEvidenceRequest,
     SubmitDkgInvalidRefreshCommitmentEvidenceRequest, SubmitDkgInvalidShareEvidenceRequest,
     SubmitPssStallOfflineReportRequest, SubmitUnauthorizedRelayEvidenceRequest,
 };
@@ -1858,20 +1858,11 @@ async fn test_invalid_crypto_response_triggers_on_chain_report() {
     println!("node3 demerit points after Sign invalid-crypto report: {demerits}");
 }
 
-/// PET blind-equality-test decrypt-phase misbehavior: corrupts node3's stored
-/// PET checking-key share (a distinct storage namespace from the main ring
-/// key — see `RingShareBundle::load_by_pet_ring_key`), which only affects the
-/// decrypt phase (reveal only touches a fresh per-attempt ephemeral blinding
-/// scalar that is never stored, so it cannot be corrupted this way — reveal
-/// misbehavior is covered at the unit level instead, in
-/// `pet::v0::coordinator::verification`'s test suite). Mirrors
-/// `test_invalid_crypto_response_triggers_on_chain_report`'s PRE-share
-/// corruption pattern and setup from
-/// `tests::integration::test_cli_calls_dkg_for_pet_ring`'s PET-gated ring/tag
-/// setup. Decrypt-phase over-asking (unlike FROST Sign's threshold-sized
-/// selection) does not depend on the Sign crypto backend, so — unlike the
-/// PRE/Sign invalid-crypto tests above — this runs under both backends with
-/// no `jubjub` exclusion.
+/// PET decrypt-phase misbehavior: node3 signs an invalid DLEQ proof after
+/// passing normal authorization, certificate and atomic-bundle checks. Its
+/// stored key remains valid, so commit/reveal still succeed on both curves.
+/// Honest decrypt shares keep PRE available while the signed bad response
+/// produces an actual on-chain report and demerit.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pet_invalid_decrypt_share_triggers_on_chain_report() {
@@ -2173,13 +2164,6 @@ resources:
         }),
     };
 
-    // Corrupt node3's PET checking-key share bundle — a distinct storage
-    // namespace (keyed by ring_id) from the main ring key. Reveal never
-    // touches this share (only a fresh per-attempt ephemeral blinding
-    // scalar, held only in memory), so this specifically targets a
-    // decrypt-phase failure: node3's identity signature on its
-    // `DecryptResponse` stays genuine, but the per-share DLEQ proof no
-    // longer verifies against the ring's real PET public polynomial.
     let mut unsafe_client = UnsafeTestingServiceClient::connect(node3_endpoint)
         .await
         .expect("connect unsafe-testing client to node3");
@@ -2196,28 +2180,13 @@ resources:
         .expect("read node3 PET ring share bundle")
         .into_inner();
     assert!(stored.found, "node3 PET ring share bundle should exist");
-    let bundle = RingShareBundle::from_bytes(&stored.value).expect("parse PET ring share bundle");
-    let pri_share = bundle.pri_share().expect("deserialize node3 PET share");
-    let corrupted_share = PriShare {
-        i: pri_share.i,
-        v: pri_share.v + ScalarField::from(1u64),
-    };
-    let corrupted_bundle = RingShareBundle {
-        share_bytes: Zeroizing::new(
-            CryptoSerialize::to_bytes(&corrupted_share).expect("serialize corrupted share"),
-        ),
-        public_polynomial: bundle.public_polynomial.clone(),
-        last_pss: bundle.last_pss,
-    };
     unsafe_client
-        .set_local_storage(SetLocalStorageRequest {
-            key: Some(storage_key),
-            access_mode: LocalStorageAccessMode::Encrypted as i32,
-            value: corrupted_bundle.to_bytes().to_vec(),
+        .set_pet_decrypt_fault(SetPetDecryptFaultRequest {
+            ring_id: ring_id.clone(),
+            enabled: true,
         })
         .await
-        .expect("store corrupted PET ring share bundle");
-    println!("node3 PET checking-key share corrupted.");
+        .expect("enable node3 signed PET decrypt-proof fault");
 
     // Decrypt-phase over-asks the whole committee and only needs `threshold`
     // genuine shares, so PRE still succeeds with node1 + node2 regardless of
@@ -2305,6 +2274,26 @@ resources:
         "node3 should have exactly 1 demerit after the PET invalid-decrypt report"
     );
     println!("node3 demerit points after PET invalid-decrypt report: {demerits}");
+    unsafe_client
+        .set_pet_decrypt_fault(SetPetDecryptFaultRequest {
+            ring_id: ring_id.clone(),
+            enabled: false,
+        })
+        .await
+        .expect("disable node3 decrypt-proof fault");
+    let after = unsafe_client
+        .get_local_storage(GetLocalStorageRequest {
+            key: Some(storage_key),
+            access_mode: LocalStorageAccessMode::Encrypted as i32,
+        })
+        .await
+        .expect("read unchanged node3 PET bundle")
+        .into_inner();
+    assert!(after.found);
+    assert!(
+        after.value == stored.value,
+        "fault must not corrupt persisted key material"
+    );
 }
 
 /// FROST-only variant of the Sign invalid-crypto test. Under jubjub the

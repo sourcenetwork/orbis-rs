@@ -7,17 +7,29 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
-common = { path = "../common" }
+common = { path = "../common", default-features = false }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+vera-identity = { package = "identity", git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+hex = { workspace = true, optional = true }
+
 [features]
 default = ["vera"]
-vera = []
+vera = ["common/cosmos"]
+native = ["dep:vera-identity", "dep:vera-client", "dep:vera-domain", "dep:hex"]
 test-helpers = []
 
+[[test]]
+name = "native_service"
+required-features = ["native"]
+
 [dev-dependencies]
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c" }
+alloy-primitives = "1"
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"
 did-key = { workspace = true }

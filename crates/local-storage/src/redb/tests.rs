@@ -1,5 +1,5 @@
 use super::{
-    raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KDF_PARAMS_KEY,
+    raw_delete, raw_get, raw_set, serialize_key, RedbStorage, INTERNAL_KDF_PARAMS_KEY,
     INTERNAL_KEY_COMMITMENT_KEY,
 };
 use crate::common::StoredKdfParams;
@@ -131,24 +131,14 @@ fn kdf_params_are_persisted_and_reused_on_reopen() {
     let path = test_db_path("sec04_kdf_persist");
     cleanup_db(&path);
 
-    {
-        RedbStorage::new("pw".to_string(), path.clone()).unwrap();
-    }
+    let expected = StoredKdfParams::for_new_db();
+    let db = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    assert_eq!(db.stored_kdf_params().unwrap(), expected);
+    drop(db);
 
-    let raw = raw_get(
-        &::redb::Database::create(&path).unwrap(),
-        INTERNAL_KDF_PARAMS_KEY,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        StoredKdfParams::from_bytes(&raw).unwrap(),
-        StoredKdfParams::for_new_db(),
-        "creation parameters must be written to disk"
-    );
-
-    // Reopen re-derives from the persisted parameters — succeeds.
-    RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    let reopened = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    assert_eq!(reopened.stored_kdf_params().unwrap(), expected);
+    drop(reopened);
 
     cleanup_db(&path);
 }
@@ -195,5 +185,127 @@ fn repeated_writes_still_read_latest() {
         &[4u8; 4]
     );
 
+    cleanup_db(&path);
+}
+
+#[test]
+fn persisted_storage_tags_remain_stable() {
+    // Slots 0..=7 are the published layout at a18d22cc and f1c15b0.
+    let fixtures: &[(LocalStorageKeys, &[u8])] = &[
+        (
+            LocalStorageKeys::RingKey("r".into()),
+            b"\x00\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+        (
+            LocalStorageKeys::PetRingKey("r".into()),
+            b"\x01\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+        (LocalStorageKeys::RingIndex, b"\x02\0\0\0"),
+        (LocalStorageKeys::NodeSecretKey, b"\x03\0\0\0"),
+        (LocalStorageKeys::NodeSigningKey, b"\x04\0\0\0"),
+        (
+            LocalStorageKeys::RingPolyHistory("r".into()),
+            b"\x05\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+        (
+            LocalStorageKeys::PendingReshareBundle("r".into()),
+            b"\x06\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+        (
+            LocalStorageKeys::PendingResharePetBundle("r".into()),
+            b"\x07\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+        (
+            LocalStorageKeys::NativeWorkerKey("r".into()),
+            b"\x08\0\0\0\x01\0\0\0\0\0\0\0r",
+        ),
+    ];
+    for (key, bytes) in fixtures {
+        assert_eq!(serialize_key(key).unwrap(), *bytes, "{key:?}");
+        assert_eq!(
+            bincode::deserialize::<LocalStorageKeys>(bytes).unwrap(),
+            *key
+        );
+    }
+}
+
+#[test]
+fn published_identity_slots_reopen_without_aliasing() {
+    let path = test_db_path("published_identity_slots");
+    cleanup_db(&path);
+    let network_secret = b"1111111111111111111111111111111111111111111111111111111111111111";
+    let signing_secret = b"2222222222222222222222222222222222222222222222222222222222222222";
+    let index = br#"[{"ring_pk_str":"main-ring","post_id":"ring-id"}]"#;
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    // Write the baseline's raw slots without serializing the current enum.
+    raw_set(&db.store, &[2, 0, 0, 0], index).unwrap();
+    for (slot, secret) in [(3, network_secret), (4, signing_secret)] {
+        let key = [slot, 0, 0, 0];
+        let encrypted = super::encrypt_value(&db.cipher, &super::slot_aad(&key), secret).unwrap();
+        raw_set(&db.store, &key, &encrypted).unwrap();
+    }
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert_eq!(db.get(LocalStorageKeys::RingIndex).unwrap().unwrap(), index);
+    for (key, secret) in [
+        (LocalStorageKeys::NodeSecretKey, network_secret),
+        (LocalStorageKeys::NodeSigningKey, signing_secret),
+    ] {
+        assert_eq!(db.get_encrypted(key).unwrap().unwrap().as_slice(), secret);
+    }
+    drop(db);
+    cleanup_db(&path);
+}
+
+#[test]
+fn native_worker_identity_survives_restart_and_deletion() {
+    let path = test_db_path("native_worker_identity");
+    cleanup_db(&path);
+    let key = LocalStorageKeys::NativeWorkerKey("vera-worker-test".into());
+    let history = LocalStorageKeys::RingPolyHistory("ring-public-key".into());
+    let pending = LocalStorageKeys::PendingReshareBundle("ring-public-key".into());
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    db.set_encrypted(key.clone(), Zeroizing::new(vec![31; 32]))
+        .unwrap();
+    db.set(history.clone(), b"public polynomial".to_vec())
+        .unwrap();
+    db.set_encrypted(pending.clone(), Zeroizing::new(b"pending share".to_vec()))
+        .unwrap();
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert_eq!(
+        db.get_encrypted(key.clone()).unwrap().unwrap().as_slice(),
+        &[31; 32]
+    );
+    assert_eq!(db.get(history).unwrap().unwrap(), b"public polynomial");
+    assert_eq!(
+        db.get_encrypted(pending).unwrap().unwrap().as_slice(),
+        b"pending share"
+    );
+    db.delete(key.clone()).unwrap();
+    drop(db);
+    let db = RedbStorage::new("pw".into(), path.clone()).unwrap();
+    assert!(db.get_encrypted(key).unwrap().is_none());
+    drop(db);
+    cleanup_db(&path);
+}
+
+/// The readback must use the stored header, never current defaults or a cache.
+#[test]
+fn stored_kdf_params_rejects_missing_or_malformed_header() {
+    let path = test_db_path("kdf_readback_invalid");
+    cleanup_db(&path);
+    let db = RedbStorage::new("pw".to_string(), path.clone()).unwrap();
+    raw_set(&db.store, INTERNAL_KDF_PARAMS_KEY, &[0; 15]).unwrap();
+    assert!(matches!(
+        db.stored_kdf_params(),
+        Err(LocalStorageError::CorruptData)
+    ));
+    raw_delete(&db.store, INTERNAL_KDF_PARAMS_KEY).unwrap();
+    assert!(matches!(
+        db.stored_kdf_params(),
+        Err(LocalStorageError::CorruptData)
+    ));
+    drop(db);
     cleanup_db(&path);
 }

@@ -1,8 +1,13 @@
+#[cfg(feature = "unsafe-testing")]
+mod decrypt_fault;
+mod generation_reports;
+mod signed_context;
+
 use super::*;
 use crate::helpers::test_helpers::{
     cleanup_db, create_test_app_state_with_bulletin, test_db_path, TestKeyPair,
 };
-use crate::pet::v0::messages::{CommitRequest, PetMessage};
+use crate::pet::v0::messages::{CommitRequest, PetMessage, RevealRequest};
 use crate::reporting::v0::types::{
     pet_blind_selection_digest, PetBlindCertificate, PetBlindSignedDecrypt, PetBlindSignedReveal,
     PET_BLIND_DECRYPT_RESPONSE_DOMAIN, PET_BLIND_REVEAL_RESPONSE_DOMAIN,
@@ -13,6 +18,7 @@ use bulletin::r#trait::{DocumentPayload, NodeInfo, RingPayload};
 use common::blockchain::{sign_node_message_with_hex_key, ChainConfig, TxSigner};
 use crypto::r#trait::{CryptoSerialize, PriShare};
 use crypto::{DkgImpl, PetImpl};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use network::PeerId;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -184,39 +190,41 @@ fn build_fixture(committee_size: usize, threshold: u32, target: &str) -> TagFixt
     }
 }
 
-fn fixture_pub_poly(fixture: &TagFixture) -> crypto::PubPolyImpl {
-    let pet_pk_bytes = hex::decode(fixture.ring_payload.pet_pk.as_ref().expect("pet_pk"))
-        .expect("decode pet_pk hex");
+fn ring_pub_poly(ring: &RingPayload) -> crypto::PubPolyImpl {
+    let pet_pk_bytes =
+        hex::decode(ring.pet_pk.as_ref().expect("pet_pk")).expect("decode pet_pk hex");
     let pet_pk = G1Affine::from_bytes(&pet_pk_bytes).expect("decode pet_pk point");
-    crypto::PubPolyImpl {
-        commits: vec![pet_pk],
-    }
+    let identity =
+        crypto::helpers::mul_point(&pet_pk, &Fr::from(0u64)).expect("zero coefficient commitment");
+    let mut commits = vec![identity; ring.threshold as usize];
+    commits[0] = pet_pk;
+    crypto::PubPolyImpl { commits }
 }
 
-/// A throwaway context sufficient for the pure `verify_reveal_response`/
-/// `verify_decrypt_response` tests below, which only pass it through to
-/// build an `InvalidProof` observation on failure — never independently
-/// validated by those functions themselves.
-fn throwaway_blind_context() -> PetBlindContext {
-    PetBlindContext {
-        chain_id: "test-chain".to_string(),
-        protocol_version: 0,
-        crypto_backend: PetImpl::name(),
-        ring_id: RING_ID.to_string(),
-        ring_pk: "aa".repeat(32),
-        ring_state_sha256: "bb".repeat(32),
-        pet_pk: "cc".repeat(32),
-        object_id: "test-object".to_string(),
-        salt: None,
-        timestamp: None,
-        document_inline: false,
-        audit_target_object_id: AUDIT_TARGET.to_string(),
-        actor_id: "test-actor".to_string(),
-        valid_window_start: None,
-        valid_window_end: None,
-        coordinator_node_key: "test-coordinator".to_string(),
-        attempt_id: "attempt-1".to_string(),
-    }
+fn fixture_pub_poly(fixture: &TagFixture) -> crypto::PubPolyImpl {
+    ring_pub_poly(&fixture.ring_payload)
+}
+
+fn fixture_ring_state(fixture: &TagFixture) -> String {
+    crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload)
+}
+
+fn fixture_polynomial_bytes(fixture: &TagFixture) -> Vec<u8> {
+    CryptoSerialize::to_bytes(&fixture_pub_poly(fixture)).expect("serialize fixture polynomial")
+}
+
+fn fixture_blind_context(fixture: &TagFixture, attempt: &str) -> PetBlindContext {
+    build_pet_blind_context(
+        "vera-localnet".to_string(),
+        &fixture.ring_payload,
+        fixture.ring_payload.pet_pk.as_ref().expect("pet_pk"),
+        0,
+        PetImpl::name(),
+        &admission_ctx(fixture),
+        ADMISSION_ACTOR.to_string(),
+        ADMISSION_COORDINATOR.to_string(),
+        attempt.to_string(),
+    )
 }
 
 /// This node's round-1 output plus everything round 2 needs to open it —
@@ -264,7 +272,7 @@ fn commit(
 
 #[allow(clippy::too_many_arguments)]
 fn reveal(
-    tag: &PetTag,
+    fixture: &TagFixture,
     target_fingerprint: &G1Affine,
     attempt_id: &str,
     context_digest: [u8; 32],
@@ -282,17 +290,17 @@ fn reveal(
     );
     let real_reply = PetImpl::prove_blinding_correctness(
         &contribution.z_i,
-        tag,
+        &fixture.tag,
         target_fingerprint,
         &blind_transcript_digest,
     )
     .expect("compute blinding-correctness proof");
     let statement = PetBlindRevealStatement {
         domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
-        chain_id: "test-chain".to_string(),
+        chain_id: "vera-localnet".to_string(),
         ring_id: RING_ID.to_string(),
-        ring_pk: "aa".repeat(32),
-        ring_state_sha256: "bb".repeat(32),
+        ring_pk: fixture.ring_payload.ring_pk.clone(),
+        ring_state_sha256: crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload),
         protocol_version: 0,
         attempt_id: attempt_id.to_string(),
         context_digest,
@@ -348,7 +356,7 @@ fn genuine_reveal_message(
 ) -> PetMessage {
     let signer = &fixture.signers[(contribution.node_id - 1) as usize];
     let signed = reveal(
-        &fixture.tag,
+        fixture,
         target_fingerprint,
         attempt_id,
         context_digest,
@@ -417,10 +425,10 @@ fn reveal_with_bad_proof(
     .expect("recompute genuine blinded points");
     let statement = PetBlindRevealStatement {
         domain: PET_BLIND_REVEAL_RESPONSE_DOMAIN.to_string(),
-        chain_id: "test-chain".to_string(),
+        chain_id: "vera-localnet".to_string(),
         ring_id: RING_ID.to_string(),
-        ring_pk: "aa".repeat(32),
-        ring_state_sha256: "bb".repeat(32),
+        ring_pk: fixture.ring_payload.ring_pk.clone(),
+        ring_state_sha256: crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload),
         protocol_version: 0,
         attempt_id: attempt_id.to_string(),
         context_digest,
@@ -487,10 +495,10 @@ fn decrypt_share(
     let signer = &fixture.signers[(node_id - 1) as usize];
     let statement = PetBlindDecryptStatement {
         domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
-        chain_id: "test-chain".to_string(),
+        chain_id: "vera-localnet".to_string(),
         ring_id: RING_ID.to_string(),
-        ring_pk: "aa".repeat(32),
-        ring_state_sha256: "bb".repeat(32),
+        ring_pk: fixture.ring_payload.ring_pk.clone(),
+        ring_state_sha256: crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload),
         protocol_version: 0,
         attempt_id: certificate.attempt_id.clone(),
         context_digest: certificate.context_digest,
@@ -503,10 +511,7 @@ fn decrypt_share(
         challenge: CryptoSerialize::to_bytes(&reply.challenge).expect("serialize challenge"),
         proof: CryptoSerialize::to_bytes(&reply.proof).expect("serialize proof"),
         signed_at: 1_700_000_000,
-        // Unused by the live-round verification these fixtures exercise
-        // (`verify_one_decrypt` takes its own authoritative `pub_poly`
-        // parameter) — only report verification reads this field.
-        public_polynomial: vec![0xaa, 0xbb],
+        public_polynomial: certificate.public_polynomial.clone(),
     };
     let response_signature =
         sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
@@ -533,10 +538,10 @@ fn malformed_decrypt_share(
     let signer = &fixture.signers[(node_id - 1) as usize];
     let statement = PetBlindDecryptStatement {
         domain: PET_BLIND_DECRYPT_RESPONSE_DOMAIN.to_string(),
-        chain_id: "test-chain".to_string(),
+        chain_id: "vera-localnet".to_string(),
         ring_id: RING_ID.to_string(),
-        ring_pk: "aa".repeat(32),
-        ring_state_sha256: "bb".repeat(32),
+        ring_pk: fixture.ring_payload.ring_pk.clone(),
+        ring_state_sha256: crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload),
         protocol_version: 0,
         attempt_id: certificate.attempt_id.clone(),
         context_digest: certificate.context_digest,
@@ -549,7 +554,7 @@ fn malformed_decrypt_share(
         challenge: vec![0xff, 0xff, 0xff],
         proof: vec![0xff, 0xff, 0xff],
         signed_at: 1_700_000_000,
-        public_polynomial: vec![0xaa, 0xbb],
+        public_polynomial: certificate.public_polynomial.clone(),
     };
     let response_signature =
         sign_node_message_with_hex_key(&signer.secret_hex, &statement.canonical_bytes())
@@ -572,6 +577,10 @@ fn build_certificate_for(
     context_digest: [u8; 32],
     node_ids: &[u32],
 ) -> PetBlindCertificate {
+    assert_eq!(
+        context_digest,
+        fixture_blind_context(fixture, attempt_id).context_digest()
+    );
     let contributions: Vec<Contribution> = node_ids
         .iter()
         .map(|&id| {
@@ -593,7 +602,7 @@ fn build_certificate_for(
         .map(|c| {
             let signer = &fixture.signers[(c.node_id - 1) as usize];
             reveal(
-                &fixture.tag,
+                fixture,
                 target_fingerprint,
                 attempt_id,
                 context_digest,
@@ -604,6 +613,7 @@ fn build_certificate_for(
         })
         .collect();
     PetBlindCertificate {
+        public_polynomial: fixture_polynomial_bytes(fixture),
         attempt_id: attempt_id.to_string(),
         context_digest,
         all_commitments: all_commitments
@@ -614,17 +624,19 @@ fn build_certificate_for(
     }
 }
 
-/// Builds a genuine, fully valid 2-of-3 certificate with a fixed
-/// placeholder attempt_id/context_digest — the shared base every
-/// certificate-only rejection test below tampers with exactly one
-/// thing. Certificate-level checks don't depend on the digest matching
-/// any external context (that binding is `verify_pet_admission`'s job,
-/// tested separately below), so a fixed placeholder is fine here.
+/// A genuine 2-of-3 certificate bound to this fixture's complete context.
+/// Each rejection test mutates one field after this valid base is signed.
 fn build_valid_certificate(
     fixture: &TagFixture,
     target_fingerprint: &G1Affine,
 ) -> PetBlindCertificate {
-    build_certificate_for(fixture, target_fingerprint, "attempt-1", [7u8; 32], &[1, 2])
+    build_certificate_for(
+        fixture,
+        target_fingerprint,
+        "attempt-1",
+        fixture_blind_context(fixture, "attempt-1").context_digest(),
+        &[1, 2],
+    )
 }
 
 /// A deterministic 64-hex-char peer id for committee member `index` —
@@ -635,10 +647,15 @@ fn peer_id_hex_for(index: usize) -> String {
     hex::encode([(index as u8) + 1; 32])
 }
 
-async fn test_coordinator(
+async fn test_coordinator(db_name: &str, fixture: &TagFixture) -> PetCoordinator<DkgImpl, PetImpl> {
+    test_coordinator_with_bulletin(db_name, fixture).await.0
+}
+
+async fn test_coordinator_with_bulletin(
     db_name: &str,
-    ring_payload: &RingPayload,
-) -> PetCoordinator<DkgImpl, PetImpl> {
+    fixture: &TagFixture,
+) -> (PetCoordinator<DkgImpl, PetImpl>, Arc<DummyBulletin>) {
+    let ring_payload = &fixture.ring_payload;
     let dummy_bulletin = Arc::new(DummyBulletin::new().await.expect("dummy bulletin"));
     dummy_bulletin
         .set_ring(RING_ID.to_string(), ring_payload.clone())
@@ -661,31 +678,27 @@ async fn test_coordinator(
             )
             .expect("seed node info");
     }
-    let app_state = create_test_app_state_with_bulletin(true, dummy_bulletin, db_name).await;
+    let mut app_state =
+        create_test_app_state_with_bulletin(true, dummy_bulletin.clone(), db_name).await;
+    app_state.node_key = fixture.signers[0].pubkey_hex.clone();
+    app_state
+        .local_storage
+        .set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            Zeroizing::new(fixture.signers[0].secret_hex.as_bytes().to_vec()),
+        )
+        .expect("store fixture node signing key");
 
-    // `verify_pet_admission`/every handler loads this ring's PET
-    // checking-key bundle to get a public polynomial to verify
-    // per-share DLEQ proofs against. Every fixture's "threshold
-    // sharing" is the degree-0 "identical shares" trick
-    // (`TagFixture::pet_sk`), so a single-commit polynomial pinned to
-    // the ring's own `pet_pk` is exactly the matching public
-    // commitment. `share_bytes` carries the same `pet_sk` as every
-    // other "share" for the same reason, at index 1 — matching
-    // `peer_id_hex_for(0)`/`signers[0]`, so this node can act as
-    // committee member 1 in handler tests.
-    let pet_pk_bytes = hex::decode(ring_payload.pet_pk.as_ref().expect("ring_payload.pet_pk"))
-        .expect("decode pet_pk hex");
-    let pet_pk = G1Affine::from_bytes(&pet_pk_bytes).expect("decode pet_pk point");
-    let pub_poly = crypto::PubPolyImpl {
-        commits: vec![pet_pk],
-    };
-    let placeholder_share = PriShare {
+    // A constant polynomial with exactly `threshold` coefficients keeps each
+    // share equal to pet_sk, while exercising canonical generation binding.
+    let pub_poly = fixture_pub_poly(fixture);
+    let share = PriShare {
         i: 1,
-        v: Fr::from(1u64),
+        v: fixture.pet_sk,
     };
     let bundle = RingShareBundle {
         share_bytes: Zeroizing::new(
-            CryptoSerialize::to_bytes(&placeholder_share).expect("serialize placeholder share"),
+            CryptoSerialize::to_bytes(&share).expect("serialize fixture share"),
         ),
         public_polynomial: hex::encode(
             CryptoSerialize::to_bytes(&pub_poly).expect("serialize pub_poly"),
@@ -696,7 +709,10 @@ async fn test_coordinator(
         .save_by_pet_ring_key(&app_state.local_storage, RING_ID)
         .expect("seed PET bundle");
 
-    PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0)
+    (
+        PetCoordinator::<DkgImpl, PetImpl>::with_routes(Arc::new(app_state), &::network::V0),
+        dummy_bulletin,
+    )
 }
 
 // ========================================================================
@@ -712,9 +728,11 @@ async fn verify_pet_check_request_rejects_a_document_object_id_mismatch() {
     let db_name = "pet_check_request_rejects_document_object_id_mismatch";
     let fixture_a = build_fixture(3, 2, AUDIT_TARGET);
     let fixture_b = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture_a.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture_a).await;
 
     let ctx = PetCheckContext {
+        ring_state_sha256: fixture_ring_state(&fixture_a),
+        public_polynomial: fixture_polynomial_bytes(&fixture_a),
         document: fixture_a.document.clone(),
         salt: None,
         object_id: object_id_for(&fixture_b),
@@ -798,6 +816,8 @@ async fn check_pet_permission_accepts_an_authorized_actor() {
 async fn verify_pet_audit_authorization_rejects_a_garbage_token() {
     let (_signer, document, object_id) = audit_authz_fixture();
     let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
         document,
         salt: None,
         object_id,
@@ -822,6 +842,8 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_object_i
         .create_pre_jwt(b"unused".to_vec(), "a-different-object-id", None, None)
         .expect("sign token");
     let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
         document,
         salt: None,
         object_id,
@@ -851,6 +873,8 @@ async fn verify_pet_audit_authorization_rejects_a_token_for_a_different_salt() {
         )
         .expect("sign token");
     let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
         document,
         salt: Some("different-salt".to_string()),
         object_id,
@@ -875,6 +899,8 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
         .create_pre_jwt(b"unused".to_vec(), &object_id, None, None)
         .expect("sign token");
     let ctx = PetCheckContext {
+        ring_state_sha256: String::new(),
+        public_polynomial: Vec::new(),
         document,
         salt: None,
         object_id,
@@ -903,7 +929,7 @@ async fn verify_pet_audit_authorization_accepts_a_genuinely_matching_token() {
 async fn handle_commit_request_rejects_a_request_with_no_valid_audit_authorization() {
     let db_name = "pet_handle_commit_request_rejects_unauthorized_audit";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let peer_id = PeerId::new(vec![0u8; 32]);
 
     let request = CommitRequest {
@@ -911,6 +937,8 @@ async fn handle_commit_request_rejects_a_request_with_no_valid_audit_authorizati
         attempt_id: "attempt-1".to_string(),
         from_node_id: 1,
         context: PetCheckContext {
+            ring_state_sha256: fixture_ring_state(&fixture),
+            public_polynomial: fixture_polynomial_bytes(&fixture),
             document: fixture.document.clone(),
             salt: None,
             object_id: object_id_for(&fixture),
@@ -942,7 +970,7 @@ async fn handle_commit_request_rejects_a_request_with_no_valid_audit_authorizati
 async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization() {
     let db_name = "pet_handle_commit_request_accepts_valid_audit_authorization";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     // Committee member 1 (`signers[0]`/`peer_id_hex_for(0)`) plays the
     // coordinator here — this node's own stored share is also index 1
     // (see `test_coordinator`), so it can answer as itself.
@@ -957,6 +985,8 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
         attempt_id: "attempt-1".to_string(),
         from_node_id: 1,
         context: PetCheckContext {
+            ring_state_sha256: fixture_ring_state(&fixture),
+            public_polynomial: fixture_polynomial_bytes(&fixture),
             document: fixture.document.clone(),
             salt: None,
             object_id,
@@ -980,6 +1010,279 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
     cleanup_db(&test_db_path(db_name));
 }
 
+fn authorized_pet_context(fixture: &TagFixture) -> PetCheckContext {
+    let mut context = admission_ctx(fixture);
+    context.token_string = TestKeyPair::new()
+        .create_pre_jwt(b"unused".to_vec(), &context.object_id, None, None)
+        .expect("sign token")
+        .0;
+    context
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn commit_with_a_valid_former_threshold_polynomial_returns_generation_mismatch() {
+    let db_name = "pet_commit_former_threshold_generation";
+    let fixture = build_fixture(3, 2, AUDIT_TARGET);
+    let coordinator = test_coordinator(db_name, &fixture).await;
+    let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode peer id"));
+    let mut old_ring = fixture.ring_payload.clone();
+    old_ring.threshold = 3;
+    let old_polynomial =
+        CryptoSerialize::to_bytes(&ring_pub_poly(&old_ring)).expect("serialize old polynomial");
+    crate::pet::v0::generation::decode::<crypto::PubPolyImpl>(
+        &old_polynomial,
+        old_ring.threshold,
+        old_ring.pet_pk.as_deref().expect("PET key"),
+    )
+    .expect("the old polynomial is canonical and has the unchanged checking key");
+    let mut context = authorized_pet_context(&fixture);
+    // The initiator can read the new ring while its local old bundle still awaits promotion.
+    context.public_polynomial = old_polynomial;
+    let result = coordinator
+        .handle_message(
+            PetMessage::CommitRequest(Box::new(CommitRequest {
+                request_id: "commit-former-threshold".to_string(),
+                attempt_id: "former-threshold".to_string(),
+                from_node_id: 1,
+                context,
+            })),
+            &peer_id,
+        )
+        .await
+        .expect("an honest threshold transition has a typed response");
+    assert!(matches!(
+        result,
+        Some(PetMessage::GenerationMismatch { request_id })
+            if request_id == "commit-former-threshold"
+    ));
+    cleanup_db(&test_db_path(db_name));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn reveal_after_ring_context_change_returns_generation_mismatch() {
+    // The unchanged case proves the request reaches real reveal generation.
+    // Only the certified ring metadata changes between the other commit/reveal.
+    for ring_changes in [false, true] {
+        let db_name = format!("pet_reveal_ring_context_changes_{ring_changes}");
+        let fixture = build_fixture(1, 1, AUDIT_TARGET);
+        let (coordinator, bulletin) = test_coordinator_with_bulletin(&db_name, &fixture).await;
+        let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode peer id"));
+        let context = authorized_pet_context(&fixture);
+        let commit_response = coordinator
+            .handle_message(
+                PetMessage::CommitRequest(Box::new(CommitRequest {
+                    request_id: "commit-ring-context".to_string(),
+                    attempt_id: "ring-context".to_string(),
+                    from_node_id: 1,
+                    context: context.clone(),
+                })),
+                &peer_id,
+            )
+            .await
+            .expect("commit succeeds before the transition");
+        let Some(PetMessage::CommitResponse { commitment, .. }) = commit_response else {
+            panic!("expected a genuine commitment, got {commit_response:?}");
+        };
+        if ring_changes {
+            let mut next_ring = fixture.ring_payload.clone();
+            next_ring.pss_interval += 1;
+            assert_ne!(
+                crate::reporting::v0::types::ring_state_sha256(&fixture.ring_payload),
+                crate::reporting::v0::types::ring_state_sha256(&next_ring),
+            );
+            bulletin
+                .set_ring(RING_ID.to_string(), next_ring)
+                .expect("update ring");
+        }
+        let result = coordinator
+            .handle_message(
+                PetMessage::RevealRequest(Box::new(RevealRequest {
+                    request_id: "reveal-ring-context".to_string(),
+                    attempt_id: "ring-context".to_string(),
+                    from_node_id: 1,
+                    all_commitments: vec![(1, commitment)],
+                    context,
+                })),
+                &peer_id,
+            )
+            .await
+            .expect("an honest ring transition has a typed response");
+        if ring_changes {
+            assert!(matches!(
+                result,
+                Some(PetMessage::GenerationMismatch { request_id })
+                    if request_id == "reveal-ring-context"
+            ));
+        } else {
+            assert!(matches!(result, Some(PetMessage::RevealResponse { .. })));
+        }
+        assert!(bulletin.take_submitted_reports().is_empty());
+        cleanup_db(&test_db_path(&db_name));
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn commit_with_a_previous_member_index_returns_generation_mismatch() {
+    let db_name = "pet_commit_previous_member_index";
+    let fixture = build_fixture(3, 2, AUDIT_TARGET);
+    let coordinator = test_coordinator(db_name, &fixture).await;
+    let mut bundle =
+        RingShareBundle::load_by_pet_ring_key(&coordinator.app_state.local_storage, RING_ID)
+            .expect("load fixture bundle");
+    bundle.share_bytes = Zeroizing::new(
+        CryptoSerialize::to_bytes(&PriShare {
+            i: 2,
+            v: fixture.pet_sk,
+        })
+        .expect("serialize old member index"),
+    );
+    bundle
+        .save_by_pet_ring_key(&coordinator.app_state.local_storage, RING_ID)
+        .expect("persist old member index");
+    let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode peer id"));
+    let result = coordinator
+        .handle_message(
+            PetMessage::CommitRequest(Box::new(CommitRequest {
+                request_id: "commit-member-index".to_string(),
+                attempt_id: "member-index".to_string(),
+                from_node_id: 1,
+                context: authorized_pet_context(&fixture),
+            })),
+            &peer_id,
+        )
+        .await
+        .expect("an honest member-index transition has a typed response");
+    assert!(matches!(
+        result,
+        Some(PetMessage::GenerationMismatch { request_id })
+            if request_id == "commit-member-index"
+    ));
+    cleanup_db(&test_db_path(db_name));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn commit_after_same_threshold_refresh_refuses_old_polynomial_and_accepts_new() {
+    let db_name = "pet_commit_refreshed_bundle";
+    let fixture = build_fixture(3, 2, AUDIT_TARGET);
+    let coordinator = test_coordinator(db_name, &fixture).await;
+    let mut refreshed = fixture_pub_poly(&fixture);
+    // Add the deterministic zero-constant polynomial pet_sk*x. The checking
+    // key and threshold stay fixed, but the share at index1 and polynomial change.
+    refreshed.commits[1] = refreshed.commits[0];
+    let refreshed_bytes = CryptoSerialize::to_bytes(&refreshed).expect("serialize refreshed poly");
+    assert_ne!(refreshed_bytes, fixture_polynomial_bytes(&fixture));
+    RingShareBundle {
+        share_bytes: Zeroizing::new(
+            CryptoSerialize::to_bytes(&PriShare {
+                i: 1,
+                v: fixture.pet_sk + fixture.pet_sk,
+            })
+            .expect("serialize refreshed share"),
+        ),
+        public_polynomial: hex::encode(&refreshed_bytes),
+        last_pss: 1,
+    }
+    .save_by_pet_ring_key(&coordinator.app_state.local_storage, RING_ID)
+    .expect("atomically persist refreshed bundle");
+    let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode peer id"));
+    for use_refreshed in [false, true] {
+        let mut context = authorized_pet_context(&fixture);
+        if use_refreshed {
+            context.public_polynomial = refreshed_bytes.clone();
+        }
+        let result = coordinator
+            .handle_message(
+                PetMessage::CommitRequest(Box::new(CommitRequest {
+                    request_id: format!("commit-refreshed-{use_refreshed}"),
+                    attempt_id: format!("refreshed-{use_refreshed}"),
+                    from_node_id: 1,
+                    context,
+                })),
+                &peer_id,
+            )
+            .await
+            .expect("a valid refreshed bundle is not a storage or protocol error");
+        if use_refreshed {
+            assert!(matches!(result, Some(PetMessage::CommitResponse { .. })));
+        } else {
+            assert!(matches!(
+                result,
+                Some(PetMessage::GenerationMismatch { request_id })
+                    if request_id == "commit-refreshed-false"
+            ));
+        }
+    }
+    cleanup_db(&test_db_path(db_name));
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn commit_refuses_a_scalar_inconsistent_with_its_atomic_polynomial() {
+    let db_name = "pet_commit_corrupt_scalar";
+    let fixture = build_fixture(3, 2, AUDIT_TARGET);
+    let coordinator = test_coordinator(db_name, &fixture).await;
+    let mut bundle =
+        RingShareBundle::load_by_pet_ring_key(&coordinator.app_state.local_storage, RING_ID)
+            .expect("load fixture bundle");
+    bundle.share_bytes = Zeroizing::new(
+        CryptoSerialize::to_bytes(&PriShare {
+            i: 1,
+            v: fixture.pet_sk + Fr::from(1u64),
+        })
+        .expect("serialize inconsistent scalar"),
+    );
+    bundle
+        .save_by_pet_ring_key(&coordinator.app_state.local_storage, RING_ID)
+        .expect("persist inconsistent bundle");
+    let peer_id = PeerId::new(hex::decode(peer_id_hex_for(0)).expect("decode peer id"));
+    let result = coordinator
+        .handle_message(
+            PetMessage::CommitRequest(Box::new(CommitRequest {
+                request_id: "commit-corrupt-scalar".to_string(),
+                attempt_id: "corrupt-scalar".to_string(),
+                from_node_id: 1,
+                context: authorized_pet_context(&fixture),
+            })),
+            &peer_id,
+        )
+        .await;
+    assert!(
+        matches!(result, Err(PetError::Storage(_))),
+        "an inconsistent stored scalar must never endorse a certificate: {result:?}"
+    );
+    cleanup_db(&test_db_path(db_name));
+}
+
+#[test]
+fn generation_mismatch_is_retryable_and_never_an_offline_observation() {
+    use crate::reporting::v0::observation::offline_observation_from_pet_error;
+
+    let fixture = build_fixture(3, 2, AUDIT_TARGET);
+    let peer_ids: Vec<_> = (0..3).map(peer_id_hex_for).collect();
+    let observe = |error| {
+        offline_observation_from_pet_error(
+            RING_ID,
+            &peer_ids,
+            &fixture.ring_payload.peer_node_keys,
+            &peer_ids[0],
+            error,
+            0,
+            "generation-transition",
+        )
+    };
+    let timeout = PetError::Timeout("transport timeout".into());
+    assert!(observe(&timeout).is_some());
+    assert!(observe(&PetError::GenerationMismatch).is_none());
+    let status = tonic::Status::from(crate::pre::v0::error::PreError::from(
+        PetError::GenerationMismatch,
+    ));
+    assert_eq!(status.code(), tonic::Code::Unavailable);
+}
+
 // ========================================================================
 // `verify_commit_response` — Commit responses carry no signature, so
 // `expected_node_id` (the caller's own transport-level authentication of
@@ -992,7 +1295,7 @@ async fn handle_commit_request_accepts_a_request_with_valid_audit_authorization(
 fn verify_commit_response_rejects_a_response_claiming_a_different_node_id() {
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
     let mut seen_node_ids = HashSet::new();
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
 
     // The authenticated peer this response actually arrived from is
     // node 1 — but the (otherwise well-formed) response body claims to
@@ -1030,7 +1333,7 @@ fn verify_commit_response_rejects_a_response_claiming_a_different_node_id() {
 fn verify_commit_response_accepts_a_response_matching_the_authenticated_peer() {
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
     let mut seen_node_ids = HashSet::new();
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
 
     let response = PetMessage::CommitResponse {
         request_id: "commit-attempt-1".to_string(),
@@ -1072,6 +1375,8 @@ const ADMISSION_ATTEMPT: &str = "admission-attempt-1";
 
 fn admission_ctx(fixture: &TagFixture) -> PetCheckContext {
     PetCheckContext {
+        ring_state_sha256: fixture_ring_state(fixture),
+        public_polynomial: fixture_polynomial_bytes(fixture),
         document: fixture.document.clone(),
         salt: None,
         object_id: object_id_for(fixture),
@@ -1125,6 +1430,7 @@ fn build_admission_evidence(
         &fixture.ring_payload,
         &fixture.tag,
         target_fingerprint,
+        &fixture_blind_context(fixture, &certificate.attempt_id),
     )
     .expect("certificate must be genuinely valid in this fixture");
     let decrypt_responses = decrypt_node_ids
@@ -1143,7 +1449,7 @@ fn build_admission_evidence(
 async fn verify_pet_admission_rejects_missing_decrypt_responses() {
     let db_name = "pet_admission_rejects_missing_decrypt_responses";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1180,7 +1486,7 @@ async fn verify_pet_admission_rejects_missing_decrypt_responses() {
 async fn verify_pet_admission_rejects_insufficient_decrypt_responses() {
     let db_name = "pet_admission_rejects_insufficient_decrypt_responses";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1217,7 +1523,7 @@ async fn verify_pet_admission_rejects_insufficient_decrypt_responses() {
 async fn verify_pet_admission_rejects_duplicate_decrypt_indices() {
     let db_name = "pet_admission_rejects_duplicate_decrypt_indices";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1258,7 +1564,7 @@ async fn verify_pet_admission_rejects_duplicate_decrypt_indices() {
 async fn verify_pet_admission_rejects_a_forged_decrypt_signature() {
     let db_name = "pet_admission_rejects_a_forged_decrypt_signature";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1298,7 +1604,7 @@ async fn verify_pet_admission_rejects_a_forged_decrypt_signature() {
 async fn verify_pet_admission_rejects_a_malformed_decrypt_share() {
     let db_name = "pet_admission_rejects_a_malformed_decrypt_share";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1314,6 +1620,7 @@ async fn verify_pet_admission_rejects_a_malformed_decrypt_share() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     )
     .expect("certificate must be genuinely valid in this fixture");
     let genuine = decrypt_share(&fixture, &certificate, &aggregate_r, &aggregate_diff, 1);
@@ -1352,7 +1659,7 @@ async fn verify_pet_admission_rejects_a_malformed_decrypt_share() {
 async fn verify_pet_admission_rejects_a_tampered_certificate() {
     let db_name = "pet_admission_rejects_a_tampered_certificate";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1397,7 +1704,7 @@ async fn verify_pet_admission_rejects_a_tampered_certificate() {
 async fn verify_pet_admission_accepts_genuine_evidence() {
     let db_name = "pet_admission_accepts_genuine_evidence";
     let fixture = build_fixture(3, 2, AUDIT_TARGET);
-    let coordinator = test_coordinator(db_name, &fixture.ring_payload).await;
+    let coordinator = test_coordinator(db_name, &fixture).await;
     let context_digest = admission_context_digest(&coordinator, &fixture);
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
@@ -1445,7 +1752,7 @@ fn spoofed_reveal_does_not_block_the_honest_participants_later_valid_response() 
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
     let attempt_id = "attempt-1";
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
     let c1 = commit(
         &fixture.tag,
         &target_fingerprint,
@@ -1463,7 +1770,7 @@ fn spoofed_reveal_does_not_block_the_honest_participants_later_valid_response() 
     let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
     let selection_digest =
         pet_blind_selection_digest(attempt_id, &context_digest, &all_commitments);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
 
     let spoofed = spoofed_reveal_message(
@@ -1529,7 +1836,7 @@ fn invalid_proof_reveal_does_not_consume_the_slot_for_a_subsequent_valid_contrib
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
     let attempt_id = "attempt-1";
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
     let c1 = commit(
         &fixture.tag,
         &target_fingerprint,
@@ -1547,7 +1854,7 @@ fn invalid_proof_reveal_does_not_consume_the_slot_for_a_subsequent_valid_contrib
     let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
     let selection_digest =
         pet_blind_selection_digest(attempt_id, &context_digest, &all_commitments);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
 
     let bad = reveal_with_bad_proof(
@@ -1622,7 +1929,7 @@ fn malformed_reveal_is_reported_and_does_not_consume_the_slot() {
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
     let attempt_id = "attempt-1";
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
     let c1 = commit(
         &fixture.tag,
         &target_fingerprint,
@@ -1640,7 +1947,7 @@ fn malformed_reveal_is_reported_and_does_not_consume_the_slot() {
     let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
     let selection_digest =
         pet_blind_selection_digest(attempt_id, &context_digest, &all_commitments);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
 
     let bad = reveal_with_bad_proof(
@@ -1710,7 +2017,7 @@ fn duplicate_valid_reveals_count_only_once() {
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
     let attempt_id = "attempt-1";
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
     let c1 = commit(
         &fixture.tag,
         &target_fingerprint,
@@ -1728,7 +2035,7 @@ fn duplicate_valid_reveals_count_only_once() {
     let all_commitments = vec![(1, c1.commitment), (2, c2.commitment)];
     let selection_digest =
         pet_blind_selection_digest(attempt_id, &context_digest, &all_commitments);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
 
     let first = verify_reveal_response::<PetImpl>(
@@ -1785,7 +2092,7 @@ fn three_of_five_reveal_collection_succeeds_despite_earlier_spoofing_and_invalid
     let target_fingerprint =
         PetImpl::owner_fingerprint(AUDIT_TARGET.as_bytes()).expect("compute F(target)");
     let attempt_id = "attempt-1";
-    let context_digest = [7u8; 32];
+    let context_digest = fixture_blind_context(&fixture, "attempt-1").context_digest();
     let contributions: Vec<Contribution> = (1..=3)
         .map(|id| {
             commit(
@@ -1803,7 +2110,7 @@ fn three_of_five_reveal_collection_succeeds_despite_earlier_spoofing_and_invalid
         .collect();
     let selection_digest =
         pet_blind_selection_digest(attempt_id, &context_digest, &all_commitments);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
     let mut verified = Vec::new();
 
@@ -1897,10 +2204,11 @@ fn spoofed_decrypt_does_not_block_the_honest_participants_later_valid_response()
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     )
     .expect("valid certificate");
     let pub_poly = fixture_pub_poly(&fixture);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
     let aggregate_r_bytes = CryptoSerialize::to_bytes(&aggregate_r).expect("serialize aggregate_r");
     let aggregate_diff_bytes =
@@ -1929,6 +2237,7 @@ fn spoofed_decrypt_does_not_block_the_honest_participants_later_valid_response()
         &aggregate_r_bytes,
         &aggregate_diff_bytes,
         &blind_context,
+        &certificate,
         &None,
         &mut seen_node_ids,
     );
@@ -1952,6 +2261,7 @@ fn spoofed_decrypt_does_not_block_the_honest_participants_later_valid_response()
         &aggregate_r_bytes,
         &aggregate_diff_bytes,
         &blind_context,
+        &certificate,
         &None,
         &mut seen_node_ids,
     );
@@ -1970,7 +2280,7 @@ fn three_of_five_decrypt_collection_succeeds_despite_earlier_spoofing() {
         &fixture,
         &target_fingerprint,
         "attempt-1",
-        [7u8; 32],
+        fixture_blind_context(&fixture, "attempt-1").context_digest(),
         &[1, 2, 3],
     );
     let (aggregate_r, aggregate_diff) = build_and_verify_pet_blind_certificate::<DkgImpl, PetImpl>(
@@ -1978,10 +2288,11 @@ fn three_of_five_decrypt_collection_succeeds_despite_earlier_spoofing() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     )
     .expect("valid certificate");
     let pub_poly = fixture_pub_poly(&fixture);
-    let blind_context = throwaway_blind_context();
+    let blind_context = fixture_blind_context(&fixture, "attempt-1");
     let mut seen_node_ids = HashSet::new();
     let mut verified = Vec::new();
     let aggregate_r_bytes = CryptoSerialize::to_bytes(&aggregate_r).expect("serialize aggregate_r");
@@ -2021,6 +2332,7 @@ fn three_of_five_decrypt_collection_succeeds_despite_earlier_spoofing() {
             &aggregate_r_bytes,
             &aggregate_diff_bytes,
             &blind_context,
+            &certificate,
             &None,
             &mut seen_node_ids,
         ) {
@@ -2050,6 +2362,7 @@ fn certificate_validates_and_recovers_a_nonidentity_aggregate() {
             &fixture.ring_payload,
             &fixture.tag,
             &target_fingerprint,
+            &fixture_blind_context(&fixture, &certificate.attempt_id),
         )
         .expect("a genuinely valid certificate must verify");
     assert!(
@@ -2072,6 +2385,7 @@ fn certificate_rejects_a_tampered_blinded_r() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     );
     assert!(
         result.is_err(),
@@ -2093,6 +2407,7 @@ fn certificate_rejects_a_non_opening_reveal() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     );
     assert!(
         result.is_err(),
@@ -2114,6 +2429,7 @@ fn certificate_rejects_a_duplicate_node_id() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     );
     assert!(
         result.is_err(),
@@ -2134,6 +2450,7 @@ fn certificate_rejects_a_short_reveal_list() {
         &fixture.ring_payload,
         &fixture.tag,
         &target_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     );
     assert!(
         result.is_err(),
@@ -2154,6 +2471,7 @@ fn certificate_rejects_wrong_target_fingerprint() {
         &fixture.ring_payload,
         &fixture.tag,
         &other_fingerprint,
+        &fixture_blind_context(&fixture, &certificate.attempt_id),
     );
     assert!(
         result.is_err(),

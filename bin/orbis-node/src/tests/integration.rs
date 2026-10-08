@@ -6,6 +6,19 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
+mod pet_dkg;
+#[path = "../../tests/support/pet_dkg_contract.rs"]
+mod pet_dkg_contract;
+mod pet_reshare;
+#[path = "../../tests/support/pre_scenario.rs"]
+mod pre_scenario;
+#[path = "../../tests/support/refresh_scenario.rs"]
+mod refresh_scenario;
+#[path = "../../tests/support/reshare_scenario.rs"]
+mod reshare_scenario;
+#[path = "../../tests/support/sign_scenario.rs"]
+mod sign_scenario;
+
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{
     BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
@@ -1083,206 +1096,117 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 /// PET's own check-and-gate (Task 6: threshold PET verification before PRE
 /// release) doesn't exist yet, so this test stops at "both keys finalized" —
 /// it does not attempt PRE against a PET-gated document.
+struct DkgScenarioOutcome {
+    _network: IntegrationTestNetwork,
+    chain_config: ChainConfig,
+    controller_client: VeraClient,
+    endpoint: String,
+    node_keys: [String; 3],
+    threshold: u32,
+    ring_id: String,
+    keys: pet_dkg_contract::Keys,
+}
+
+/// Run the shared paired-DKG scenario through the Cosmos adapter and retain
+/// its fixture for callers that continue into PET/PRE behavior.
+///
+/// Shared by `test_cli_calls_dkg_for_pet_ring` (which continues on to
+/// PET-gated PRE assertions) and `cosmos_dkg` (which only proves this shared
+/// tail — the direct Cosmos counterpart to native's `native_dkg`). Bring-up
+/// Provisioning and trigger mechanics remain backend-specific implementations
+/// of `pet_dkg_contract::ScenarioBackend`; their ordering and all behavioral
+/// assertions live in the common runner used by both Cosmos and native.
+async fn dkg_scenario(
+    ring_id: &'static str,
+    expected_policy_id: &'static str,
+) -> DkgScenarioOutcome {
+    let (scenario, keys, _local_state) = pet_dkg::run(ring_id, expected_policy_id).await;
+    DkgScenarioOutcome {
+        _network: scenario.network,
+        chain_config: scenario.chain_config,
+        controller_client: scenario.controller_client,
+        endpoint: scenario.endpoint,
+        node_keys: scenario.node_keys,
+        threshold: scenario.threshold,
+        ring_id: scenario.ring_id,
+        keys,
+    }
+}
+
+/// Fixed PET-enabled ring id for `cosmos_dkg`, genesis-seeded the same way
+/// `PET_RING_ID` is for `test_cli_calls_dkg_for_pet_ring` — distinct so the
+/// two tests' genesis fixtures never collide (each gets its own freshly
+/// started chain, but both are baked into this same file's constants).
+const DKG_SCENARIO_RING_ID: &str = "integration-test-dkg-scenario-ring";
+const PRE_SCENARIO_RING_ID: &str = "integration-test-pre-scenario-ring";
+
+/// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
+/// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
+/// Proves the shared provision-trigger-finalize-verify scenario on its own, without
+/// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
+/// layers on top.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_dkg() {
+    let outcome = dkg_scenario(DKG_SCENARIO_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    assert!(
+        !outcome.keys.main.is_empty(),
+        "DKG must finalize the main key"
+    );
+    assert!(
+        outcome.keys.pet.as_ref().is_some_and(|pet| !pet.is_empty()),
+        "DKG must finalize the PET key"
+    );
+}
+
+/// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
+/// authorized PRE, derived-key signing, refresh, and committee reshare. Its
+/// native counterpart runs the same scenario body below the backend boundary
+/// in `native_startup.rs`.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_dkg_and_pre() {
+    let (mut backend, keys, local_state, outcome) =
+        pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
+            ring_id: PRE_SCENARIO_RING_ID,
+            expected_policy_id: RING_GOVERNANCE_POLICY_ID,
+            mode: pet_dkg_contract::DkgMode::Standard,
+        })
+        .await;
+    let sign = sign_scenario::run(&backend, &keys, &outcome.policy_id).await;
+    refresh_scenario::run(&mut backend, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&mut backend, &keys, &outcome, &sign).await;
+    assert!(
+        keys.pet.is_none(),
+        "standard DKG must not produce a PET key"
+    );
+    assert!(
+        !outcome.object_id.is_empty(),
+        "the shared PRE scenario must store a document"
+    );
+    assert!(
+        !sign.derivation_id.is_empty(),
+        "the shared Sign scenario must store a key derivation"
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn test_cli_calls_dkg_for_pet_ring() {
     println!("Starting Docker-based PET integration test...");
 
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": PET_RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3),
-                    "requires_pet": true
-                }]
-            }),
-        )
-        .build();
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
-
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
-    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
-        .await
-        .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
-        .await
-        .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
-        .await
-        .expect("Failed to query node3 info");
-
-    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_SERVICE,
-    );
-    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_SERVICE,
-    );
-    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_SERVICE,
-    );
-
-    let threshold = 2u32;
-    let endpoint = endpoints[0].to_string();
-    let node_endpoints = [
-        endpoints[0].to_string(),
-        endpoints[1].to_string(),
-        endpoints[2].to_string(),
-    ];
-
-    let node_keys = [
-        node1_info.node_key.clone(),
-        node2_info.node_key.clone(),
-        node3_info.node_key.clone(),
-    ];
-    assert_eq!(
-        node_keys[0], NODE_KEY_1,
-        "node1 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[1], NODE_KEY_2,
-        "node2 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[2], NODE_KEY_3,
-        "node3 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
-
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
-
-    // Must be the first CreatePolicy tx (counter=0) so the returned ID matches
-    // RING_GOVERNANCE_POLICY_ID baked into genesis — see the reference test.
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        PET_RING_ID,
-        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-    )
-    .await;
-    assert_eq!(
-        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
-        "ACP policy ID mismatch — acp_core may have changed. \
-         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
-    );
-
-    let ring_id = PET_RING_ID.to_string();
-
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
-        wait_for_node_info_on_chain(
-            &controller_client,
-            node_key,
-            Duration::from_secs(60),
-            Duration::from_millis(500),
-        )
-        .await;
-        let peer_update = controller_client
-            .orbis_update_node_peer_id(node_key, peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
-
-        let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
-            .await
-            .expect("add ring to NodeInfo whitelist");
-        assert_eq!(
-            whitelist_update.code, 0,
-            "add ring to NodeInfo whitelist tx failed: {}",
-            whitelist_update.log
-        );
-    }
-
-    println!("Starting DKG for PET-enabled ring {}...", ring_id);
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
-    assert!(
-        dkg_result.is_ok(),
-        "DKG should succeed: {:?}",
-        dkg_result.err()
-    );
-
-    println!(
-        "DKG initiated (session_id: {}), waiting for combined ring+PET finalization...",
-        dkg_result.unwrap().session_id
-    );
-
-    // Two sequential fresh-DKG ceremonies (main key, then auto-chained PET
-    // key), each with its own up-to-~150s prepare-barrier allowance
-    // (DKG_PREPARATION_TIMEOUT + DKG_FORWARDED_START_RESPONSE_GRACE) — a
-    // longer budget than the reference test's single-ceremony 90s wait.
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
-
-    let finalized_ring = controller_client
-        .orbis_read_ring(&ring_id)
-        .await
-        .expect("read finalized ring")
-        .expect("finalized ring should exist");
-    assert!(
-        finalized_ring.requires_pet,
-        "finalized ring should still report requires_pet"
-    );
-    assert_eq!(
-        finalized_ring.ring_pk, ring_pk_hex,
-        "ring_pk mismatch between wait_for_ring_finalized and a fresh read-back"
-    );
-    assert!(
-        finalized_ring.confirmations.is_empty(),
-        "confirmations should be cleared once the ring is fully finalized"
-    );
-    let pet_pk_hex = finalized_ring
-        .pet_pk
-        .clone()
-        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
-    assert_ne!(
-        pet_pk_hex, ring_pk_hex,
-        "the PET key must be independent of the main key"
-    );
-
-    // Both keys must be valid, non-identity curve points, not just opaque hex.
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let _ = GroupAffine::from_bytes(&ring_pk_bytes)
-        .expect("main key should deserialize to a valid point");
-    let pet_pk_bytes = hex::decode(&pet_pk_hex).expect("decode pet_pk hex");
-    let _ = GroupAffine::from_bytes(&pet_pk_bytes)
-        .expect("PET key should deserialize to a valid point");
-
-    // The main key's local per-node state (share + polynomial) is consistent
-    // across all three nodes — mirrors the reference test's cross-node check.
-    // The PET key has no RingIndex entry of its own (it's stored keyed by the
-    // ring's ring_id, not its own pubkey, since it's never looked up
-    // independently of the main key) so this check only covers the main key;
-    // agreement on pet_pk is instead guaranteed by Vera's FinalizeRing conflict
-    // check, which deletes the ring outright if any two confirmations disagree.
-    wait_for_ring_state_on_all_nodes(
-        &node_endpoints,
-        &ring_pk_hex,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let DkgScenarioOutcome {
+        _network,
+        chain_config,
+        controller_client,
+        endpoint,
+        node_keys,
+        threshold,
+        ring_id,
+        keys,
+    } = dkg_scenario(PET_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    let ring_pk_hex = keys.main;
+    let pet_pk_hex = keys.pet.expect("PET DKG must return a PET key");
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
@@ -1489,21 +1413,16 @@ resources:
         }),
     };
 
-    let decrypted = cli_tool::do_pre_with_inline_document(
+    let decrypted = do_pre_inline_expect_success(
+        "PRE against a genuinely PET-tagged document",
         endpoint.clone(),
         chain_config.chain_id.clone(),
         ring_pk_hex.clone(),
         pet_object_id.clone(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        inline_document,
         Some(audit_target_object_id.clone()),
+        inline_document,
     )
-    .await
-    .expect("PRE should succeed against a genuinely PET-tagged document");
+    .await;
     assert_eq!(
         decrypted, secret_message,
         "decrypted secret should match the original"
@@ -1891,13 +1810,20 @@ async fn test_pet_ring_refresh_and_reshare() {
     let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
     let reshare_threshold = 2u32;
 
-    let pre_reshare_pet_states = wait_for_pet_ring_state_on_all_nodes(
-        &node_endpoints[..2],
-        &ring_id,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
+    let (pre_reshare_main_states, pre_reshare_pet_states) = tokio::join!(
+        wait_for_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_pk_hex,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+        wait_for_pet_ring_state_on_all_nodes(
+            &node_endpoints[..2],
+            &ring_id,
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+    );
 
     cli_tool::start_ring_reshare_by_acp_with_config(
         ring_id.clone(),
@@ -1936,9 +1862,12 @@ async fn test_pet_ring_refresh_and_reshare() {
         &ring_id[..16.min(ring_id.len())]
     );
 
-    let reshared_pet_states = wait_for_pet_pss_refresh_on_all_nodes(
+    let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
+        &chain_config,
         &node_endpoints[..2],
         &ring_id,
+        &reshared_payload,
+        &pre_reshare_main_states,
         &pre_reshare_pet_states,
         Duration::from_secs(120),
         Duration::from_secs(2),
@@ -2166,21 +2095,16 @@ resources:
         }),
     };
 
-    let decrypted = cli_tool::do_pre_with_inline_document(
+    let decrypted = do_pre_inline_expect_success(
+        "PRE against a genuinely PET-tagged document",
         endpoint.to_string(),
         chain_config.chain_id.clone(),
         ring_pk_hex.to_string(),
         pet_object_id.clone(),
-        None,
-        None,
-        None,
-        None,
-        None,
-        inline_document,
         Some(audit_target_object_id.clone()),
+        inline_document,
     )
-    .await
-    .expect("PRE should succeed against a genuinely PET-tagged document");
+    .await;
     assert_eq!(
         decrypted, secret_message,
         "decrypted secret should match the original"
@@ -2539,6 +2463,59 @@ async fn do_pre_expect_success(
                 );
                 println!(
                     "{} attempt {} failed, retrying after transient PRE race: {}",
+                    context, attempt, e
+                );
+                attempt += 1;
+                sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+
+/// Same retry contract as [`do_pre_expect_success`] for the inline-document
+/// path: periodic PSS refreshes move the ring generation under an in-flight
+/// request, and the responder rejects it as explicitly retryable.
+async fn do_pre_inline_expect_success(
+    context: &str,
+    endpoint: String,
+    chain_id: String,
+    ring_pk: String,
+    object_id: String,
+    audit_target_object_id: Option<String>,
+    inline_document: proto::v0::pre::InlineDocument,
+) -> Vec<u8> {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let mut attempt = 1usize;
+
+    loop {
+        match cli_tool::do_pre_with_inline_document(
+            endpoint.clone(),
+            chain_id.clone(),
+            ring_pk.clone(),
+            object_id.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            inline_document.clone(),
+            audit_target_object_id.clone(),
+        )
+        .await
+        {
+            Ok(result) => return result,
+            Err(e) => {
+                // `{:?}` (anyhow's Debug): the underlying tonic::Status and its
+                // rejection reason only surface through the error's cause chain.
+                assert!(
+                    Instant::now() < deadline,
+                    "{} failed after {} attempts: {:?}",
+                    context,
+                    attempt,
+                    e
+                );
+                println!(
+                    "{} attempt {} failed, retrying after transient PRE race: {:?}",
                     context, attempt, e
                 );
                 attempt += 1;

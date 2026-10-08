@@ -1,0 +1,132 @@
+//! Canonical report envelopes and evidence shared by signers and the native service.
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::{ReportingError, Result};
+
+pub mod codec;
+mod dkg;
+mod envelope;
+pub mod error;
+mod invalid_crypto;
+mod pet_blind;
+mod pre_sign;
+mod relay;
+
+pub use dkg::*;
+pub use envelope::*;
+pub use invalid_crypto::*;
+pub use pet_blind::*;
+pub use pre_sign::*;
+pub use relay::*;
+
+use codec::{write_string, write_u64, Decoder};
+
+pub const REPORT_DOMAIN: &str = "orbis-mpc-fault-report";
+pub const NODE_OFFLINE_REPORT_TYPE: &str = "node_offline";
+pub const INVALID_CRYPTO_RESPONSE_REPORT_TYPE: &str = "invalid_crypto_response";
+pub const UNAUTHORIZED_REQUEST_REPORT_TYPE: &str = "unauthorized_request";
+pub const PRE_REENCRYPT_RESPONSE_DOMAIN: &str = "orbis-pre-reencrypt-response-v1";
+pub const SIGN_RESPONSE_DOMAIN: &str = "orbis-sign-response-v1";
+/// Domain for PET's blind equality-test protocol (the multi-round blinded
+/// check that replaced PET's original single-round check, which leaked
+/// information about the plaintext fingerprint across repeated checks).
+/// Distinct from `crates/crypto`'s own `BLIND_PROOF_DOMAIN` (the
+/// blinding-correctness DLEQ's Fiat-Shamir challenge domain) — these bind
+/// the reporting-layer digests and signed statements built around it.
+pub const PET_BLIND_CONTEXT_DOMAIN: &str = "orbis-pet-blind-context-v2";
+pub const PET_BLIND_COMMIT_DOMAIN: &str = "orbis-pet-blind-commit-v2";
+pub const PET_BLIND_SELECTION_DOMAIN: &str = "orbis-pet-blind-selection-v2";
+/// Domain for the externally-supplied digest fed into
+/// `crypto::r#trait::Pet::prove_blinding_correctness`/`verify_blinding_correctness`'s
+/// own `blind_transcript_digest` parameter — distinct from that crypto-level
+/// function's *internal* `BLIND_PROOF_DOMAIN` (which additionally binds the
+/// group elements themselves). This is the reporting layer's contribution:
+/// attempt/context/selection/node/commitment binding, computed once the
+/// selected list is known (round 2), never round 1.
+pub const PET_BLIND_PROOF_TRANSCRIPT_DOMAIN: &str = "orbis-pet-blind-proof-transcript-v2";
+pub const PET_BLIND_REVEAL_RESPONSE_DOMAIN: &str = "orbis-pet-blind-reveal-response-v2";
+pub const PET_BLIND_DECRYPT_RESPONSE_DOMAIN: &str = "orbis-pet-blind-decrypt-response-v2";
+pub const PET_BLIND_CERTIFICATE_DOMAIN: &str = "orbis-pet-blind-certificate-v2";
+pub const DKG_COMMITMENT_DOMAIN: &str = "orbis-dkg-commitment-v1";
+pub const DKG_SHARE_DOMAIN: &str = "orbis-dkg-share-v1";
+pub const DKG_PUBLIC_ORIGIN_FAULT_DOMAIN: &str = "orbis-dkg-public-origin-fault-v1";
+pub const DKG_LEADER_EQUIVOCATION_DOMAIN: &str = "orbis-dkg-leader-equivocation-v1";
+pub const DKG_LEADER_PUBLIC_FAULT_DOMAIN: &str = "orbis-dkg-leader-public-fault-v1";
+pub const DKG_LEADER_BATCH_MISMATCH_DOMAIN: &str = "orbis-dkg-leader-batch-mismatch-v1";
+pub const DKG_CONTROL_MESSAGE_FAULT_DOMAIN: &str = "orbis-dkg-control-message-fault-v1";
+pub const RELAY_REQUEST_DOMAIN: &str = "orbis-relay-request-v1";
+pub const REPORT_TTL_SECS: u64 = 120;
+/// Reporters backdate `observed_at` by this so the `observed_at <= block_time`
+/// check passes gas simulation against ~5s blocks. invalid_crypto_response
+/// envelopes are pinned to their evidence via
+/// `observed_at == signed_at - CHAIN_BLOCK_GRACE_SECS`, which makes the
+/// envelope's fixed `observed_at + REPORT_TTL_SECS` expiry double as the
+/// evidence expiry — a plain TTL dedupe record on chain then always outlives
+/// any resubmission of the same evidence.
+pub const CHAIN_BLOCK_GRACE_SECS: u64 = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitteeScope {
+    Current,
+    PendingNew,
+}
+
+impl CommitteeScope {
+    fn tag(self) -> u8 {
+        match self {
+            Self::Current => 1,
+            Self::PendingNew => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self> {
+        match tag {
+            1 => Ok(Self::Current),
+            2 => Ok(Self::PendingNew),
+            value => Err(ReportingError::InvalidReport(format!(
+                "unknown committee scope {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeOffline {
+    pub origin_protocol: String,
+    pub origin_protocol_version: u64,
+    pub accused_committee_scope: CommitteeScope,
+    pub signing_committee_scope: CommitteeScope,
+}
+
+impl NodeOffline {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_string(&mut out, &self.origin_protocol);
+        write_u64(&mut out, self.origin_protocol_version);
+        out.push(self.accused_committee_scope.tag());
+        out.push(self.signing_committee_scope.tag());
+        out
+    }
+
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let mut decoder = Decoder::new(bytes);
+        let origin_protocol = decoder.read_string("origin_protocol")?;
+        let origin_protocol_version = decoder.read_u64("origin_protocol_version")?;
+        let accused_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("accused_committee_scope")?)?;
+        let signing_committee_scope =
+            CommitteeScope::from_tag(decoder.read_u8("signing_committee_scope")?)?;
+        decoder.finish()?;
+        Ok(Self {
+            origin_protocol,
+            origin_protocol_version,
+            accused_committee_scope,
+            signing_committee_scope,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;

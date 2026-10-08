@@ -10,7 +10,7 @@
 //! letting them recover the owner's deterministic fingerprint on every
 //! check regardless of match/mismatch.
 
-use authz::vera::ValidWindow;
+use authz::request::ValidWindow;
 use bulletin::r#trait::DocumentPayload;
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,10 @@ use crate::reporting::v0::types::PetBlindCertificate;
 /// step" invariant for why that's still safe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PetCheckContext {
+    /// Certified ring snapshot used to start this attempt.
+    pub ring_state_sha256: String,
+    /// Exact canonical PET polynomial fixed for this attempt.
+    pub public_polynomial: Vec<u8>,
     /// The full document payload — carries the tag, its knowledge proof, and
     /// everything `crypto::pet_context::tag_proof_digest` needs to rebuild
     /// the transcript digest independently. `ring_payload` is never carried
@@ -190,6 +194,10 @@ pub enum PetMessage {
         /// Signature over `PetBlindDecryptStatement::canonical_bytes()`.
         response_signature: Vec<u8>,
     },
+    /// The peer has a different local generation; start a fresh attempt after convergence.
+    GenerationMismatch {
+        request_id: String,
+    },
     /// Error message.
     Error {
         request_id: String,
@@ -207,7 +215,8 @@ impl PetMessage {
             PetMessage::RevealResponse { request_id, .. } => request_id,
             PetMessage::DecryptRequest(req) => &req.request_id,
             PetMessage::DecryptResponse { request_id, .. } => request_id,
-            PetMessage::Error { request_id, .. } => request_id,
+            PetMessage::Error { request_id, .. }
+            | PetMessage::GenerationMismatch { request_id } => request_id,
         }
     }
 

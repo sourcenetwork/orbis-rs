@@ -39,7 +39,7 @@ path = "junit.xml"
 serial = { max-threads = 1 }
 
 [[profile.default.overrides]]
-filter = 'package(orbis-node) & test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/)'
+filter = 'package(orbis-node) & (binary(native_startup) | test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/))'
 test-group = 'serial'
 
 [[profile.default.overrides]]
@@ -57,7 +57,7 @@ test-group = 'serial'
 # The `ci` profile inherits `default`'s overrides, but test-group overrides are
 # not merged across profiles — repeat them so `--profile ci` serialises too.
 [[profile.ci.overrides]]
-filter = 'package(orbis-node) & test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/)'
+filter = 'package(orbis-node) & (binary(native_startup) | test(/^(dkg::v0::tests|pre::v0::tests|sign::v0::tests|reporting::v0::tests|dkg::v0::network::stability_tests::reshare_routes|tests|unsafe_testing::tests)::/))'
 test-group = 'serial'
 
 [[profile.ci.overrides]]
