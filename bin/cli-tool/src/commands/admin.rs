@@ -689,6 +689,20 @@ pub async fn fund(address: String, config: ChainConfig) -> common::blockchain::R
     fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
 }
 
+/// Ensure an integration account has at least `minimum` tokens without
+/// submitting another transfer when the fixture funded it in genesis.
+pub async fn ensure_funded(
+    address: String,
+    config: ChainConfig,
+    minimum: u64,
+) -> common::blockchain::Result<()> {
+    let client = common::blockchain::VeraClient::new(config.clone()).await?;
+    if client.get_balance(&address, "uopen").await? >= minimum {
+        return Ok(());
+    }
+    fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
+}
+
 pub async fn fund_with_signer(
     address: String,
     config: ChainConfig,

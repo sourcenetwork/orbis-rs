@@ -81,7 +81,12 @@ impl PreparedServices {
             if let Some(funding) = self.funding {
                 status.set_status(NodeStatus::ConnectingToChain);
                 status.set_status(NodeStatus::WaitingForFunding);
-                cli_tool::fund(funding.address, funding.config).await?;
+                cli_tool::ensure_funded(
+                    funding.address,
+                    funding.config,
+                    crate::constants::MIN_NODE_BALANCE,
+                )
+                .await?;
                 status.set_status(NodeStatus::Funded);
             }
             let progress = |phase| update_status(status, phase);

@@ -39,7 +39,7 @@ ENV CARGO_BUILD_JOBS=${BUILD_JOBS}
 # cooked dependency artifacts don't match and get rebuilt.
 RUN case "$BACKEND" in \
       cosmos) features="redb,authz-vera,bulletin-vera,iroh,${CRYPTO_FEATURE}"; \
-        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="redb,integration-test,${CRYPTO_FEATURE}"; fi ;; \
+        if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="redb,integration-test-cosmos,${CRYPTO_FEATURE}"; fi ;; \
       native) features="native,redb,iroh,${CRYPTO_FEATURE}"; \
         if [ "$ENABLE_INTEGRATION_TEST" = "true" ]; then features="$features,unsafe-testing"; fi ;; \
       *) echo 'Unsupported integration backend' >&2; exit 1 ;; \

@@ -659,39 +659,62 @@ fn service_running(project_name: &str, service: &str) -> bool {
         })
 }
 
-/// Create a plain (non-Compose-managed) bridge network and return its
-/// Docker-assigned subnet (e.g. `"172.30.0.0/16"`). Compose joins it later as
-/// `external: true`, so Compose never tries to create or remove it itself.
-/// Letting Docker pick the subnet (rather than specifying one) is what avoids
-/// collisions — both with other Docker networks already on the host and with
-/// concurrently-running test shards, which each get their own uniquely-named
-/// network here.
+/// Create a plain (non-Compose-managed) bridge network and return its subnet
+/// (e.g. `"172.30.0.0/16"`). Compose joins it later as `external: true`, so
+/// Compose never tries to create or remove it itself.
+///
+/// Docker must see the subnet as user-configured before Compose may assign the
+/// validators fixed `ipv4_address` values. To retain collision-free allocation,
+/// first let Docker reserve a subnet on a short-lived probe network, then
+/// recreate the real network with that subnet explicitly. A competing process
+/// can claim it in the small remove/recreate window, so retry with a fresh
+/// Docker allocation when explicit creation reports an overlap.
 fn create_external_network(name: &str) -> String {
-    let status = Command::new("docker")
-        .args(["network", "create", name])
-        .status()
-        .expect("Failed to create native integration network");
-    if !status.success() {
-        panic!("docker network create failed for {name}");
+    let mut last_error = String::new();
+    for attempt in 1..=16 {
+        let probe = format!("{name}-subnet-probe-{attempt}");
+        let created = Command::new("docker")
+            .args(["network", "create", &probe])
+            .output()
+            .expect("Failed to create native integration subnet probe");
+        if !created.status.success() {
+            panic!(
+                "docker network create failed for subnet probe {probe}: {}",
+                String::from_utf8_lossy(&created.stderr)
+            );
+        }
+
+        let inspected = Command::new("docker")
+            .args([
+                "network",
+                "inspect",
+                "--format",
+                "{{(index .IPAM.Config 0).Subnet}}",
+                &probe,
+            ])
+            .output()
+            .expect("Failed to inspect native integration subnet probe");
+        let subnet = String::from_utf8_lossy(&inspected.stdout)
+            .trim()
+            .to_string();
+        remove_network(&probe);
+        if !inspected.status.success() || subnet.is_empty() {
+            panic!(
+                "docker network inspect failed for {probe}: {}",
+                String::from_utf8_lossy(&inspected.stderr)
+            );
+        }
+
+        let explicit = Command::new("docker")
+            .args(["network", "create", "--subnet", &subnet, name])
+            .output()
+            .expect("Failed to create native integration network");
+        if explicit.status.success() {
+            return subnet;
+        }
+        last_error = String::from_utf8_lossy(&explicit.stderr).trim().to_string();
     }
-    let output = Command::new("docker")
-        .args([
-            "network",
-            "inspect",
-            "--format",
-            "{{(index .IPAM.Config 0).Subnet}}",
-            name,
-        ])
-        .output()
-        .expect("Failed to inspect native integration network");
-    if !output.status.success() {
-        remove_network(name);
-        panic!(
-            "docker network inspect failed for {name}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
+    panic!("docker network create failed for {name} after 16 allocations: {last_error}");
 }
 
 fn remove_network(name: &str) {
