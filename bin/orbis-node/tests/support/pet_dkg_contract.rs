@@ -1,4 +1,5 @@
-//! Shared paired-DKG assertions for the Cosmos and native Docker scenarios.
+//! Shared paired-DKG scenario and assertions for the Cosmos and native Docker
+//! backends.
 
 use crypto::r#trait::{Dkg, PubPoly};
 use crypto::{CryptoDeserialize, DkgImpl, GroupAffine};
@@ -12,36 +13,82 @@ pub(super) struct FinalizedRing {
 
 pub(super) struct Keys {
     pub main: String,
-    pub pet: String,
+    pub pet: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DkgMode {
+    Standard,
+    Pet,
+}
+
+impl DkgMode {
+    pub fn requires_pet(self) -> bool {
+        matches!(self, Self::Pet)
+    }
 }
 
 pub(super) trait Backend {
     type LocalState;
 
+    fn mode(&self) -> DkgMode;
     async fn finalized_ring(&self) -> FinalizedRing;
     async fn local_state(&self, keys: &Keys) -> Self::LocalState;
 }
 
+/// Backend-specific construction and DKG triggering for the shared paired-DKG
+/// scenario. Provisioning remains behind the adapter because Cosmos seeds its
+/// ring in genesis while native Vera creates and authorizes it through its own
+/// protocol. Once provisioned, both backends execute the same scenario body.
+pub(super) trait ScenarioBackend: Backend + Sized {
+    type Config;
+
+    async fn provision(config: Self::Config) -> Self;
+    async fn start_dkg(&self) -> String;
+}
+
+/// Provision one backend, trigger its paired DKG, then run the common
+/// finalization and local-state assertions. The backend fixture is returned so
+/// callers can continue into longer PET/PRE scenarios without rebuilding it.
+pub(super) async fn run<B: ScenarioBackend>(config: B::Config) -> (B, Keys, B::LocalState) {
+    let backend = B::provision(config).await;
+    let session_id = backend.start_dkg().await;
+    assert!(!session_id.is_empty(), "DKG must return a session id");
+    let (keys, local_state) = verify(&backend).await;
+    (backend, keys, local_state)
+}
+
 pub(super) async fn verify<B: Backend>(backend: &B) -> (Keys, B::LocalState) {
     let ring = backend.finalized_ring().await;
-    assert!(ring.requires_pet, "finalized ring must retain PET mode");
+    assert_eq!(
+        ring.requires_pet,
+        backend.mode().requires_pet(),
+        "finalized ring must retain its configured DKG mode"
+    );
     assert_eq!(
         ring.confirmations, 0,
         "finalized confirmations must be cleared"
     );
     let keys = Keys {
         main: ring.public_key,
-        pet: ring
-            .pet_public_key
-            .expect("paired DKG must finalize the PET key"),
+        pet: ring.pet_public_key,
     };
-    assert!(
-        !keys.main.is_empty(),
-        "paired DKG must finalize the main key"
-    );
-    assert!(!keys.pet.is_empty(), "paired DKG must finalize the PET key");
-    assert_ne!(keys.main, keys.pet, "PET and main keys must be independent");
-    for key in [&keys.main, &keys.pet] {
+    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
+    match backend.mode() {
+        DkgMode::Standard => assert!(
+            keys.pet.is_none(),
+            "standard DKG must not produce a PET key"
+        ),
+        DkgMode::Pet => {
+            let pet = keys
+                .pet
+                .as_ref()
+                .expect("paired DKG must finalize the PET key");
+            assert!(!pet.is_empty(), "paired DKG must finalize the PET key");
+            assert_ne!(&keys.main, pet, "PET and main keys must be independent");
+        }
+    }
+    for key in std::iter::once(&keys.main).chain(keys.pet.iter()) {
         let bytes = hex::decode(key).expect("finalized key must be hex");
         let point =
             GroupAffine::from_bytes(&bytes).expect("finalized key must be a valid curve point");

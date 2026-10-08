@@ -1,14 +1,25 @@
-//! A Vera chain plus orbis-node instances, all via Docker Compose.
+//! Backend-dispatching integration-test network: a chain plus orbis-node
+//! instances. [`IntegrationTestNetwork::builder`] defaults to
+//! [`IntegrationBackend::Cosmos`], preserving every existing call site's
+//! behavior unchanged; pass `.with_backend(IntegrationBackend::NativeVera)`
+//! to provision the native Vera chain instead.
+//!
+//! The two backends' concrete types (`.cosmos()` / `.native()`) keep their
+//! full original APIs for callers that need backend-specific detail; the
+//! methods directly on `IntegrationTestNetwork` are the backend-neutral
+//! surface shared scenario code is meant to use.
 
-use super::compose::{
-    compose_command, localhost_url, published_port, report_compose_failure, stop_compose,
-    unique_project_name,
-};
-use common::blockchain::{ChainConfig, ChainConfigBuilder};
-use std::process::Command;
-use std::time::Duration;
+#[cfg(feature = "cosmos")]
+mod cosmos;
+#[cfg(feature = "cosmos")]
+pub use cosmos::CosmosNetwork;
 
-const INTEGRATION_TEST_COMPOSE_FILE: &str = "docker/docker-compose-integration-test.yml";
+#[cfg(all(unix, feature = "native"))]
+mod native;
+#[cfg(all(unix, feature = "native"))]
+pub use native::NativeNetworkAdapter;
+
+use crate::backend::IntegrationBackend;
 
 /// Node info returned from the info endpoint
 #[derive(Debug, Clone)]
@@ -19,43 +30,44 @@ pub struct NodeInfo {
     pub public_address: String,
 }
 
-/// Integration test network that spins up vera + orbis nodes via Docker Compose.
-///
-/// The node image is built (`docker compose up --build`) with the crypto
-/// implementation named by the `ORBIS_INTEGRATION_CRYPTO` env var, which the
-/// compose subprocess inherits. **Unset ⇒ bls12-381.** A jubjub run must
-/// export it so the built images match the host feature set — there is no
-/// auto-detection:
-/// `ORBIS_INTEGRATION_CRYPTO=jubjub cargo test --no-default-features --features integration-test,jubjub test_cli_calls_dkg_and_pre_endpoint`
-pub struct IntegrationTestNetwork {
-    compose_file: String,
-    project_name: String,
-    chain_config: ChainConfig,
-    node_endpoints: Vec<String>,
-    _patch_file: Option<tempfile::NamedTempFile>,
+enum NetworkInner {
+    // Boxed: `CosmosNetwork` is far larger than `NativeNetworkAdapter`, and
+    // both features can be active in the same build (e.g. `orbis-node`'s
+    // `native` feature doesn't disable `test-support`'s default `cosmos`
+    // feature — that split is Phase D of the harness-unification plan).
+    #[cfg(feature = "cosmos")]
+    Cosmos(Box<CosmosNetwork>),
+    #[cfg(all(unix, feature = "native"))]
+    Native(Box<NativeNetworkAdapter>),
 }
 
-/// Builder for `IntegrationTestNetwork` that supports injecting arbitrary genesis module state
-/// into the Vera chain before it starts, bypassing keeper validation via `InitGenesis`.
+pub struct IntegrationTestNetwork {
+    backend: IntegrationBackend,
+    inner: NetworkInner,
+}
+
 pub struct IntegrationTestNetworkBuilder {
-    genesis_patches: serde_json::Map<String, serde_json::Value>,
+    backend: IntegrationBackend,
+    node_count: usize,
     production_node_build: bool,
     unsafe_testing_runtime_enabled: bool,
-    node_count: usize,
+    #[cfg(feature = "cosmos")]
+    genesis_patches: serde_json::Map<String, serde_json::Value>,
+    #[cfg(all(unix, feature = "native"))]
+    native_deployment_seed: u64,
 }
 
 impl IntegrationTestNetwork {
-    pub const NODE1_SERVICE: &'static str = "node1";
-    pub const NODE2_SERVICE: &'static str = "node2";
-    pub const NODE3_SERVICE: &'static str = "node3";
-    pub const NODE4_SERVICE: &'static str = "node4";
-
     pub fn builder() -> IntegrationTestNetworkBuilder {
         IntegrationTestNetworkBuilder {
-            genesis_patches: serde_json::Map::new(),
+            backend: IntegrationBackend::default(),
+            node_count: 3,
             production_node_build: false,
             unsafe_testing_runtime_enabled: true,
-            node_count: 3,
+            #[cfg(feature = "cosmos")]
+            genesis_patches: serde_json::Map::new(),
+            #[cfg(all(unix, feature = "native"))]
+            native_deployment_seed: 9000,
         }
     }
 
@@ -63,186 +75,51 @@ impl IntegrationTestNetwork {
         Self::builder().build()
     }
 
-    pub fn wait_for_healthy(&self) {
-        let max_attempts = 120; // 4 minutes total (nodes take longer to build)
-        let delay = Duration::from_secs(2);
-
-        for attempt in 1..=max_attempts {
-            if self.all_services_healthy() {
-                println!(
-                    "All integration test services healthy after {} attempts",
-                    attempt
-                );
-                return;
-            }
-            println!(
-                "Waiting for integration test services to be healthy (attempt {}/{})",
-                attempt, max_attempts
-            );
-            std::thread::sleep(delay);
-        }
-
-        panic!(
-            "Integration test services failed to become healthy after {} attempts",
-            max_attempts
-        );
+    pub fn backend(&self) -> IntegrationBackend {
+        self.backend
     }
 
-    fn all_services_healthy(&self) -> bool {
-        let vera_healthy = Command::new("curl")
-            .args(["-sf", &format!("{}/health", self.vera_rpc_url())])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if !vera_healthy {
-            return false;
-        }
-
-        for endpoint in &self.node_endpoints {
-            let address = endpoint
-                .strip_prefix("http://")
-                .expect("node endpoint should use http://");
-            if std::net::TcpStream::connect_timeout(
-                &address.parse().expect("valid node endpoint"),
-                Duration::from_secs(1),
-            )
-            .is_err()
-            {
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Get the gRPC endpoint for node 1 (the primary node for client requests)
-    pub fn node1_endpoint(&self) -> &str {
-        &self.node_endpoints[0]
-    }
-
-    pub fn all_endpoints(&self) -> Vec<&str> {
-        self.node_endpoints.iter().map(String::as_str).collect()
-    }
-
-    pub fn vera_rpc_url(&self) -> &str {
-        &self.chain_config.rpc_url
-    }
-
-    pub fn vera_api_url(&self) -> &str {
-        &self.chain_config.rest_url
-    }
-
-    pub fn vera_grpc_url(&self) -> &str {
-        &self.chain_config.grpc_url
-    }
-
-    pub fn chain_config(&self) -> ChainConfig {
-        self.chain_config.clone()
-    }
-
-    pub fn chain_config_builder(&self) -> ChainConfigBuilder {
-        ChainConfigBuilder::default()
-            .rpc_url(Some(self.vera_rpc_url().to_string()))
-            .rest_url(Some(self.vera_api_url().to_string()))
-            .grpc_url(Some(self.vera_grpc_url().to_string()))
-    }
-
-    /// Restart the Orbis node containers without rebuilding them or resetting
-    /// their local storage. Docker may reassign ephemeral host ports during a
-    /// restart, so the returned endpoints must replace any previously cached
-    /// node endpoints.
-    pub fn restart_nodes(&self) -> Vec<String> {
-        let services = self.node_services();
-        let status = compose_command(&self.compose_file, &self.project_name)
-            .arg("restart")
-            .args(&services)
-            .status()
-            .expect("Failed to restart integration test nodes");
-        if !status.success() {
-            report_compose_failure(&self.compose_file, &self.project_name);
-            panic!("Failed to restart integration test nodes");
-        }
-
-        services
-            .iter()
-            .map(|service| {
-                localhost_url(
-                    published_port(&self.compose_file, &self.project_name, service, 50051)
-                        .unwrap_or_else(|error| {
-                            panic!("discover restarted {service} endpoint: {error}")
-                        }),
-                )
-            })
-            .collect()
-    }
-
-    /// Transform a p2p_address from local format to Docker inter-container format
-    ///
-    /// The p2p_address from a container will be like `peer_id@0.0.0.0:12345`
-    /// For inter-container communication, we need `peer_id@container_name:12345`
-    pub fn transform_p2p_address(p2p_address: &str, container_name: &str) -> String {
-        // Parse peer_id@host:port
-        if let Some(at_pos) = p2p_address.find('@') {
-            let peer_id = &p2p_address[..at_pos];
-            let host_port = &p2p_address[at_pos + 1..];
-
-            // Extract just the port (after the last colon)
-            if let Some(colon_pos) = host_port.rfind(':') {
-                let port = &host_port[colon_pos + 1..];
-                return format!("{}@{}:{}", peer_id, container_name, port);
-            }
-        }
-        // Fallback: return as-is
-        p2p_address.to_string()
-    }
-
-    pub fn service_name_for_node(node_index: usize) -> &'static str {
-        match node_index {
-            1 => Self::NODE1_SERVICE,
-            2 => Self::NODE2_SERVICE,
-            3 => Self::NODE3_SERVICE,
-            4 => Self::NODE4_SERVICE,
-            _ => panic!("Invalid node index: {}", node_index),
-        }
-    }
-
-    fn node_services(&self) -> Vec<String> {
-        (1..=self.node_endpoints.len())
-            .map(|index| Self::service_name_for_node(index).to_string())
-            .collect()
-    }
-
-    /// Stop a single Docker Compose service by name without removing it.
-    pub fn stop_service(&self, service: &str) {
-        let status = compose_command(&self.compose_file, &self.project_name)
-            .args(["stop", service])
-            .status()
-            .expect("docker compose stop failed");
-        if !status.success() {
-            report_compose_failure(&self.compose_file, &self.project_name);
-            panic!("Failed to stop service {service}");
-        }
-    }
-
-    /// Start a previously stopped Docker Compose service without recreating it,
-    /// preserving its local storage. Docker may reassign the ephemeral host port,
-    /// so the returned gRPC endpoint must replace any previously cached one.
-    pub fn start_service(&self, service: &str) -> String {
-        let status = compose_command(&self.compose_file, &self.project_name)
-            .args(["start", service])
-            .status()
-            .expect("docker compose start failed");
-        if !status.success() {
-            report_compose_failure(&self.compose_file, &self.project_name);
-            panic!("Failed to start service {service}");
-        }
-        localhost_url(
-            published_port(&self.compose_file, &self.project_name, service, 50051).unwrap_or_else(
-                |error| {
-                    panic!("failed to discover {service} endpoint after starting service: {error}")
-                },
+    #[cfg(feature = "cosmos")]
+    pub fn cosmos(&self) -> &CosmosNetwork {
+        match &self.inner {
+            NetworkInner::Cosmos(network) => network,
+            #[allow(unreachable_patterns)]
+            _ => panic!(
+                "IntegrationTestNetwork::cosmos() called on a {:?} backend",
+                self.backend
             ),
-        )
+        }
+    }
+
+    #[cfg(all(unix, feature = "native"))]
+    pub fn native(&self) -> &NativeNetworkAdapter {
+        match &self.inner {
+            NetworkInner::Native(network) => network,
+            #[allow(unreachable_patterns)]
+            _ => panic!(
+                "IntegrationTestNetwork::native() called on a {:?} backend",
+                self.backend
+            ),
+        }
+    }
+
+    // `NODE1_SERVICE`..`NODE4_SERVICE` and `transform_p2p_address` are
+    // associated items (not instance methods), so `Deref` below doesn't reach
+    // them — every existing `IntegrationTestNetwork::NODE1_SERVICE` /
+    // `IntegrationTestNetwork::transform_p2p_address(..)` call site (there are
+    // many, across `src/tests/*`) resolves these directly instead.
+    #[cfg(feature = "cosmos")]
+    pub const NODE1_SERVICE: &'static str = CosmosNetwork::NODE1_SERVICE;
+    #[cfg(feature = "cosmos")]
+    pub const NODE2_SERVICE: &'static str = CosmosNetwork::NODE2_SERVICE;
+    #[cfg(feature = "cosmos")]
+    pub const NODE3_SERVICE: &'static str = CosmosNetwork::NODE3_SERVICE;
+    #[cfg(feature = "cosmos")]
+    pub const NODE4_SERVICE: &'static str = CosmosNetwork::NODE4_SERVICE;
+
+    #[cfg(feature = "cosmos")]
+    pub fn transform_p2p_address(p2p_address: &str, container_name: &str) -> String {
+        CosmosNetwork::transform_p2p_address(p2p_address, container_name)
     }
 }
 
@@ -252,197 +129,120 @@ impl Default for IntegrationTestNetwork {
     }
 }
 
-impl Drop for IntegrationTestNetwork {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            report_compose_failure(&self.compose_file, &self.project_name);
-        }
-        println!("Stopping integration test containers...");
-        stop_compose(&self.compose_file, &self.project_name);
+/// Transparent access to every original `CosmosNetwork` instance method
+/// (`node1_endpoint`, `all_endpoints`, `vera_rpc_url`, `chain_config`,
+/// `restart_nodes`, `stop_service`, `start_service`, …) for the many existing
+/// call sites that reach them directly on `IntegrationTestNetwork`, predating
+/// this dispatch wrapper. Panics via `.cosmos()` if the backend isn't Cosmos —
+/// same behavior as calling `.cosmos()` explicitly.
+#[cfg(feature = "cosmos")]
+impl std::ops::Deref for IntegrationTestNetwork {
+    type Target = CosmosNetwork;
+
+    fn deref(&self) -> &CosmosNetwork {
+        self.cosmos()
     }
 }
 
 impl IntegrationTestNetworkBuilder {
-    pub fn with_module_genesis(mut self, module: &str, state: serde_json::Value) -> Self {
-        self.genesis_patches.insert(module.to_string(), state);
+    pub fn with_backend(mut self, backend: IntegrationBackend) -> Self {
+        self.backend = backend;
         self
     }
 
-    /// Build Docker nodes with the default production feature set instead of
-    /// the integration-test feature set.
+    pub fn with_node_count(mut self, node_count: usize) -> Self {
+        self.node_count = node_count;
+        self
+    }
+
     pub fn with_production_node_build(mut self) -> Self {
         self.production_node_build = true;
         self.unsafe_testing_runtime_enabled = false;
         self
     }
 
-    /// Compile the integration-test feature set, but leave the unsafe testing
-    /// gRPC service disabled at runtime.
     pub fn with_unsafe_testing_runtime_disabled(mut self) -> Self {
         self.unsafe_testing_runtime_enabled = false;
         self
     }
 
-    pub fn with_node_count(mut self, node_count: usize) -> Self {
-        assert!(
-            matches!(node_count, 3 | 4),
-            "integration test network supports 3 or 4 nodes"
-        );
-        self.node_count = node_count;
+    /// Cosmos-only escape hatch: inject arbitrary genesis module state into the
+    /// Vera chain before it starts, bypassing keeper validation via `InitGenesis`.
+    #[cfg(feature = "cosmos")]
+    pub fn with_module_genesis(mut self, module: &str, state: serde_json::Value) -> Self {
+        self.genesis_patches.insert(module.to_string(), state);
+        self
+    }
+
+    /// Native-only escape hatch: seed the native Vera devnet's keys/genesis
+    /// deterministically. Defaults to a fixed seed shared by every builder
+    /// that doesn't call this.
+    #[cfg(all(unix, feature = "native"))]
+    pub fn with_native_deployment_seed(mut self, seed: u64) -> Self {
+        self.native_deployment_seed = seed;
         self
     }
 
     pub fn build(self) -> IntegrationTestNetwork {
-        let IntegrationTestNetworkBuilder {
-            genesis_patches,
-            production_node_build,
-            unsafe_testing_runtime_enabled,
-            node_count,
-        } = self;
-        let compose_file = INTEGRATION_TEST_COMPOSE_FILE.to_string();
-        let project_name = unique_project_name("orbis-integration");
-
-        let patch_file: Option<tempfile::NamedTempFile> = if genesis_patches.is_empty() {
-            None
-        } else {
-            let mut f = tempfile::NamedTempFile::new().expect("genesis patch tempfile");
-            serde_json::to_writer(&mut f, &serde_json::Value::Object(genesis_patches))
-                .expect("write genesis patch");
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-
-                let mut permissions = f
-                    .as_file()
-                    .metadata()
-                    .expect("read genesis patch tempfile metadata")
-                    .permissions();
-                permissions.set_mode(0o644);
-                f.as_file()
-                    .set_permissions(permissions)
-                    .expect("make genesis patch tempfile readable by Docker container");
-            }
-            Some(f)
-        };
-
-        // CI (and anyone who wants to) can pre-build the node image and load it,
-        // then set `ORBIS_INTEGRATION_IMAGE` so `docker compose up` reuses it
-        // instead of running a cold `cargo build --release` per test. The
-        // production-feature-set path (`with_production_node_build`) needs a
-        // *different* image, so it always builds — into a throwaway per-project
-        // tag so it never clobbers the shared pre-built one.
-        let reuse_prebuilt =
-            !production_node_build && std::env::var_os("ORBIS_INTEGRATION_IMAGE").is_some();
-        let prod_check_image = format!("orbis-node-prod-check:{project_name}");
-
-        let start_compose = || {
-            let mut command = compose_command(&compose_file, &project_name);
-            if node_count == 4 {
-                command.args(["--profile", "node4"]);
-            }
-            if reuse_prebuilt {
-                command.args(["up", "-d"]);
-            } else {
-                command.args(["up", "-d", "--build"]);
-                if production_node_build {
-                    command.env("ORBIS_INTEGRATION_IMAGE", &prod_check_image);
+        match self.backend {
+            #[cfg(feature = "cosmos")]
+            IntegrationBackend::Cosmos => {
+                let mut builder = CosmosNetwork::builder().with_node_count(self.node_count);
+                if self.production_node_build {
+                    builder = builder.with_production_node_build();
+                }
+                if !self.unsafe_testing_runtime_enabled {
+                    builder = builder.with_unsafe_testing_runtime_disabled();
+                }
+                for (module, state) in self.genesis_patches {
+                    builder = builder.with_module_genesis(&module, state);
+                }
+                IntegrationTestNetwork {
+                    backend: IntegrationBackend::Cosmos,
+                    inner: NetworkInner::Cosmos(Box::new(builder.build())),
                 }
             }
-
-            // `ORBIS_INTEGRATION_CRYPTO` (if set) is inherited by the compose
-            // subprocess; when unset the compose file defaults to bls12-381. A
-            // Jubjub run must export it so the built node images match the host —
-            // see this type's doc comment and the CI `jubjub` matrix leg.
-            command.env(
-                "ORBIS_BUILD_INTEGRATION_TEST",
-                if production_node_build {
-                    "false"
-                } else {
-                    "true"
-                },
-            );
-            command.env(
-                "ORBIS_ENABLE_INTEGRATION_TEST",
-                if unsafe_testing_runtime_enabled {
-                    "true"
-                } else {
-                    "false"
-                },
-            );
-            if let Some(ref patch_file) = patch_file {
-                command.env("GENESIS_PATCH_FILE", patch_file.path());
-            } else {
-                command.env_remove("GENESIS_PATCH_FILE");
+            #[cfg(not(feature = "cosmos"))]
+            IntegrationBackend::Cosmos => {
+                panic!("IntegrationBackend::Cosmos requires the \"cosmos\" feature")
             }
-
-            command.status()
-        };
-
-        let mut status = start_compose().expect("Failed to start docker compose");
-        if !status.success() {
-            eprintln!(
-                "docker compose up failed for project {project_name} with status {status}; retrying once"
-            );
-            report_compose_failure(&compose_file, &project_name);
-            stop_compose(&compose_file, &project_name);
-            std::thread::sleep(Duration::from_secs(2));
-            status = start_compose().expect("Failed to start docker compose on retry");
+            #[allow(unreachable_patterns)]
+            IntegrationBackend::NativeVera => panic!(
+                "IntegrationTestNetworkBuilder::build() is synchronous; native network \
+                 bootstrap is async. Use .build_async().await instead (requires the \
+                 \"native\" feature on unix)."
+            ),
         }
+    }
 
-        if !status.success() {
-            report_compose_failure(&compose_file, &project_name);
-            stop_compose(&compose_file, &project_name);
-            panic!("Failed to start integration test containers");
-        }
-
-        let endpoints = (|| -> Result<(ChainConfig, Vec<String>), String> {
-            let chain_config = ChainConfig::builder()
-                .rpc_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    26657,
-                )?)))
-                .rest_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    1317,
-                )?)))
-                .grpc_url(Some(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    "vera",
-                    9090,
-                )?)))
-                .build();
-            let mut node_endpoints = Vec::with_capacity(node_count);
-            for index in 1..=node_count {
-                let service = IntegrationTestNetwork::service_name_for_node(index);
-                node_endpoints.push(localhost_url(published_port(
-                    &compose_file,
-                    &project_name,
-                    service,
-                    50051,
-                )?));
+    /// Async counterpart of [`Self::build`], required for
+    /// [`IntegrationBackend::NativeVera`] — native's chain bootstrap polls the
+    /// chain over RPC (`NativeTestNetwork::start_with_genesis`) and can't be
+    /// driven from a synchronous `build()` without an executor-flavor-fragile
+    /// `block_in_place` bridge. Phase B's Compose-driven native bring-up may
+    /// make this synchronous like Cosmos's; until then, native callers await
+    /// this instead of calling `.build()`.
+    #[cfg(all(unix, feature = "native"))]
+    pub async fn build_async(self) -> IntegrationTestNetwork {
+        match self.backend {
+            IntegrationBackend::NativeVera => {
+                let cluster = NativeNetworkAdapter::start_configured(
+                    self.native_deployment_seed,
+                    self.node_count,
+                    self.production_node_build,
+                    self.unsafe_testing_runtime_enabled,
+                )
+                .await;
+                IntegrationTestNetwork {
+                    backend: IntegrationBackend::NativeVera,
+                    inner: NetworkInner::Native(Box::new(cluster)),
+                }
             }
-            Ok((chain_config, node_endpoints))
-        })()
-        .unwrap_or_else(|error| {
-            report_compose_failure(&compose_file, &project_name);
-            stop_compose(&compose_file, &project_name);
-            panic!("Failed to discover integration test endpoints: {error}");
-        });
-        let (chain_config, node_endpoints) = endpoints;
-
-        let network = IntegrationTestNetwork {
-            compose_file,
-            project_name,
-            chain_config,
-            node_endpoints,
-            _patch_file: patch_file,
-        };
-        network.wait_for_healthy();
-        network
+            #[allow(unreachable_patterns)]
+            _ => panic!(
+                "IntegrationTestNetworkBuilder::build_async() is for \
+                 IntegrationBackend::NativeVera only; call .build() for Cosmos"
+            ),
+        }
     }
 }

@@ -89,7 +89,7 @@ tonic-prost = { workspace = true }
 cli-tool = { path = "../cli-tool", default-features = false }
 tempfile = { workspace = true }
 # Docker Compose integration-test harness (Vera + orbis-node containers).
-test-support = { path = "../../crates/test-support" }
+test-support = { path = "../../crates/test-support", default-features = false }
 
 [[test]]
 name = "native_startup"
@@ -106,7 +106,16 @@ cosmos = ["common/cosmos", "bulletin/cosmos-identity"]
 authz-vera = ["authz/vera", "cosmos"]
 bulletin-vera = ["bulletin/vera", "cosmos"]
 iroh = ["network/iroh"]
-integration-test = ["cli-tool", "unsafe-testing", "authz-vera", "bulletin-vera"]
+# Shared E2E scenario machinery, backend-neutral (scenario fns, `BackendAdmin`
+# trait, `IntegrationBackend` enum). Pick a backend variant below to actually
+# run anything — this alone doesn't pull in either chain client.
+integration-test = ["cli-tool", "unsafe-testing"]
+# Adds Cosmos/SourceHub wiring on top of the shared base.
+integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "test-support/cosmos"]
+# Adds native Vera wiring on top of the shared base — does NOT pull in
+# authz-vera/bulletin-vera/cosmos (see test-support's own `cosmos` default
+# feature, which this crate explicitly opts out of above).
+integration-test-native = ["integration-test", "native", "test-support/native"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead

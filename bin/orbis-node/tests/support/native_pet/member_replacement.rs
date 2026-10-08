@@ -1,6 +1,6 @@
 use super::{
-    endpoint, read_ring, stored_bundle as store, submit, unix_now, wait_polynomials, Delivery,
-    Document, Node, Polynomials, PreChecks, Reader,
+    add_orbis_node4, endpoint, read_ring, stored_bundle as store, submit, unix_now,
+    wait_polynomials, Delivery, Document, Node, Polynomials, PreChecks, Reader,
 };
 use crypto::r#trait::CryptoDeserialize;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
@@ -8,7 +8,7 @@ use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse,
     GetPetRingStateRequest, GetRingStateRequest,
 };
-use std::{fs, net::TcpListener, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{
     create_scoped_bearer_token,
@@ -26,7 +26,6 @@ pub(super) struct MemberReplacement<'a> {
     pub deployment: u64,
     pub deployment_root: &'a [u8; 32],
     pub controller: &'a k256::ecdsa::SigningKey,
-    pub controller_key: &'a str,
     pub worker: &'a BlsSigner,
     pub policy: &'a str,
     pub ring_id: &'a str,
@@ -85,17 +84,11 @@ impl MemberReplacement<'_> {
             assert!(!node.0.wait().unwrap().success());
         }
         // Spawn both threshold participants before waiting on readiness.
-        for index in 2..4 {
-            let directory = self.base.join(format!("node-{index}"));
-            let log = directory.join("pet-replacement-restart.log");
-            let bind = infos[index].p2p_address.split_once('@').unwrap().1;
-            nodes[index] = Node::start_bound(
-                &directory,
-                &addresses[index],
-                self.controller_key,
-                &log,
-                bind,
-            );
+        for (index, node) in nodes.iter_mut().enumerate().take(4).skip(2) {
+            let log = self
+                .base
+                .join(format!("node-{index}/pet-replacement-restart.log"));
+            *node = Node::restart(self.cluster.project_name(), index, &log);
         }
         for index in 2..4 {
             let log = self
@@ -147,19 +140,8 @@ impl MemberReplacement<'_> {
     }
 
     async fn incoming(&self) -> (Node, String, GetNodeInfoResponse) {
-        let directory = self.base.join("node-3");
-        fs::create_dir(&directory).unwrap();
-        fs::write(directory.join("password"), "native-dkg-test").unwrap();
-        fs::copy(
-            self.base.join("node-0/vera.json"),
-            directory.join("vera.json"),
-        )
-        .unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap().to_string();
-        drop(listener);
-        let log = directory.join("node.log");
-        let mut incoming = Node::start(&directory, &address, self.controller_key, &log);
+        let (mut incoming, address) = add_orbis_node4(self.cluster, self.base);
+        let log = self.base.join("node-3/node.log");
         let info = incoming.ready(&address, &log).await;
         assert_eq!(info.managed_ring_count, 0);
         for command in [

@@ -25,6 +25,11 @@ pub(super) fn compose_command(compose_file: &str, project_name: &str) -> Command
     command
 }
 
+// `published_port`/`localhost_url`/`report_compose_failure`/`stop_compose`
+// are shared by `CosmosNetwork`/`VeraTestContainer` (Cosmos) and
+// `NativeTestNetwork`/`NativeNetworkAdapter` (native, Phase B of the
+// harness-unification plan) — both drive a real multi-service Compose file.
+#[cfg(any(feature = "cosmos", feature = "native"))]
 fn parse_published_port(output: &str) -> Option<u16> {
     output
         .lines()
@@ -33,6 +38,7 @@ fn parse_published_port(output: &str) -> Option<u16> {
         .and_then(|(_, port)| port.parse().ok())
 }
 
+#[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn published_port(
     compose_file: &str,
     project_name: &str,
@@ -59,10 +65,12 @@ pub(super) fn published_port(
     })
 }
 
+#[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn localhost_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+#[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
     eprintln!("Docker Compose diagnostics for project {project_name}:");
     let _ = compose_command(compose_file, project_name)
@@ -96,6 +104,7 @@ pub(super) fn report_compose_failure(compose_file: &str, project_name: &str) {
         .status();
 }
 
+#[cfg(any(feature = "cosmos", feature = "native"))]
 pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
     match compose_command(compose_file, project_name)
         .args(["--profile", "node4", "down", "-v", "--remove-orphans"])
@@ -111,11 +120,15 @@ pub(super) fn stop_compose(compose_file: &str, project_name: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_published_port, unique_project_name};
+    use super::unique_project_name;
 
+    #[cfg(any(feature = "cosmos", feature = "native"))]
     #[test]
     fn parses_compose_port_output() {
-        assert_eq!(parse_published_port("127.0.0.1:49152\n"), Some(49152));
+        assert_eq!(
+            super::parse_published_port("127.0.0.1:49152\n"),
+            Some(49152)
+        );
     }
 
     #[test]

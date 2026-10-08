@@ -20,7 +20,7 @@ pub(super) enum Error {
     #[cfg(feature = "native")]
     #[error("native configuration failed")]
     Configuration(#[from] bulletin::native::ConfigError),
-    #[cfg(feature = "integration-test")]
+    #[cfg(feature = "integration-test-cosmos")]
     #[error("integration account funding failed")]
     Funding(#[from] common::blockchain::BlockchainError),
     #[error("backend connection timed out")]
@@ -57,7 +57,7 @@ impl Services {
 
 type Authorization = Pin<Box<dyn Future<Output = Result<Arc<dyn Authz>, AuthZError>> + Send>>;
 
-#[cfg(feature = "integration-test")]
+#[cfg(feature = "integration-test-cosmos")]
 struct Funding {
     address: String,
     config: common::blockchain::ChainConfig,
@@ -68,7 +68,7 @@ pub(super) struct PreparedServices {
     bulletin: Box<dyn PreparedBulletin>,
     authorization: Authorization,
     timeout: Option<Duration>,
-    #[cfg(feature = "integration-test")]
+    #[cfg(feature = "integration-test-cosmos")]
     funding: Option<Funding>,
 }
 
@@ -77,11 +77,16 @@ impl PreparedServices {
         let timeout = self.timeout;
         let connect = async {
             let authz = self.authorization.await?;
-            #[cfg(feature = "integration-test")]
+            #[cfg(feature = "integration-test-cosmos")]
             if let Some(funding) = self.funding {
                 status.set_status(NodeStatus::ConnectingToChain);
                 status.set_status(NodeStatus::WaitingForFunding);
-                cli_tool::fund(funding.address, funding.config).await?;
+                cli_tool::ensure_funded(
+                    funding.address,
+                    funding.config,
+                    crate::constants::MIN_NODE_BALANCE,
+                )
+                .await?;
                 status.set_status(NodeStatus::Funded);
             }
             let progress = |phase| update_status(status, phase);
@@ -167,7 +172,7 @@ impl Configuration {
                 bulletin,
                 authorization,
                 timeout: Some(timeout),
-                #[cfg(feature = "integration-test")]
+                #[cfg(feature = "integration-test-cosmos")]
                 funding: None,
             });
         }
@@ -198,7 +203,7 @@ impl Configuration {
                 initial_key.as_deref(),
                 Some(crate::constants::MIN_NODE_BALANCE),
             )?;
-            #[cfg(feature = "integration-test")]
+            #[cfg(feature = "integration-test-cosmos")]
             let (bulletin, funding) = {
                 let funding = Funding {
                     address: bulletin.identity().public_address.clone(),
@@ -218,7 +223,7 @@ impl Configuration {
                 bulletin: Box::new(bulletin),
                 authorization: Box::pin(async move { Ok(authz) }),
                 timeout: None,
-                #[cfg(feature = "integration-test")]
+                #[cfg(feature = "integration-test-cosmos")]
                 funding,
             })
         }

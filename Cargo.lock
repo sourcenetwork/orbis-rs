@@ -11296,6 +11296,8 @@ dependencies = [
 name = "test-support"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
+ "bs58 0.5.1",
  "common",
  "commonware-codec",
  "cosmrs",

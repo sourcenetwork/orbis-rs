@@ -26,6 +26,15 @@ services:
         echo "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" | verad keys add test --recover --keyring-backend test --home /home/node/.vera
         verad genesis add-genesis-account validator 100000000000uopen --keyring-backend test --home /home/node/.vera
         verad genesis add-genesis-account test 100000000000uopen --keyring-backend test --home /home/node/.vera
+        # Integration images use the deterministic ORBIS_SIGNING_KEY values
+        # configured on node1..node4 below. Fund those addresses in genesis so
+        # parallel node startup does not race four transfers from the same test
+        # account sequence. The runtime still falls back to a transfer when a
+        # non-deterministic integration address is not already funded.
+        verad genesis add-genesis-account vera1w508d6qejxtdg4y5r3zarvary0c5xw7kvy8klp 1000000uopen --home /home/node/.vera
+        verad genesis add-genesis-account vera1q6hag67dl53wl99vzg42z8eyzfz2xlkvx6ksx4 1000000uopen --home /home/node/.vera
+        verad genesis add-genesis-account vera10ht9tyks4vh7p5p904t340cr9nvahy7u3qheku 1000000uopen --home /home/node/.vera
+        verad genesis add-genesis-account vera1csh8a7f0mdsr47zy6pj04tv4mwdumlfasukrn8 1000000uopen --home /home/node/.vera
         verad genesis gentx validator 10000000000uopen --keyring-backend test --chain-id vera-localnet --home /home/node/.vera
         verad genesis collect-gentxs --home /home/node/.vera
         if [ -s /tmp/genesis-patch.json ]; then

@@ -689,6 +689,36 @@ pub async fn fund(address: String, config: ChainConfig) -> common::blockchain::R
     fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await
 }
 
+/// Ensure an integration account has at least `minimum` tokens without
+/// submitting another transfer when the fixture funded it in genesis.
+#[allow(dead_code)]
+pub async fn ensure_funded(
+    address: String,
+    config: ChainConfig,
+    minimum: u64,
+) -> common::blockchain::Result<()> {
+    let client = common::blockchain::VeraClient::new(config.clone()).await?;
+    const BALANCE_MAX_ATTEMPTS: u32 = 30;
+    const BALANCE_RETRY_DELAY: tokio::time::Duration = tokio::time::Duration::from_secs(1);
+
+    for attempt in 1..=BALANCE_MAX_ATTEMPTS {
+        match client.get_balance(&address, "uopen").await {
+            Ok(balance) if balance >= minimum => return Ok(()),
+            Ok(_) => return fund_impl(address, config, TEST_ACCOUNT_HEX_KEY).await,
+            Err(error) if attempt < BALANCE_MAX_ATTEMPTS => {
+                eprintln!(
+                    "Balance query failed while waiting for the integration chain \
+                     (attempt {attempt}/{BALANCE_MAX_ATTEMPTS}), retrying: {error}"
+                );
+                tokio::time::sleep(BALANCE_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    unreachable!("the bounded balance-query loop always returns")
+}
+
 pub async fn fund_with_signer(
     address: String,
     config: ChainConfig,

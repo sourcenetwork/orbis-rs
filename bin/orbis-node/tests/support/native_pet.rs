@@ -1,11 +1,8 @@
-use super::{confirmed, submit, Node};
+use super::{add_orbis_node4, confirmed, submit, Node};
 use alloy_primitives::B256;
 use alloy_sol_types::SolCall;
-use proto::{
-    info_service::{
-        info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
-    },
-    v0::dkg::{dkg_service_client::DkgServiceClient, StartDkgRequest},
+use proto::info_service::{
+    info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
 };
 use std::time::Duration;
 use tonic::transport::Endpoint;
@@ -21,6 +18,14 @@ use vera_domain::ConsensusPublicKey;
 mod dkg;
 #[path = "pet_dkg_contract.rs"]
 mod pet_dkg_contract;
+#[path = "pre_scenario.rs"]
+mod pre_scenario;
+#[path = "refresh_scenario.rs"]
+mod refresh_scenario;
+#[path = "reshare_scenario.rs"]
+mod reshare_scenario;
+#[path = "sign_scenario.rs"]
+mod sign_scenario;
 
 #[path = "native_pet/document.rs"]
 mod document;
@@ -47,6 +52,30 @@ pub enum Scenario {
     ReportFault,
 }
 
+/// Run the shared paired-DKG scenario through the native adapter. The adapter
+/// owns native-specific provisioning and gRPC triggering; the common runner
+/// owns their ordering and the finalized/local-state assertions. Shared by
+/// every `Scenario` variant below and by the standalone `native_dkg` test.
+pub async fn dkg_scenario(
+    deployment: u64,
+    report_fault: bool,
+) -> (
+    super::native_workflow::NativeWorkflow,
+    RingPublicKeys,
+    Vec<Polynomials>,
+) {
+    let (workflow, keys, baseline) = dkg::run(deployment, report_fault).await;
+    eprintln!("native PET phase=paired-dkg members=3 threshold=2");
+    (workflow, keys, baseline)
+}
+
+/// Run the same standard-DKG lifecycle as the Cosmos integration suite,
+/// including PRE, signing, refresh, and committee reshare. Only backend
+/// provisioning and bulletin/ACP mechanisms differ.
+pub async fn dkg_pre_and_sign_scenario(deployment: u64) -> (String, String) {
+    dkg::run_pre(deployment).await
+}
+
 pub async fn run(scenario: Scenario) {
     let (deployment, report_fault) = match scenario {
         Scenario::Lifecycle => (9075, false),
@@ -55,13 +84,13 @@ pub async fn run(scenario: Scenario) {
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
+    let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
     let super::native_workflow::NativeWorkflow {
         cluster,
         client,
         trusted,
         root,
         controller,
-        controller_key,
         actor,
         base,
         mut nodes,
@@ -73,19 +102,7 @@ pub async fn run(scenario: Scenario) {
         ring_id,
         headers: _headers,
         ..
-    } = super::native_workflow::NativeWorkflow::start(deployment, true, report_fault).await;
-    let response = DkgServiceClient::connect(endpoint(&addresses[0]))
-        .await
-        .unwrap()
-        .start_dkg(StartDkgRequest {
-            ring_id: ring_id.clone(),
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(!response.session_id.is_empty());
-    let (keys, baseline) = dkg::verify(&client, &trusted, &ring_id, &addresses).await;
-    eprintln!("native PET phase=paired-dkg members=3 threshold=2");
+    } = workflow;
 
     let reader = Reader::new(vera_client::rings::ring_deployment_label(
         root.0, deployment,
@@ -161,6 +178,7 @@ pub async fn run(scenario: Scenario) {
     }
     if matches!(scenario, Scenario::ScheduledRefresh) {
         scheduled_refresh::ScheduledRefresh {
+            cluster: &cluster,
             client: &client,
             trusted: &trusted,
             ring_id: &ring_id,
@@ -168,7 +186,6 @@ pub async fn run(scenario: Scenario) {
             base: base.path(),
             addresses: &addresses,
             infos: &infos,
-            controller: &controller_key,
         }
         .run(&mut nodes, &checks, documents)
         .await;
@@ -259,7 +276,6 @@ pub async fn run(scenario: Scenario) {
             deployment,
             deployment_root: &root.0,
             controller: &controller,
-            controller_key: &controller_key,
             worker: &worker,
             policy: &policy,
             ring_id: &ring_id,
@@ -346,11 +362,8 @@ pub async fn run(scenario: Scenario) {
         assert!(!node.0.wait().unwrap().success());
     }
     for index in 0..2 {
-        let directory = base.path().join(format!("node-{index}"));
-        let log = directory.join("pet-restart.log");
-        let bind = infos[index].p2p_address.split_once('@').unwrap().1;
-        nodes[index] =
-            Node::start_bound(&directory, &addresses[index], &controller_key, &log, bind);
+        let log = base.path().join(format!("node-{index}/pet-restart.log"));
+        nodes[index] = Node::restart(cluster.project_name(), index, &log);
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
@@ -441,7 +454,7 @@ impl Permissions<'_> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Polynomials {
+pub(crate) struct Polynomials {
     main: String,
     pet: String,
 }
