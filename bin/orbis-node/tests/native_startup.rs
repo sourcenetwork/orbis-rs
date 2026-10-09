@@ -1466,6 +1466,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .is_none());
     nodes[0].stop().await;
     nodes[1].stop().await;
+    let pre_endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[2]))
+        .unwrap()
+        .timeout(Duration::from_secs(30));
+    pre = PreServiceClient::connect(pre_endpoint).await.unwrap();
     let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[3]))
         .unwrap()
         .timeout(Duration::from_secs(30));
