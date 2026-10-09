@@ -210,6 +210,12 @@ impl NativeTestNetwork {
                 dir.display().to_string(),
             )
         }))
+        .chain(dirs.iter().enumerate().map(|(i, dir)| {
+            (
+                format!("ORBIS_NATIVE_VERA{}_USER", i + 1),
+                crate::bind_mount_user(dir).expect("validator fixture owner"),
+            )
+        }))
         .chain(
             validator_ips
                 .iter()

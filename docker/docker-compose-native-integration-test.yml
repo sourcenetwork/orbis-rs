@@ -34,6 +34,7 @@
 # them, and only then starts the containers.
 services:
   vera1:
+    user: "${ORBIS_NATIVE_VERA1_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
@@ -58,6 +59,7 @@ services:
       start_period: 30s
 
   vera2:
+    user: "${ORBIS_NATIVE_VERA2_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
@@ -82,6 +84,7 @@ services:
       start_period: 30s
 
   vera3:
+    user: "${ORBIS_NATIVE_VERA3_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
@@ -106,6 +109,7 @@ services:
       start_period: 30s
 
   vera4:
+    user: "${ORBIS_NATIVE_VERA4_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
@@ -130,6 +134,7 @@ services:
       start_period: 30s
 
   node1:
+    user: "${ORBIS_NATIVE_NODE1_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -185,6 +190,7 @@ services:
       start_period: 30s
 
   node2:
+    user: "${ORBIS_NATIVE_NODE2_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -240,6 +246,7 @@ services:
       start_period: 30s
 
   node3:
+    user: "${ORBIS_NATIVE_NODE3_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -295,6 +302,7 @@ services:
       start_period: 30s
 
   node4:
+    user: "${ORBIS_NATIVE_NODE4_USER:-0:0}"
     profiles: ["node4"]
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:

@@ -35,7 +35,12 @@ mod defra_documents;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
+    time::Duration,
+};
 use vera_client::VeraClient;
 use vera_harness::cluster::KeySet;
 
@@ -313,6 +318,10 @@ fn bring_up_orbis_nodes(
         )
         .unwrap();
         extra_env.push((
+            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
+            test_support::bind_mount_user(&dir).expect("node fixture owner"),
+        ));
+        extra_env.push((
             format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
             dir.display().to_string(),
         ));
@@ -372,7 +381,6 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -419,6 +427,11 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .join("native-vera")
         .join(root)
         .join("state.json");
+    let metadata = fs::metadata(&journal).unwrap();
+    let owner = fs::metadata(base.path()).unwrap();
+    assert_eq!(metadata.uid(), owner.uid());
+    assert_eq!(metadata.gid(), owner.gid());
+    assert_eq!(metadata.permissions().mode() & 0o077, 0);
     let before = fs::read(&journal).unwrap();
     let log = base.path().join("restart.log");
     let mut restarted = Node::restart(cluster.project_name(), 0, &log);
