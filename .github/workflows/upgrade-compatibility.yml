@@ -42,6 +42,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Configure Docker Hub cache
+        uses: ./.github/actions/docker-builder
+
       - name: Run cross-commit upgrade gate
         shell: bash
         # Pin the network launch revision so every target is checked against

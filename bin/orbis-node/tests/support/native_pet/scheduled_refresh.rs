@@ -107,25 +107,29 @@ impl ScheduledRefresh<'_> {
         }
         // All store handles have closed before any native process restarts.
         let restarted_at = unix_now();
+        let mut addresses = self.addresses.to_vec();
         for (index, node) in nodes.iter_mut().enumerate() {
             let log = self
                 .base
                 .join(format!("node-{index}/scheduled-pet-refresh.log"));
             *node = Node::restart(self.cluster.project_name(), index, &log);
+            addresses[index] = node.endpoint();
         }
         for (index, node) in nodes.iter_mut().enumerate() {
             let log = self
                 .base
                 .join(format!("node-{index}/scheduled-pet-refresh.log"));
-            let recovered = node.ready(&self.addresses[index], &log).await;
+            let recovered = node.ready(&addresses[index], &log).await;
             assert_eq!(recovered.node_key, self.infos[index].node_key);
+            assert_eq!(recovered.peer_id, self.infos[index].peer_id);
             assert_eq!(recovered.p2p_address, self.infos[index].p2p_address);
+            assert_eq!(recovered.public_address, self.infos[index].public_address);
             assert_eq!(recovered.managed_ring_count, 1);
         }
         let observed = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 let mut states = Vec::new();
-                for address in self.addresses {
+                for address in &addresses {
                     let response = InfoServiceClient::connect(endpoint(address))
                         .await
                         .unwrap()
@@ -161,6 +165,7 @@ impl ScheduledRefresh<'_> {
             current, initial,
             "PET refresh changed certified ring configuration or keys"
         );
+        let checks = checks.reconnect(endpoint(&addresses[0]));
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }

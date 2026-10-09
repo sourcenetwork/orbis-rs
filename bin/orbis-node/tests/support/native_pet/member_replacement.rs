@@ -89,6 +89,7 @@ impl MemberReplacement<'_> {
                 .base
                 .join(format!("node-{index}/pet-replacement-restart.log"));
             *node = Node::restart(self.cluster.project_name(), index, &log);
+            addresses[index] = node.endpoint();
         }
         for index in 2..4 {
             let log = self
@@ -96,7 +97,9 @@ impl MemberReplacement<'_> {
                 .join(format!("node-{index}/pet-replacement-restart.log"));
             let recovered = nodes[index].ready(&addresses[index], &log).await;
             assert_eq!(recovered.node_key, infos[index].node_key);
+            assert_eq!(recovered.peer_id, infos[index].peer_id);
             assert_eq!(recovered.p2p_address, infos[index].p2p_address);
+            assert_eq!(recovered.public_address, infos[index].public_address);
             assert_eq!(recovered.managed_ring_count, 1);
         }
         assert_eq!(
@@ -104,6 +107,7 @@ impl MemberReplacement<'_> {
             reshared[1..],
         );
         self.assert_certified_state(&finalized, documents).await;
+        let checks = checks.reconnect(endpoint(&addresses[3]));
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
