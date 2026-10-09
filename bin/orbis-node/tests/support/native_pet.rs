@@ -47,6 +47,9 @@ mod member_replacement;
 #[path = "native_pet/soak.rs"]
 pub mod soak;
 
+#[path = "native_pet/polynomial_state.rs"]
+mod polynomial_state;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
@@ -476,21 +479,39 @@ async fn wait_polynomials(
     if let Some(previous) = previous {
         assert_eq!(previous.len(), addresses.len());
     }
-    tokio::time::timeout(Duration::from_secs(60), async {
+    assert!(addresses.len() <= 4);
+    let mut observed = vec![polynomial_state::Member::default(); addresses.len()];
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let mut states = Vec::new();
-            for addr in addresses {
+            let mut states: Vec<Polynomials> = Vec::new();
+            observed.fill(polynomial_state::Member::default());
+            for (index, addr) in addresses.iter().enumerate() {
                 let mut client = InfoServiceClient::connect(endpoint(addr)).await.unwrap();
+                observed[index].connected = Some(true);
                 let main = client
                     .get_ring_state(GetRingStateRequest {
                         ring_pk_hex: keys.public_key.clone(),
                     })
                     .await;
+                observed[index].main = polynomial_state::Response::observe(
+                    main.as_ref()
+                        .map(|response| response.get_ref().public_polynomial.as_str())
+                        .map_err(|error| error.code()),
+                    previous.map(|old| old[index].main.as_str()),
+                    states.first().map(|first| first.main.as_str()),
+                );
                 let pet = client
                     .get_pet_ring_state(GetPetRingStateRequest {
                         ring_id: ring_id.into(),
                     })
                     .await;
+                observed[index].pet = polynomial_state::Response::observe(
+                    pet.as_ref()
+                        .map(|response| response.get_ref().public_polynomial.as_str())
+                        .map_err(|error| error.code()),
+                    previous.map(|old| old[index].pet.as_str()),
+                    states.first().map(|first| first.pet.as_str()),
+                );
                 match (main, pet) {
                     (Ok(main), Ok(pet)) => states.push(Polynomials {
                         main: main.into_inner().public_polynomial,
@@ -515,6 +536,14 @@ async fn wait_polynomials(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("all members must hold the same main and PET polynomial generation")
+    .await;
+    result.unwrap_or_else(|error| {
+        eprintln!(
+            "native_polynomial_state={}",
+            serde_json::json!({
+                "members": addresses.len(), "previous": previous.is_some(), "responses": observed,
+            })
+        );
+        panic!("all members must hold the same main and PET polynomial generation: {error}");
+    })
 }

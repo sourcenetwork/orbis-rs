@@ -60,9 +60,11 @@ impl MemberReplacement<'_> {
         assert_eq!(target.len(), 3);
         assert!(!target.contains(&infos[0].node_key));
         let finalized = self.reshare(target.clone()).await;
+        eprintln!("native PET phase=replacement-finalized members=3 threshold=2");
         let previous = vec![baseline[0].clone(); 3];
         let reshared =
             wait_polynomials(&addresses[1..], self.ring_id, self.keys, Some(&previous)).await;
+        eprintln!("native PET phase=replacement-material-ready members=3 threshold=2");
 
         // Keep the departed process alive until its normal scheduler removes both bundles.
         // Public PRE/sign RPCs allow external coordinators, so blanket RPC rejection would
