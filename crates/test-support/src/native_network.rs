@@ -222,6 +222,13 @@ impl NativeTestNetwork {
                 .enumerate()
                 .map(|(i, ip)| (format!("ORBIS_NATIVE_VERA{}_IP", i + 1), ip.clone())),
         )
+        // Stored peer routes must still reach the same identity after all nodes stop.
+        .chain((0..4).map(|i| {
+            (
+                format!("ORBIS_NATIVE_NODE{}_IP", i + 1),
+                host_ip(&subnet, 21 + i),
+            )
+        }))
         .collect();
 
         // All four `vera{1..4}` services share one identical `build:` block
@@ -741,8 +748,8 @@ fn remove_network(name: &str) {
 /// `host_ip("172.30.0.0/16", 11)` → `"172.30.0.11"`. Works for any prefix
 /// length Docker might hand back (typically /16 or /20 for an
 /// auto-allocated pool); only needs the subnet to be large enough to include
-/// the low offsets this module uses (11..=14), which every default Docker
-/// pool comfortably is.
+/// the low offsets this module uses (11..=14 and 21..=24), which default
+/// Docker pools comfortably include.
 fn host_ip(subnet_cidr: &str, offset: u32) -> String {
     let base = subnet_cidr
         .split_once('/')

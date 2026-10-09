@@ -172,7 +172,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE1_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -228,7 +229,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE2_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -284,7 +286,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE3_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -341,7 +344,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE4_IP}
     depends_on:
       vera1:
         condition: service_healthy
