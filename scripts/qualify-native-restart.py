@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 import subprocess
+import time
 
 RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
 VERA = "892cf0582e9d9395574cd5e8900988cb4a6ebd21"
@@ -68,12 +69,15 @@ def qualify():
     ]
     codes = []
     for index, command in enumerate(commands):
+        print(json.dumps({"curve": curve, "stage": index, "state": "running"}), flush=True)
+        started = time.monotonic()
         log = output / (str(index) + ".log")
         with log.open("x") as stream:
             os.chmod(log, 0o600)
             result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
         codes.append(result.returncode)
-        print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode}), flush=True)
+        print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode,
+                          "elapsed_seconds": round(time.monotonic() - started, 3)}), flush=True)
         if result.returncode:
             with log.open("rb") as stream:
                 stream.seek(max(0, log.stat().st_size - 65536))
