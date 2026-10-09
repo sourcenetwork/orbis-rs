@@ -61,12 +61,16 @@ def environment():
 
 
 def command(args, cwd, env, log, timeout=5400):
-    COMMANDS.append({'args': args, 'cwd': str(cwd), 'timeout': timeout})
+    record = {'args': args, 'cwd': str(cwd), 'timeout': timeout, 'returncode': None, 'timed_out': False}
+    COMMANDS.append(record)
     with log.open('wb') as output:
         process = subprocess.Popen(args, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
             status = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            record['timed_out'] = True
+            raise
         finally:
             if args[0] == 'sudo':
                 # The fixture group contains another UID; the invoking runner
@@ -78,7 +82,7 @@ def command(args, cwd, env, log, timeout=5400):
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            process.wait()
+            record['returncode'] = process.wait()
     if status:
         raise Failure()
 
@@ -483,7 +487,22 @@ def safe_diagnostics(output):
 def build_diagnostics(output):
     result = {'disk_full': 0, 'killed': 0, 'exit_codes': [], 'rust_codes': [], 'go_locations': [],
               'buildkit_metadata': int((output / 'buildkit.json').is_file()),
-              'gateway_archive': int((output / 'payload' / IMAGE_ARCHIVE).is_file())}
+              'gateway_archive': int((output / 'payload' / IMAGE_ARCHIVE).is_file()),
+              'command_status': sorted({record['returncode'] for record in COMMANDS
+                                        if isinstance(record.get('returncode'), int)})[:16],
+              'command_timeouts': sum(bool(record.get('timed_out')) for record in COMMANDS),
+              'failure_kinds': []}
+    patterns = {
+        'network': r'connection (?:refused|reset)|network is unreachable|i/o timeout|TLS handshake timeout|temporary failure in name resolution|failed to fetch',
+        'source_revision': r'not our ref|unknown revision|could not find remote ref|reference is not a tree',
+        'credentials': r'unauthorized|authentication required|permission denied|pull access denied',
+        'resources': r'resource temporarily unavailable|resourceexhausted|cannot allocate memory',
+        'export': r'failed to (?:export|load)|error exporting',
+        'toolchain': r'toolchain.*not installed|command not found|requires rustc|cannot find.*(?:clang|cc)',
+        'checksum': r'checksum mismatch|checksum.*changed|verification failed',
+        'docker_build': r'failed to solve|ERROR:',
+    }
+    kinds = set()
     exit_codes, rust_codes, locations = set(), set(), set()
     for name in ('defra-build.log', 'trust-build.log', 'go-fixture-build.log'):
         path = output / name
@@ -493,6 +512,7 @@ def build_diagnostics(output):
             stream.seek(0, 2)
             stream.seek(max(0, stream.tell() - 4 * 1024 * 1024))
             content = stream.read().decode(errors='replace')
+        kinds.update(kind for kind, pattern in patterns.items() if re.search(pattern, content, re.I))
         result['disk_full'] += content.lower().count('no space left on device')
         result['killed'] += len(re.findall(r'\bsignal: killed\b|\bSIGKILL\b|\bOOMKilled\b', content))
         exit_codes.update(int(code) for code in re.findall(r'exit code: ([0-9]{1,3})\b', content) if int(code) < 256)
@@ -503,6 +523,7 @@ def build_diagnostics(output):
     result['exit_codes'] = sorted(exit_codes)[:16]
     result['rust_codes'] = sorted(rust_codes)[:16]
     result['go_locations'] = [list(value) for value in sorted(locations)[:16]]
+    result['failure_kinds'] = sorted(kinds)
     return result
 
 

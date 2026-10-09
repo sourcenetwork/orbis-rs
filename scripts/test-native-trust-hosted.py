@@ -59,7 +59,9 @@ class Qualification(unittest.TestCase):
                                      'panics': 2, 'elapsed': 1, 'locations': [[1, 123]],
                                      'build': {'disk_full': 0, 'killed': 0, 'exit_codes': [],
                                                'rust_codes': [], 'go_locations': [],
-                                               'buildkit_metadata': 0, 'gateway_archive': 0}})
+                                               'buildkit_metadata': 0, 'gateway_archive': 0,
+                                               'command_status': [], 'command_timeouts': 0,
+                                               'failure_kinds': []}})
             encoded = json.dumps(result)
             for forbidden in ('secret', '/private', '/secret', '\x1b', 'rendered'):
                 self.assertNotIn(forbidden, encoded)
@@ -92,6 +94,20 @@ class Qualification(unittest.TestCase):
             self.assertEqual(result['rust_codes'], ['E0308'])
             self.assertEqual(result['go_locations'], [['api_server.go', 323, 18]])
             for forbidden in ('private-key', '/private', 'assertion', '999999'):
+                self.assertNotIn(forbidden, json.dumps(result))
+
+    def test_build_failure_classification_is_bounded_and_reports_command_status(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'trust-build.log').write_text('ERROR: failed to solve: failed to fetch /private/token\n'
+                'connection reset by peer; ResourceExhausted; unknown revision private-ref\n')
+            with patch.object(driver, 'COMMANDS', [{'returncode': 1, 'timed_out': False},
+                                                  {'returncode': -9, 'timed_out': True}]):
+                result = driver.build_diagnostics(root)
+            self.assertEqual(result['command_status'], [-9, 1])
+            self.assertEqual(result['command_timeouts'], 1)
+            self.assertEqual(result['failure_kinds'], ['docker_build', 'network', 'resources', 'source_revision'])
+            for forbidden in ('/private', 'token', 'private-ref', 'connection reset'):
                 self.assertNotIn(forbidden, json.dumps(result))
 
     def test_clears_inherited_overrides_without_changing_artifact_inputs(self):
