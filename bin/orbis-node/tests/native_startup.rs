@@ -179,16 +179,24 @@ impl Node {
         })
     }
 
-    /// Restart a previously-brought-up node in place (same service, same
-    /// fixture directory, same bind address — all already baked into the
-    /// Compose service). Replaces the old `Node::start`/`start_bound` (which
-    /// created a fresh `ContainerNode` each call); callers that used to pass
-    /// `base`/`addr`/`controller`/`bind` now only need the node's index,
-    /// since none of that varies between a node's launches anymore.
+    /// Restart the same container and its persisted state. Docker may reassign
+    /// its published port; callers must refresh the endpoint before reconnecting.
     fn restart(project_name: &str, index: usize, log: &Path) -> Self {
         let node = Self::attach(project_name, index, log);
         node.0.start_service();
         node
+    }
+
+    fn endpoint(&self) -> String {
+        test_support::compose_discover_endpoint(
+            NATIVE_COMPOSE_FILE,
+            &self.0.project_name,
+            &self.0.service,
+            50051,
+        )
+        .strip_prefix("http://")
+        .expect("Compose endpoint must use HTTP")
+        .to_owned()
     }
 
     async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
@@ -471,7 +479,8 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
     let before = fs::read(&journal).unwrap();
     let log = base.path().join("restart.log");
     let mut restarted = Node::restart(cluster.project_name(), 0, &log);
-    let second_info = restarted.ready(addr, &log).await;
+    let restarted_addr = restarted.endpoint();
+    let second_info = restarted.ready(&restarted_addr, &log).await;
     assert_eq!(first_info.node_key, second_info.node_key);
     assert_eq!(first_info.peer_id, second_info.peer_id);
     restarted.stop().await;
