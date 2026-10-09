@@ -11,6 +11,11 @@ import xml.etree.ElementTree as ET
 
 RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
 VERA = "892cf0582e9d9395574cd5e8900988cb4a6ebd21"
+# Published native-diagnostic targets from run 37940390635, built at RUNTIME.
+DIAGNOSTIC_DIGESTS = {
+    "bls12-381": "sha256:64f306d0db89054182becf312c421d358f0097505126ae9c8a6ebe5956a9586f",
+    "jubjub": "sha256:c74ae88480f8bd20e4a61fad7e5bdd384c2a4b7a010aecf6de82ef92fe9800fd",
+}
 FIXTURE_FILES = {
     ".github/workflows/rust.yml", "scripts/qualify-native-restart.py",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
@@ -116,21 +121,24 @@ def qualify():
     }
     if suite == "fault":
         images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
-            f"{repository}/node-integration:{RUNTIME}-native-diagnostic-{curve}"
+            f"{repository}/node-integration@{DIAGNOSTIC_DIGESTS[curve]}"
         )
     for variable, image in images.items():
         subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
-        labels = info["Config"]["Labels"]
+        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
+            if image not in info.get("RepoDigests", []):
+                raise ValueError("diagnostic image differs from the qualified build digest")
+            env[variable] = info["Id"]
+            continue
+        labels = info["Config"].get("Labels") or {}
         expected = {"org.opencontainers.image.revision": VERA}
-        if variable in ("ORBIS_NATIVE_IMAGE", "ORBIS_NATIVE_DIAGNOSTIC_IMAGE"):
+        if variable == "ORBIS_NATIVE_IMAGE":
             expected = {
                 "org.opencontainers.image.revision": RUNTIME,
                 "io.sourcenetwork.orbis.backend": "native",
                 "io.sourcenetwork.orbis.curve": curve,
-                "io.sourcenetwork.orbis.integration-features": (
-                    "true" if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE" else "false"
-                ),
+                "io.sourcenetwork.orbis.integration-features": "false",
             }
         if any(labels.get(key) != value for key, value in expected.items()):
             raise ValueError("runtime image labels do not match the selected sources")

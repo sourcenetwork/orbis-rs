@@ -245,6 +245,12 @@ jobs:
         context: .
         file: docker/Dockerfile
         target: native-diagnostic
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+          io.sourcenetwork.orbis.backend=native
+          io.sourcenetwork.orbis.curve=${{ matrix.crypto }}
+          io.sourcenetwork.orbis.integration-features=false
+          io.sourcenetwork.orbis.unsafe-testing=true
         push: true
         tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
         build-args: |
