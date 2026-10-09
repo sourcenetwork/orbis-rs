@@ -265,6 +265,10 @@ async fn bring_up_orbis_nodes(
         )
         .expect("write node vera.json fixture");
         command.env(
+            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
+            crate::bind_mount_user(&dir).expect("node fixture owner"),
+        );
+        command.env(
             format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
             dir.display().to_string(),
         );

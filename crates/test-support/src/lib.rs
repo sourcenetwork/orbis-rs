@@ -38,7 +38,7 @@ pub mod admin;
 #[cfg(unix)]
 mod container;
 #[cfg(unix)]
-pub use container::{ContainerError, ContainerExit, ContainerNode, NativeImage};
+pub use container::{bind_mount_user, ContainerError, ContainerExit, ContainerNode, NativeImage};
 
 #[cfg(all(unix, feature = "native"))]
 mod native_network;
