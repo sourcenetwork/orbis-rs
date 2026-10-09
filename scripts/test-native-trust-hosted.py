@@ -10,6 +10,7 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('driver', Path(__file__).with_name('native_trust_hosted.py'))
@@ -100,15 +101,45 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             (root / 'trust-build.log').write_text('ERROR: failed to solve: failed to fetch /private/token\n'
-                'connection reset by peer; ResourceExhausted; unknown revision private-ref\n')
+                'connection reset by peer; ResourceExhausted; unknown revision private-ref\n'
+                'additional privileges requested: fs.read=/private/context\n')
             with patch.object(driver, 'COMMANDS', [{'returncode': 1, 'timed_out': False},
                                                   {'returncode': -9, 'timed_out': True}]):
                 result = driver.build_diagnostics(root)
             self.assertEqual(result['command_status'], [-9, 1])
             self.assertEqual(result['command_timeouts'], 1)
-            self.assertEqual(result['failure_kinds'], ['docker_build', 'network', 'resources', 'source_revision'])
+            self.assertEqual(result['failure_kinds'], ['docker_build', 'filesystem_entitlement', 'network', 'resources', 'source_revision'])
             for forbidden in ('/private', 'token', 'private-ref', 'connection reset'):
                 self.assertNotIn(forbidden, json.dumps(result))
+
+    def test_bake_context_is_checked_before_compiling_defra(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            trust = root / 'trust'
+            trust.mkdir()
+            output = root / 'output'
+            output.mkdir()
+            args = SimpleNamespace(trust=str(trust), vera=str(root / 'vera'), defra=str(root / 'defra'),
+                                   trust_ref='a' * 40, image='ghcr.io/source/test:run', local_image=True)
+            def reject(command, cwd, env, log, timeout):
+                self.assertEqual(command[:3], ['docker', 'buildx', 'bake'])
+                self.assertIn('--check', command)
+                self.assertNotIn('--allow', command)
+                self.assertEqual(cwd, trust.resolve())
+                self.assertEqual(timeout, 300)
+                self.assertEqual(log.name, 'trust-bake-check.log')
+                graph = json.loads((output / 'bake.json').read_text())
+                self.assertEqual(graph['target']['gateway']['context'], str(cwd))
+                raise driver.Failure()
+            with patch.object(driver, 'pins', return_value={}), \
+                 patch.object(driver, 'capture', return_value='cargo 1.98.0 test'), \
+                 patch.object(driver, 'command', side_effect=reject) as command:
+                with self.assertRaises(driver.Failure):
+                    driver.build(root / 'orbis', args, output)
+                self.assertEqual(command.call_count, 1)
+            actual = driver.bake_command(output)
+            self.assertIn('--metadata-file', actual)
+            self.assertNotIn('--check', actual)
 
     def test_clears_inherited_overrides_without_changing_artifact_inputs(self):
         inherited = {'RUSTUP_TOOLCHAIN': 'nightly', 'RUSTC': '/secret/compiler',

@@ -138,6 +138,11 @@ def bake(trust, image, trust_ref, local=False):
         'gateway': gateway}}
 
 
+def bake_command(output, check=False):
+    args = ['docker', 'buildx', 'bake', '--progress', 'plain', '--file', str(output / 'bake.json')]
+    return args + (['--check'] if check else ['--metadata-file', str(output / 'buildkit.json')])
+
+
 def build(root, args, output):
     global STAGE
     STAGE = 10
@@ -150,6 +155,10 @@ def build(root, args, output):
     payload = output / 'payload'
     for directory in ('bin', 'lib', 'include'):
         (payload / directory).mkdir(parents=True, mode=0o700)
+    STAGE = 15
+    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image)))
+    # Keep the build context within Bake's working directory; no filesystem entitlement is needed.
+    command(bake_command(output, check=True), trust, env, output / 'trust-bake-check.log', 300)
     # This one private target is never shared with other source checkouts.
     target = output / 'defra-target'
     env['CARGO_TARGET_DIR'] = str(target)
@@ -160,9 +169,7 @@ def build(root, args, output):
     shutil.rmtree(target)  # Only this newly-created job-private target; downloaded dependencies remain cached.
     env.pop('CARGO_TARGET_DIR')
     STAGE = 30
-    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image)))
-    command(['docker', 'buildx', 'bake', '--file', str(output / 'bake.json'), '--metadata-file', str(output / 'buildkit.json')],
-            root, env, output / 'trust-build.log')
+    command(bake_command(output), trust, env, output / 'trust-build.log')
     STAGE = 31
     meta = json.loads((output / 'buildkit.json').read_text())
     if args.local_image:
@@ -501,10 +508,11 @@ def build_diagnostics(output):
         'toolchain': r'toolchain.*not installed|command not found|requires rustc|cannot find.*(?:clang|cc)',
         'checksum': r'checksum mismatch|checksum.*changed|verification failed',
         'docker_build': r'failed to solve|ERROR:',
+        'filesystem_entitlement': r'filesystem entitle|additional privileges|fs\.read|access[^\n]*outside',
     }
     kinds = set()
     exit_codes, rust_codes, locations = set(), set(), set()
-    for name in ('defra-build.log', 'trust-build.log', 'go-fixture-build.log'):
+    for name in ('defra-build.log', 'trust-bake-check.log', 'trust-build.log', 'go-fixture-build.log'):
         path = output / name
         if not path.is_file():
             continue
