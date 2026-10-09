@@ -121,7 +121,8 @@ impl ScheduledRefresh<'_> {
                 .join(format!("node-{index}/scheduled-pet-refresh.log"));
             let recovered = node.ready(&addresses[index], &log).await;
             assert_eq!(recovered.node_key, self.infos[index].node_key);
-            assert_eq!(recovered.p2p_address, self.infos[index].p2p_address);
+            assert_eq!(recovered.peer_id, self.infos[index].peer_id);
+            assert_eq!(recovered.public_address, self.infos[index].public_address);
             assert_eq!(recovered.managed_ring_count, 1);
         }
         let observed = tokio::time::timeout(Duration::from_secs(60), async {
