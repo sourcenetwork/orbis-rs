@@ -56,7 +56,10 @@ class Qualification(unittest.TestCase):
             (root / 'executable.log').write_text("thread panicked at tests/support/native_trust_gateway.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
             result = driver.safe_diagnostics(root)
             self.assertEqual(result, {'compiler_errors': 2, 'compiler_codes': ['E0308'],
-                                     'panics': 2, 'elapsed': 1, 'locations': [[1, 123]]})
+                                     'panics': 2, 'elapsed': 1, 'locations': [[1, 123]],
+                                     'build': {'disk_full': 0, 'killed': 0, 'exit_codes': [],
+                                               'rust_codes': [], 'go_locations': [],
+                                               'buildkit_metadata': 0, 'gateway_archive': 0}})
             encoded = json.dumps(result)
             for forbidden in ('secret', '/private', '/secret', '\x1b', 'rendered'):
                 self.assertNotIn(forbidden, encoded)
@@ -66,6 +69,30 @@ class Qualification(unittest.TestCase):
             with self.assertRaises(driver.Failure):
                 driver.revision(value)
         self.assertEqual(driver.revision('a' * 40), 'a' * 40)
+
+    def test_fixture_uses_read_only_test_sources_outside_production_context(self):
+        command = driver.fixture_build_command(Path('/pinned/trust'), Path('/private/payload'))
+        self.assertIn('type=bind,src=/pinned/trust,dst=/fixture,readonly', command)
+        self.assertIn('type=bind,src=/private/payload/bin,dst=/out', command)
+        self.assertEqual(command[command.index('trust-ring-builder:local') + 1:][:3], ['-C', '/fixture', 'test'])
+        self.assertEqual(command[command.index('--network') + 1], 'none')
+        self.assertIn('GOFLAGS=-mod=readonly -p=2', command)
+
+    def test_build_diagnostics_exclude_commands_assertions_and_private_paths(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'trust-build.log').write_text('private-key /private/keys error[E0308]\n'
+                '#42 1.01 cmd/trust-api/api_server.go:323:18: private assertion\n'
+                'no space left on device; signal: killed; exit code: 1\n'
+                'exit code: 999999; cmd/trust-api/api_server.go:0:0: invalid\n')
+            result = driver.build_diagnostics(root)
+            self.assertEqual(result['disk_full'], 1)
+            self.assertEqual(result['killed'], 1)
+            self.assertEqual(result['exit_codes'], [1])
+            self.assertEqual(result['rust_codes'], ['E0308'])
+            self.assertEqual(result['go_locations'], [['api_server.go', 323, 18]])
+            for forbidden in ('private-key', '/private', 'assertion', '999999'):
+                self.assertNotIn(forbidden, json.dumps(result))
 
     def test_clears_inherited_overrides_without_changing_artifact_inputs(self):
         inherited = {'RUSTUP_TOOLCHAIN': 'nightly', 'RUSTC': '/secret/compiler',

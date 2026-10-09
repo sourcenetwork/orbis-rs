@@ -159,8 +159,10 @@ def build(root, args, output):
     (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image)))
     command(['docker', 'buildx', 'bake', '--file', str(output / 'bake.json'), '--metadata-file', str(output / 'buildkit.json')],
             root, env, output / 'trust-build.log')
+    STAGE = 31
     meta = json.loads((output / 'buildkit.json').read_text())
     if args.local_image:
+        STAGE = 32
         image_ref = capture(['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'])
         if not re.fullmatch('sha256:[0-9a-f]{64}', image_ref):
             raise Failure()
@@ -171,6 +173,7 @@ def build(root, args, output):
         if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
             raise Failure()
         image_ref = args.image + '@' + digest
+    STAGE = 33
     container = capture(['docker', 'create', 'trust-ring-builder:local', 'true'])
     try:
         for src, dst in (('/runtime/app/trust-api', 'bin/trust-api'),
@@ -185,15 +188,11 @@ def build(root, args, output):
     go_version = capture(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'go', 'trust-ring-builder:local', 'version'])
     if go_version != builder_go_version(trust):
         raise Failure()
-    # Compile only the Go driver using the already-built production builder's
-    # toolchain, module downloads, verifier and Go cache. Never rebuild the gateway.
-    command(['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
-             '-e', 'GOFLAGS=-mod=readonly -p=2',
-             '-e', 'CGO_CFLAGS=-I/opt/vera/include', '-e', 'CGO_LDFLAGS=-L/opt/vera/lib',
-             '--mount', f'type=bind,src={payload / "bin"},dst=/out', '--entrypoint', 'go',
-             'trust-ring-builder:local', 'test', '-c', '-tags', 'vera_native', '-trimpath',
-             '-buildvcs=false', '-ldflags=-s -w', '-o', '/out/trust-api.test', './cmd/trust-api'],
+    # Production excludes test sources; mount the pinned checkout read-only.
+    command(fixture_build_command(trust, payload),
             trust, env, output / 'go-fixture-build.log')
+    if not (payload / 'bin/trust-api.test').is_file():
+        raise Failure()
     if pins(root, trust, vera, defra, args.trust_ref) != sources:
         raise Failure()
     env['LD_LIBRARY_PATH'] = str(payload / 'lib')
@@ -219,6 +218,16 @@ def build(root, args, output):
     (output / 'native-trust-artifacts.sha256').write_text(sha(archive) + '\n')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as result:
         result.write('trust_image=' + image_ref + '\n')
+
+
+def fixture_build_command(trust, payload):
+    return ['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
+            '-e', 'GOFLAGS=-mod=readonly -p=2',
+            '-e', 'CGO_CFLAGS=-I/opt/vera/include', '-e', 'CGO_LDFLAGS=-L/opt/vera/lib',
+            '--mount', f'type=bind,src={trust},dst=/fixture,readonly',
+            '--mount', f'type=bind,src={payload / "bin"},dst=/out', '--entrypoint', 'go',
+            'trust-ring-builder:local', '-C', '/fixture', 'test', '-c', '-tags', 'vera_native',
+            '-trimpath', '-buildvcs=false', '-ldflags=-s -w', '-o', '/out/trust-api.test', './cmd/trust-api']
 
 
 def restore(directory, destination, expected_orbis, expected_trust):
@@ -467,6 +476,33 @@ def safe_diagnostics(output):
                 locations.add((2 if '/runner.rs' in filename else 1, int(number)))
     result['compiler_codes'] = sorted(codes)[:16]
     result['locations'] = [list(value) for value in sorted(locations)[:16]]
+    result['build'] = build_diagnostics(output)
+    return result
+
+
+def build_diagnostics(output):
+    result = {'disk_full': 0, 'killed': 0, 'exit_codes': [], 'rust_codes': [], 'go_locations': [],
+              'buildkit_metadata': int((output / 'buildkit.json').is_file()),
+              'gateway_archive': int((output / 'payload' / IMAGE_ARCHIVE).is_file())}
+    exit_codes, rust_codes, locations = set(), set(), set()
+    for name in ('defra-build.log', 'trust-build.log', 'go-fixture-build.log'):
+        path = output / name
+        if not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 4 * 1024 * 1024))
+            content = stream.read().decode(errors='replace')
+        result['disk_full'] += content.lower().count('no space left on device')
+        result['killed'] += len(re.findall(r'\bsignal: killed\b|\bSIGKILL\b|\bOOMKilled\b', content))
+        exit_codes.update(int(code) for code in re.findall(r'exit code: ([0-9]{1,3})\b', content) if int(code) < 256)
+        rust_codes.update(re.findall(r'error\[(E[0-9]{4})\]', content))
+        for filename, row, column in re.findall(r'\bcmd/trust-api/([a-z_]+\.go):([0-9]{1,6}):([0-9]{1,6}):', content):
+            if 0 < int(row) < 1000000 and 0 < int(column) < 1000000:
+                locations.add((filename, int(row), int(column)))
+    result['exit_codes'] = sorted(exit_codes)[:16]
+    result['rust_codes'] = sorted(rust_codes)[:16]
+    result['go_locations'] = [list(value) for value in sorted(locations)[:16]]
     return result
 
 
