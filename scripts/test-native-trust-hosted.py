@@ -19,6 +19,24 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_native_sdk_and_docker_use_the_same_vera_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual((root / 'docker/NATIVE_VERA_REF').read_text().strip(), driver.VERA)
+        compose = (root / 'docker/docker-compose-native-integration-test.yml').read_text()
+        defaults = re.findall(r'\$\{VERA_REF:-([0-9a-f]{40})\}', compose)
+        self.assertEqual(defaults, [driver.VERA] * 4)
+        declarations = []
+        manifests = [root / 'Cargo.toml', *root.glob('bin/*/Cargo.toml'),
+                     *root.glob('crates/*/Cargo.toml')]
+        for manifest in manifests:
+            for line in manifest.read_text().splitlines():
+                if 'git = "https://github.com/sourcenetwork/vera.rs"' in line:
+                    match = re.search(r'rev = "([0-9a-f]{40})"', line)
+                    self.assertIsNotNone(match, str(manifest.relative_to(root)))
+                    declarations.append(match.group(1))
+        self.assertTrue(declarations)
+        self.assertEqual(set(declarations), {driver.VERA})
+
     def test_gateway_matrix_does_not_reintroduce_cosmos_with_include(self):
         workflow = Path(__file__).resolve().parents[1].joinpath('.github/workflows/rust.yml').read_text()
         image = workflow.split('  image:\n', 1)[1].split('  # Compile every test binary', 1)[0]

@@ -1,6 +1,6 @@
 # Opt-in hosted native Trust ring qualification
 
-The existing Rust workflow accepts `scope: full` (the default), `common`, or
+The existing Rust workflow accepts `scope: full` (the default), `common`,
 `native`, or `gateway`. Full retains the usual CI jobs; Common retains its existing focused
 checks. Gateway runs only the two normal Orbis image builds, matching native Vera
 image, one shared artifact build, and two focused curve jobs. It does not run the
@@ -93,7 +93,7 @@ After adopting a source-consistent dependency lockfile, dispatch native lifecycl
 qualification with:
 
 ```sh
-gh workflow run rust.yml --ref "$ORBIS_REVISION" -f scope=native
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=native
 ```
 
 Release qualification requires the results from that exact source and both
