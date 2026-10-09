@@ -25,6 +25,10 @@ mod native_pet;
 mod native_trust_gateway;
 
 #[cfg(feature = "bls12-381")]
+#[path = "support/defra_signer.rs"]
+mod defra_signer;
+
+#[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
 
@@ -754,32 +758,33 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     )
     .unwrap();
     #[cfg(feature = "bls12-381")]
-    let defra = {
-        let service_identity = std::sync::Arc::new(
-            defra_identity::RawIdentity::from_ed25519(
-                defra_crypto::Ed25519PrivateKey::from_bytes(
-                    &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
-                )
-                .unwrap(),
+    let service_identity = std::sync::Arc::new(
+        defra_identity::RawIdentity::from_ed25519(
+            defra_crypto::Ed25519PrivateKey::from_bytes(
+                &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
             )
             .unwrap(),
-        );
+        )
+        .unwrap(),
+    );
+    #[cfg(feature = "bls12-381")]
+    let defra = {
         assert_eq!(
             defra_identity::Identity::did(service_identity.as_ref())
                 .unwrap()
                 .to_string(),
             reader.did_uri
         );
-        std::sync::Arc::new(
+        std::sync::Arc::new(defra_signer::Signer::new(
             defra_orbis::OrbisClient::new(
                 format!("http://{}", addresses[1]),
                 derivation_id.clone(),
                 derived_key.to_bytes().unwrap(),
-                service_identity,
+                service_identity.clone(),
             )
             .await
             .unwrap(),
-        )
+        ))
     };
     #[cfg(feature = "bls12-381")]
     let documents =
@@ -898,6 +903,17 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     addresses[1] = nodes[1].endpoint();
     let recovered = nodes[1].ready(&addresses[1], &log).await;
     assert_eq!(recovered.node_key, infos[1].node_key);
+    #[cfg(feature = "bls12-381")]
+    defra.reconnect(
+        defra_orbis::OrbisClient::new(
+            format!("http://{}", addresses[1]),
+            derivation_id.clone(),
+            derived_key.to_bytes().unwrap(),
+            service_identity.clone(),
+        )
+        .await
+        .unwrap(),
+    );
     signing = SignServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[1]))
             .unwrap()
