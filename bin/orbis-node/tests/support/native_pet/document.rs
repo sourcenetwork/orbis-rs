@@ -53,6 +53,10 @@ impl<'a> PreChecks<'a> {
         }
     }
 
+    pub fn reconnect(&self, endpoint: Endpoint) -> Self {
+        Self::new(endpoint, self.reader, self.audit)
+    }
+
     pub async fn decrypt(&self, document: &Document, delivery: Delivery) {
         document
             .pre(self.endpoint.clone(), self.reader, delivery, self.audit)

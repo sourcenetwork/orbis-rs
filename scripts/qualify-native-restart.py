@@ -14,6 +14,10 @@ FIXTURE_FILES = {
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
     "bin/orbis-node/tests/native_startup.rs",
+    "bin/orbis-node/tests/support/native_pet.rs",
+    "bin/orbis-node/tests/support/native_pet/document.rs",
+    "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
+    "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
     "docker/docker-compose-native-integration-test.yml",
 }
 

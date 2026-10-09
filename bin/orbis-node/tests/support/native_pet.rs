@@ -94,7 +94,7 @@ pub async fn run(scenario: Scenario) {
         actor,
         base,
         mut nodes,
-        addresses,
+        mut addresses,
         infos,
         worker,
         policy,
@@ -364,6 +364,7 @@ pub async fn run(scenario: Scenario) {
     for index in 0..2 {
         let log = base.path().join(format!("node-{index}/pet-restart.log"));
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
@@ -381,6 +382,7 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     assert_eq!(restored.state, RingState::Active { keys });
     assert_eq!(restored.current_settings().peer_node_keys, target);
+    let surviving = surviving.reconnect(endpoint(&addresses[1]));
     for (document, delivery) in documents {
         surviving.decrypt(document, delivery).await;
     }

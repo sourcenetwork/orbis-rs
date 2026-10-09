@@ -691,6 +691,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         let directory = base.path().join(format!("node-{index}"));
         let log = directory.join("restart.log");
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
@@ -893,6 +894,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     nodes[1].stop().await;
     let log = base.path().join("node-1/policy-edit-restart.log");
     nodes[1] = Node::restart(cluster.project_name(), 1, &log);
+    addresses[1] = nodes[1].endpoint();
     let recovered = nodes[1].ready(&addresses[1], &log).await;
     assert_eq!(recovered.node_key, infos[1].node_key);
     signing = SignServiceClient::connect(
@@ -1364,6 +1366,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             .path()
             .join(format!("node-{index}/reshare-restart.log"));
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
     }

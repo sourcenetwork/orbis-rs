@@ -89,6 +89,7 @@ impl MemberReplacement<'_> {
                 .base
                 .join(format!("node-{index}/pet-replacement-restart.log"));
             *node = Node::restart(self.cluster.project_name(), index, &log);
+            addresses[index] = node.endpoint();
         }
         for index in 2..4 {
             let log = self
@@ -104,6 +105,7 @@ impl MemberReplacement<'_> {
             reshared[1..],
         );
         self.assert_certified_state(&finalized, documents).await;
+        let checks = checks.reconnect(endpoint(&addresses[3]));
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
