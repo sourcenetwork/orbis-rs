@@ -16,6 +16,11 @@ on:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
         default: 11630c1a0b3241bed2799a6c162c4c8e16a4e502
+      restart_curve:
+        description: Curve for focused restart qualification
+        type: choice
+        options: [both, bls12-381, jubjub]
+        default: both
 
 permissions:
   contents: read
@@ -454,7 +459,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crypto: [bls12-381, jubjub]
+        crypto: ${{ fromJSON(inputs.restart_curve == 'bls12-381' && '["bls12-381"]' || inputs.restart_curve == 'jubjub' && '["jubjub"]' || '["bls12-381", "jubjub"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

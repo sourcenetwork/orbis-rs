@@ -85,6 +85,16 @@ def qualify():
             for source, line, column in sorted(set(locations))[:8]:
                 print(json.dumps({"source": source, "line": int(line), "column": int(column)}), flush=True)
             errors = sorted(set(re.findall(r"error\[(E\d{4})\]", tail)))
+            fields = {"restart", "connections", "responses", "last_status", "endpoint_changed", "log_read",
+                      "password_loaded", "network_initializing", "bootstrap_started",
+                      "permission_denied", "runtime_panicked"}
+            for payload in re.findall(r"native_readiness=(\{[^\n]*\})", tail)[:8]:
+                diagnostics = json.loads(payload)
+                if set(diagnostics) == fields and all(
+                    value is None or isinstance(value, (bool, int))
+                    for value in diagnostics.values()
+                ):
+                    print(json.dumps({"readiness": diagnostics}), flush=True)
             print(json.dumps({"compiler_errors": errors[:8], "invalid_argument": "unexpected argument" in tail,
                               "permission_denied": "PermissionDenied" in tail,
                               "elapsed_deadline": "Elapsed(())" in tail}), flush=True)

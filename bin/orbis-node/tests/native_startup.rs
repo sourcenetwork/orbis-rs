@@ -191,7 +191,10 @@ impl Node {
         node
     }
 
-    async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
+    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+        let mut connections = 0_u32;
+        let mut responses = 0_u32;
+        let mut last_status = None;
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 assert!(
@@ -199,8 +202,11 @@ impl Node {
                     "node exited; logs retained privately"
                 );
                 if let Ok(mut client) = InfoServiceClient::connect(format!("http://{addr}")).await {
+                    connections += 1;
                     if let Ok(response) = client.get_node_info(GetNodeInfoRequest {}).await {
+                        responses += 1;
                         let info = response.into_inner();
+                        last_status = Some(info.status);
                         assert!(!matches!(
                             info.status(),
                             NodeStatus::ConnectingToChain
@@ -218,6 +224,36 @@ impl Node {
         .await
         .unwrap_or_else(|_| {
             self.0.retain_logs().unwrap();
+            use std::io::{Read, Seek, SeekFrom};
+            let mut tail = Vec::new();
+            let log_read = fs::File::open(&self.0.log).and_then(|mut file| {
+                let length = file.metadata()?.len();
+                file.seek(SeekFrom::Start(length.saturating_sub(65_536)))?;
+                file.take(65_536).read_to_end(&mut tail)
+            });
+            let text = String::from_utf8_lossy(&tail);
+            let endpoint = test_support::compose_discover_endpoint(
+                NATIVE_COMPOSE_FILE,
+                &self.0.project_name,
+                &self.0.service,
+                50051,
+            );
+            eprintln!(
+                "native_readiness={}",
+                serde_json::json!({
+                    "restart": log.file_name().is_some_and(|name| name == "restart.log"),
+                    "connections": connections,
+                    "responses": responses,
+                    "last_status": last_status,
+                    "endpoint_changed": endpoint.trim_start_matches("http://") != addr,
+                    "log_read": log_read.is_ok(),
+                    "password_loaded": text.contains("Password loaded from file"),
+                    "network_initializing": text.contains("Initializing network"),
+                    "bootstrap_started": text.contains("Bootstrap info service started"),
+                    "permission_denied": text.contains("Permission denied"),
+                    "runtime_panicked": text.contains("panicked at"),
+                })
+            );
             panic!("startup timed out; logs retained privately")
         })
     }
