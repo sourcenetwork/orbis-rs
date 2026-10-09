@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify the shared restart fixture against unchanged normal runtime images."""
+"""Qualify native lifecycle scenarios against unchanged normal runtime images."""
 import json
 import os
 import re
@@ -32,6 +32,17 @@ def qualify():
         raise ValueError("runtime source differs from the selected images")
     if Path("docker/NATIVE_VERA_REF").read_text().strip() != VERA:
         raise ValueError("Vera source does not match the runtime image")
+    suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
+    scenarios = {
+        "restart": ["native_startup_registers_and_preserves_identity_on_restart"],
+        "threshold": ["native_distributed_threshold_workflows", "native_pet_threshold_workflows",
+                      "native_pet_member_replacement", "native_pet_scheduled_refresh_after_restart"],
+    }
+    if suite not in scenarios:
+        raise ValueError("unsupported lifecycle suite")
+    selected = list(scenarios[suite])
+    if suite == "threshold" and curve == "bls12-381":
+        selected.append("native_defra_signing")
     env = dict(os.environ)
     for name in list(env):
         if name.startswith("ORBIS_LOCAL_STORAGE_KDF_"):
@@ -57,15 +68,17 @@ def qualify():
         if any(labels.get(key) != value for key, value in expected.items()):
             raise ValueError("runtime image labels do not match the selected sources")
         env[variable] = info["Id"]
-    output = Path(os.environ["RUNNER_TEMP"]) / ("native-restart-" + curve)
+    output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)
+    unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
+    if suite == "threshold":
+        unit_flags = ["--features", "native", "--lib", "native_network::tests::"]
     commands = [
-        ["cargo", "test", "--release", "--locked", "-p", "test-support",
-         "--no-default-features", "--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"],
+        ["cargo", "test", "--release", "--locked", "-p", "test-support", "--no-default-features", *unit_flags],
         ["cargo", "nextest", "run", "--release", "--locked", "--profile", "ci",
          "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
          "--features", "integration-test-native,redb,iroh," + curve,
-         "--test", "native_startup", "-E", "test(=native_startup_registers_and_preserves_identity_on_restart)"],
+         "--test", "native_startup", "-E", " | ".join("test(=" + name + ")" for name in selected)],
     ]
     codes = []
     for index, command in enumerate(commands):

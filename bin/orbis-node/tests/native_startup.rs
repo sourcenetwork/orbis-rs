@@ -408,10 +408,16 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("password"), "native-dkg-test").unwrap();
     fs::copy(base.join("node-0/vera.json"), directory.join("vera.json")).unwrap();
-    let extra_env = [(
-        "ORBIS_NATIVE_NODE4_DIR".to_string(),
-        directory.display().to_string(),
-    )];
+    let extra_env = [
+        (
+            "ORBIS_NATIVE_NODE4_DIR".to_string(),
+            directory.display().to_string(),
+        ),
+        (
+            "ORBIS_NATIVE_NODE4_USER".to_string(),
+            test_support::bind_mount_user(&directory).unwrap(),
+        ),
+    ];
     cluster.build_service("node4", &extra_env);
     cluster.bring_up_services(&["node4"], &extra_env);
     let endpoint = cluster
@@ -488,7 +494,6 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -496,7 +501,6 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -504,7 +508,6 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
@@ -549,14 +552,12 @@ async fn native_dkg_and_pre() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_member_replacement() {
     native_pet::run(native_pet::Scenario::MemberReplacement).await;
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;

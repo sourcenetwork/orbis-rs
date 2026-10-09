@@ -600,33 +600,41 @@ pub fn compose_kill(compose_file: &str, project_name: &str, service: &str, signa
     }
 }
 
-/// `None` while the service's container is running; `Some(exit_code)` once
-/// it has exited (crashed, been killed, or exited cleanly) — equivalent to
-/// the legacy `ContainerNode::try_wait`'s "did it crash" check, reimplemented
-/// against a named Compose service's container.
+#[derive(serde::Deserialize)]
+struct DockerState {
+    #[serde(rename = "Running")]
+    running: bool,
+    #[serde(rename = "ExitCode")]
+    exit_code: u8,
+}
+
+fn decode_exit_code(data: &[u8]) -> Result<Option<i32>, serde_json::Error> {
+    let state: DockerState = serde_json::from_slice(data)?;
+    Ok((!state.running).then_some(i32::from(state.exit_code)))
+}
+
+/// Observe the running state or exit status of one existing Compose service.
 pub fn compose_exit_code(compose_file: &str, project_name: &str, service: &str) -> Option<i32> {
     let output = compose_command(compose_file, project_name)
         .args(["ps", "--all", "--quiet", service])
         .output()
         .expect("docker compose ps failed");
-    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if id.is_empty() {
-        return None; // Container doesn't exist yet.
-    }
+    assert!(output.status.success(), "docker compose ps failed");
+    let id = std::str::from_utf8(&output.stdout)
+        .expect("invalid container identifier")
+        .trim();
+    assert!(!id.is_empty(), "service container is missing");
+    assert_eq!(
+        id.split_whitespace().count(),
+        1,
+        "ambiguous service container"
+    );
     let inspect = std::process::Command::new("docker")
-        .args([
-            "inspect",
-            "--format",
-            "{{.State.Running}} {{.State.ExitCode}}",
-            &id,
-        ])
+        .args(["inspect", "--format", "{{json .State}}", id])
         .output()
         .expect("docker inspect failed");
-    let text = String::from_utf8_lossy(&inspect.stdout);
-    let mut parts = text.split_whitespace();
-    let running: bool = parts.next().unwrap_or("true").parse().unwrap_or(true);
-    let exit_code: i32 = parts.next().unwrap_or("0").parse().unwrap_or(0);
-    (!running).then_some(exit_code)
+    assert!(inspect.status.success(), "docker inspect failed");
+    decode_exit_code(&inspect.stdout).expect("invalid container state")
 }
 
 /// Copy a service's full Compose logs to a local file, overwriting it —
@@ -766,4 +774,42 @@ fn native_vera_ref() -> String {
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_exit_code;
+
+    #[test]
+    fn container_state_preserves_running_and_failed_exit() {
+        assert_eq!(
+            decode_exit_code(br#"{"Running":true,"ExitCode":0}"#).unwrap(),
+            None
+        );
+        assert_eq!(
+            decode_exit_code(br#"{"Running":false,"ExitCode":0}"#).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            decode_exit_code(br#"{"Running":false,"ExitCode":137}"#).unwrap(),
+            Some(137)
+        );
+    }
+
+    #[test]
+    fn malformed_container_state_cannot_report_success() {
+        for state in [
+            "",
+            "{}",
+            "null",
+            r#"{"Running":false}"#,
+            r#"{"Running":false,"ExitCode":"0"}"#,
+            r#"{"Running":"false","ExitCode":0}"#,
+            r#"{"Running":false,"ExitCode":-1}"#,
+            r#"{"Running":false,"ExitCode":256}"#,
+            r#"{"Running":false,"ExitCode":0} {}"#,
+        ] {
+            assert!(decode_exit_code(state.as_bytes()).is_err());
+        }
+    }
 }

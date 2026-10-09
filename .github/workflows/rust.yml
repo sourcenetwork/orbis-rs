@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart]
+        options: [full, common, native, gateway, restart, threshold]
         default: full
         required: true
       trust_revision:
@@ -189,7 +189,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -367,7 +367,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -449,8 +449,8 @@ jobs:
             -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 
   native-restart:
-    name: Native restart (${{ matrix.crypto }})
-    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'restart'
+    name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -480,9 +480,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Qualify private journal ownership and restart
+      - name: Qualify native lifecycle
         env:
           NATIVE_RESTART_CURVE: ${{ matrix.crypto }}
+          NATIVE_RESTART_SUITE: ${{ inputs.scope }}
         run: python3 scripts/qualify-native-restart.py
 
   native-trust-artifacts:
