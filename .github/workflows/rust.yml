@@ -101,6 +101,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+    - name: Check native qualification source guards
+      run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-qualification.py
     - name: Update Rust stable
       run: rustup update stable
     - name: Cache cargo registry / index

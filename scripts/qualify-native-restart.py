@@ -18,6 +18,8 @@ DIAGNOSTIC_DIGESTS = {
 }
 FIXTURE_FILES = {
     ".github/workflows/rust.yml", "scripts/qualify-native-restart.py",
+    ".github/actions/docker-builder/action.yml", ".github/workflows/upgrade-compatibility.yml",
+    "scripts/test-native-qualification.py",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
     "bin/orbis-node/tests/native_startup.rs",
@@ -28,8 +30,15 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_pet/document.rs",
     "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
     "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
+    "bin/orbis-node/tests/support/native_trust_gateway/runner.rs",
+    "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
     "docker/docker-compose-native-integration-test.yml",
 }
+
+
+def verify_fixture_changes(changed):
+    if set(changed) - FIXTURE_FILES:
+        raise ValueError("runtime source differs from the selected images")
 
 
 def capture(command):
@@ -88,8 +97,7 @@ def qualify():
         raise ValueError("unsupported curve")
     subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", RUNTIME], check=True)
     changed = set(capture(["git", "diff", "--name-only", RUNTIME, "HEAD"]).splitlines())
-    if changed - FIXTURE_FILES:
-        raise ValueError("runtime source differs from the selected images")
+    verify_fixture_changes(changed)
     if Path("docker/NATIVE_VERA_REF").read_text().strip() != VERA:
         raise ValueError("Vera source does not match the runtime image")
     suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
