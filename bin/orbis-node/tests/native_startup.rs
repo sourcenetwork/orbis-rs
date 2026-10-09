@@ -1341,9 +1341,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut started = false;
-            for (index, node) in nodes.iter().take(nodes.len() - 1).enumerate() {
+            for node in nodes.iter().take(nodes.len() - 1) {
                 node.0.refresh_logs().await.unwrap();
-                if tokio::fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                if tokio::fs::read_to_string(&node.0.log)
                     .await
                     .unwrap()
                     .contains("forwarding pending reshare to canonical next-committee leader")
