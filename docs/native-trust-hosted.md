@@ -1,16 +1,17 @@
 # Opt-in hosted native Trust ring qualification
 
-The existing Rust workflow accepts `scope: full` (the default), `common`, or
-`gateway`. Full retains the usual CI jobs; Common retains its existing focused
+The existing Rust workflow accepts `scope: full` (the default), `common`,
+`native`, or `gateway`. Full retains the usual CI jobs; Common retains its existing focused
 checks. Gateway runs only the two normal Orbis image builds, matching native Vera
 image, one shared artifact build, and two focused curve jobs. It does not run the
 legacy suites or build/use the unsafe diagnostic image.
 
 The intended Trust fixture revision is
 `11630c1a0b3241bed2799a6c162c4c8e16a4e502`. The immutable manual input is checked
-against its checkout, native Dockerfile pin and Defra workflow pin. Vera stays at
-`1dab0c4562da551b1a7f00fcea643b914769891c`; Defra stays at
-`88e148a7387e00d9dd6fbf6ab78701d6e2bef452`. No Cosmos/Go references are rewritten.
+against its checkout, native Dockerfile pin and Defra workflow pin. The native Vera and Defra revisions are declared in
+`scripts/native_trust_hosted.py`; the Vera runtime pin is also in
+`docker/NATIVE_VERA_REF`. These must match the native SDK and fixture dependency
+revisions when selecting a compatible Trust build.
 
 The artifact job builds Defra's normal native CLI once, stages it, and removes
 only its own new target directory. A single BuildKit bake graph uses the real
@@ -79,3 +80,21 @@ LD_LIBRARY_PATH="$VERIFIER_LIB_DIR" \
 The hosted driver performs the same selection for both curves and separately
 checks the unchanged production container as UID/GID 65532. It stages and hashes
 these artifacts first; no fresh or ad hoc Vera runtime replaces the selected image.
+
+
+The `native` scope selects the existing native backend checks and Compose-backed
+lifecycle suite for both curves, with the normal native Vera and Orbis images.
+It also builds the established diagnostic image for the fault-report scenario.
+The lifecycle suite includes restart, signing, encryption, PET member replacement
+and scheduled refresh. The Trust gateway fixture has its separate `gateway`
+scope and requires a matching immutable Trust revision.
+
+After adopting a source-consistent dependency lockfile, dispatch native lifecycle
+qualification with:
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=native
+```
+
+Release qualification requires the results from that exact source and both
+curves; changing these pins does not establish a passing deployment.

@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, gateway]
+        options: [full, common, native, gateway]
         default: full
         required: true
       trust_revision:
@@ -139,7 +139,7 @@ jobs:
       run: cargo clippy --all-targets ${{ matrix.cargo_flags }} -- -D warnings
 
   native:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
     name: Native backend (${{ matrix.crypto }})
     runs-on: ubuntu-latest
     env:
@@ -191,7 +191,7 @@ jobs:
       fail-fast: false
       matrix:
         crypto: [bls12-381, jubjub]
-        backend: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' && fromJSON('["native"]') || fromJSON('["cosmos", "native"]') }}
+        backend: ${{ github.event_name == 'workflow_dispatch' && (inputs.scope == 'gateway' || inputs.scope == 'native') && fromJSON('["native"]') || fromJSON('["cosmos", "native"]') }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -390,7 +390,7 @@ jobs:
           cache-to: type=gha,scope=native-vera,mode=max
 
   native-lifecycle:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
+    if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
     name: Native lifecycle (${{ matrix.crypto }})
     needs: [image, native-vera-image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\

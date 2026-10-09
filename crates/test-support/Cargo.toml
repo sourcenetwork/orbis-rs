@@ -20,9 +20,9 @@ tokio = { workspace = true }
 
 bs58 = { version = "0.5", optional = true }
 commonware-codec = { version = "2026.9.0", optional = true }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "892cf0582e9d9395574cd5e8900988cb4a6ebd21", optional = true }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "892cf0582e9d9395574cd5e8900988cb4a6ebd21", optional = true }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "892cf0582e9d9395574cd5e8900988cb4a6ebd21", optional = true }
 
 [features]
 default = ["cosmos"]
