@@ -1,3 +1,6 @@
+#[path = "go_diagnostics.rs"]
+mod go_diagnostics;
+
 use super::private_file;
 use std::{
     io::Read as _,
@@ -57,16 +60,22 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .await
         .expect("Go ring contract exceeded the existing gateway test deadline")
         .expect("wait for Go ring contract");
-    assert!(
-        status.success(),
-        "Go ring contract failed; details retained privately"
-    );
     let mut output = String::new();
     std::fs::File::open(log)
         .unwrap()
         .take(4 * 1024 * 1024)
         .read_to_string(&mut output)
         .unwrap();
+    if !status.success() {
+        eprintln!(
+            "native Trust Go failure {}",
+            go_diagnostics::summarize(&output, status.code())
+        );
+    }
+    assert!(
+        status.success(),
+        "Go ring contract failed; details retained privately"
+    );
     assert_eq!(
         output
             .lines()
