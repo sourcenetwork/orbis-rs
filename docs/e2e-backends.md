@@ -52,3 +52,18 @@ lifecycle for the separate Go Trust service, including executable and container
 packaging. It does not invoke every existing integration test. The shared DKG
 extraction has passed source review and formatting checks; execution against
 both backend/curve combinations remains a qualification gate.
+
+### Trust-owned ring qualification
+
+The hosted driver accepts `build --local-image` when the workflow runs in Trust's
+repository. BuildKit loads the unchanged gateway image locally, and the transfer
+archive includes that image with its SHA-256 alongside the normal executable,
+verifier and compiled Go fixture. Neither the gateway image nor its build cache
+is published. Restore rejects missing, extra or changed image evidence and checks
+the loaded image's immutable ID before executing either fixture mode.
+
+The run phase also accepts already-loaded immutable image IDs for the native
+Orbis and Vera images. Registry references retain the existing pull path. Source,
+curve, backend, production-feature labels and gateway/verifier binary equality
+remain required in both paths. The existing two-mode test and deadlines are
+unchanged; transport preparation alone does not establish a passed DKG run.

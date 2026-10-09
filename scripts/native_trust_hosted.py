@@ -21,6 +21,7 @@ MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true produc
 STAGE = 0
 COMPLETED = 0
 COMMANDS = []
+IMAGE_ARCHIVE = 'gateway-image.tar'
 FILES = ('bin/defra', 'bin/trust-api', 'bin/trust-api.test', 'lib/libvera_verifier.so', 'include/vera_verifier.h')
 
 
@@ -107,17 +108,22 @@ def pins(root, trust, vera, defra, trust_ref):
     return sources
 
 
-def bake(trust, image, trust_ref):
+def bake(trust, image, trust_ref, local=False):
     # Both targets share the exact context, Dockerfile and args in one BuildKit
     # graph. The final target remains the real distroless production stage.
     common = {'context': str(trust), 'dockerfile': 'Dockerfile.native',
               'args': {'VERA_REVISION': VERA, 'VERSION': 'native-trust-rings', 'REVISION': trust_ref},
               'cache-from': [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache'],
               'platforms': ['linux/amd64']}
+    gateway = {**common, 'tags': [image], 'output': ['type=docker' if local else 'type=image,push=true']}
+    if local:
+        common.pop('cache-from')
+        gateway.pop('cache-from')
+    else:
+        gateway['cache-to'] = [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache,mode=max']
     return {'group': {'default': {'targets': ['builder', 'gateway']}}, 'target': {
         'builder': {**common, 'target': 'builder', 'tags': ['trust-ring-builder:local'], 'output': ['type=docker']},
-        'gateway': {**common, 'tags': [image], 'output': ['type=image,push=true'],
-                    'cache-to': [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache,mode=max']}}}
+        'gateway': gateway}}
 
 
 def build(root, args, output):
@@ -142,14 +148,21 @@ def build(root, args, output):
     shutil.rmtree(target)  # Only this newly-created job-private target; downloaded dependencies remain cached.
     env.pop('CARGO_TARGET_DIR')
     STAGE = 30
-    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref)))
+    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image)))
     command(['docker', 'buildx', 'bake', '--file', str(output / 'bake.json'), '--metadata-file', str(output / 'buildkit.json')],
             root, env, output / 'trust-build.log')
     meta = json.loads((output / 'buildkit.json').read_text())
-    digest = meta['gateway']['containerimage.digest']
-    if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
-        raise Failure()
-    image_ref = args.image + '@' + digest
+    if args.local_image:
+        image_ref = capture(['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'])
+        if not re.fullmatch('sha256:[0-9a-f]{64}', image_ref):
+            raise Failure()
+        command(['docker', 'image', 'save', '--output', str(payload / IMAGE_ARCHIVE), image_ref],
+                root, env, output / 'gateway-save.log')
+    else:
+        digest = meta['gateway']['containerimage.digest']
+        if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
+            raise Failure()
+        image_ref = args.image + '@' + digest
     container = capture(['docker', 'create', 'trust-ring-builder:local', 'true'])
     try:
         for src, dst in (('/runtime/app/trust-api', 'bin/trust-api'),
@@ -188,10 +201,12 @@ def build(root, args, output):
                 'source_files_sha256': {'trust/Dockerfile.native': sha(trust / 'Dockerfile.native'),
                     'trust/go.mod': sha(trust / 'go.mod'), 'trust/go.sum': sha(trust / 'go.sum'),
                     'orbis/Cargo.lock': sha(root / 'Cargo.lock'), 'defra/Cargo.lock': sha(defra / 'Cargo.lock')}}
+    if args.local_image:
+        manifest['image_archive_sha256'] = sha(payload / IMAGE_ARCHIVE)
     (payload / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     archive = output / 'native-trust-artifacts.tar'
     with tarfile.open(archive, 'w') as tar:
-        for name in (*FILES, 'manifest.json'):
+        for name in (*FILES, 'manifest.json', *((IMAGE_ARCHIVE,) if args.local_image else ())):
             tar.add(payload / name, arcname=name, recursive=False)
     (output / 'native-trust-artifacts.sha256').write_text(sha(archive) + '\n')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as result:
@@ -204,7 +219,11 @@ def restore(directory, destination, expected_orbis, expected_trust):
         raise Failure()
     with tarfile.open(archive) as tar:
         members = tar.getmembers()
-        if set(m.name for m in members) != {*FILES, 'manifest.json'} or len(members) != len(FILES) + 1:
+        names = [m.name for m in members]
+        expected = {*FILES, 'manifest.json'}
+        if IMAGE_ARCHIVE in names:
+            expected.add(IMAGE_ARCHIVE)
+        if set(names) != expected or len(names) != len(expected):
             raise Failure()
         if any(not m.isfile() for m in members):
             raise Failure()
@@ -225,7 +244,24 @@ def restore(directory, destination, expected_orbis, expected_trust):
         raise Failure()
     if any(sha(destination / name) != value for name, value in manifest['binary_sha256'].items()):
         raise Failure()
+    local_image = (destination / IMAGE_ARCHIVE).is_file()
+    if local_image != ('image_archive_sha256' in manifest):
+        raise Failure()
+    if local_image and (not re.fullmatch('sha256:[0-9a-f]{64}', manifest['trust_image']) or
+                        sha(destination / IMAGE_ARCHIVE) != manifest['image_archive_sha256']):
+        raise Failure()
     return manifest
+
+
+def image_id(root, env, image, log):
+    if not re.fullmatch('sha256:[0-9a-f]{64}', image):
+        command(['docker', 'pull', image], root, env, log)
+    identifier = capture(['docker', 'image', 'inspect', image, '--format', '{{.Id}}'])
+    if not re.fullmatch('sha256:[0-9a-f]{64}', identifier):
+        raise Failure()
+    if image.startswith('sha256:') and identifier != image:
+        raise Failure()
+    return identifier
 
 
 def test_binary(path, target, curve):
@@ -299,12 +335,11 @@ def run(root, args, output):
     STAGE = 80
     images = {}
     for name in ('ORBIS_NATIVE_IMAGE', 'ORBIS_NATIVE_VERA_IMAGE'):
-        command(['docker', 'pull', env[name]], root, env, output / (name + '.log'))
-        images[name] = capture(['docker', 'image', 'inspect', env[name], '--format', '{{.Id}}'])
-        if not re.fullmatch('sha256:[0-9a-f]{64}', images[name]):
-            raise Failure()
-    command(['docker', 'pull', manifest['trust_image']], root, env, output / 'gateway-pull.log')
-    gateway_image = capture(['docker', 'image', 'inspect', manifest['trust_image'], '--format', '{{.Id}}'])
+        images[name] = image_id(root, env, env[name], output / (name + '.log'))
+    if 'image_archive_sha256' in manifest:
+        command(['docker', 'image', 'load', '--input', str(artifacts / IMAGE_ARCHIVE)],
+                root, env, output / 'gateway-load.log')
+    gateway_image = image_id(root, env, manifest['trust_image'], output / 'gateway-pull.log')
     info = json.loads(capture(['docker', 'image', 'inspect', gateway_image]))[0]['Config']
     if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
         raise Failure()
@@ -434,6 +469,7 @@ def main():
     parser.add_argument('--output', type=Path)
     for name in ('trust', 'vera', 'defra', 'image', 'artifacts'):
         parser.add_argument('--' + name)
+    parser.add_argument('--local-image', action='store_true', help='Transfer the gateway image privately without publishing it')
     parser.add_argument('--curve', choices=('bls12-381', 'jubjub'))
     args = parser.parse_args()
     os.umask(0o077)

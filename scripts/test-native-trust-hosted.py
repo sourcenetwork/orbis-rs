@@ -120,6 +120,31 @@ class Qualification(unittest.TestCase):
                 with self.assertRaises(driver.Failure):
                     driver.outcome(path)
 
+    def test_local_bake_never_publishes_or_reads_registry_cache(self):
+        config = driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40, local=True)
+        for target in config['target'].values():
+            self.assertEqual(target['output'], ['type=docker'])
+            self.assertNotIn('cache-from', target)
+            self.assertNotIn('cache-to', target)
+        self.assertNotIn('push=true', json.dumps(config))
+
+    def test_local_image_requires_exact_loaded_identity_without_pull(self):
+        image = 'sha256:' + 'a' * 64
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value=image):
+            self.assertEqual(driver.image_id(Path('/root'), {}, image, Path('/log')), image)
+            execute.assert_not_called()
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value='sha256:' + 'b' * 64):
+            with self.assertRaises(driver.Failure):
+                driver.image_id(Path('/root'), {}, image, Path('/log'))
+            execute.assert_not_called()
+
+    def test_registry_image_is_pulled_and_resolved_to_immutable_identity(self):
+        image = 'ghcr.io/source/test@sha256:' + 'b' * 64
+        identifier = 'sha256:' + 'a' * 64
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value=identifier):
+            self.assertEqual(driver.image_id(Path('/root'), {}, image, Path('/log')), identifier)
+            self.assertEqual(execute.call_args.args[0], ['docker', 'pull', image])
+
     def test_rejects_transfer_path_escape_and_wrong_source(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -136,10 +161,12 @@ class Qualification(unittest.TestCase):
                             ('orbis', 'a' * 40), ('trust', 'b' * 40), ('vera', driver.VERA), ('defra', driver.DEFRA))}}
             (payload / 'manifest.json').write_text(json.dumps(manifest))
             archive = root / 'native-trust-artifacts.tar'
-            def pack(extra=False):
+            def pack(extra=False, local=False):
                 with tarfile.open(archive, 'w') as tar:
                     for name in (*driver.FILES, 'manifest.json'):
                         tar.add(payload / name, arcname=name)
+                    if local:
+                        tar.add(payload / driver.IMAGE_ARCHIVE, arcname=driver.IMAGE_ARCHIVE)
                     if extra:
                         tar.add(payload / 'manifest.json', arcname='../private-secret')
                 (root / 'native-trust-artifacts.sha256').write_text(driver.sha(archive) + '\n')
@@ -151,6 +178,27 @@ class Qualification(unittest.TestCase):
             with self.assertRaises(driver.Failure):
                 driver.restore(root, root / 'escape', 'a' * 40, 'b' * 40)
             self.assertFalse((root / 'private-secret').exists())
+            (payload / driver.IMAGE_ARCHIVE).write_bytes(b'private-image-fixture')
+            manifest['trust_image'] = 'sha256:' + 'c' * 64
+            manifest['image_archive_sha256'] = driver.sha(payload / driver.IMAGE_ARCHIVE)
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            restored = driver.restore(root, root / 'local', 'a' * 40, 'b' * 40)
+            self.assertEqual(restored['trust_image'], manifest['trust_image'])
+            pack()
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'missing-image', 'a' * 40, 'b' * 40)
+            pack(local=True)
+            manifest['image_archive_sha256'] = 'd' * 64
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'changed-image', 'a' * 40, 'b' * 40)
+            del manifest['image_archive_sha256']
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'unrecorded-image', 'a' * 40, 'b' * 40)
 
     def test_failure_console_never_copies_raw_messages_or_paths(self):
         output = io.StringIO()
