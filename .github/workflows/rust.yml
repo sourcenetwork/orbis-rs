@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault]
+        options: [full, common, native, gateway, restart, threshold, fault, soak]
         default: full
         required: true
       trust_revision:
@@ -205,7 +205,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -389,7 +389,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -472,7 +472,7 @@ jobs:
 
   native-restart:
     name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
-    if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold' || inputs.scope == 'fault')
+    if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold' || inputs.scope == 'fault' || inputs.scope == 'soak')
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
