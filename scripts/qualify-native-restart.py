@@ -90,6 +90,7 @@ def qualify():
     suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
     scenarios = {
         "restart": ["native_startup_registers_and_preserves_identity_on_restart"],
+        "fault": ["native_pet_fault_reports"],
         "threshold": ["native_distributed_threshold_workflows", "native_pet_threshold_workflows",
                       "native_pet_member_replacement", "native_pet_scheduled_refresh_after_restart"],
     }
@@ -113,17 +114,23 @@ def qualify():
         "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration:{RUNTIME}-native-{curve}",
         "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native:{RUNTIME}",
     }
+    if suite == "fault":
+        images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
+            f"{repository}/node-integration:{RUNTIME}-native-diagnostic-{curve}"
+        )
     for variable, image in images.items():
         subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
         labels = info["Config"]["Labels"]
         expected = {"org.opencontainers.image.revision": VERA}
-        if variable == "ORBIS_NATIVE_IMAGE":
+        if variable in ("ORBIS_NATIVE_IMAGE", "ORBIS_NATIVE_DIAGNOSTIC_IMAGE"):
             expected = {
                 "org.opencontainers.image.revision": RUNTIME,
                 "io.sourcenetwork.orbis.backend": "native",
                 "io.sourcenetwork.orbis.curve": curve,
-                "io.sourcenetwork.orbis.integration-features": "false",
+                "io.sourcenetwork.orbis.integration-features": (
+                    "true" if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE" else "false"
+                ),
             }
         if any(labels.get(key) != value for key, value in expected.items()):
             raise ValueError("runtime image labels do not match the selected sources")

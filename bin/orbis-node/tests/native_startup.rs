@@ -575,7 +575,6 @@ async fn native_trust_gateway_ring_dkg() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: the Compose harness inspects a container-owned native worker journal through a host bind mount, which is not portable; re-enable after fault-report verification uses a harness API"]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
