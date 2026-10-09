@@ -2,6 +2,7 @@
 """Qualify the shared restart fixture against unchanged normal runtime images."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -61,7 +62,7 @@ def qualify():
         ["cargo", "test", "--release", "--locked", "-p", "test-support",
          "--no-default-features", "--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"],
         ["cargo", "nextest", "run", "--release", "--locked", "--profile", "ci",
-         "--no-retries", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
+         "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
          "--features", "integration-test-native,redb,iroh," + curve,
          "--test", "native_startup", "-E", "test(=native_startup_registers_and_preserves_identity_on_restart)"],
     ]
@@ -74,6 +75,19 @@ def qualify():
         codes.append(result.returncode)
         print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode}), flush=True)
         if result.returncode:
+            with log.open("rb") as stream:
+                stream.seek(max(0, log.stat().st_size - 65536))
+                tail = stream.read().decode("utf-8", errors="replace")
+            locations = re.findall(
+                r"(?:bin/orbis-node/tests/)?(native_startup\.rs|support/native_workflow\.rs|support/native_pet\.rs):(\d+):(\d+)",
+                tail,
+            )
+            for source, line, column in sorted(set(locations))[:8]:
+                print(json.dumps({"source": source, "line": int(line), "column": int(column)}), flush=True)
+            errors = sorted(set(re.findall(r"error\[(E\d{4})\]", tail)))
+            print(json.dumps({"compiler_errors": errors[:8], "invalid_argument": "unexpected argument" in tail,
+                              "permission_denied": "PermissionDenied" in tail,
+                              "elapsed_deadline": "Elapsed(())" in tail}), flush=True)
             raise RuntimeError("focused restart qualification failed; private log retained on runner")
     print(json.dumps({"curve": curve, "runtime": RUNTIME, "vera": VERA, "exit_codes": codes}), flush=True)
 
