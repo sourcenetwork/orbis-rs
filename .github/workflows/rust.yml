@@ -22,6 +22,18 @@ on:
         options: [both, bls12-381, jubjub]
         default: both
 
+      threshold_case:
+        description: Case for focused threshold qualification
+        type: choice
+        options:
+          - all
+          - native_distributed_threshold_workflows
+          - native_pet_threshold_workflows
+          - native_pet_member_replacement
+          - native_pet_scheduled_refresh_after_restart
+          - native_defra_signing
+        default: all
+
 permissions:
   contents: read
   packages: write   # `image` job pushes the integration image to GHCR
@@ -484,7 +496,16 @@ jobs:
         env:
           NATIVE_RESTART_CURVE: ${{ matrix.crypto }}
           NATIVE_RESTART_SUITE: ${{ inputs.scope }}
+          NATIVE_LIFECYCLE_CASE: ${{ inputs.threshold_case }}
         run: python3 scripts/qualify-native-restart.py
+      - name: Retain bounded lifecycle results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ inputs.scope }}-${{ matrix.crypto }}-results
+          path: ${{ runner.temp }}/native-${{ inputs.scope }}-${{ matrix.crypto }}/results.json
+          retention-days: 3
+          if-no-files-found: warn
 
   native-trust-artifacts:
     name: Build native Trust ring artifacts once
