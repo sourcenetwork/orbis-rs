@@ -108,6 +108,14 @@ def pins(root, trust, vera, defra, trust_ref):
     return sources
 
 
+def builder_go_version(trust):
+    versions = re.findall(r'^FROM golang:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64} AS builder$',
+                          (trust / 'Dockerfile.native').read_text(), re.M)
+    if len(versions) != 1:
+        raise Failure()
+    return 'go version go' + versions[0] + ' linux/amd64'
+
+
 def bake(trust, image, trust_ref, local=False):
     # Both targets share the exact context, Dockerfile and args in one BuildKit
     # graph. The final target remains the real distroless production stage.
@@ -175,7 +183,7 @@ def build(root, args, output):
         raise Failure()
     STAGE = 40
     go_version = capture(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'go', 'trust-ring-builder:local', 'version'])
-    if go_version != 'go version go1.27.1 linux/amd64':
+    if go_version != builder_go_version(trust):
         raise Failure()
     # Compile only the Go driver using the already-built production builder's
     # toolchain, module downloads, verifier and Go cache. Never rebuild the gateway.

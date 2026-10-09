@@ -120,6 +120,22 @@ class Qualification(unittest.TestCase):
                 with self.assertRaises(driver.Failure):
                     driver.outcome(path)
 
+    def test_go_version_is_bound_to_one_digest_pinned_builder(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / 'Dockerfile.native'
+            for version in ('1.27.1', '1.27.2'):
+                line = 'FROM golang:' + version + '-bookworm@sha256:' + 'a' * 64 + ' AS builder\n'
+                path.write_text(line)
+                self.assertEqual(driver.builder_go_version(root), 'go version go' + version + ' linux/amd64')
+                path.write_text(line + line)
+                with self.assertRaises(driver.Failure):
+                    driver.builder_go_version(root)
+            for content in ('FROM golang:latest AS builder\n', 'FROM golang:1.27.2-bookworm AS builder\n'):
+                path.write_text(content)
+                with self.assertRaises(driver.Failure):
+                    driver.builder_go_version(root)
+
     def test_local_bake_never_publishes_or_reads_registry_cache(self):
         config = driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40, local=True)
         for target in config['target'].values():
