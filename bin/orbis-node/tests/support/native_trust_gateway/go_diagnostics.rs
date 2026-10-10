@@ -70,7 +70,7 @@ pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -
         "invalid_flag": output.lines().any(|line| line.starts_with("flag provided but not defined: ")),
         "cgo_signal": output.contains("signal arrived during cgo execution"),
         "signal": ["SIGSEGV", "SIGBUS", "SIGABRT", "SIGILL"].into_iter().find(|signal| {
-            output.lines().any(|line| line.strip_prefix(signal).is_some_and(|rest| rest.starts_with(':')))
+            output.lines().any(|line| line.strip_prefix(*signal).is_some_and(|rest| rest.starts_with(':')))
         }),
         "output_truncated": truncated,
         "locations": locations.into_iter().map(|(file, line)| json!({"file": file, "line": line})).collect::<Vec<_>>(),
