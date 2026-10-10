@@ -60,16 +60,20 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .await
         .expect("Go ring contract exceeded the existing gateway test deadline")
         .expect("wait for Go ring contract");
-    let mut output = String::new();
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let mut output = Vec::new();
     std::fs::File::open(log)
         .unwrap()
-        .take(4 * 1024 * 1024)
-        .read_to_string(&mut output)
+        .take(LIMIT + 1)
+        .read_to_end(&mut output)
         .unwrap();
+    let truncated = output.len() > LIMIT as usize;
+    output.truncate(LIMIT as usize);
+    let output = String::from_utf8_lossy(&output);
     if !status.success() {
         eprintln!(
             "native Trust Go failure {}",
-            go_diagnostics::summarize(&output, status.code())
+            go_diagnostics::summarize(&output, status.code(), truncated)
         );
     }
     assert!(
