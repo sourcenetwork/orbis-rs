@@ -10,7 +10,7 @@ import time
 import xml.etree.ElementTree as ET
 
 RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
-VERA = "892cf0582e9d9395574cd5e8900988cb4a6ebd21"
+VERA = "c8a718743b19e6e8b9320baa5643380ada2a6932"
 # Published native-diagnostic targets from run 37940390635, built at RUNTIME.
 DIAGNOSTIC_DIGESTS = {
     "bls12-381": "sha256:64f306d0db89054182becf312c421d358f0097505126ae9c8a6ebe5956a9586f",
