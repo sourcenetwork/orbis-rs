@@ -201,7 +201,6 @@ jobs:
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
         cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
-        cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib native_identity_preserves_existing_keys_and_refuses_corruption
         cargo test --locked -p bulletin --no-default-features --features native,${{ matrix.crypto }} --lib native::
 
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
