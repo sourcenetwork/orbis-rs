@@ -9,12 +9,17 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
-VERA = "892cf0582e9d9395574cd5e8900988cb4a6ebd21"
-# Published native-diagnostic targets from run 37940390635, built at RUNTIME.
+RUNTIME = "67ed409901ed694ac9855ef5217e2b57ee75be40"
+VERA = "b3131f408078107f59254cfe9e107e510b3139c2"
+# Published Linux amd64 targets from run 38033630305, built at RUNTIME.
+VERA_DIGEST = "sha256:a463eb2b5124de81e2fa017ed919cf2aa6d0907caa53dc5347bc21a1dc9a1998"
+RUNTIME_DIGESTS = {
+    "bls12-381": "sha256:7d44270a6abbaf7cd9a87549d42ff92153c8d43a8f1ff9069a331eaeef620743",
+    "jubjub": "sha256:b29be06d927727c3e11aa06402dfe968f72bd5fdee998584ab6d382d33c626a0",
+}
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:64f306d0db89054182becf312c421d358f0097505126ae9c8a6ebe5956a9586f",
-    "jubjub": "sha256:c74ae88480f8bd20e4a61fad7e5bdd384c2a4b7a010aecf6de82ef92fe9800fd",
+    "bls12-381": "sha256:4179615af9ec5779fd3394af810477659eeb3c4ad5d30b3fe60bd072df489c79",
+    "jubjub": "sha256:303b5cd70cedcc18b44aa2c55005182ff16c86bbe45d4440203c6c56372f8311",
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",
@@ -22,6 +27,7 @@ FIXTURE_FILES = {
     ".github/actions/docker-builder/action.yml", ".github/workflows/upgrade-compatibility.yml",
     "scripts/test-native-qualification.py",
     "docs/native-threshold-soak.md",
+    "docs/native-trust-ring-fixture.md", "docs/native-trust-hosted.md",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
     "bin/orbis-node/tests/native_startup.rs",
@@ -46,8 +52,45 @@ def verify_fixture_changes(changed):
         raise ValueError("runtime source differs from the selected images")
 
 
+def verified_image_id(info, variable, image, curve):
+    if image not in info.get("RepoDigests", []):
+        raise ValueError("runtime image differs from the qualified build digest")
+    if (info.get("Os"), info.get("Architecture")) != ("linux", "amd64"):
+        raise ValueError("runtime image is not Linux amd64")
+    expected = {"org.opencontainers.image.revision": VERA}
+    if variable in ("ORBIS_NATIVE_IMAGE", "ORBIS_NATIVE_DIAGNOSTIC_IMAGE"):
+        expected = {
+            "org.opencontainers.image.revision": RUNTIME,
+            "io.sourcenetwork.orbis.backend": "native",
+            "io.sourcenetwork.orbis.curve": curve,
+            "io.sourcenetwork.orbis.integration-features": "false",
+        }
+        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
+            expected["io.sourcenetwork.orbis.unsafe-testing"] = "true"
+    elif variable != "ORBIS_NATIVE_VERA_IMAGE":
+        raise ValueError("unsupported runtime image")
+    labels = info["Config"].get("Labels") or {}
+    if any(labels.get(key) != value for key, value in expected.items()):
+        raise ValueError("runtime image labels do not match the selected sources")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", info.get("Id", "")):
+        raise ValueError("invalid runtime image ID")
+    return info["Id"]
+
+
 def capture(command):
     return subprocess.check_output(command, text=True).strip()
+
+
+def verified_fixture_source(runtime):
+    if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
+        raise ValueError("qualification requires unchanged tracked source")
+    source = {"head": capture(["git", "rev-parse", "HEAD"]),
+              "tree": capture(["git", "rev-parse", "HEAD^{tree}"])}
+    # Disabling renames keeps a removed production path visible to the allowlist.
+    changed = capture(["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                       "--name-only", runtime, source["head"], "--"]).splitlines()
+    verify_fixture_changes(changed)
+    return source
 
 
 def soak_result(tail):
@@ -167,8 +210,7 @@ def qualify():
     if curve not in ("bls12-381", "jubjub"):
         raise ValueError("unsupported curve")
     subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", RUNTIME], check=True)
-    changed = set(capture(["git", "diff", "--name-only", RUNTIME, "HEAD"]).splitlines())
-    verify_fixture_changes(changed)
+    source = verified_fixture_source(RUNTIME)
     if Path("docker/NATIVE_VERA_REF").read_text().strip() != VERA:
         raise ValueError("Vera source does not match the runtime image")
     suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
@@ -196,8 +238,8 @@ def qualify():
     env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.98.0")
     repository = "ghcr.io/sourcenetwork/orbis-rs"
     images = {
-        "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration:{RUNTIME}-native-{curve}",
-        "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native:{RUNTIME}",
+        "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration@{RUNTIME_DIGESTS[curve]}",
+        "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native@{VERA_DIGEST}",
     }
     if suite == "fault":
         images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
@@ -206,23 +248,7 @@ def qualify():
     for variable, image in images.items():
         subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
-        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
-            if image not in info.get("RepoDigests", []):
-                raise ValueError("diagnostic image differs from the qualified build digest")
-            env[variable] = info["Id"]
-            continue
-        labels = info["Config"].get("Labels") or {}
-        expected = {"org.opencontainers.image.revision": VERA}
-        if variable == "ORBIS_NATIVE_IMAGE":
-            expected = {
-                "org.opencontainers.image.revision": RUNTIME,
-                "io.sourcenetwork.orbis.backend": "native",
-                "io.sourcenetwork.orbis.curve": curve,
-                "io.sourcenetwork.orbis.integration-features": "false",
-            }
-        if any(labels.get(key) != value for key, value in expected.items()):
-            raise ValueError("runtime image labels do not match the selected sources")
-        env[variable] = info["Id"]
+        env[variable] = verified_image_id(info, variable, image, curve)
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
@@ -253,6 +279,8 @@ def qualify():
         with log.open("x") as stream:
             os.chmod(log, 0o600)
             result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
+        if verified_fixture_source(RUNTIME) != source:
+            raise ValueError("qualification source changed during execution")
         codes.append(result.returncode)
         print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode,
                           "elapsed_seconds": round(time.monotonic() - started, 3)}), flush=True)

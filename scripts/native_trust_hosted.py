@@ -15,8 +15,8 @@ import tarfile
 import tempfile
 import time
 
-VERA = '892cf0582e9d9395574cd5e8900988cb4a6ebd21'
-DEFRA = '810418b9c8f00b1024a90a7e696b7286154c625a'
+VERA = 'b3131f408078107f59254cfe9e107e510b3139c2'
+DEFRA = 'cd8958601fa5319c6b4bcf5053c840c8606708a9'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
@@ -419,6 +419,7 @@ def run(root, args, output):
             (private / 'bin').mkdir(mode=0o700)
             (private / 'lib').mkdir(mode=0o700)
             (private / 'state').mkdir(mode=0o700)
+            (private / 'home').mkdir(mode=0o700)
             for name in FILES:
                 if name.endswith('.h'):
                     continue
@@ -427,7 +428,8 @@ def run(root, args, output):
                 dst.chmod(0o555)
             shutil.copy2(binary, private / 'bin/native_startup')
             (private / 'bin/native_startup').chmod(0o555)
-            run_env = {**images, 'PATH': env['PATH'], 'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
+            run_env = {**images, 'PATH': env['PATH'], 'HOME': str(private / 'home'),
+                       'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
                        'VERA_E2E_DIR': str(private / 'state'), 'ORBIS_NATIVE_E2E_DIR': str(private / 'state'),
                        'LD_LIBRARY_PATH': str(private / 'lib'),
                        'TRUST_NATIVE_GATEWAY_TEST_BINARY': str(private / 'bin/trust-api.test'),

@@ -48,7 +48,7 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .args([
             "-test.run=^TestNativeGatewayRingDKGContract$",
             "-test.v",
-            "-test.timeout=120s",
+            "-test.timeout=360s",
         ])
         .env("TRUST_NATIVE_RING_FIXTURE", descriptor)
         .stdout(output.try_clone().unwrap())
@@ -56,9 +56,10 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .kill_on_drop(true);
     let mut child = command.spawn().expect("start compiled Trust ring contract");
     let _group = Group(child.id().expect("Go fixture process ID"));
-    let status = tokio::time::timeout(Duration::from_secs(125), child.wait())
+    // Allow the five-minute Go contract context and bounded child cleanup to finish.
+    let status = tokio::time::timeout(Duration::from_secs(365), child.wait())
         .await
-        .expect("Go ring contract exceeded the existing gateway test deadline")
+        .expect("Go ring contract exceeded its process deadline")
         .expect("wait for Go ring contract");
     const LIMIT: u64 = 4 * 1024 * 1024;
     let mut output = Vec::new();

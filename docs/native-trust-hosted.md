@@ -34,9 +34,10 @@ Each curve compiles only the `native_startup` target once and directly runs
 container. Both use UID/GID 65532 and the same staged artifacts. Every run must
 execute exactly one Rust test and one inner Go test, produce the exact paired-ring
 success marker, and assert persisted production KDF headers in all three stopped
-Orbis stores. Existing fixture readiness/receipt/DKG limits and Go 120/125-second
-bounds remain unchanged. The outer process watchdog is 600 seconds; it cannot
-extend the inner deadlines. Build-job limits are 120 minutes and native compilation
+Orbis stores. Fixture readiness, receipt and per-ring DKG limits are unchanged.
+The five-minute Go contract context runs within a 360-second test watchdog and a
+365-second Rust subprocess limit, including cleanup. The outer fixture watchdog
+is 600 seconds; it does not extend those inner deadlines. Build-job limits are 120 minutes and native compilation
 is bounded at 90 minutes.
 
 Private roots are fresh per packaging mode. Complete build/test logs, descriptor,
