@@ -10,7 +10,7 @@ import time
 import xml.etree.ElementTree as ET
 
 RUNTIME = "67ed409901ed694ac9855ef5217e2b57ee75be40"
-VERA = "c8a718743b19e6e8b9320baa5643380ada2a6932"
+VERA = "b3131f408078107f59254cfe9e107e510b3139c2"
 # Published Linux amd64 targets from run 38033630305, built at RUNTIME.
 VERA_DIGEST = "sha256:a463eb2b5124de81e2fa017ed919cf2aa6d0907caa53dc5347bc21a1dc9a1998"
 RUNTIME_DIGESTS = {
