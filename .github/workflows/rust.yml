@@ -189,6 +189,8 @@ jobs:
     - name: Check native node and bulletin
       run: |
         cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
+    - name: Check reshare participant selection
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::selection::tests -- --test-threads=1
     - name: Compile native lifecycle scenarios
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
     - name: Check private Go failure diagnostics

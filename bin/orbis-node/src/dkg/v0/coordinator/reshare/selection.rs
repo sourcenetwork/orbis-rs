@@ -477,14 +477,15 @@ where
             "ReshareParticipantSet received for non-reshare session".to_string(),
         ));
     }
-    if !matches!(
-        state.node.role(),
-        DkgRole::Receiver | DkgRole::DealerReceiver
-    ) {
-        return Err(DkgError::InvalidInput(
-            "ReshareParticipantSet received by node outside new committee".to_string(),
-        ));
-    }
+    let receives_shares = match state.node.role() {
+        DkgRole::Receiver | DkgRole::DealerReceiver => true,
+        DkgRole::Dealer => false,
+        DkgRole::Standard => {
+            return Err(DkgError::InvalidInput(
+                "ReshareParticipantSet received by node outside new committee".to_string(),
+            ));
+        }
+    };
     if selected_dealer_ids.len() != state.node.threshold() {
         return Err(DkgError::InvalidInput(format!(
             "ReshareParticipantSet has {} dealers, expected old threshold {}",
@@ -516,12 +517,17 @@ where
                 dealer_id
             )));
         }
-        if !state.reshare.valid_share_dealers.contains(dealer_id) {
+        if receives_shares && !state.reshare.valid_share_dealers.contains(dealer_id) {
             return Err(DkgError::InvalidState(format!(
                 "ReshareParticipantSet selected dealer {} before this receiver accepted its commitment and share",
                 dealer_id
             )));
         }
+    }
+
+    // Departing dealers share the public topic but never compute a new share.
+    if !receives_shares {
+        return Ok(false);
     }
 
     if let Some(existing) = &state.reshare.selected_dealers {
@@ -567,10 +573,27 @@ mod tests {
         active_dealers: Vec<u32>,
         valid_share_dealers: Vec<u32>,
     ) -> (DkgCoordinator<DkgImpl>, String) {
+        reshare_role_test_coordinator(
+            db_name,
+            session_id,
+            DkgRole::Receiver,
+            active_dealers,
+            valid_share_dealers,
+        )
+        .await
+    }
+
+    async fn reshare_role_test_coordinator(
+        db_name: &str,
+        session_id: u128,
+        role: DkgRole,
+        active_dealers: Vec<u32>,
+        valid_share_dealers: Vec<u32>,
+    ) -> (DkgCoordinator<DkgImpl>, String) {
         let db_path = crate::helpers::test_helpers::test_db_path(db_name);
         let state = Arc::new(create_test_app_state_default(db_name).await);
-        let node = *DkgImpl::new(1, 1, 2, 0, DkgRole::Receiver)
-            .expect("construct receiver DkgImpl for test session");
+        let node =
+            *DkgImpl::new(1, 1, 2, 0, role).expect("construct receiver DkgImpl for test session");
         assert_eq!(
             state
                 .dkg_session_state
@@ -616,6 +639,98 @@ mod tests {
             session.reshare.valid_share_dealers = valid_share_dealers.into_iter().collect();
         }
         (DkgCoordinator::with_routes(state, &::network::V0), db_path)
+    }
+
+    #[tokio::test]
+    async fn departing_dealer_observes_main_and_pet_selection_without_accepting_new_shares() {
+        for (session_id, pet) in [(1010, false), (1011, true)] {
+            let name = format!("reshare_departing_dealer_{session_id}");
+            let (coord, db_path) =
+                reshare_role_test_coordinator(&name, session_id, DkgRole::Dealer, vec![1], vec![])
+                    .await;
+            let attempt = AttemptKey::test(session_id);
+            if pet {
+                coord
+                    .app_state
+                    .dkg_session_state
+                    .with_attempt_state_mut(attempt, |state| {
+                        state.kind = SessionKind::ResharePet {
+                            ring_id: "test-ring-post".into(),
+                            new_peer_node_keys: vec!["node-a".into(), "node-b".into()],
+                            new_threshold: 1,
+                        };
+                    })
+                    .await
+                    .unwrap();
+            }
+            preflight_reshare_participant_set(&coord, attempt, 1, &[1])
+                .await
+                .unwrap();
+            handle_reshare_participant_set(&coord, attempt, 1, vec![1])
+                .await
+                .unwrap();
+            coord
+                .app_state
+                .dkg_session_state
+                .with_attempt_state(attempt, |state| {
+                    assert_eq!(state.node.role(), DkgRole::Dealer);
+                    assert!(state.reshare.selected_dealers.is_none());
+                    assert!(state.reshare.valid_share_dealers.is_empty());
+                })
+                .await
+                .unwrap();
+            crate::helpers::test_helpers::cleanup_db(&db_path);
+        }
+    }
+
+    #[tokio::test]
+    async fn departing_dealer_rejects_unauthorized_and_invalid_public_selections() {
+        let (coord, db_path) = reshare_role_test_coordinator(
+            "reshare_departing_dealer_rejects_invalid_selection",
+            1012,
+            DkgRole::Dealer,
+            vec![1],
+            vec![],
+        )
+        .await;
+        let attempt = AttemptKey::test(1012);
+        let error = preflight_reshare_participant_set(&coord, attempt, 2, &[1])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        for selected in [vec![], vec![0], vec![3], vec![1, 1]] {
+            let error = handle_reshare_participant_set(&coord, attempt, 1, selected)
+                .await
+                .unwrap_err();
+            assert!(matches!(error, DkgError::InvalidInput(_)));
+        }
+        let error = handle_reshare_participant_set(&coord, attempt, 1, vec![2])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DkgError::Unauthorized(_)));
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state_mut(attempt, |state| {
+                state.node = *DkgImpl::new(1, 2, 2, 1012, DkgRole::Dealer).unwrap();
+            })
+            .await
+            .unwrap();
+        let error = handle_reshare_participant_set(&coord, attempt, 1, vec![1, 1])
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DkgError::InvalidInput(_)));
+        assert!(error.to_string().contains("duplicate dealer IDs"));
+        coord
+            .app_state
+            .dkg_session_state
+            .with_attempt_state(attempt, |state| {
+                assert!(state.reshare.selected_dealers.is_none());
+                assert!(state.reshare.valid_share_dealers.is_empty());
+            })
+            .await
+            .unwrap();
+        crate::helpers::test_helpers::cleanup_db(&db_path);
     }
 
     #[tokio::test]
