@@ -1,37 +1,48 @@
 name: Native release lockfile
 
 on:
-  push:
-    branches: ['iverc/native-release-*']
-    paths:
-      - '**/Cargo.toml'
-      - scripts/resolve-native-release.sh
-      - .github/workflows/native-release-lockfile.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-  GIT_CONFIG_COUNT: "1"
-  GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
-  GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
-
 jobs:
-  lockfile:
+  selection:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        curve: [bls12-381, jubjub]
+    env:
+      SELECTION_CURVE: ${{ matrix.curve }}
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TERM_COLOR: never
+      RUSTFLAGS: -C link-arg=-fuse-ld=lld
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+      GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 3
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
-      - name: Resolve the updated native release graph
-        run: bash scripts/resolve-native-release.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler lld
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          name: native-release-lockfile-${{ github.sha }}
-          path: Cargo.lock
+          key: native-${{ matrix.curve }}
+      - name: Prove the departing-dealer regression against the retained baseline
+        run: python3 scripts/qualify-departing-selection.py
+      - name: Retain bounded regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: departing-selection-${{ matrix.curve }}
+          path: ${{ runner.temp }}/selection-${{ matrix.curve }}/result.json
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
