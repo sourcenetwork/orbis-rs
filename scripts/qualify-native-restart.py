@@ -80,6 +80,18 @@ def capture(command):
     return subprocess.check_output(command, text=True).strip()
 
 
+def verified_fixture_source(runtime):
+    if capture(["git", "status", "--porcelain", "--untracked-files=no"]):
+        raise ValueError("qualification requires unchanged tracked source")
+    source = {"head": capture(["git", "rev-parse", "HEAD"]),
+              "tree": capture(["git", "rev-parse", "HEAD^{tree}"])}
+    # Disabling renames keeps a removed production path visible to the allowlist.
+    changed = capture(["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
+                       "--name-only", runtime, source["head"], "--"]).splitlines()
+    verify_fixture_changes(changed)
+    return source
+
+
 def soak_result(tail):
     matches = re.findall(r'native_threshold_soak=(\{[^\n]{1,256}\})', tail)
     if len(matches) != 1:
@@ -197,8 +209,7 @@ def qualify():
     if curve not in ("bls12-381", "jubjub"):
         raise ValueError("unsupported curve")
     subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", RUNTIME], check=True)
-    changed = set(capture(["git", "diff", "--name-only", RUNTIME, "HEAD"]).splitlines())
-    verify_fixture_changes(changed)
+    source = verified_fixture_source(RUNTIME)
     if Path("docker/NATIVE_VERA_REF").read_text().strip() != VERA:
         raise ValueError("Vera source does not match the runtime image")
     suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
@@ -267,6 +278,8 @@ def qualify():
         with log.open("x") as stream:
             os.chmod(log, 0o600)
             result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
+        if verified_fixture_source(RUNTIME) != source:
+            raise ValueError("qualification source changed during execution")
         codes.append(result.returncode)
         print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode,
                           "elapsed_seconds": round(time.monotonic() - started, 3)}), flush=True)

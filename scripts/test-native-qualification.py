@@ -1,6 +1,9 @@
-import json
-import runpy
 import copy
+import json
+import os
+import runpy
+import subprocess
+import tempfile
 from pathlib import Path
 import unittest
 
@@ -9,6 +12,59 @@ verify = namespace['verify_fixture_changes']
 soak_result = namespace['soak_result']
 polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
+verified_fixture_source = namespace['verified_fixture_source']
+
+
+class FixtureSource(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.previous = Path.cwd()
+        os.chdir(self.directory.name)
+        self.addCleanup(os.chdir, self.previous)
+        self.git('init', '--quiet')
+        self.git('config', 'diff.renames', 'true')
+        self.production = Path('bin/orbis-node/src/node.rs')
+        self.fixture = Path('bin/orbis-node/tests/native_startup.rs')
+        self.production.parent.mkdir(parents=True)
+        self.production.write_text('original production source\n' * 100)
+        self.commit()
+        self.runtime = self.git('rev-parse', 'HEAD')
+
+    def git(self, *args):
+        return subprocess.check_output(
+            ['git', '-c', 'user.name=iverc', '-c', 'user.email=ivanverch@gmail.com', *args],
+            text=True, stderr=subprocess.DEVNULL).strip()
+
+    def commit(self):
+        self.git('add', '.')
+        self.git('commit', '--quiet', '-m', 'Record fixture source')
+
+    def test_committed_fixture_change_returns_exact_source(self):
+        self.fixture.parent.mkdir(parents=True)
+        self.fixture.write_text('new fixture\n')
+        self.commit()
+        self.assertEqual(verified_fixture_source(self.runtime), {
+            'head': self.git('rev-parse', 'HEAD'), 'tree': self.git('rev-parse', 'HEAD^{tree}')})
+
+    def test_production_change_is_rejected(self):
+        self.production.write_text('changed production source\n')
+        self.commit()
+        with self.assertRaisesRegex(ValueError, 'runtime source differs'):
+            verified_fixture_source(self.runtime)
+
+    def test_production_rename_cannot_hide_in_an_approved_fixture_path(self):
+        self.fixture.parent.mkdir(parents=True)
+        self.production.rename(self.fixture)
+        self.commit()
+        self.assertEqual(self.git('diff', '--name-only', self.runtime, 'HEAD'), str(self.fixture))
+        with self.assertRaisesRegex(ValueError, 'runtime source differs'):
+            verified_fixture_source(self.runtime)
+
+    def test_dirty_tracked_source_is_rejected(self):
+        self.production.write_text('uncommitted production source\n')
+        with self.assertRaisesRegex(ValueError, 'unchanged tracked source'):
+            verified_fixture_source(self.runtime)
 
 
 class RuntimeImages(unittest.TestCase):
