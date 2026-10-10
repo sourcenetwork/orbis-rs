@@ -419,6 +419,7 @@ def run(root, args, output):
             (private / 'bin').mkdir(mode=0o700)
             (private / 'lib').mkdir(mode=0o700)
             (private / 'state').mkdir(mode=0o700)
+            (private / 'home').mkdir(mode=0o700)
             for name in FILES:
                 if name.endswith('.h'):
                     continue
@@ -427,7 +428,8 @@ def run(root, args, output):
                 dst.chmod(0o555)
             shutil.copy2(binary, private / 'bin/native_startup')
             (private / 'bin/native_startup').chmod(0o555)
-            run_env = {**images, 'PATH': env['PATH'], 'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
+            run_env = {**images, 'PATH': env['PATH'], 'HOME': str(private / 'home'),
+                       'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
                        'VERA_E2E_DIR': str(private / 'state'), 'ORBIS_NATIVE_E2E_DIR': str(private / 'state'),
                        'LD_LIBRARY_PATH': str(private / 'lib'),
                        'TRUST_NATIVE_GATEWAY_TEST_BINARY': str(private / 'bin/trust-api.test'),
