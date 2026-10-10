@@ -9,12 +9,17 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
+RUNTIME = "67ed409901ed694ac9855ef5217e2b57ee75be40"
 VERA = "c8a718743b19e6e8b9320baa5643380ada2a6932"
-# Published native-diagnostic targets from run 37940390635, built at RUNTIME.
+# Published Linux amd64 targets from run 38033630305, built at RUNTIME.
+VERA_DIGEST = "sha256:a463eb2b5124de81e2fa017ed919cf2aa6d0907caa53dc5347bc21a1dc9a1998"
+RUNTIME_DIGESTS = {
+    "bls12-381": "sha256:7d44270a6abbaf7cd9a87549d42ff92153c8d43a8f1ff9069a331eaeef620743",
+    "jubjub": "sha256:b29be06d927727c3e11aa06402dfe968f72bd5fdee998584ab6d382d33c626a0",
+}
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:64f306d0db89054182becf312c421d358f0097505126ae9c8a6ebe5956a9586f",
-    "jubjub": "sha256:c74ae88480f8bd20e4a61fad7e5bdd384c2a4b7a010aecf6de82ef92fe9800fd",
+    "bls12-381": "sha256:4179615af9ec5779fd3394af810477659eeb3c4ad5d30b3fe60bd072df489c79",
+    "jubjub": "sha256:303b5cd70cedcc18b44aa2c55005182ff16c86bbe45d4440203c6c56372f8311",
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",
@@ -44,6 +49,31 @@ FIXTURE_FILES = {
 def verify_fixture_changes(changed):
     if set(changed) - FIXTURE_FILES:
         raise ValueError("runtime source differs from the selected images")
+
+
+def verified_image_id(info, variable, image, curve):
+    if image not in info.get("RepoDigests", []):
+        raise ValueError("runtime image differs from the qualified build digest")
+    if (info.get("Os"), info.get("Architecture")) != ("linux", "amd64"):
+        raise ValueError("runtime image is not Linux amd64")
+    expected = {"org.opencontainers.image.revision": VERA}
+    if variable in ("ORBIS_NATIVE_IMAGE", "ORBIS_NATIVE_DIAGNOSTIC_IMAGE"):
+        expected = {
+            "org.opencontainers.image.revision": RUNTIME,
+            "io.sourcenetwork.orbis.backend": "native",
+            "io.sourcenetwork.orbis.curve": curve,
+            "io.sourcenetwork.orbis.integration-features": "false",
+        }
+        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
+            expected["io.sourcenetwork.orbis.unsafe-testing"] = "true"
+    elif variable != "ORBIS_NATIVE_VERA_IMAGE":
+        raise ValueError("unsupported runtime image")
+    labels = info["Config"].get("Labels") or {}
+    if any(labels.get(key) != value for key, value in expected.items()):
+        raise ValueError("runtime image labels do not match the selected sources")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", info.get("Id", "")):
+        raise ValueError("invalid runtime image ID")
+    return info["Id"]
 
 
 def capture(command):
@@ -196,8 +226,8 @@ def qualify():
     env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.98.0")
     repository = "ghcr.io/sourcenetwork/orbis-rs"
     images = {
-        "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration:{RUNTIME}-native-{curve}",
-        "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native:{RUNTIME}",
+        "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration@{RUNTIME_DIGESTS[curve]}",
+        "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native@{VERA_DIGEST}",
     }
     if suite == "fault":
         images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
@@ -206,23 +236,7 @@ def qualify():
     for variable, image in images.items():
         subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
-        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
-            if image not in info.get("RepoDigests", []):
-                raise ValueError("diagnostic image differs from the qualified build digest")
-            env[variable] = info["Id"]
-            continue
-        labels = info["Config"].get("Labels") or {}
-        expected = {"org.opencontainers.image.revision": VERA}
-        if variable == "ORBIS_NATIVE_IMAGE":
-            expected = {
-                "org.opencontainers.image.revision": RUNTIME,
-                "io.sourcenetwork.orbis.backend": "native",
-                "io.sourcenetwork.orbis.curve": curve,
-                "io.sourcenetwork.orbis.integration-features": "false",
-            }
-        if any(labels.get(key) != value for key, value in expected.items()):
-            raise ValueError("runtime image labels do not match the selected sources")
-        env[variable] = info["Id"]
+        env[variable] = verified_image_id(info, variable, image, curve)
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]

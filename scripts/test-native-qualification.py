@@ -1,5 +1,6 @@
 import json
 import runpy
+import copy
 from pathlib import Path
 import unittest
 
@@ -7,6 +8,63 @@ namespace = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.
 verify = namespace['verify_fixture_changes']
 soak_result = namespace['soak_result']
 polynomial_result = namespace['polynomial_result']
+verified_image_id = namespace['verified_image_id']
+
+
+class RuntimeImages(unittest.TestCase):
+    def image(self, curve, diagnostic=False):
+        labels = {
+            'org.opencontainers.image.revision': namespace['RUNTIME'],
+            'io.sourcenetwork.orbis.backend': 'native',
+            'io.sourcenetwork.orbis.curve': curve,
+            'io.sourcenetwork.orbis.integration-features': 'false',
+        }
+        variable = 'ORBIS_NATIVE_IMAGE'
+        digests = namespace['RUNTIME_DIGESTS']
+        if diagnostic:
+            variable = 'ORBIS_NATIVE_DIAGNOSTIC_IMAGE'
+            digests = namespace['DIAGNOSTIC_DIGESTS']
+            labels['io.sourcenetwork.orbis.unsafe-testing'] = 'true'
+        image = 'ghcr.io/sourcenetwork/orbis-rs/node-integration@' + digests[curve]
+        return variable, image, {
+            'Id': 'sha256:' + 'a' * 64, 'RepoDigests': [image],
+            'Os': 'linux', 'Architecture': 'amd64', 'Config': {'Labels': labels},
+        }
+
+    def test_matching_normal_diagnostic_and_vera_images_are_accepted(self):
+        for curve in ('bls12-381', 'jubjub'):
+            for diagnostic in (False, True):
+                variable, image, info = self.image(curve, diagnostic)
+                self.assertEqual(verified_image_id(info, variable, image, curve), info['Id'])
+            image = 'ghcr.io/sourcenetwork/orbis-rs/vera-native@' + namespace['VERA_DIGEST']
+            info = dict(Id='sha256:' + 'b' * 64, RepoDigests=[image], Os='linux',
+                        Architecture='amd64',
+                        Config={'Labels': {'org.opencontainers.image.revision': namespace['VERA']}})
+            self.assertEqual(verified_image_id(info, 'ORBIS_NATIVE_VERA_IMAGE', image, curve), info['Id'])
+
+    def test_wrong_source_curve_features_or_diagnostic_mode_are_rejected(self):
+        for curve in ('bls12-381', 'jubjub'):
+            for diagnostic in (False, True):
+                variable, image, info = self.image(curve, diagnostic)
+                for label in info['Config']['Labels']:
+                    changed = copy.deepcopy(info)
+                    changed['Config']['Labels'][label] = 'wrong'
+                    with self.subTest(curve=curve, diagnostic=diagnostic, label=label):
+                        with self.assertRaisesRegex(ValueError, 'labels do not match'):
+                            verified_image_id(changed, variable, image, curve)
+            wrong_curve = 'jubjub' if curve == 'bls12-381' else 'bls12-381'
+            with self.assertRaisesRegex(ValueError, 'labels do not match'):
+                verified_image_id(info, variable, image, wrong_curve)
+
+    def test_missing_digest_wrong_platform_and_invalid_id_are_rejected(self):
+        variable, image, info = self.image('bls12-381', diagnostic=True)
+        for field, value in [('RepoDigests', []), ('Os', 'windows'),
+                             ('Architecture', 'arm64'), ('Id', 'orbis:latest')]:
+            changed = dict(info, **{field: value})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                verified_image_id(changed, variable, image, 'bls12-381')
+        with self.assertRaisesRegex(ValueError, 'unsupported runtime image'):
+            verified_image_id(info, 'UNKNOWN_IMAGE', image, 'bls12-381')
 
 
 class FixtureChanges(unittest.TestCase):
