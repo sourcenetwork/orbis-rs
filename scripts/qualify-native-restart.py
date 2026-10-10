@@ -27,6 +27,7 @@ FIXTURE_FILES = {
     ".github/actions/docker-builder/action.yml", ".github/workflows/upgrade-compatibility.yml",
     "scripts/test-native-qualification.py",
     "docs/native-threshold-soak.md",
+    "docs/native-trust-ring-fixture.md", "docs/native-trust-hosted.md",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
     "bin/orbis-node/tests/native_startup.rs",

@@ -31,9 +31,11 @@ cargo +1.98.0 test --release --frozen -j2 -p orbis-node \
 ```
 
 Use `jubjub` in place of `bls12-381` for the other curve. No storage KDF or deadline
-overrides are accepted. The inner Go selector retains its existing 120-second
-test / 125-second process limit. All node readiness, receipt and certified-read
-waits remain bounded. After Go succeeds, Rust checks both full ring configurations
+overrides are accepted. The Go contract has a five-minute context and a two-minute
+limit for each ring activation. Its test watchdog is 360 seconds, allowing cleanup
+after the contract context expires; Rust limits the Go process to 365 seconds.
+A shorter outer watchdog could kill the test before its activation deadline reports
+the failed stage. Node readiness, receipt and certified-read limits are unchanged. After Go succeeds, Rust checks both full ring configurations
 and Active main/PET keys against certified records on every Vera replica. It
 stops all three Orbis nodes and reopens their existing stores to assert persisted
 KDF parameters `262144/3/1/0x13` through the local-storage API.
