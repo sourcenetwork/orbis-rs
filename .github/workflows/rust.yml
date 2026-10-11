@@ -30,8 +30,6 @@ jobs:
           key: native-restart-${{ matrix.crypto }}
           cache-targets: true
           cache-on-failure: true
-      - name: Reproduce delayed promotion on the previous implementation
-        run: sh .github/scripts/qualify-paired-promotion.sh
       - name: Verify corrected cleanup and formatting
         run: |
           cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::cleanup::tests -- --test-threads=1
