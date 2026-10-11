@@ -344,7 +344,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: [compile, image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+      spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
       ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
@@ -424,7 +424,7 @@ jobs:
     name: Native lifecycle (${{ matrix.crypto }})
     needs: [image, native-vera-image]
     runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+      spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     timeout-minutes: 120
     strategy:
       fail-fast: false
