@@ -234,6 +234,15 @@ def lifecycle_results(report, selected):
             rounds = re.findall(r"native PET phase=(?:churn-round-start|churn-finalized) round=([1-4])\b", content)
             if rounds:
                 record["churn_round"] = int(rounds[-1])
+            signing = re.findall(r"native_churn_sign member=([0-3]) cycle=([1-4](?:00|10|30))\b", content)
+            if signing:
+                member, cycle = signing[-1]
+                record['churn_signing'] = {'member': int(member), 'cycle': int(cycle)}
+            insufficient = re.findall(r'Insufficient shares: got ([0-9]{1,4}), need ([0-9]{1,4})\b', content)
+            if insufficient:
+                got, need = map(int, insufficient[-1])
+                if got <= 4096 and 1 <= need <= 4096:
+                    record['insufficient_shares'] = {'got': got, 'need': need}
             grpc_codes = {
                 "Cancelled", "Unknown", "InvalidArgument", "DeadlineExceeded", "NotFound",
                 "AlreadyExists", "PermissionDenied", "ResourceExhausted", "FailedPrecondition",
@@ -287,6 +296,12 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
         'local_verification_errors': 'Sign Coordinator: Local share verification failed',
         'missing_nonce': 'No nonce state found for request_id',
         'nonce_context_mismatch': 'Nonce context key mismatch for request_id',
+        'peer_nonce_id_mismatches': 'Sign Coordinator: nonce response node_id does not match authenticated peer',
+        'peer_signature_id_mismatches': 'Sign Coordinator: signature response node_id does not match authenticated peer',
+        'peer_signature_verification_errors': 'Sign Coordinator: Failed to verify share',
+        'peer_signature_decode_errors': 'Sign Coordinator: Failed to deserialize sig_share',
+        'peer_nonce_decode_errors': 'Sign Coordinator: Failed to deserialize nonce commitment',
+
         'nonce_capacity': 'Nonce state limit exceeded',
         'signatures_recovered': 'Sign Coordinator: Successfully recovered signature',
         'main_promotions': 'Reshare: promoted staged bundle after chain confirmation',
@@ -320,6 +335,24 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
                     tail = stream.read(1024 * 1024).decode('utf-8', errors='replace')
                 result.update(log_available=True, tail_truncated=size > 1024 * 1024,
                               counters={name: tail.count(marker) for name, marker in markers.items()})
+                configurations = []
+                for line in tail.splitlines():
+                    if 'Sign Coordinator: Initiating signing' not in line:
+                        continue
+                    line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+                    fields = {}
+                    for name in ('peer_count', 'threshold'):
+                        match = re.search(r'\b' + name + r'=([0-9]{1,4})\b', line)
+                        if match and int(match[1]) <= 4096:
+                            fields[name] = int(match[1])
+                    for name in ('self_in_list', 'interactive'):
+                        match = re.search(r'\b' + name + r'=(true|false)\b', line)
+                        if match:
+                            fields[name] = match[1] == 'true'
+                    if len(fields) == 4:
+                        configurations.append(fields)
+                result['last_signing_configuration'] = configurations[-1] if configurations else None
+
             except OSError:
                 pass
         members.append(result)

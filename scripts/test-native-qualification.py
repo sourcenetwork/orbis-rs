@@ -384,5 +384,40 @@ class SigningRestartDiagnostics(unittest.TestCase):
         self.assertNotIn('private', json.dumps(result))
 
 
+    def test_peer_rejection_counts_and_configuration_omit_identifiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / 'orbis-native-1-fixture' / 'node-0'
+            parent.mkdir(parents=True)
+            (parent / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: nonce response node_id does not match authenticated peer private=private-value\n'
+                'Sign Coordinator: Failed to verify share signature=private-key\n'
+                'Sign Coordinator: Initiating signing peer_count=99999 threshold=2 self_in_list=true interactive=true\n'
+                'Sign Coordinator: Initiating signing peer_count=2 threshold=2 '
+                'self_in_list=\x1b[32mtrue\x1b[0m interactive=true request_id=private-value\n')
+            result = namespace['signing_restart_diagnostics'](root, 'churn-diagnostic.log', (0,))
+        member = result['members'][0]
+        self.assertEqual(member['counters']['peer_nonce_id_mismatches'], 1)
+        self.assertEqual(member['counters']['peer_signature_verification_errors'], 1)
+        self.assertEqual(member['last_signing_configuration'],
+                         {'peer_count': 2, 'threshold': 2, 'self_in_list': True, 'interactive': True})
+        self.assertNotIn('private', json.dumps(result))
+        self.assertNotIn('99999', json.dumps(result))
+
+    def test_failed_signing_exports_only_bounded_member_cycle_and_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native_churn_sign member=0 cycle=110\n'
+                              'native_churn_sign member=99 cycle=99999\n'
+                              'Status { code: FailedPrecondition, message: "Insufficient shares: got 1, need 2" }'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        case = result['cases'][0]
+        self.assertEqual(case['churn_signing'], {'member': 0, 'cycle': 110})
+        self.assertEqual(case['insufficient_shares'], {'got': 1, 'need': 2})
+        self.assertNotIn('99999', json.dumps(result))
+
+
 if __name__ == '__main__':
     unittest.main()

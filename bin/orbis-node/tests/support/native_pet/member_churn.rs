@@ -211,6 +211,7 @@ impl MemberReplacement<'_> {
             for (document, delivery) in documents {
                 checks.decrypt(document, delivery).await;
             }
+            eprintln!("native_churn_sign member={index} cycle={message}");
             self.signing
                 .verify(&addresses[*index], reader, message)
                 .await;
