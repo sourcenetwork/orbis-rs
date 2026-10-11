@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import runpy
 from pathlib import Path
 import tarfile
 import tempfile
@@ -82,6 +83,43 @@ class Qualification(unittest.TestCase):
                     declarations.append(match.group(1))
         self.assertTrue(declarations)
         self.assertEqual(set(declarations), {driver.VERA})
+
+    def test_native_defra_fixture_uses_release_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        reader = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))['revision']
+        self.assertEqual(reader(root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)), driver.DEFRA)
+
+    def test_gateway_preflight_rejects_defra_fixture_from_another_release(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            trust = Path(raw)
+            (trust / '.github/workflows').mkdir(parents=True)
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            selected = 'c' * 40
+            (trust / '.github/workflows/native-gateway.yml').write_text('DEFRADB_REVISION: ' + selected + '\n')
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
+                    patch.object(driver, 'DEFRA', selected), \
+                    patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
+                with self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
+
+    def test_native_reference_reader_checks_every_declaration(self):
+        root = Path(__file__).resolve().parents[1]
+        reader = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))['revision']
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = Path(raw)
+            manifest = fixture / 'Cargo.toml'
+            first = 'one = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "' + 'a' * 40 + '" }\n'
+            second = first.replace('one =', 'two =')
+            manifest.write_text(first + second)
+            self.assertEqual(reader(fixture, 'defradb.rs', ('Cargo.toml',)), 'a' * 40)
+            for invalid in ('', first + second.replace('a' * 40, 'b' * 40),
+                            first + second.replace('a' * 40, 'main'),
+                            first + second.replace(', rev = "' + 'a' * 40 + '"', '')):
+                with self.subTest(declarations=invalid):
+                    manifest.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        reader(fixture, 'defradb.rs', ('Cargo.toml',))
 
     def test_gateway_matrix_does_not_reintroduce_cosmos_with_include(self):
         workflow = Path(__file__).resolve().parents[1].joinpath('.github/workflows/rust.yml').read_text()

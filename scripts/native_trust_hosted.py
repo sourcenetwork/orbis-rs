@@ -115,7 +115,9 @@ def pins(root, trust, vera, defra, trust_ref):
     sources = {name: source(path, ref) for name, path, ref in (
         ('orbis', root, os.environ['GITHUB_SHA']), ('trust', trust, trust_ref),
         ('vera', vera, VERA), ('defra', defra, DEFRA))}
-    if capture([sys.executable, str(root / 'scripts/native-vera-ref.py')]) != VERA:
+    references = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))
+    if references['revision'](root) != VERA or references['revision'](
+            root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)) != DEFRA:
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
         raise Failure()
