@@ -15,8 +15,24 @@ const FILES: &[&str] = &[
     "native_identity_login_test.go",
 ];
 
+const RING_FAILURES: &[(&str, &str)] = &[
+    (
+        "certification_deadline",
+        "native ring DKG certification deadline",
+    ),
+    (
+        "missing_ring",
+        "created ring absent from certified current state",
+    ),
+    ("missing_keys", "DKG did not certify both main and PET keys"),
+    ("terminal_state", "DKG reached a terminal non-active state"),
+    ("http_failure", "unexpected current-ring HTTP failure"),
+    ("response_shape", "invalid native ring response shape"),
+];
+
 pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -> Value {
     let mut locations = Vec::new();
+    let mut ring_failures = Vec::new();
     for line in output.lines() {
         for &file in FILES {
             let line = line.trim_start();
@@ -52,6 +68,13 @@ pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -
             if number == 0 {
                 continue;
             }
+            if let Some(message) = tail.strip_prefix(": ") {
+                for &(kind, expected) in RING_FAILURES {
+                    if message == expected && !ring_failures.contains(&kind) {
+                        ring_failures.push(kind);
+                    }
+                }
+            }
             let point = (file, number);
             locations.retain(|existing| *existing != point);
             locations.push(point);
@@ -79,6 +102,7 @@ pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -
         "cgo_signal": output.contains("signal arrived during cgo execution"),
         "signal": signal,
         "output_truncated": truncated,
+        "ring_failures": ring_failures,
         "locations": locations.into_iter().map(|(file, line)| json!({"file": file, "line": line})).collect::<Vec<_>>(),
     })
 }
@@ -86,6 +110,33 @@ pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_go_failure_identifies_exact_ring_assertions_without_messages() {
+        for &(kind, message) in RING_FAILURES {
+            let output = format!("    native_gateway_ring_test.go:136: {message}\n");
+            let result = summarize(&output, Some(1), false);
+            assert_eq!(result["ring_failures"], json!([kind]));
+            assert!(!result.to_string().contains(message));
+        }
+        let repeated = "native_gateway_ring_test.go:136: native ring DKG certification deadline\n";
+        assert_eq!(
+            summarize(&repeated.repeat(50), Some(1), false)["ring_failures"],
+            json!(["certification_deadline"])
+        );
+    }
+
+    #[test]
+    fn trust_go_failure_rejects_echoed_or_private_ring_messages() {
+        let output = "unknown.go:136: native ring DKG certification deadline\n\
+            /private/native_gateway_ring_test.go:136: native ring DKG certification deadline\n\
+            native_gateway_process_test.go:131: process log tail: native ring DKG certification deadline\n\
+            native_gateway_ring_test.go:136: private native ring DKG certification deadline\n\
+            native_gateway_ring_test.go:136: native ring DKG certification deadline private\n";
+        let result = summarize(output, Some(1), false);
+        assert_eq!(result["ring_failures"], json!([]));
+        assert!(!result.to_string().contains("private"));
+    }
 
     #[test]
     fn trust_go_failure_keeps_only_known_source_locations() {

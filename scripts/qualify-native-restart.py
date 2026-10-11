@@ -9,17 +9,17 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "fb3a8fb33de978f8332ca8044f0fadeb4968d359"
+RUNTIME = "68cf26d15fb554adfbab50df157e8e2d085463d4"
 VERA = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf"
-# Source-verified Linux amd64 images from run 38124598366, built at RUNTIME.
-VERA_DIGEST = "sha256:02410ba0f76e0cb3c7b6fd0b9f8c4d47dbbe411b3481f0fc3fb5b32968ecf050"
+# Source-verified Linux amd64 images from run 38131456347, built at RUNTIME.
+VERA_DIGEST = "sha256:13100a948d3dc642839aeb29de747d7a0c7d9c78fb018d33bce6bfb3902bebfd"
 RUNTIME_DIGESTS = {
-    "bls12-381": "sha256:dd0397491833ef883c5c6ec86120936eaedc1fe9b904efef607ac686798608d1",
-    "jubjub": "sha256:6d74feb8b48a9c58370937b1d06c48f92ea7aec1c47132ee498b0a9b7868b744",
+    "bls12-381": "sha256:b0c0c87f9516c51aa1e6db363d602e50b9d00f06fe2338bdc38a7aa185206895",
+    "jubjub": "sha256:062bcc69615d2c3357839532eaf42ace0eb759887dc3960327165777e8b6e43e",
 }
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:20b9a3eeda28e2ba866f6f747cf79005ca8791005ecb235b48941fb6ec09fa86",
-    "jubjub": "sha256:c0d4ef4d15e7529b52e87022e4d9b54dd319868f8cee85d6b285cb524cb217cb",
+    "bls12-381": "sha256:09d26cdad7bc33cbe800746015347379b16135faa0d74fee0f418c756fc9f42f",
+    "jubjub": "sha256:7382aa857f00c4da0f8c577bf42e62edef94fc512c8e9bdf1ec1ac4365263c97",
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",

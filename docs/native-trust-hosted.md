@@ -45,8 +45,12 @@ operation IDs, passwords and stores are never uploaded. Console output is fixed
 numeric status, stage, duration and execution counts. Bounded diagnostics add
 Rust compiler error counts/E-codes, panic/Elapsed counts and numeric line locations
 for the two known fixture files (IDs 1 and 2). They never include raw messages or
-paths. BuildKit/Go errors retain stage-only summaries; their private raw logs are
-not retained after the ephemeral runner is destroyed. The artifact upload contains
+paths. Go test failures retain source locations and a bounded set of exact ring
+assertion categories: certification deadline, missing ring or paired keys,
+terminal state, HTTP failure and response shape. The decoder rejects unknown,
+duplicate or untyped categories. A failed helper location alone does not identify
+which assertion fired. Private raw logs are not retained after the ephemeral
+runner is destroyed. The artifact upload contains
 only the explicit build products and hashes. Cleanup removes only the exact Trust
 fixture label and Compose containers mounted beneath these private roots, with
 no daemon-wide prune. Source and staged binary hashes are checked again afterward.
