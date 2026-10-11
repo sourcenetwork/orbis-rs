@@ -568,6 +568,15 @@ async fn native_pet_scheduled_refresh_after_restart() {
 }
 
 #[tokio::test]
+#[ignore = "requires the focused native soak profile and normal runtime images"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_threshold_soak() {
+    tokio::time::timeout(Duration::from_secs(1800), native_pet::soak::run())
+        .await
+        .expect("native threshold soak must finish within thirty minutes");
+}
+
+#[tokio::test]
 #[ignore = "requires normal native Docker images and compiled Trust gateway contract artifacts"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_trust_gateway_ring_dkg() {

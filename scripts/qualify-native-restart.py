@@ -17,9 +17,11 @@ DIAGNOSTIC_DIGESTS = {
     "jubjub": "sha256:c74ae88480f8bd20e4a61fad7e5bdd384c2a4b7a010aecf6de82ef92fe9800fd",
 }
 FIXTURE_FILES = {
+    ".config/nextest.toml",
     ".github/workflows/rust.yml", "scripts/qualify-native-restart.py",
     ".github/actions/docker-builder/action.yml", ".github/workflows/upgrade-compatibility.yml",
     "scripts/test-native-qualification.py",
+    "docs/native-threshold-soak.md",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
     "crates/test-support/src/native_network.rs", "crates/test-support/src/network/native.rs",
     "bin/orbis-node/tests/native_startup.rs",
@@ -30,6 +32,7 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_pet/document.rs",
     "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
     "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
+    "bin/orbis-node/tests/support/native_pet/soak.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/runner.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
     "docker/docker-compose-native-integration-test.yml",
@@ -43,6 +46,24 @@ def verify_fixture_changes(changed):
 
 def capture(command):
     return subprocess.check_output(command, text=True).strip()
+
+
+def soak_result(tail):
+    matches = re.findall(r'native_threshold_soak=(\{[^\n]{1,256}\})', tail)
+    if len(matches) != 1:
+        return None
+    try:
+        result = json.loads(matches[0])
+    except json.JSONDecodeError:
+        return None
+    if set(result) != {"cycles", "active_seconds", "restarts"}:
+        return None
+    if any(type(value) is not int for value in result.values()):
+        return None
+    if not (20 <= result["cycles"] <= 1800 and 900 <= result["active_seconds"] <= 1800
+            and result["restarts"] == 3):
+        return None
+    return result
 
 
 def lifecycle_results(report, selected):
@@ -78,6 +99,7 @@ def lifecycle_results(report, selected):
                 "support/native_pet/member_replacement.rs", "support/native_pet/scheduled_refresh.rs",
                 "support/native_pet/scheduled_store.rs", "support/native_pet/report_fault.rs",
                 "support/native_pet/report_acceptance.rs",
+                "support/native_pet/soak.rs",
             )
             locations = re.findall(r"(?:bin/orbis-node/tests/|tests/)(" +
                                    "|".join(re.escape(source) for source in filenames) +
@@ -106,6 +128,7 @@ def qualify():
         "fault": ["native_pet_fault_reports"],
         "threshold": ["native_distributed_threshold_workflows", "native_pet_threshold_workflows",
                       "native_pet_member_replacement", "native_pet_scheduled_refresh_after_restart"],
+        "soak": ["native_threshold_soak"],
     }
     if suite not in scenarios:
         raise ValueError("unsupported lifecycle suite")
@@ -154,16 +177,19 @@ def qualify():
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
-    if suite == "threshold":
+    if suite in ("threshold", "soak"):
         unit_flags = ["--features", "native", "--lib", "native_network::tests::"]
+    profile = "native-soak" if suite == "soak" else "ci"
+    ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if suite == "soak" else []
     commands = [
         ["cargo", "test", "--release", "--locked", "-p", "test-support", "--no-default-features", *unit_flags],
-        ["cargo", "nextest", "run", "--release", "--locked", "--profile", "ci",
+        ["cargo", "nextest", "run", "--release", "--locked", "--profile", profile,
          "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
          "--features", "integration-test-native,redb,iroh," + curve,
-         "--test", "native_startup", "-E", " | ".join("test(=" + name + ")" for name in selected)],
+         "--test", "native_startup", *ignored_flags,
+         "-E", " | ".join("test(=" + name + ")" for name in selected)],
     ]
-    report = Path(env.get("CARGO_TARGET_DIR", "target")) / "nextest/ci/junit.xml"
+    report = Path(env.get("CARGO_TARGET_DIR", "target")) / "nextest" / profile / "junit.xml"
     codes = []
     for index, command in enumerate(commands):
         print(json.dumps({"curve": curve, "stage": index, "state": "running"}), flush=True)
@@ -180,6 +206,12 @@ def qualify():
         passed = result.returncode == 0
         if index == 1:
             summary = lifecycle_results(report, selected)
+            if suite == "soak":
+                with log.open("rb") as stream:
+                    stream.seek(max(0, log.stat().st_size - 65536))
+                    soak = soak_result(stream.read().decode("utf-8", errors="replace"))
+                summary["soak"] = soak
+                summary["complete"] = summary["complete"] and soak is not None
             print(json.dumps(summary), flush=True)
             (output / "results.json").write_text(json.dumps(summary) + "\n")
             passed = passed and summary["complete"]

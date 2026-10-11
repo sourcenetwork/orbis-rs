@@ -26,6 +26,15 @@ final-status-level = "flaky"
 [profile.ci.junit]
 path = "junit.xml"
 
+[profile.native-soak]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "120s", terminate-after = 18 }
+failure-output = "immediate-final"
+
+[profile.native-soak.junit]
+path = "junit.xml"
+
 # ---------------------------------------------------------------------------
 # Serial groups
 # ---------------------------------------------------------------------------

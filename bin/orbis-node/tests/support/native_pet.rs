@@ -44,6 +44,9 @@ mod stored_bundle;
 #[path = "native_pet/member_replacement.rs"]
 mod member_replacement;
 
+#[path = "native_pet/soak.rs"]
+pub mod soak;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
