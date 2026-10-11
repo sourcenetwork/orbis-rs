@@ -25,6 +25,12 @@ impl MemberReplacement<'_> {
         } = self.run(nodes, reader, audit, documents, baseline).await;
         assert_eq!(nodes.len(), 4);
         assert_eq!(infos.len(), 4);
+        std::fs::write(
+            self.base.join("diagnostic-peer-routes.json"),
+            serde_json::to_vec(&infos.iter().map(|info| &info.peer_id).collect::<Vec<_>>())
+                .unwrap(),
+        )
+        .unwrap();
         let mut addresses = vec![String::new(); 4];
         let mut changes = 1;
         let mut crash_restarts = 2;

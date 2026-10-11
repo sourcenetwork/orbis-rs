@@ -419,5 +419,47 @@ class SigningRestartDiagnostics(unittest.TestCase):
         self.assertNotIn('99999', json.dumps(result))
 
 
+    def test_transport_errors_are_correlated_to_private_request_and_peer(self):
+        peers = {'a' * 64: 0, 'b' * 64: 2}
+        tail = ('Sign Coordinator: Initiating signing request_id=private-request peer_count=2 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Nonce peer request failed request_id=private-request peer_id=' + 'a' * 64 +
+                ' error=Network communication error: private-key timed out\n'
+                'Nonce peer request failed request_id=unknown-private peer_id=' + 'b' * 64 + '\n'
+                'Sign Coordinator: Initiating signing request_id=private-report peer_count=1 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Sign Coordinator: Successfully recovered signature request_id=private-report\n')
+        attempts = namespace['signing_attempts'](tail, peers)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]['peer_errors'],
+                         [{'phase': 'nonce', 'member': 0, 'class': 'communication', 'timed_out': True}])
+        self.assertFalse(attempts[0]['recovered'])
+        self.assertTrue(attempts[1]['recovered'])
+        self.assertNotIn('private', json.dumps(attempts))
+        self.assertNotIn('a' * 64, json.dumps(attempts))
+
+    def test_private_peer_routes_are_bounded_and_symlinks_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'diagnostic-peer-routes.json'
+            path.write_text(json.dumps([character * 64 for character in 'abcd']))
+            self.assertEqual(namespace['fixture_peer_indices'](root)['a' * 64], 0)
+            path.write_bytes(b'x' * 4097)
+            self.assertEqual(namespace['fixture_peer_indices'](root), {})
+            path.unlink()
+            private = root / 'private'
+            private.write_text(json.dumps([character * 64 for character in 'abcd']))
+            path.symlink_to(private)
+            self.assertEqual(namespace['fixture_peer_indices'](root), {})
+
+    def test_correlated_attempt_exports_are_bounded(self):
+        tail = ''.join('Sign Coordinator: Initiating signing request_id=private-' + str(index) +
+                       ' peer_count=2 threshold=2 self_in_list=true interactive=true\n'
+                       for index in range(100))
+        attempts = namespace['signing_attempts'](tail, {})
+        self.assertEqual(len(attempts), 16)
+        self.assertNotIn('private', json.dumps(attempts))
+
+
 if __name__ == '__main__':
     unittest.main()

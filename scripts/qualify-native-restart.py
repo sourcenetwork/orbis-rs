@@ -276,6 +276,73 @@ def lifecycle_results(report, selected):
     return {"complete": all(case["status"] == "passed" for case in cases), "cases": cases}
 
 
+def fixture_peer_indices(fixture):
+    try:
+        descriptor = os.open(fixture / 'diagnostic-peer-routes.json',
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return {}
+            raw = stream.read(4097)
+        if len(raw) > 4096:
+            return {}
+        peers = json.loads(raw)
+        if not isinstance(peers, list) or len(peers) != 4 or any(
+                not isinstance(peer, str) or not re.fullmatch(r'[0-9a-fA-F]{64}', peer)
+                for peer in peers):
+            return {}
+        if len(set(peer.lower() for peer in peers)) != 4:
+            return {}
+        return {peer.lower(): member for member, peer in enumerate(peers)}
+    except (OSError, ValueError):
+        return {}
+
+
+def signing_attempts(tail, peers):
+    """Correlate fixed transport events without exporting request or peer IDs."""
+    attempts = {}
+    for line in tail.splitlines():
+        line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        identity = re.search(r'\brequest_id="?([A-Za-z0-9_-]{1,96})(?:"|\s|$)', line)
+        if not identity:
+            continue
+        if 'Sign Coordinator: Initiating signing' in line:
+            fields = {}
+            for name in ('peer_count', 'threshold'):
+                match = re.search(r'\b' + name + r'=([0-9]{1,4})\b', line)
+                if match and int(match[1]) <= 4096:
+                    fields[name] = int(match[1])
+            for name in ('self_in_list', 'interactive'):
+                match = re.search(r'\b' + name + r'=(true|false)\b', line)
+                if match:
+                    fields[name] = match[1] == 'true'
+            if len(fields) == 4:
+                if len(attempts) == 64:
+                    del attempts[next(iter(attempts))]
+                attempts[identity[1]] = {'configuration': fields, 'recovered': False, 'peer_errors': []}
+        attempt = attempts.get(identity[1])
+        if attempt is None:
+            continue
+        if 'Sign Coordinator: Successfully recovered signature' in line:
+            attempt['recovered'] = True
+        phase = ('nonce' if 'Nonce peer request failed' in line else
+                 'signature' if 'Sign peer request failed' in line else None)
+        if phase is None or len(attempt['peer_errors']) == 8:
+            continue
+        peer = re.search(r'\bpeer_id="?([0-9a-fA-F]{64})(?:@|"|\s|$)', line)
+        classes = {'connection': 'Network connection error:',
+                   'communication': 'Network communication error:',
+                   'unauthorized': 'Unauthorized:', 'nonce_state': 'Nonce state error:',
+                   'timeout': 'Timeout waiting for responses:', 'invalid_input': 'Invalid input:',
+                   'invalid_state': 'Invalid state:', 'protocol': 'Protocol error:'}
+        error_class = next((name for name, marker in classes.items() if marker in line), None)
+        attempt['peer_errors'].append({'phase': phase,
+            'member': peers.get(peer[1].lower()) if peer else None,
+            'class': error_class,
+            'timed_out': any(marker in line.lower() for marker in ('timed out', 'timeout', 'deadline exceeded'))})
+    return list(attempts.values())[-16:]
+
+
 def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log', selected=(2, 3)):
     """Export bounded counters from fixed private fixture logs."""
     if filename not in ('pet-replacement-restart.log', 'churn-diagnostic.log') or any(
@@ -284,6 +351,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
     fixtures = list(directory.glob('orbis-native-*'))
     if len(fixtures) != 1 or fixtures[0].is_symlink():
         return {'available': False, 'members': []}
+    peer_indices = fixture_peer_indices(fixtures[0])
     markers = {
         'nonce_requests': 'Sign Coordinator: Received NonceRequest',
         'sign_requests': 'Sign Coordinator: Received SignRequest',
@@ -311,6 +379,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
         'confirmation_timeouts': 'Reshare: timed out waiting for bulletin confirmation',
         'confirmation_recheck_errors': 'Reshare: failed to recheck confirmation before local promotion',
         'staged_pet_read_errors': 'Reshare: failed to read staged local PET bundle',
+        'local_bundle_missing': 'local bundle missing, falling back to ring config polynomial',
         'missing_main_bundle': 'Reshare: chain confirmed but no staged bundle was found',
         'main_write_errors': 'Reshare: chain confirmed but writing the promoted bundle',
         'pet_write_errors': 'Reshare: failed to promote local PET bundle',
@@ -352,6 +421,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
                     if len(fields) == 4:
                         configurations.append(fields)
                 result['last_signing_configuration'] = configurations[-1] if configurations else None
+                result['signing_attempts'] = signing_attempts(tail, peer_indices)
 
             except OSError:
                 pass
