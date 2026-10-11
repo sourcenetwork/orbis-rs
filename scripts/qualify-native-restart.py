@@ -33,6 +33,7 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
     "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
     "bin/orbis-node/tests/support/native_pet/soak.rs",
+    "bin/orbis-node/tests/support/native_pet/polynomial_state.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/runner.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
     "docker/docker-compose-native-integration-test.yml",
@@ -63,6 +64,50 @@ def soak_result(tail):
     if not (20 <= result["cycles"] <= 1800 and 900 <= result["active_seconds"] <= 1800
             and result["restarts"] == 3):
         return None
+    return result
+
+
+def polynomial_result(content):
+    matches = re.findall(r'native_polynomial_state=(\{[^\n]{1,4096}\})', content)
+    if len(matches) != 1:
+        return None
+    try:
+        result = json.loads(matches[0])
+    except json.JSONDecodeError:
+        return None
+    if set(result) != {"members", "previous", "responses"}:
+        return None
+    if type(result["members"]) is not int or not 1 <= result["members"] <= 4:
+        return None
+    if type(result["previous"]) is not bool or not isinstance(result["responses"], list):
+        return None
+    if len(result["responses"]) != result["members"]:
+        return None
+    for member in result["responses"]:
+        if not isinstance(member, dict) or set(member) != {"connected", "main", "pet"}:
+            return None
+        if member["connected"] is not None and type(member["connected"]) is not bool:
+            return None
+        for response in (member["main"], member["pet"]):
+            if not isinstance(response, dict) or set(response) != {"status", "present", "changed", "matches_first"}:
+                return None
+            status = response["status"]
+            if status is not None and (type(status) is not int or not 0 <= status <= 16):
+                return None
+            if member["connected"] is not True and status is not None:
+                return None
+            if any(value is not None and type(value) is not bool for key, value in response.items() if key != "status"):
+                return None
+            if status != 0 and any(response[key] is not None for key in ("present", "changed", "matches_first")):
+                return None
+            if status == 0:
+                if type(response["present"]) is not bool:
+                    return None
+                if result["previous"]:
+                    if type(response["changed"]) is not bool:
+                        return None
+                elif response["changed"] is not None:
+                    return None
     return result
 
 
@@ -109,6 +154,9 @@ def lifecycle_results(report, selected):
             record["deadline"] = any(marker in content for marker in ("Elapsed(())", "TIMED OUT", "execution timed out"))
             record["permission_denied"] = "PermissionDenied" in content
             record["panicked"] = "panicked at" in content
+            polynomials = polynomial_result(content)
+            if polynomials is not None:
+                record["polynomials"] = polynomials
         cases.append(record)
     return {"complete": all(case["status"] == "passed" for case in cases), "cases": cases}
 
@@ -183,6 +231,9 @@ def qualify():
     ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if suite == "soak" else []
     commands = [
         ["cargo", "test", "--release", "--locked", "-p", "test-support", "--no-default-features", *unit_flags],
+        ["cargo", "test", "--release", "--locked", "-p", "orbis-node", "--no-default-features",
+         "--features", "integration-test-native,redb,iroh," + curve,
+         "--test", "native_startup", "native_polynomial_state_"],
         ["cargo", "nextest", "run", "--release", "--locked", "--profile", profile,
          "--retries", "0", "--no-tests", "fail", "--test-threads", "1", "-p", "orbis-node", "--no-default-features",
          "--features", "integration-test-native,redb,iroh," + curve,
@@ -192,10 +243,11 @@ def qualify():
     report = Path(env.get("CARGO_TARGET_DIR", "target")) / "nextest" / profile / "junit.xml"
     codes = []
     for index, command in enumerate(commands):
+        is_scenario = command[1] == "nextest"
         print(json.dumps({"curve": curve, "stage": index, "state": "running"}), flush=True)
         started = time.monotonic()
         log = output / (str(index) + ".log")
-        if index == 1:
+        if is_scenario:
             report.unlink(missing_ok=True)
         with log.open("x") as stream:
             os.chmod(log, 0o600)
@@ -204,7 +256,7 @@ def qualify():
         print(json.dumps({"curve": curve, "stage": index, "exit_code": result.returncode,
                           "elapsed_seconds": round(time.monotonic() - started, 3)}), flush=True)
         passed = result.returncode == 0
-        if index == 1:
+        if is_scenario:
             summary = lifecycle_results(report, selected)
             if suite == "soak":
                 with log.open("rb") as stream:

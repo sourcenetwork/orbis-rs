@@ -1,9 +1,12 @@
+import json
 import runpy
 from pathlib import Path
 import unittest
 
-verify = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))['verify_fixture_changes']
-soak_result = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))['soak_result']
+namespace = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+verify = namespace['verify_fixture_changes']
+soak_result = namespace['soak_result']
+polynomial_result = namespace['polynomial_result']
 
 
 class FixtureChanges(unittest.TestCase):
@@ -47,7 +50,6 @@ class SoakSummary(unittest.TestCase):
                 self.assertIsNone(soak_result(text))
 
     def test_incomplete_or_private_fields_cannot_be_published(self):
-        import json
         for overrides in [dict(cycles=0), dict(cycles=True), dict(cycles=1801),
                           dict(active_seconds=899), dict(active_seconds=1801),
                           dict(restarts=2), dict(restarts=4), dict(private_key='secret')]:
@@ -55,6 +57,47 @@ class SoakSummary(unittest.TestCase):
             result.update(overrides)
             with self.subTest(fields=overrides):
                 self.assertIsNone(soak_result('native_threshold_soak=' + json.dumps(result)))
+
+
+class PolynomialSummary(unittest.TestCase):
+    def record(self):
+        response = dict(status=0, present=True, changed=False, matches_first=False)
+        return dict(members=1, previous=True,
+                    responses=[dict(connected=True, main=response.copy(), pet=response.copy())])
+
+    def decode(self, record):
+        return polynomial_result('native_polynomial_state=' + json.dumps(record))
+
+    def test_known_numeric_state_is_preserved(self):
+        record = self.record()
+        self.assertEqual(self.decode(record), record)
+        record['responses'][0]['main'] = dict(status=5, present=None, changed=None, matches_first=None)
+        self.assertEqual(self.decode(record), record)
+
+    def test_private_fields_and_invalid_types_are_rejected(self):
+        for field, value in [('status', True), ('status', 17), ('present', 'private-polynomial'),
+                             ('changed', 1), ('polynomial', 'private-polynomial')]:
+            record = self.record()
+            record['responses'][0]['main'][field] = value
+            with self.subTest(field=field, value=value):
+                self.assertIsNone(self.decode(record))
+
+    def test_incomplete_ambiguous_or_inconsistent_state_is_rejected(self):
+        for overrides in [dict(members=True), dict(members=5), dict(members=2),
+                          dict(previous=False), dict(responses=[]), dict(extra='private')]:
+            record = self.record()
+            record.update(overrides)
+            with self.subTest(fields=overrides):
+                self.assertIsNone(self.decode(record))
+        record = self.record()
+        record['responses'][0]['main']['status'] = 5
+        self.assertIsNone(self.decode(record))
+        record = self.record()
+        record['responses'][0]['connected'] = False
+        self.assertIsNone(self.decode(record))
+        text = 'native_polynomial_state=' + json.dumps(self.record())
+        for content in ['', text + '\n' + text, 'native_polynomial_state={broken}']:
+            self.assertIsNone(polynomial_result(content))
 
 
 if __name__ == '__main__':
