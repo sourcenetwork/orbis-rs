@@ -112,6 +112,16 @@ class RuntimeImages(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'labels do not match'):
                 verified_image_id(info, variable, image, wrong_curve)
 
+    def test_normal_runtime_rejects_diagnostic_features(self):
+        for curve in ('bls12-381', 'jubjub'):
+            variable, image, info = self.image(curve)
+            for value in ('true', '', 'unknown'):
+                info['Config']['Labels']['io.sourcenetwork.orbis.unsafe-testing'] = value
+                with self.subTest(curve=curve, value=value), self.assertRaisesRegex(ValueError, 'diagnostic features'):
+                    verified_image_id(info, variable, image, curve)
+            info['Config']['Labels']['io.sourcenetwork.orbis.unsafe-testing'] = 'false'
+            self.assertEqual(verified_image_id(info, variable, image, curve), info['Id'])
+
     def test_missing_digest_wrong_platform_and_invalid_id_are_rejected(self):
         variable, image, info = self.image('bls12-381', diagnostic=True)
         for field, value in [('RepoDigests', []), ('Os', 'windows'),

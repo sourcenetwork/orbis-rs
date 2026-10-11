@@ -19,6 +19,29 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_normal_runtime_labels_reject_diagnostic_features(self):
+        for curve in ('bls12-381', 'jubjub'):
+            labels = {
+                'org.opencontainers.image.revision': 'a' * 40,
+                'io.sourcenetwork.orbis.backend': 'native',
+                'io.sourcenetwork.orbis.curve': curve,
+                'io.sourcenetwork.orbis.integration-features': 'false',
+            }
+            driver.verify_runtime_labels(labels, 'a' * 40, curve)
+            for value in ('false', 'true', '', 'unknown'):
+                labels['io.sourcenetwork.orbis.unsafe-testing'] = value
+                with self.subTest(curve=curve, value=value):
+                    if value == 'false':
+                        driver.verify_runtime_labels(labels, 'a' * 40, curve)
+                    else:
+                        with self.assertRaises(driver.Failure):
+                            driver.verify_runtime_labels(labels, 'a' * 40, curve)
+            labels['io.sourcenetwork.orbis.unsafe-testing'] = 'false'
+            for key in labels:
+                changed = dict(labels, **{key: 'wrong'})
+                with self.subTest(curve=curve, key=key), self.assertRaises(driver.Failure):
+                    driver.verify_runtime_labels(changed, 'a' * 40, curve)
+
     def test_same_runtime_needs_no_source_exception(self):
         with patch.object(driver, 'capture') as capture:
             for requested in (None, 'a' * 40):

@@ -9,17 +9,17 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "67ed409901ed694ac9855ef5217e2b57ee75be40"
+RUNTIME = "c28954d867e90f1b06a7492b034d9a603dff1cd8"
 VERA = "95fc6b893fc247d4680c716f3ddf69aa6d27d053"
-# Published Linux amd64 targets from run 38033630305, built at RUNTIME.
-VERA_DIGEST = "sha256:a463eb2b5124de81e2fa017ed919cf2aa6d0907caa53dc5347bc21a1dc9a1998"
+# Source-verified Linux amd64 images from run 38113766489, built at RUNTIME.
+VERA_DIGEST = "sha256:1b34c9f9b02bf704a1609640ecc86f0ad0a1d11564673396bfc5eb009ab180cc"
 RUNTIME_DIGESTS = {
-    "bls12-381": "sha256:7d44270a6abbaf7cd9a87549d42ff92153c8d43a8f1ff9069a331eaeef620743",
-    "jubjub": "sha256:b29be06d927727c3e11aa06402dfe968f72bd5fdee998584ab6d382d33c626a0",
+    "bls12-381": "sha256:47cdfa662be27f57af96a17fb89c9d05aecfb4ae1140d80996e97d774bd2e368",
+    "jubjub": "sha256:8b30c97ce14741a31f3f22c36e2a04a8c80ddabe1336ae053aab07ab03a717c6",
 }
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:4179615af9ec5779fd3394af810477659eeb3c4ad5d30b3fe60bd072df489c79",
-    "jubjub": "sha256:303b5cd70cedcc18b44aa2c55005182ff16c86bbe45d4440203c6c56372f8311",
+    "bls12-381": "sha256:7e91d35b4105ea7b0f8457d5d963225a48bfb4b40fda50c2d3bb9aa9d3e7541b",
+    "jubjub": "sha256:f0bcd86d983f9a84a9eeaef6bbbf902d81da17e69a36a1efca9e3692050a176f",
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",
@@ -72,6 +72,8 @@ def verified_image_id(info, variable, image, curve):
     labels = info["Config"].get("Labels") or {}
     if any(labels.get(key) != value for key, value in expected.items()):
         raise ValueError("runtime image labels do not match the selected sources")
+    if variable == "ORBIS_NATIVE_IMAGE" and labels.get("io.sourcenetwork.orbis.unsafe-testing") not in (None, "false"):
+        raise ValueError("normal runtime image enables diagnostic features")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", info.get("Id", "")):
         raise ValueError("invalid runtime image ID")
     return info["Id"]
