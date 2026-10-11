@@ -274,8 +274,7 @@ jobs:
   # `unit` / `integration` jobs restore.
   compile:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-compile-${{ strategy.job-index }}/spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
@@ -308,8 +307,7 @@ jobs:
   unit:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: compile
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-unit-${{ strategy.job-index }}/spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
@@ -343,8 +341,7 @@ jobs:
   integration:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: [compile, image]
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-integration-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
       ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
@@ -360,6 +357,8 @@ jobs:
           - crypto: jubjub
             cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
+    - name: Verify on-demand runner
+      run: test "${RUNS_ON_INSTANCE_LIFECYCLE:-}" = on-demand
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
@@ -423,8 +422,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
     name: Native lifecycle (${{ matrix.crypto }})
     needs: [image, native-vera-image]
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-native-lifecycle-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -435,6 +433,8 @@ jobs:
       ORBIS_NATIVE_DIAGNOSTIC_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
       ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
     steps:
+      - name: Verify on-demand runner
+        run: test "${RUNS_ON_INSTANCE_LIFECYCLE:-}" = on-demand
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
