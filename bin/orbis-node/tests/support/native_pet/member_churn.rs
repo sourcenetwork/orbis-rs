@@ -29,6 +29,7 @@ impl MemberReplacement<'_> {
         let mut changes = 1;
         let mut crash_restarts = 2;
         for round in 1..=4 {
+            eprintln!("native PET phase=churn-round-start round={round}");
             let departed = round % 4;
             let incoming = (round - 1) % 4;
             self.assert_departed_store(incoming);
@@ -45,6 +46,7 @@ impl MemberReplacement<'_> {
             assert!(target.contains(&infos[incoming].node_key));
             assert!(!target.contains(&infos[departed].node_key));
             let finalized = self.reshare(target.clone()).await;
+            eprintln!("native PET phase=churn-finalized round={round}");
             let next_addresses: Vec<_> = members
                 .iter()
                 .map(|index| addresses[*index].clone())

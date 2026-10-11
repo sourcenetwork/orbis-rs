@@ -86,6 +86,7 @@ impl MemberReplacement<'_> {
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
+        eprintln!("native PET phase=replacement-signing");
         self.signing.verify(&addresses[3], reader, 2).await;
         for node in &mut nodes[2..] {
             assert!(node.0.try_wait().unwrap().is_none());
@@ -120,6 +121,7 @@ impl MemberReplacement<'_> {
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
+        eprintln!("native PET phase=replacement-restart-signing");
         self.signing.verify(&addresses[3], reader, 3).await;
         let permission = Permissions {
             client: self.client,

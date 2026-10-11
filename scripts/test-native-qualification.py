@@ -346,5 +346,43 @@ class SigningRestartDiagnostics(unittest.TestCase):
             self.assertEqual(self.collect(root), {'available': False, 'members': []})
 
 
+    def test_churn_promotion_events_use_all_four_fixed_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for member in range(4):
+                parent = root / 'orbis-native-1-fixture' / f'node-{member}'
+                parent.mkdir(parents=True)
+                (parent / 'churn-diagnostic.log').write_text(
+                    'Reshare: promoted staged bundle after chain confirmation secret=private-value\n'
+                    'Reshare: local PET promotion not ready ring=private-key\n')
+            result = namespace['signing_restart_diagnostics'](
+                root, 'churn-diagnostic.log', tuple(range(4)))
+            self.assertTrue(result['available'])
+            self.assertEqual([member['member'] for member in result['members']], [0, 1, 2, 3])
+            for member in result['members']:
+                self.assertEqual(member['counters']['main_promotions'], 1)
+                self.assertEqual(member['counters']['local_pet_not_ready'], 1)
+            self.assertNotIn('private', json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+            with self.assertRaises(ValueError):
+                namespace['signing_restart_diagnostics'](root, '../private-key')
+
+    def test_last_phase_distinguishes_churn_from_completed_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native PET phase=member-replacement-restart\n'
+                              'native PET phase=churn-round-start round=1\n'
+                              'native PET phase=churn-finalized round=1\n'
+                              'native PET phase=/private/key round=123\n'
+                              'panicked at tests/support/native_pet.rs:646:9: private-value'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['pet_phase'], 'churn-finalized')
+        self.assertEqual(result['cases'][0]['churn_round'], 1)
+        self.assertNotIn('private', json.dumps(result))
+
+
 if __name__ == '__main__':
     unittest.main()

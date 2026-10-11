@@ -224,12 +224,16 @@ def lifecycle_results(report, selected):
             record["panicked"] = "panicked at" in content
             phases = re.findall(
                 r"native PET phase=(paired-dkg|stored-inline-permissions-revocation-regrant|"
-                r"replacement-finalized|replacement-material-ready|member-replacement-restart|"
+                r"replacement-finalized|replacement-material-ready|replacement-signing|"
+                r"replacement-restart-signing|member-replacement-restart|churn-round-start|churn-finalized|"
                 r"member-churn|scheduled-refresh-after-restart|reshared-pre|restart-pre|fault-report)\b",
                 content,
             )
             if phases:
                 record["pet_phase"] = phases[-1]
+            rounds = re.findall(r"native PET phase=(?:churn-round-start|churn-finalized) round=([1-4])\b", content)
+            if rounds:
+                record["churn_round"] = int(rounds[-1])
             grpc_codes = {
                 "Cancelled", "Unknown", "InvalidArgument", "DeadlineExceeded", "NotFound",
                 "AlreadyExists", "PermissionDenied", "ResourceExhausted", "FailedPrecondition",
@@ -263,8 +267,11 @@ def lifecycle_results(report, selected):
     return {"complete": all(case["status"] == "passed" for case in cases), "cases": cases}
 
 
-def signing_restart_diagnostics(directory):
-    """Count fixed signing events in the two first-replacement restart logs."""
+def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log', selected=(2, 3)):
+    """Export bounded counters from fixed private fixture logs."""
+    if filename not in ('pet-replacement-restart.log', 'churn-diagnostic.log') or any(
+            member not in range(4) for member in selected):
+        raise ValueError('unsupported diagnostic log')
     fixtures = list(directory.glob('orbis-native-*'))
     if len(fixtures) != 1 or fixtures[0].is_symlink():
         return {'available': False, 'members': []}
@@ -282,14 +289,28 @@ def signing_restart_diagnostics(directory):
         'nonce_context_mismatch': 'Nonce context key mismatch for request_id',
         'nonce_capacity': 'Nonce state limit exceeded',
         'signatures_recovered': 'Sign Coordinator: Successfully recovered signature',
+        'main_promotions': 'Reshare: promoted staged bundle after chain confirmation',
+        'pet_promotions': 'Reshare: promoted staged PET bundle after bulletin confirmation',
+        'pet_staged': 'Reshare PET: Phase 4 complete',
+        'local_pet_not_ready': 'Reshare: local PET promotion not ready',
+        'confirmation_timeouts': 'Reshare: timed out waiting for bulletin confirmation',
+        'confirmation_recheck_errors': 'Reshare: failed to recheck confirmation before local promotion',
+        'staged_pet_read_errors': 'Reshare: failed to read staged local PET bundle',
+        'missing_main_bundle': 'Reshare: chain confirmed but no staged bundle was found',
+        'main_write_errors': 'Reshare: chain confirmed but writing the promoted bundle',
+        'pet_write_errors': 'Reshare: failed to promote local PET bundle',
+        'confirmation_mismatches': 'Reshare: bulletin confirmation did not match',
+        'attempt_deadlines': 'SessionStateManager: Removing DKG attempt at hard deadline',
+        'expired_sessions': 'SessionStateManager: Expired session cleanup complete',
+
     }
     members = []
-    for member in (2, 3):
+    for member in selected:
         parent = fixtures[0] / f'node-{member}'
         result = {'member': member, 'log_available': False}
         if not parent.is_symlink():
             try:
-                descriptor = os.open(parent / 'pet-replacement-restart.log',
+                descriptor = os.open(parent / filename,
                                      os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                 with os.fdopen(descriptor, 'rb') as stream:
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
@@ -408,9 +429,9 @@ def qualify():
                     observed = churn_result(stream.read().decode("utf-8", errors="replace"))
                 summary["churn"] = observed
                 summary["complete"] = summary["complete"] and observed is not None
-                if any(case.get('pet_phase') == 'member-replacement-restart'
-                       and case['status'] == 'failed' for case in summary['cases']):
-                    summary['signing_restart'] = signing_restart_diagnostics(output / 'nodes')
+                if any(case['status'] == 'failed' for case in summary['cases']):
+                    summary['failure_events'] = signing_restart_diagnostics(
+                        output / 'nodes', 'churn-diagnostic.log', tuple(range(4)))
             print(json.dumps(summary), flush=True)
             (output / "results.json").write_text(json.dumps(summary) + "\n")
             passed = passed and summary["complete"]

@@ -4,7 +4,13 @@ use alloy_sol_types::SolCall;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
 };
-use std::time::Duration;
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
 use tonic::transport::Endpoint;
 use vera_client::{
     create_scoped_bearer_token,
@@ -63,6 +69,53 @@ pub enum Scenario {
     MemberChurn,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
+}
+
+struct ChurnFailureLogs {
+    project: String,
+    directory: PathBuf,
+}
+
+impl Drop for ChurnFailureLogs {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for member in 0..4 {
+            let destination = self
+                .directory
+                .join(format!("node-{member}/churn-diagnostic.log"));
+            let saved = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(destination)
+                .and_then(|file| {
+                    Command::new("timeout")
+                        .args([
+                            "10s",
+                            "docker",
+                            "compose",
+                            "--project-name",
+                            &self.project,
+                            "-f",
+                            super::NATIVE_COMPOSE_FILE,
+                            "logs",
+                            "--tail",
+                            "10000",
+                            "--no-color",
+                            "--no-log-prefix",
+                            &super::orbis_service(member),
+                        ])
+                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                        .stdout(Stdio::from(file))
+                        .stderr(Stdio::null())
+                        .status()
+                })
+                .is_ok_and(|status| status.success());
+            eprintln!("native_churn_log member={member} saved={saved}");
+        }
+    }
 }
 
 /// Run the shared paired-DKG scenario through the native adapter. The adapter
@@ -125,6 +178,11 @@ pub async fn run(scenario: Scenario) {
         headers: _headers,
         ..
     } = workflow;
+
+    let _failure_logs = matches!(scenario, Scenario::MemberChurn).then(|| ChurnFailureLogs {
+        project: cluster.project_name().to_owned(),
+        directory: base.path().to_owned(),
+    });
 
     let reader = Reader::new(vera_client::rings::ring_deployment_label(
         root.0, deployment,
