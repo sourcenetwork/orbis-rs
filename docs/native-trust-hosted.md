@@ -34,9 +34,10 @@ Each curve compiles only the `native_startup` target once and directly runs
 container. Both use UID/GID 65532 and the same staged artifacts. Every run must
 execute exactly one Rust test and one inner Go test, produce the exact paired-ring
 success marker, and assert persisted production KDF headers in all three stopped
-Orbis stores. Existing fixture readiness/receipt/DKG limits and Go 120/125-second
-bounds remain unchanged. The outer process watchdog is 600 seconds; it cannot
-extend the inner deadlines. Build-job limits are 120 minutes and native compilation
+Orbis stores. Fixture readiness, receipt and per-ring DKG limits are unchanged.
+The five-minute Go contract context runs within a 360-second test watchdog and a
+365-second Rust subprocess limit, including cleanup. The outer fixture watchdog
+is 600 seconds; it does not extend those inner deadlines. Build-job limits are 120 minutes and native compilation
 is bounded at 90 minutes.
 
 Private roots are fresh per packaging mode. Complete build/test logs, descriptor,
@@ -44,8 +45,12 @@ operation IDs, passwords and stores are never uploaded. Console output is fixed
 numeric status, stage, duration and execution counts. Bounded diagnostics add
 Rust compiler error counts/E-codes, panic/Elapsed counts and numeric line locations
 for the two known fixture files (IDs 1 and 2). They never include raw messages or
-paths. BuildKit/Go errors retain stage-only summaries; their private raw logs are
-not retained after the ephemeral runner is destroyed. The artifact upload contains
+paths. Go test failures retain source locations and a bounded set of exact ring
+assertion categories: certification deadline, missing ring or paired keys,
+terminal state, HTTP failure and response shape. The decoder rejects unknown,
+duplicate or untyped categories. A failed helper location alone does not identify
+which assertion fired. Private raw logs are not retained after the ephemeral
+runner is destroyed. The artifact upload contains
 only the explicit build products and hashes. Cleanup removes only the exact Trust
 fixture label and Compose containers mounted beneath these private roots, with
 no daemon-wide prune. Source and staged binary hashes are checked again afterward.

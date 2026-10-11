@@ -15,8 +15,8 @@ import tarfile
 import tempfile
 import time
 
-VERA = '892cf0582e9d9395574cd5e8900988cb4a6ebd21'
-DEFRA = '810418b9c8f00b1024a90a7e696b7286154c625a'
+VERA = '9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf'
+DEFRA = '8cfd791fe7f3b69777c60b436f6b32c1a4447526'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
@@ -115,7 +115,9 @@ def pins(root, trust, vera, defra, trust_ref):
     sources = {name: source(path, ref) for name, path, ref in (
         ('orbis', root, os.environ['GITHUB_SHA']), ('trust', trust, trust_ref),
         ('vera', vera, VERA), ('defra', defra, DEFRA))}
-    if capture([sys.executable, str(root / 'scripts/native-vera-ref.py')]) != VERA:
+    references = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))
+    if references['revision'](root) != VERA or references['revision'](
+            root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)) != DEFRA:
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
         raise Failure()
@@ -293,6 +295,18 @@ def restore(directory, destination, expected_orbis, expected_trust):
     return manifest
 
 
+def verify_runtime_labels(labels, runtime, curve):
+    expected = {
+        'org.opencontainers.image.revision': runtime,
+        'io.sourcenetwork.orbis.backend': 'native',
+        'io.sourcenetwork.orbis.curve': curve,
+        'io.sourcenetwork.orbis.integration-features': 'false',
+    }
+    if any(labels.get(key) != value for key, value in expected.items()) or labels.get(
+            'io.sourcenetwork.orbis.unsafe-testing') not in (None, 'false'):
+        raise Failure()
+
+
 def image_id(root, env, image, log):
     if not re.fullmatch('sha256:[0-9a-f]{64}', image):
         command(['docker', 'pull', image], root, env, log)
@@ -386,8 +400,7 @@ def run(root, args, output):
     if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
         raise Failure()
     labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_IMAGE']]))[0]['Config']['Labels']
-    if labels.get('org.opencontainers.image.revision') != runtime or labels.get('io.sourcenetwork.orbis.backend') != 'native' or labels.get('io.sourcenetwork.orbis.curve') != args.curve or labels.get('io.sourcenetwork.orbis.integration-features') != 'false':
-        raise Failure()
+    verify_runtime_labels(labels, runtime, args.curve)
     vera_labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_VERA_IMAGE']]))[0]['Config']['Labels']
     if vera_labels.get('org.opencontainers.image.revision') != VERA:
         raise Failure()
@@ -419,6 +432,7 @@ def run(root, args, output):
             (private / 'bin').mkdir(mode=0o700)
             (private / 'lib').mkdir(mode=0o700)
             (private / 'state').mkdir(mode=0o700)
+            (private / 'home').mkdir(mode=0o700)
             for name in FILES:
                 if name.endswith('.h'):
                     continue
@@ -427,7 +441,8 @@ def run(root, args, output):
                 dst.chmod(0o555)
             shutil.copy2(binary, private / 'bin/native_startup')
             (private / 'bin/native_startup').chmod(0o555)
-            run_env = {**images, 'PATH': env['PATH'], 'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
+            run_env = {**images, 'PATH': env['PATH'], 'HOME': str(private / 'home'),
+                       'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
                        'VERA_E2E_DIR': str(private / 'state'), 'ORBIS_NATIVE_E2E_DIR': str(private / 'state'),
                        'LD_LIBRARY_PATH': str(private / 'lib'),
                        'TRUST_NATIVE_GATEWAY_TEST_BINARY': str(private / 'bin/trust-api.test'),

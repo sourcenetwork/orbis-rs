@@ -1,8 +1,11 @@
 use super::{
-    add_orbis_node4, endpoint, read_ring, stored_bundle as store, submit, unix_now,
-    wait_polynomials, Delivery, Document, Node, Polynomials, PreChecks, Reader,
+    add_orbis_node4, endpoint, read_ring, signing::Signing, stored_bundle as store, submit,
+    unix_now, wait_polynomials, Delivery, Document, Node, Permissions, Polynomials, PreChecks,
+    Reader,
 };
+use alloy_primitives::B256;
 use crypto::r#trait::CryptoDeserialize;
+
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse,
@@ -28,6 +31,8 @@ pub(super) struct MemberReplacement<'a> {
     pub controller: &'a k256::ecdsa::SigningKey,
     pub worker: &'a BlsSigner,
     pub policy: &'a str,
+    pub policy_bytes: B256,
+    pub signing: &'a Signing,
     pub ring_id: &'a str,
     pub keys: &'a RingPublicKeys,
     pub base: &'a Path,
@@ -80,6 +85,7 @@ impl MemberReplacement<'_> {
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
+        self.signing.verify(&addresses[3], reader, 2).await;
         for node in &mut nodes[2..] {
             assert!(node.0.try_wait().unwrap().is_none());
             node.0.kill().unwrap();
@@ -113,6 +119,18 @@ impl MemberReplacement<'_> {
         for (document, delivery) in documents {
             checks.decrypt(document, delivery).await;
         }
+        self.signing.verify(&addresses[3], reader, 3).await;
+        let permission = Permissions {
+            client: self.client,
+            worker: self.worker,
+            trusted: self.trusted,
+            policy: self.policy_bytes,
+            reader: &reader.signer.did_uri,
+        };
+        permission.set(&self.signing.id, false).await;
+        self.signing.denied(&addresses[3], reader, 4).await;
+        permission.set(&self.signing.id, true).await;
+        self.signing.verify(&addresses[3], reader, 5).await;
         for node in &mut nodes[2..] {
             node.stop().await;
         }
