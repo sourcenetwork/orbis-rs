@@ -11,6 +11,11 @@ import xml.etree.ElementTree as ET
 
 RUNTIME = "9c76e741f73bdbac37fab71e79192c1289b052f2"
 VERA = "892cf0582e9d9395574cd5e8900988cb4a6ebd21"
+# Published native-diagnostic targets from run 37940390635, built at RUNTIME.
+DIAGNOSTIC_DIGESTS = {
+    "bls12-381": "sha256:64f306d0db89054182becf312c421d358f0097505126ae9c8a6ebe5956a9586f",
+    "jubjub": "sha256:c74ae88480f8bd20e4a61fad7e5bdd384c2a4b7a010aecf6de82ef92fe9800fd",
+}
 FIXTURE_FILES = {
     ".github/workflows/rust.yml", "scripts/qualify-native-restart.py",
     "crates/test-support/src/container.rs", "crates/test-support/src/lib.rs",
@@ -90,6 +95,7 @@ def qualify():
     suite = os.environ.get("NATIVE_RESTART_SUITE", "restart")
     scenarios = {
         "restart": ["native_startup_registers_and_preserves_identity_on_restart"],
+        "fault": ["native_pet_fault_reports"],
         "threshold": ["native_distributed_threshold_workflows", "native_pet_threshold_workflows",
                       "native_pet_member_replacement", "native_pet_scheduled_refresh_after_restart"],
     }
@@ -113,10 +119,19 @@ def qualify():
         "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration:{RUNTIME}-native-{curve}",
         "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native:{RUNTIME}",
     }
+    if suite == "fault":
+        images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
+            f"{repository}/node-integration@{DIAGNOSTIC_DIGESTS[curve]}"
+        )
     for variable, image in images.items():
         subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
-        labels = info["Config"]["Labels"]
+        if variable == "ORBIS_NATIVE_DIAGNOSTIC_IMAGE":
+            if image not in info.get("RepoDigests", []):
+                raise ValueError("diagnostic image differs from the qualified build digest")
+            env[variable] = info["Id"]
+            continue
+        labels = info["Config"].get("Labels") or {}
         expected = {"org.opencontainers.image.revision": VERA}
         if variable == "ORBIS_NATIVE_IMAGE":
             expected = {
