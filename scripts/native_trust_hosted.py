@@ -16,7 +16,7 @@ import tempfile
 import time
 
 VERA = '95fc6b893fc247d4680c716f3ddf69aa6d27d053'
-DEFRA = 'ca430a81bc653bde89b934a6c92c35a0dea7a789'
+DEFRA = 'c77e9a8594b6ca43f913110d96ecb63df48008b9'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
