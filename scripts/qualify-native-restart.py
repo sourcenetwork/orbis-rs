@@ -298,7 +298,24 @@ def fixture_peer_indices(fixture):
         return {}
 
 
-def signing_attempts(tail, peers):
+def received_nonce_requests(tail, peers):
+    received = {}
+    for line in tail.splitlines():
+        if 'Sign Coordinator: Received NonceRequest' not in line:
+            continue
+        line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        request = re.search(r'\brequest_id="?nonce-([A-Za-z0-9_-]{1,96})(?:"|\s|$)', line)
+        sender = re.search(r'\bsender_peer="?([0-9a-fA-F]{64})(?:"|\s|$)', line)
+        member = peers.get(sender[1].lower()) if sender else None
+        if request and member is not None:
+            key = (request[1], member)
+            if key not in received and len(received) == 256:
+                del received[next(iter(received))]
+            received[key] = True
+    return received
+
+
+def signing_attempts(tail, peers, received=None, coordinator=None):
     """Correlate fixed transport events without exporting request or peer IDs."""
     attempts = {}
     for line in tail.splitlines():
@@ -340,6 +357,11 @@ def signing_attempts(tail, peers):
             'member': peers.get(peer[1].lower()) if peer else None,
             'class': error_class,
             'timed_out': any(marker in line.lower() for marker in ('timed out', 'timeout', 'deadline exceeded'))})
+        if received is not None and phase == 'nonce':
+            receiver = attempt['peer_errors'][-1]['member']
+            observed = received.get(receiver)
+            attempt['peer_errors'][-1]['nonce_request_observed'] = (
+                (identity[1], coordinator) in observed if observed is not None else None)
     return list(attempts.values())[-16:]
 
 
@@ -389,6 +411,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
 
     }
     members = []
+    tails = {}
     for member in selected:
         parent = fixtures[0] / f'node-{member}'
         result = {'member': member, 'log_available': False}
@@ -421,11 +444,17 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
                     if len(fields) == 4:
                         configurations.append(fields)
                 result['last_signing_configuration'] = configurations[-1] if configurations else None
-                result['signing_attempts'] = signing_attempts(tail, peer_indices)
+                tails[member] = tail
 
             except OSError:
                 pass
         members.append(result)
+    received = {member: received_nonce_requests(tail, peer_indices)
+                for member, tail in tails.items()}
+    for member in members:
+        if member['log_available']:
+            member['signing_attempts'] = signing_attempts(
+                tails[member['member']], peer_indices, received, member['member'])
     return {'available': all(member['log_available'] for member in members),
             'members': members}
 

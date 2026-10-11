@@ -438,6 +438,61 @@ class SigningRestartDiagnostics(unittest.TestCase):
         self.assertNotIn('private', json.dumps(attempts))
         self.assertNotIn('a' * 64, json.dumps(attempts))
 
+    def test_nonce_delivery_is_correlated_across_members_without_exporting_ids(self):
+        peers = {'a' * 64: 0, 'd' * 64: 3}
+        receiver_log = ('Sign Coordinator: Received NonceRequest request_id=nonce-private-round '
+                        'sender_peer=' + 'd' * 64 + '\n'
+                        'Sign Coordinator: Received NonceRequest request_id=nonce-private-other '
+                        'sender_peer=' + 'a' * 64 + '\n')
+        received = namespace['received_nonce_requests'](receiver_log, peers)
+        coordinator_log = ('Sign Coordinator: Initiating signing request_id=private-round peer_count=2 '
+                           'threshold=2 self_in_list=true interactive=true\n'
+                           'Nonce peer request failed request_id=private-round peer_id=' + 'a' * 64 +
+                           ' error=Timeout waiting for responses: private-error\n')
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {0: received}, 3)
+        self.assertTrue(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {0: received}, 0)
+        self.assertFalse(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {}, 3)
+        self.assertIsNone(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        self.assertNotIn('private', json.dumps(attempts))
+        self.assertNotIn('a' * 64, json.dumps(attempts))
+
+    def test_failure_log_collection_links_coordinator_to_receiver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / 'orbis-native-1-fixture'
+            (fixture / 'node-0').mkdir(parents=True)
+            (fixture / 'node-3').mkdir()
+            (fixture / 'diagnostic-peer-routes.json').write_text(
+                json.dumps([character * 64 for character in 'abcd']))
+            (fixture / 'node-0' / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: Received NonceRequest request_id=nonce-private-round '
+                'sender_peer=' + 'd' * 64 + '\n')
+            (fixture / 'node-3' / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: Initiating signing request_id=private-round peer_count=2 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Nonce peer request failed request_id=private-round peer_id=' + 'a' * 64 +
+                ' error=Timeout waiting for responses: private-error\n')
+            result = namespace['signing_restart_diagnostics'](
+                root, 'churn-diagnostic.log', tuple(range(4)))
+        error = result['members'][3]['signing_attempts'][0]['peer_errors'][0]
+        self.assertTrue(error['nonce_request_observed'])
+        self.assertFalse(result['available'])
+        self.assertNotIn('private', json.dumps(result))
+
+    def test_nonce_delivery_rejects_unknown_senders_and_bounds_retained_events(self):
+        peer = 'a' * 64
+        tail = ('Sign Coordinator: Received NonceRequest request_id=nonce-private-unknown sender_peer=' +
+                'b' * 64 + '\n' + ''.join(
+                    'Sign Coordinator: Received NonceRequest request_id=nonce-private-' + str(index) +
+                    ' sender_peer=' + peer + '\n' for index in range(300)))
+        received = namespace['received_nonce_requests'](tail, {peer: 0})
+        self.assertEqual(len(received), 256)
+        self.assertNotIn(('private-unknown', 0), received)
+        self.assertNotIn(('private-0', 0), received)
+        self.assertIn(('private-299', 0), received)
+
     def test_private_peer_routes_are_bounded_and_symlinks_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
