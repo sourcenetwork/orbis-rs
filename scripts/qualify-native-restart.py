@@ -229,6 +229,32 @@ def lifecycle_results(report, selected):
             )
             if phases:
                 record["pet_phase"] = phases[-1]
+            grpc_codes = {
+                "Cancelled", "Unknown", "InvalidArgument", "DeadlineExceeded", "NotFound",
+                "AlreadyExists", "PermissionDenied", "ResourceExhausted", "FailedPrecondition",
+                "Aborted", "OutOfRange", "Unimplemented", "Internal", "Unavailable",
+                "DataLoss", "Unauthenticated",
+            }
+            observed_codes = re.findall(r"Status \{ code: ([A-Za-z]{1,32}),", content)
+            if observed_codes:
+                record["rpc_codes"] = sorted(set(observed_codes) & grpc_codes)[:8]
+            error_classes = {
+                "unauthorized": "Unauthorized:", "serialization": "Serialization error:",
+                "deserialization": "Deserialization error:", "network_connection": "Network connection error:",
+                "network_communication": "Network communication error:", "crypto": "Cryptographic operation error:",
+                "verification": "Verification failed:", "recovery": "Recovery failed:",
+                "storage": "Local storage error:", "ring_not_found": "Ring not found:",
+                "insufficient_shares": "Insufficient shares:", "response_timeout": "Timeout waiting for responses:",
+                "invalid_input": "Invalid input:", "invalid_state": "Invalid state:",
+                "nonce_state": "Nonce state error:", "protocol": "Protocol error:",
+                "reshare_in_progress": "Ring reshare in progress, try again shortly",
+                "generic": "Sign error:", "system_time": "System time error:", "authz": "Authz error:",
+                "ring_polynomial_state": "Failed to load ring polynomial state:",
+            }
+            observed_classes = [name for name, prefix in error_classes.items()
+                                if 'message: "' + prefix in content]
+            if observed_classes:
+                record["sign_error_classes"] = sorted(observed_classes)[:8]
             polynomials = polynomial_result(content)
             if polynomials is not None:
                 record["polynomials"] = polynomials

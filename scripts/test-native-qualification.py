@@ -275,6 +275,22 @@ class ChurnResult(unittest.TestCase):
         for private in ('private-value', 'private-key', '/private/secret'):
             self.assertNotIn(private, json.dumps(result))
 
+    def test_rpc_failure_exports_closed_codes_and_error_classes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>panicked at tests/support/native_pet/signing.rs:95:65: '
+                              'Status { code: DeadlineExceeded, message: "Timeout waiting for responses: private-value" }\n'
+                              'Status { code: PrivateUnknown, message: "private-value" }\n'
+                              'Status { code: Unavailable, message: "Ring reshare in progress, try again shortly" }'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['rpc_codes'], ['DeadlineExceeded', 'Unavailable'])
+        self.assertEqual(result['cases'][0]['sign_error_classes'], ['reshare_in_progress', 'response_timeout'])
+        for private in ('private-value', 'PrivateUnknown'):
+            self.assertNotIn(private, json.dumps(result))
+
 
 if __name__ == '__main__':
     unittest.main()
