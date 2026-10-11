@@ -405,6 +405,8 @@ async fn wait_for_reshare_bulletin_finalized<D>(
 
 #[cfg(test)]
 mod tests {
+    mod paired_promotion;
+
     use super::*;
     use crate::dkg::v0::session_state::ReshareSignatureReadyKey;
     use crate::helpers::test_helpers::{
