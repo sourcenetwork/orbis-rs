@@ -36,6 +36,7 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_pet/polynomial_state.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/runner.rs",
     "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
+    "scripts/native_trust_hosted.py", "scripts/test-native-trust-hosted.py",
     "docker/docker-compose-native-integration-test.yml",
 }
 
