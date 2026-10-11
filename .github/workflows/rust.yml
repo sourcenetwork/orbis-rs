@@ -9,13 +9,18 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway]
+        options: [full, common, native, gateway, restart]
         default: full
         required: true
       trust_revision:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
         default: 11630c1a0b3241bed2799a6c162c4c8e16a4e502
+      restart_curve:
+        description: Curve for focused restart qualification
+        type: choice
+        options: [both, bls12-381, jubjub]
+        default: both
 
 permissions:
   contents: read
@@ -184,7 +189,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -362,7 +367,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -442,6 +447,43 @@ jobs:
             --features "integration-test-native,redb,iroh,${{ matrix.crypto }}" \
             --test native_startup \
             -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
+
+  native-restart:
+    name: Native restart (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'restart'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: ${{ fromJSON(inputs.restart_curve == 'bls12-381' && '["bls12-381"]' || inputs.restart_curve == 'jubjub' && '["jubjub"]' || '["bls12-381", "jubjub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: native-restart-${{ matrix.crypto }}
+          cache-targets: true
+          cache-on-failure: true
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Qualify private journal ownership and restart
+        env:
+          NATIVE_RESTART_CURVE: ${{ matrix.crypto }}
+        run: python3 scripts/qualify-native-restart.py
 
   native-trust-artifacts:
     name: Build native Trust ring artifacts once
