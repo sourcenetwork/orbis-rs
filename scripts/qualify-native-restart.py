@@ -37,6 +37,8 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_pet.rs",
     "bin/orbis-node/tests/support/native_pet/document.rs",
     "bin/orbis-node/tests/support/native_pet/member_replacement.rs",
+    "bin/orbis-node/tests/support/native_pet/member_churn.rs",
+    "bin/orbis-node/tests/support/native_pet/signing.rs",
     "bin/orbis-node/tests/support/native_pet/scheduled_refresh.rs",
     "bin/orbis-node/tests/support/native_pet/soak.rs",
     "bin/orbis-node/tests/support/native_pet/polynomial_state.rs",
@@ -109,6 +111,20 @@ def soak_result(tail):
         return None
     if not (20 <= result["cycles"] <= 1800 and 900 <= result["active_seconds"] <= 1800
             and result["restarts"] == 3):
+        return None
+    return result
+
+
+def churn_result(tail):
+    matches = re.findall(r'native_threshold_churn=(\{[^\n]{1,256}\})', tail)
+    if len(matches) != 1:
+        return None
+    try:
+        result = json.loads(matches[0])
+    except json.JSONDecodeError:
+        return None
+    expected = {"changes": 5, "reentries": 4, "crash_restarts": 10}
+    if result != expected or any(type(value) is not int for value in result.values()):
         return None
     return result
 
@@ -188,6 +204,7 @@ def lifecycle_results(report, selected):
                 "native_startup.rs", "support/native_workflow.rs", "support/native_pet.rs",
                 "support/native_pet/dkg.rs", "support/native_pet/document.rs",
                 "support/native_pet/member_replacement.rs", "support/native_pet/scheduled_refresh.rs",
+                "support/native_pet/member_churn.rs",
                 "support/native_pet/scheduled_store.rs", "support/native_pet/report_fault.rs",
                 "support/native_pet/report_acceptance.rs",
                 "support/native_pet/soak.rs",
@@ -229,7 +246,10 @@ def qualify():
     if suite == "threshold" and curve == "bls12-381":
         selected.append("native_defra_signing")
     requested = os.environ.get("NATIVE_LIFECYCLE_CASE", "all")
-    if requested != "all":
+    churn = suite == "threshold" and requested == "native_pet_member_churn"
+    if churn:
+        selected = [requested]
+    elif requested != "all":
         if suite != "threshold" or requested not in selected:
             raise ValueError("scenario does not belong to the selected suite and curve")
         selected = [requested]
@@ -256,8 +276,9 @@ def qualify():
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
     if suite in ("threshold", "soak"):
         unit_flags = ["--features", "native", "--lib", "native_network::tests::"]
-    profile = "native-soak" if suite == "soak" else "ci"
-    ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if suite == "soak" else []
+    focused_ignored = suite == "soak" or churn
+    profile = "native-soak" if focused_ignored else "ci"
+    ignored_flags = ["--run-ignored", "only", "--success-output", "immediate"] if focused_ignored else []
     commands = [
         ["cargo", "test", "--release", "--locked", "-p", "test-support", "--no-default-features", *unit_flags],
         ["cargo", "test", "--release", "--locked", "-p", "orbis-node", "--no-default-features",
@@ -295,6 +316,12 @@ def qualify():
                     soak = soak_result(stream.read().decode("utf-8", errors="replace"))
                 summary["soak"] = soak
                 summary["complete"] = summary["complete"] and soak is not None
+            if churn:
+                with log.open("rb") as stream:
+                    stream.seek(max(0, log.stat().st_size - 65536))
+                    observed = churn_result(stream.read().decode("utf-8", errors="replace"))
+                summary["churn"] = observed
+                summary["complete"] = summary["complete"] and observed is not None
             print(json.dumps(summary), flush=True)
             (output / "results.json").write_text(json.dumps(summary) + "\n")
             passed = passed and summary["complete"]

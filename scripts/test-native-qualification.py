@@ -10,6 +10,7 @@ import unittest
 namespace = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
 verify = namespace['verify_fixture_changes']
 soak_result = namespace['soak_result']
+churn_result = namespace['churn_result']
 polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
 verified_fixture_source = namespace['verified_fixture_source']
@@ -222,6 +223,38 @@ class PolynomialSummary(unittest.TestCase):
         text = 'native_polynomial_state=' + json.dumps(self.record())
         for content in ['', text + '\n' + text, 'native_polynomial_state={broken}']:
             self.assertIsNone(polynomial_result(content))
+
+
+class ChurnResult(unittest.TestCase):
+    def test_complete_churn_is_retained(self):
+        record = {'changes': 5, 'reentries': 4, 'crash_restarts': 10}
+        self.assertEqual(churn_result('native_threshold_churn=' + json.dumps(record)), record)
+
+    def test_partial_or_private_results_are_rejected(self):
+        for update in ({'changes': 4}, {'reentries': 3}, {'crash_restarts': 9},
+                       {'changes': 5.0}, {'reentries': True}, {'private_key': 'private'}):
+            record = {'changes': 5, 'reentries': 4, 'crash_restarts': 10}
+            record.update(update)
+            with self.subTest(fields=update):
+                self.assertIsNone(churn_result('native_threshold_churn=' + json.dumps(record)))
+
+    def test_missing_malformed_or_duplicate_completion_is_rejected(self):
+        valid = 'native_threshold_churn={"changes":5,"reentries":4,"crash_restarts":10}'
+        for tail in ('', 'native_threshold_churn={broken}', valid + '\n' + valid):
+            with self.subTest(tail=tail):
+                self.assertIsNone(churn_result(tail))
+
+    def test_churn_failure_retains_location_without_private_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>panicked at bin/orbis-node/tests/support/native_pet/member_churn.rs:42:17: '
+                              'private-value</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['locations'], [
+            {'source': 'support/native_pet/member_churn.rs', 'line': 42, 'column': 17}])
+        self.assertNotIn('private-value', json.dumps(result))
 
 
 if __name__ == '__main__':

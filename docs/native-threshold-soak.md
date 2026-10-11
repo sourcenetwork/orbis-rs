@@ -53,3 +53,36 @@ does not establish capacity, a memory plateau, WAN behavior or prolonged refresh
 and membership churn. Scheduled refresh and member replacement have separate
 lifecycle cases. The soak requires a successful hosted run on each curve before
 its behavior can be described as qualified.
+
+## Repeated member replacement
+
+The ignored `native_pet_member_churn` case keeps one deployment and ring while
+finalizing five replacements. Four rounds reintroduce a previously removed member
+after checking that its paired secrets and pending bundles are absent. Each round
+removes another member, waits for public polynomial convergence and secret cleanup,
+then stops one retained member. Two current members remain, so successful PRE and
+derived-key signing require the incoming share.
+
+Those two participants are killed and restarted using their existing encrypted
+stores. Both endpoints must recover decryption and signing, reject revoked signing
+authority and recover after certified regrant. Finalized ring keys and stored
+documents remain unchanged. Persisted main/PET polynomials and sorted committee
+indices must match the new membership; departed ring material remains absent.
+Signing messages differ across rounds and phases, and PRE uses a fresh recipient
+key in each phase to exclude cached results from an earlier committee.
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=threshold \
+  -f restart_curve=both -f threshold_case=native_pet_member_churn
+```
+
+The focused driver runs this case with zero retries against the pinned normal
+images. The twenty-minute test deadline includes setup and all five replacements.
+Qualification requires a unique completion record with five changes, four
+reentries and ten recoveries after participant crashes, in addition to a passing test. Its bounded
+result omits keys, stores, runtime logs and raw assertion messages. Ordinary CI
+keeps the case ignored, and the default threshold selection stays unchanged.
+
+This is bounded membership qualification. Sustained memory, throughput, WAN and
+prolonged scheduled refresh need separate measurements. A successful hosted result
+on each curve is required before describing this case as qualified.

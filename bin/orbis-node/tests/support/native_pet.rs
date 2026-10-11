@@ -53,10 +53,14 @@ pub mod soak;
 #[path = "native_pet/polynomial_state.rs"]
 mod polynomial_state;
 
+#[path = "native_pet/member_churn.rs"]
+mod member_churn;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
     MemberReplacement,
+    MemberChurn,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
 }
@@ -90,11 +94,15 @@ pub async fn run(scenario: Scenario) {
         Scenario::Lifecycle => (9075, false),
         Scenario::ScheduledRefresh => (9077, false),
         Scenario::MemberReplacement => (9078, false),
+        Scenario::MemberChurn => (9082, false),
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
     let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
-    let signing = if matches!(scenario, Scenario::MemberReplacement) {
+    let signing = if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
         Some(signing::Signing::create(&workflow, &keys, "native-member-replacement").await)
     } else {
         None
@@ -289,12 +297,15 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(&client, id, &trusted).await;
-    if matches!(scenario, Scenario::MemberReplacement) {
+    if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
         let signing = signing.as_ref().unwrap();
         signing.denied(&addresses[0], &reader, 0).await;
         permission.set(&signing.id, true).await;
         signing.verify(&addresses[0], &reader, 1).await;
-        member_replacement::MemberReplacement {
+        let replacement = member_replacement::MemberReplacement {
             cluster: &cluster,
             client: &client,
             trusted: &trusted,
@@ -310,9 +321,16 @@ pub async fn run(scenario: Scenario) {
             base: base.path(),
             addresses: &addresses,
             infos: &infos,
+        };
+        if matches!(scenario, Scenario::MemberChurn) {
+            replacement
+                .run_churn(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
+        } else {
+            replacement
+                .run(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
         }
-        .run(&mut nodes, &reader, &audit, documents, &baseline)
-        .await;
         return;
     }
     let previous = client

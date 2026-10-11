@@ -562,6 +562,18 @@ async fn native_pet_member_replacement() {
 }
 
 #[tokio::test]
+#[ignore = "requires focused native membership churn qualification"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_member_churn() {
+    tokio::time::timeout(
+        Duration::from_secs(1200),
+        native_pet::run(native_pet::Scenario::MemberChurn),
+    )
+    .await
+    .expect("native membership churn must finish within twenty minutes");
+}
+
+#[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;

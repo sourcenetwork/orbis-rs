@@ -1,3 +1,4 @@
+use super::member_churn::Committee;
 use super::{
     add_orbis_node4, endpoint, read_ring, signing::Signing, stored_bundle as store, submit,
     unix_now, wait_polynomials, Delivery, Document, Node, Permissions, Polynomials, PreChecks,
@@ -41,14 +42,14 @@ pub(super) struct MemberReplacement<'a> {
 }
 
 impl MemberReplacement<'_> {
-    pub async fn run(
+    pub(super) async fn run(
         &self,
         nodes: &mut Vec<Node>,
         reader: &Reader,
         audit: &str,
         documents: [(&Document, Delivery); 2],
         baseline: &[Polynomials],
-    ) {
+    ) -> Committee {
         assert_eq!(nodes.len(), 3);
         let (incoming, address, info) = self.incoming().await;
         assert!(self.infos.iter().all(|old| old.node_key != info.node_key));
@@ -76,7 +77,7 @@ impl MemberReplacement<'_> {
         // not establish exclusion from the current share committee.
         self.wait_departed_cleanup(&addresses[0]).await;
         nodes[0].stop().await;
-        self.assert_departed_store();
+        self.assert_departed_store(0);
         nodes[1].stop().await;
         assert!(nodes[0].0.try_wait().unwrap().is_some());
         assert!(nodes[1].0.try_wait().unwrap().is_some());
@@ -159,8 +160,12 @@ impl MemberReplacement<'_> {
             assert_eq!(main.polynomial, reshared[index - 1].main);
             assert_eq!(pet.polynomial, reshared[index - 1].pet);
         }
-        self.assert_departed_store();
+        self.assert_departed_store(0);
         eprintln!("native PET phase=member-replacement-restart incoming-required=true paired-keys-stable=true departed-secrets-absent=true");
+        Committee {
+            infos,
+            polynomials: reshared,
+        }
     }
 
     async fn incoming(&self) -> (Node, String, GetNodeInfoResponse) {
@@ -204,7 +209,7 @@ impl MemberReplacement<'_> {
         (incoming, address, info)
     }
 
-    async fn reshare(&self, target: Vec<String>) -> RingRecord {
+    pub(super) async fn reshare(&self, target: Vec<String>) -> RingRecord {
         let previous = self
             .client
             .read_threshold_ring(self.ring_id, 1, self.trusted)
@@ -268,7 +273,7 @@ impl MemberReplacement<'_> {
         .expect("native PET member replacement must finalize")
     }
 
-    async fn wait_departed_cleanup(&self, address: &str) {
+    pub(super) async fn wait_departed_cleanup(&self, address: &str) {
         tokio::time::timeout(Duration::from_secs(60), async {
             let mut client = InfoServiceClient::connect(endpoint(address)).await.unwrap();
             loop {
@@ -306,14 +311,14 @@ impl MemberReplacement<'_> {
         .expect("departed native scheduler must clean paired material and index");
     }
 
-    fn main_storage_key(&self) -> String {
+    pub(super) fn main_storage_key(&self) -> String {
         crypto::GroupAffine::from_bytes(&hex::decode(&self.keys.public_key).unwrap())
             .unwrap()
             .to_string()
     }
 
-    fn assert_departed_store(&self) {
-        let storage = store::open(&self.base.join("node-0"));
+    pub(super) fn assert_departed_store(&self, index: usize) {
+        let storage = store::open(&self.base.join(format!("node-{index}")));
         let main_key = self.main_storage_key();
         for key in [
             LocalStorageKeys::RingKey(main_key.clone()),
@@ -333,7 +338,7 @@ impl MemberReplacement<'_> {
         }
     }
 
-    async fn assert_certified_state(
+    pub(super) async fn assert_certified_state(
         &self,
         finalized: &RingRecord,
         documents: [(&Document, Delivery); 2],

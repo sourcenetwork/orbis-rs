@@ -30,6 +30,7 @@ on:
           - native_distributed_threshold_workflows
           - native_pet_threshold_workflows
           - native_pet_member_replacement
+          - native_pet_member_churn
           - native_pet_scheduled_refresh_after_restart
           - native_defra_signing
         default: all
