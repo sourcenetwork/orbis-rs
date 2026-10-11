@@ -292,5 +292,59 @@ class ChurnResult(unittest.TestCase):
             self.assertNotIn(private, json.dumps(result))
 
 
+class SigningRestartDiagnostics(unittest.TestCase):
+    def collect(self, directory):
+        return namespace['signing_restart_diagnostics'](directory)
+
+    def test_restart_events_are_numeric_and_private_fields_are_omitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for member in (2, 3):
+                parent = root / 'orbis-native-1-fixture' / f'node-{member}'
+                parent.mkdir(parents=True)
+                (parent / 'pet-replacement-restart.log').write_text(
+                    'private-key jwt request-id node-key\n'
+                    'Sign Coordinator: Received NonceRequest\n'
+                    'Sign peer request failed error=private-response\n'
+                    'No nonce state found for request_id private-request\n')
+            result = self.collect(root)
+            self.assertTrue(result['available'])
+            for member in result['members']:
+                self.assertEqual(member['counters']['nonce_requests'], 1)
+                self.assertEqual(member['counters']['sign_peer_errors'], 1)
+                self.assertEqual(member['counters']['missing_nonce'], 1)
+                self.assertEqual(member['counters']['signatures_recovered'], 0)
+            self.assertNotIn('private', json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+
+    def test_log_tail_is_bounded_and_truncation_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / 'orbis-native-1-fixture' / 'node-2'
+            parent.mkdir(parents=True)
+            (parent / 'pet-replacement-restart.log').write_bytes(
+                b'Sign Coordinator: Received NonceRequest\n' + b'x' * (1024 * 1024) +
+                b'\nSign Coordinator: Local signing failed\n')
+            result = self.collect(root)
+            self.assertFalse(result['available'])
+            self.assertTrue(result['members'][0]['tail_truncated'])
+            self.assertEqual(result['members'][0]['counters']['nonce_requests'], 0)
+            self.assertEqual(result['members'][0]['counters']['local_signing_errors'], 1)
+
+    def test_symlinks_and_missing_or_ambiguous_fixtures_are_not_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(self.collect(root), {'available': False, 'members': []})
+            parent = root / 'orbis-native-1-fixture' / 'node-2'
+            parent.mkdir(parents=True)
+            private = root / 'private'
+            private.write_text('Sign Coordinator: Local signing failed\n')
+            (parent / 'pet-replacement-restart.log').symlink_to(private)
+            result = self.collect(root)
+            self.assertFalse(result['members'][0]['log_available'])
+            (root / 'orbis-native-2-fixture').mkdir()
+            self.assertEqual(self.collect(root), {'available': False, 'members': []})
+
+
 if __name__ == '__main__':
     unittest.main()

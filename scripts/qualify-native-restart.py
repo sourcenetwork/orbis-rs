@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import stat
 import re
 from pathlib import Path
 import subprocess
@@ -262,6 +263,49 @@ def lifecycle_results(report, selected):
     return {"complete": all(case["status"] == "passed" for case in cases), "cases": cases}
 
 
+def signing_restart_diagnostics(directory):
+    """Count fixed signing events in the two first-replacement restart logs."""
+    fixtures = list(directory.glob('orbis-native-*'))
+    if len(fixtures) != 1 or fixtures[0].is_symlink():
+        return {'available': False, 'members': []}
+    markers = {
+        'nonce_requests': 'Sign Coordinator: Received NonceRequest',
+        'sign_requests': 'Sign Coordinator: Received SignRequest',
+        'sign_responses': 'Sign Coordinator: Sending SignResponse',
+        'nonce_peer_errors': 'Nonce peer request failed',
+        'sign_peer_errors': 'Sign peer request failed',
+        'nonce_deadlines': 'Nonce collection timed out; proceeding with partial responses',
+        'sign_deadlines': 'Sign collection timed out; proceeding with partial responses',
+        'local_signing_errors': 'Sign Coordinator: Local signing failed',
+        'local_verification_errors': 'Sign Coordinator: Local share verification failed',
+        'missing_nonce': 'No nonce state found for request_id',
+        'nonce_context_mismatch': 'Nonce context key mismatch for request_id',
+        'nonce_capacity': 'Nonce state limit exceeded',
+        'signatures_recovered': 'Sign Coordinator: Successfully recovered signature',
+    }
+    members = []
+    for member in (2, 3):
+        parent = fixtures[0] / f'node-{member}'
+        result = {'member': member, 'log_available': False}
+        if not parent.is_symlink():
+            try:
+                descriptor = os.open(parent / 'pet-replacement-restart.log',
+                                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, 'rb') as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise OSError('restart log is not a regular file')
+                    size = stream.seek(0, os.SEEK_END)
+                    stream.seek(max(0, size - 1024 * 1024))
+                    tail = stream.read(1024 * 1024).decode('utf-8', errors='replace')
+                result.update(log_available=True, tail_truncated=size > 1024 * 1024,
+                              counters={name: tail.count(marker) for name, marker in markers.items()})
+            except OSError:
+                pass
+        members.append(result)
+    return {'available': all(member['log_available'] for member in members),
+            'members': members}
+
+
 def qualify():
     curve = os.environ["NATIVE_RESTART_CURVE"]
     if curve not in ("bls12-381", "jubjub"):
@@ -311,6 +355,10 @@ def qualify():
         env[variable] = verified_image_id(info, variable, image, curve)
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)
+    if churn:
+        nodes = output / 'nodes'
+        nodes.mkdir(mode=0o700)
+        env['ORBIS_NATIVE_E2E_DIR'] = str(nodes)
     unit_flags = ["--lib", "container::tests::bind_mount_user_rejects_files_and_symlinks", "--", "--exact"]
     if suite in ("threshold", "soak"):
         unit_flags = ["--features", "native", "--lib", "native_network::tests::"]
@@ -360,6 +408,9 @@ def qualify():
                     observed = churn_result(stream.read().decode("utf-8", errors="replace"))
                 summary["churn"] = observed
                 summary["complete"] = summary["complete"] and observed is not None
+                if any(case.get('pet_phase') == 'member-replacement-restart'
+                       and case['status'] == 'failed' for case in summary['cases']):
+                    summary['signing_restart'] = signing_restart_diagnostics(output / 'nodes')
             print(json.dumps(summary), flush=True)
             (output / "results.json").write_text(json.dumps(summary) + "\n")
             passed = passed and summary["complete"]
