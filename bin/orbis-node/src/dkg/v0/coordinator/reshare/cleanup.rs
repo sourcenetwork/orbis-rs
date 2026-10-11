@@ -56,6 +56,7 @@ async fn wait_for_local_pet_bundle<D>(
     attempt: AttemptKey,
     ring_id: &str,
     info: &ReshareReadinessInfo,
+    confirmed_payload: &RingPayload,
 ) -> Option<PendingReshareBundle>
 where
     D: Dkg + Clone + Send + Sync + 'static,
@@ -79,7 +80,26 @@ where
                     )
                     && pending.expected_new_threshold == info.expected_new_threshold =>
             {
-                return Some(pending);
+                let post = match app_state
+                    .bulletin
+                    .read(ring_id.to_string(), BulletinKind::Ring)
+                    .await
+                {
+                    Ok(post) => post,
+                    Err(error) => {
+                        tracing::warn!(
+                            session_id = attempt.session_id(),
+                            ring_id,
+                            %error,
+                            "Reshare: failed to recheck confirmation before local promotion"
+                        );
+                        return None;
+                    }
+                };
+                match serde_json::from_slice::<RingPayload>(&post.payload) {
+                    Ok(payload) if payload == *confirmed_payload => return Some(pending),
+                    _ => return None,
+                }
             }
             Ok(_) => {}
             Err(error) => {
@@ -264,14 +284,17 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                 let mut pet_pending_bundle_resolved = false;
                 // Bulletin confirmation proves the publisher staged its PET bundle;
                 // each other member may still be completing its own PET Phase 4.
-                let pending_pet = if should_promote && requires_pet {
-                    if let Some(ring_id) = ring_id_for_pet.as_deref() {
-                        wait_for_local_pet_bundle(&app_state, attempt, ring_id, &info).await
-                    } else {
-                        None
+                let pending_pet = match (
+                    should_promote,
+                    requires_pet,
+                    ring_id_for_pet.as_deref(),
+                    finalized_payload.as_ref(),
+                ) {
+                    (true, true, Some(ring_id), Some(payload)) => {
+                        wait_for_local_pet_bundle(&app_state, attempt, ring_id, &info, payload)
+                            .await
                     }
-                } else {
-                    None
+                    _ => None,
                 };
                 let promotion_ready = !requires_pet || pending_pet.is_some();
                 if should_promote && promotion_ready {
@@ -357,7 +380,7 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                     tracing::error!(
                         session_id,
                         ring_key = %key,
-                        "Reshare: matching local PET bundle unavailable; preserving active pair and pending recovery material"
+                        "Reshare: local PET promotion not ready; preserving active pair and pending recovery material"
                     );
                 } else if let Some(payload) = finalized_payload.as_ref() {
                     // A genuine, confirmed mismatch: we know for certain the bulletin
