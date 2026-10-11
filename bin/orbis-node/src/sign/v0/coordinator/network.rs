@@ -227,10 +227,24 @@ where
         accept_response(response, stream.peer_id().clone()).await
     })
     .await;
-    let _ = parent;
-    exchange.map_err(|_| {
-        SignError::Timeout(format!("Peer exchange timed out while {phase} for {peer}"))
-    })?
+    let result = exchange.unwrap_or_else(|_| {
+        Err(SignError::Timeout(format!(
+            "Peer exchange timed out while {phase} for {peer}"
+        )))
+    });
+    if matches!(
+        &result,
+        Err(SignError::NetworkConnection(_)
+            | SignError::NetworkCommunication(_)
+            | SignError::Timeout(_))
+    ) {
+        if let Some(parent) = parent {
+            pool.invalidate_if_same(peer, protocol, &parent).await;
+        }
+    }
+    // A sent signing request may have consumed a nonce. Only a fresh caller
+    // request may retry after retiring the failed transport.
+    result
 }
 
 #[cfg(test)]

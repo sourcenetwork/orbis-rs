@@ -72,3 +72,22 @@ gate does not establish atomic persistence across a crash between those writes.
 Paused-time cleanup tests cover delayed local staging, unavailable and unrelated
 PET material, superseded confirmation, and the existing main-only promotion,
 cancellation and confirmation-timeout paths.
+
+## Signing connection recovery
+
+Each signing exchange retains its pooled parent connection before opening a
+stream. A connection, send, receive or deadline failure removes that exact
+parent from the pool; a later failure cannot remove a concurrently installed
+replacement. The next caller opens a fresh connection. A received response that
+fails protocol validation does not invalidate an otherwise responsive transport.
+
+The exchange keeps the existing ten-second deadline through response validation.
+Timeout errors identify connection acquisition, stream opening, sending,
+receiving or response validation. The transport never repeats a request after
+sending it: a responder may already have consumed authorization or nonce state.
+A retry must start a new signing request with fresh authorization and nonces.
+
+Focused transport regressions cover blocked stream opening, receive timeout,
+broken sends, successful reuse, protocol rejection and a late timeout racing a
+replacement. These tests do not qualify real member-churn recovery; that requires
+the native lifecycle case against the resulting normal runtime images.
