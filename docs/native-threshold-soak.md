@@ -53,3 +53,22 @@ does not establish capacity, a memory plateau, WAN behavior or prolonged refresh
 and membership churn. Scheduled refresh and member replacement have separate
 lifecycle cases. The soak requires a successful hosted run on each curve before
 its behavior can be described as qualified.
+
+## Local promotion after paired resharing
+
+A certified ring update establishes the new committee and threshold. It proves
+that the publishing member staged its PET bundle; another member may still be
+finishing its own PET computation. Each continuing member waits up to 150 seconds
+for its local pending PET bundle before promoting the main bundle. The pending
+bundle must match the ring ID, committee and threshold. The complete certified
+ring payload must still match the confirmation observed before the wait.
+
+A missing or unrelated PET bundle, a read failure, or a superseding ring update
+preserves the active pair and durable pending recovery material. The attempt is
+released, and startup reconciliation can resolve the retained material against
+certified state. Main and PET persistence remain separate writes; this staging
+gate does not establish atomic persistence across a crash between those writes.
+
+Paused-time cleanup tests cover delayed local staging, unavailable and unrelated
+PET material, superseded confirmation, and the existing main-only promotion,
+cancellation and confirmation-timeout paths.
