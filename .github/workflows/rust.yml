@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault, soak]
+        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery]
         default: full
         required: true
       trust_revision:
@@ -472,6 +472,57 @@ jobs:
             --features "integration-test-native,redb,iroh,${{ matrix.crypto }}" \
             --test native_startup \
             -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
+
+  sign-peer-recovery:
+    name: Signing peer recovery (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'peer-recovery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      QUALIFICATION_CURVE: ${{ matrix.crypto }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+          path: candidate
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: native-restart-${{ matrix.crypto }}
+          cache-on-failure: true
+      - name: Fetch locked dependencies
+        working-directory: candidate
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo +1.98.0 fetch --locked
+      - name: Reproduce and fix signing connection retention
+        run: python3 scripts/qualify-sign-peer-recovery.py
+      - name: Retain bounded regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sign-peer-recovery-${{ matrix.crypto }}
+          path: ${{ runner.temp }}/sign-peer-recovery-${{ matrix.crypto }}/results.json
+          if-no-files-found: warn
+          retention-days: 14
 
   native-restart:
     name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
