@@ -15,8 +15,8 @@ import tarfile
 import tempfile
 import time
 
-VERA = 'b3131f408078107f59254cfe9e107e510b3139c2'
-DEFRA = 'cd8958601fa5319c6b4bcf5053c840c8606708a9'
+VERA = '95fc6b893fc247d4680c716f3ddf69aa6d27d053'
+DEFRA = 'ca430a81bc653bde89b934a6c92c35a0dea7a789'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
