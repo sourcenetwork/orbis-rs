@@ -44,6 +44,9 @@ mod stored_bundle;
 #[path = "native_pet/member_replacement.rs"]
 mod member_replacement;
 
+#[path = "native_pet/signing.rs"]
+mod signing;
+
 #[path = "native_pet/soak.rs"]
 pub mod soak;
 
@@ -91,6 +94,11 @@ pub async fn run(scenario: Scenario) {
         Scenario::ReportFault => (9076, true),
     };
     let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
+    let signing = if matches!(scenario, Scenario::MemberReplacement) {
+        Some(signing::Signing::create(&workflow, &keys, "native-member-replacement").await)
+    } else {
+        None
+    };
     let super::native_workflow::NativeWorkflow {
         cluster,
         client,
@@ -147,6 +155,13 @@ pub async fn run(scenario: Scenario) {
     for id in [&stored.id, &inline.id, &audit, &wrong_audit] {
         let registered = client
             .native_register_object(&worker, policy_bytes, id, "document")
+            .await
+            .unwrap();
+        confirmed(&client, registered.transaction_hash, &trusted).await;
+    }
+    if let Some(signing) = &signing {
+        let registered = client
+            .native_register_object(&worker, policy_bytes, &signing.id, "document")
             .await
             .unwrap();
         confirmed(&client, registered.transaction_hash, &trusted).await;
@@ -275,6 +290,10 @@ pub async fn run(scenario: Scenario) {
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(&client, id, &trusted).await;
     if matches!(scenario, Scenario::MemberReplacement) {
+        let signing = signing.as_ref().unwrap();
+        signing.denied(&addresses[0], &reader, 0).await;
+        permission.set(&signing.id, true).await;
+        signing.verify(&addresses[0], &reader, 1).await;
         member_replacement::MemberReplacement {
             cluster: &cluster,
             client: &client,
@@ -284,6 +303,8 @@ pub async fn run(scenario: Scenario) {
             controller: &controller,
             worker: &worker,
             policy: &policy,
+            policy_bytes,
+            signing,
             ring_id: &ring_id,
             keys: &keys,
             base: base.path(),
