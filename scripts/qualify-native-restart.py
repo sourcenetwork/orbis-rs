@@ -207,7 +207,11 @@ def lifecycle_results(report, selected):
                 "support/native_pet/member_churn.rs",
                 "support/native_pet/scheduled_store.rs", "support/native_pet/report_fault.rs",
                 "support/native_pet/report_acceptance.rs",
-                "support/native_pet/soak.rs",
+                "support/native_pet/soak.rs", "support/native_pet/signing.rs",
+                "support/native_pet/polynomial_state.rs", "support/pet_dkg_contract.rs",
+                "support/pre_scenario.rs", "support/sign_scenario.rs",
+                "support/refresh_scenario.rs", "support/reshare_scenario.rs",
+                "support/native_confirmation.rs",
             )
             locations = re.findall(r"(?:bin/orbis-node/tests/|tests/)(" +
                                    "|".join(re.escape(source) for source in filenames) +
@@ -217,6 +221,14 @@ def lifecycle_results(report, selected):
             record["deadline"] = any(marker in content for marker in ("Elapsed(())", "TIMED OUT", "execution timed out"))
             record["permission_denied"] = "PermissionDenied" in content
             record["panicked"] = "panicked at" in content
+            phases = re.findall(
+                r"native PET phase=(paired-dkg|stored-inline-permissions-revocation-regrant|"
+                r"replacement-finalized|replacement-material-ready|member-replacement-restart|"
+                r"member-churn|scheduled-refresh-after-restart|reshared-pre|restart-pre|fault-report)\b",
+                content,
+            )
+            if phases:
+                record["pet_phase"] = phases[-1]
             polynomials = polynomial_result(content)
             if polynomials is not None:
                 record["polynomials"] = polynomials

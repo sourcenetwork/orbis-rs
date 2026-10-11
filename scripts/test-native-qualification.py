@@ -256,6 +256,25 @@ class ChurnResult(unittest.TestCase):
             {'source': 'support/native_pet/member_churn.rs', 'line': 42, 'column': 17}])
         self.assertNotIn('private-value', json.dumps(result))
 
+    def test_shared_helper_failure_retains_only_known_source_and_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native PET phase=paired-dkg private-key=private-value\n'
+                              'native PET phase=member-replacement-restart\n'
+                              'native PET phase=/private/secret\n'
+                              'panicked at tests/support/native_pet/signing.rs:97:62: private-value\n'
+                              'tests/support/pre_scenario.rs:14:3 private-value'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['pet_phase'], 'member-replacement-restart')
+        self.assertEqual(result['cases'][0]['locations'], [
+            {'source': 'support/native_pet/signing.rs', 'line': 97, 'column': 62},
+            {'source': 'support/pre_scenario.rs', 'line': 14, 'column': 3}])
+        for private in ('private-value', 'private-key', '/private/secret'):
+            self.assertNotIn(private, json.dumps(result))
+
 
 if __name__ == '__main__':
     unittest.main()
