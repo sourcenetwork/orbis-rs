@@ -7,7 +7,7 @@ by focused lifecycle qualification. The driver rejects production source changes
 against those images and clears test KDF overrides. It does not build a diagnostic
 runtime or change the production refresh interval.
 
-The focused driver selects Orbis runtime `68cf26d15fb554adfbab50df157e8e2d085463d4`
+The focused driver selects Orbis runtime `d80d02d6f2f3606cd0c0a9688c7a5ae09d658bd4`
 and Vera `9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf`. It pulls the pinned
 Linux amd64 images by digest and checks their source, backend and curve labels.
 The fault scope additionally requires the diagnostic image's unsafe-testing

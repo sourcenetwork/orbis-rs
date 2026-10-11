@@ -9,13 +9,13 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "68cf26d15fb554adfbab50df157e8e2d085463d4"
+RUNTIME = "d80d02d6f2f3606cd0c0a9688c7a5ae09d658bd4"
 VERA = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf"
-# Source-verified Linux amd64 images from run 38131456347, built at RUNTIME.
+# Source-verified Linux amd64 images from run 38160944392, built at RUNTIME.
 VERA_DIGEST = "sha256:13100a948d3dc642839aeb29de747d7a0c7d9c78fb018d33bce6bfb3902bebfd"
 RUNTIME_DIGESTS = {
-    "bls12-381": "sha256:b0c0c87f9516c51aa1e6db363d602e50b9d00f06fe2338bdc38a7aa185206895",
-    "jubjub": "sha256:062bcc69615d2c3357839532eaf42ace0eb759887dc3960327165777e8b6e43e",
+    "bls12-381": "sha256:93e19dd7cb69003eda51172f93ca62023f8cf4b1509e608678e3cd40f33f8990",
+    "jubjub": "sha256:e4b3c630c15addce4d18f19c638d2f2396d88fc8620e5c96edcaa326a9528937",
 }
 DIAGNOSTIC_DIGESTS = {
     "bls12-381": "sha256:09d26cdad7bc33cbe800746015347379b16135faa0d74fee0f418c756fc9f42f",
