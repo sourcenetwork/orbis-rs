@@ -211,7 +211,7 @@ async fn failed_send_retires_connection_without_replaying_request() {
 async fn successful_exchanges_reuse_connection() {
     let pool = PeerConnectionPool::new();
     let healthy = ScriptedPeer::new(Behavior::Healthy);
-    let scripted = ScriptedNetwork::new(&[healthy.clone()]);
+    let scripted = ScriptedNetwork::new(std::slice::from_ref(&healthy));
     let network: Arc<dyn Network> = scripted.clone();
     for _ in 0..2 {
         request(&pool, &network, Duration::from_secs(1))
@@ -227,7 +227,7 @@ async fn successful_exchanges_reuse_connection() {
 async fn response_validation_failure_does_not_retire_transport() {
     let pool = PeerConnectionPool::new();
     let healthy = ScriptedPeer::new(Behavior::Healthy);
-    let scripted = ScriptedNetwork::new(&[healthy.clone()]);
+    let scripted = ScriptedNetwork::new(std::slice::from_ref(&healthy));
     let network: Arc<dyn Network> = scripted.clone();
     let error = peer_exchange(
         &pool,
