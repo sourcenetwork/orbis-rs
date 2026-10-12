@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Qualify native lifecycle scenarios against unchanged normal runtime images."""
+import ipaddress
 import json
 import math
 import os
@@ -315,7 +316,36 @@ def received_nonce_requests(tail, peers):
     return received
 
 
-def signing_attempts(tail, peers, received=None, coordinator=None):
+def observed_peer_routes(tail, peers):
+    route = None
+    for line in tail.splitlines():
+        if 'Iroh peer route' not in line:
+            continue
+        line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+        match = re.search(r'\bconnection="?([0-9a-fA-F]{64}(?:@[^"\s]{1,256})?)(?="|\s|$)', line)
+        if match and match[1].split('@', 1)[0].lower() in peers:
+            route = match[1].lower()
+    return route
+
+
+def transport_route_summary(route, observed, coordinator):
+    result = {'address_present': '@' in route,
+              'matches_observed_peer_route': route == observed if observed else None,
+              'matches_coordinator_route': route == coordinator if coordinator else None,
+              'address_kind': None, 'address_is_loopback': None, 'address_is_unspecified': None}
+    if '@' in route:
+        host, _, port = route.split('@', 1)[1].rpartition(':')
+        try:
+            address = ipaddress.ip_address(host.strip('[]'))
+            result.update(address_kind='ipv4' if address.version == 4 else 'ipv6',
+                          address_is_loopback=address.is_loopback,
+                          address_is_unspecified=address.is_unspecified)
+        except ValueError:
+            result['address_kind'] = 'hostname'
+    return result
+
+
+def signing_attempts(tail, peers, received=None, coordinator=None, routes=None):
     """Correlate fixed transport events without exporting request or peer IDs."""
     attempts = {}
     for line in tail.splitlines():
@@ -346,7 +376,7 @@ def signing_attempts(tail, peers, received=None, coordinator=None):
                  'signature' if 'Sign peer request failed' in line else None)
         if phase is None or len(attempt['peer_errors']) == 8:
             continue
-        peer = re.search(r'\bpeer_id="?([0-9a-fA-F]{64})(?:@|"|\s|$)', line)
+        peer = re.search(r'\bpeer_id="?([0-9a-fA-F]{64})(?:@([^"\s]{1,256}))?(?="|\s|$)', line)
         classes = {'connection': 'Network connection error:',
                    'communication': 'Network communication error:',
                    'unauthorized': 'Unauthorized:', 'nonce_state': 'Nonce state error:',
@@ -360,6 +390,11 @@ def signing_attempts(tail, peers, received=None, coordinator=None):
             'class': error_class,
             'transport_phase': transport[1] if transport else None,
             'timed_out': any(marker in line.lower() for marker in ('timed out', 'timeout', 'deadline exceeded'))})
+        if routes is not None and peer:
+            destination = peers.get(peer[1].lower())
+            route = peer[1].lower() + ('@' + peer[2].lower() if peer[2] else '')
+            attempt['peer_errors'][-1]['route'] = transport_route_summary(
+                route, routes.get(destination), routes.get(coordinator))
         if received is not None and phase == 'nonce':
             receiver = attempt['peer_errors'][-1]['member']
             observed = received.get(receiver)
@@ -454,10 +489,11 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
         members.append(result)
     received = {member: received_nonce_requests(tail, peer_indices)
                 for member, tail in tails.items()}
+    routes = {member: observed_peer_routes(tail, peer_indices) for member, tail in tails.items()}
     for member in members:
         if member['log_available']:
             member['signing_attempts'] = signing_attempts(
-                tails[member['member']], peer_indices, received, member['member'])
+                tails[member['member']], peer_indices, received, member['member'], routes)
     return {'available': all(member['log_available'] for member in members),
             'members': members}
 

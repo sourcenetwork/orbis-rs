@@ -453,6 +453,39 @@ class SigningRestartDiagnostics(unittest.TestCase):
                 self.assertNotIn('private', json.dumps(attempts))
                 self.assertNotIn('a' * 64, json.dumps(attempts))
 
+    def test_transport_route_exports_reachability_facts_without_addresses(self):
+        peers = {'a' * 64: 0, 'd' * 64: 3}
+        receiver = 'a' * 64 + '@172.20.0.2:9001'
+        sender = 'd' * 64 + '@172.20.0.5:9001'
+        log = 'Iroh peer route connection=' + receiver + '\n'
+        self.assertEqual(namespace['observed_peer_routes'](log, peers), receiver)
+        for suffix, present in (('', False), ('@172.20.0.2:9001', True)):
+            tail = ('Sign Coordinator: Initiating signing request_id=private-request peer_count=2 '
+                    'threshold=2 self_in_list=true interactive=true\n'
+                    'Nonce peer request failed request_id=private-request peer_id=' + 'a' * 64 + suffix +
+                    ' error=Timeout waiting for responses: Peer exchange timed out while connecting for private-peer\n')
+            attempts = namespace['signing_attempts'](tail, peers, coordinator=3, routes={0: receiver, 3: sender})
+            route = attempts[0]['peer_errors'][0]['route']
+            self.assertEqual(route['address_present'], present)
+            self.assertEqual(route['matches_observed_peer_route'], present)
+            self.assertFalse(route['matches_coordinator_route'])
+            encoded = json.dumps(attempts)
+            for private in ('172.20.', '9001', 'a' * 64, 'd' * 64, 'private'):
+                self.assertNotIn(private, encoded)
+
+    def test_route_classification_distinguishes_loopback_wildcard_and_hostname(self):
+        for address, kind, loopback, wildcard in (
+                ('127.0.0.1:9001', 'ipv4', True, False),
+                ('0.0.0.0:9001', 'ipv4', False, True),
+                ('[::1]:9001', 'ipv6', True, False),
+                ('orbis-node-0:9001', 'hostname', None, None)):
+            result = namespace['transport_route_summary']('a' * 64 + '@' + address, None, None)
+            self.assertEqual(result['address_kind'], kind)
+            self.assertEqual(result['address_is_loopback'], loopback)
+            self.assertEqual(result['address_is_unspecified'], wildcard)
+            self.assertIsNone(result['matches_observed_peer_route'])
+            self.assertNotIn(address, json.dumps(result))
+
     def test_nonce_delivery_is_correlated_across_members_without_exporting_ids(self):
         peers = {'a' * 64: 0, 'd' * 64: 3}
         receiver_log = ('Sign Coordinator: Received NonceRequest request_id=nonce-private-round '
