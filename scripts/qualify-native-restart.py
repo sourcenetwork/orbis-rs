@@ -12,7 +12,7 @@ import time
 import xml.etree.ElementTree as ET
 
 RUNTIME = "20dfa47de9ad5ae5fe4c7748089dea5be286b556"
-VERA = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf"
+VERA = "64488334864dd03033513df389b7fb03d348452d"
 # Source-verified Linux amd64 images from run 38172581653.
 VERA_DIGEST = "sha256:a137e467a7aabcd04beed1bf4976364a6b7ff2b33ffde7096817c692e818396c"
 RUNTIME_DIGESTS = {
@@ -49,6 +49,7 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs",
     "scripts/native_trust_hosted.py", "scripts/test-native-trust-hosted.py",
     "docker/docker-compose-native-integration-test.yml",
+    "docker/NATIVE_VERA_REF",
 }
 
 
