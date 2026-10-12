@@ -28,6 +28,28 @@ const RING_FAILURES: &[(&str, &str)] = &[
     ("terminal_state", "DKG reached a terminal non-active state"),
     ("http_failure", "unexpected current-ring HTTP failure"),
     ("response_shape", "invalid native ring response shape"),
+    ("wait_relay_ring", "native ring wait mode is relay"),
+    ("wait_direct_ring", "native ring wait mode is direct"),
+    ("wait_no_response", "native ring wait has no response"),
+    ("wait_transport", "native ring wait transport failed"),
+    ("wait_backend", "native ring wait backend failed"),
+    (
+        "wait_certified_pending",
+        "native ring wait saw certified pending",
+    ),
+    ("wait_pending_keys", "native ring wait pending has keys"),
+    (
+        "wait_pending_no_keys",
+        "native ring wait pending has no keys",
+    ),
+    (
+        "wait_pending_confirmations",
+        "native ring wait pending has confirmations",
+    ),
+    (
+        "wait_pending_no_confirmations",
+        "native ring wait pending has no confirmations",
+    ),
 ];
 
 pub(super) fn summarize(output: &str, exit_code: Option<i32>, truncated: bool) -> Value {
