@@ -40,7 +40,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-64488334864dd03033513df389b7fb03d348452d}
+        VERA_REF: ${VERA_REF:-f3c2a31619e633ec34036524958ad0283bc032f4}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -65,7 +65,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-64488334864dd03033513df389b7fb03d348452d}
+        VERA_REF: ${VERA_REF:-f3c2a31619e633ec34036524958ad0283bc032f4}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -90,7 +90,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-64488334864dd03033513df389b7fb03d348452d}
+        VERA_REF: ${VERA_REF:-f3c2a31619e633ec34036524958ad0283bc032f4}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -115,7 +115,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-64488334864dd03033513df389b7fb03d348452d}
+        VERA_REF: ${VERA_REF:-f3c2a31619e633ec34036524958ad0283bc032f4}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]

@@ -55,11 +55,11 @@ only the explicit build products and hashes. Cleanup removes only the exact Trus
 fixture label and Compose containers mounted beneath these private roots, with
 no daemon-wide prune. Source and staged binary hashes are checked again afterward.
 
-This candidate is source-only. Hosted disk/RAM/time fit, cold-cache BuildKit
-behavior and all four curve/packaging runs remain unqualified. Compilation must
-use the eventual published Orbis commit that contains the companion hook and
-workflow; its run-scoped images and labels must bind that same commit. A passing
-older SDK fixture or this source review does not establish that qualification.
+A qualification result covers only its recorded source set, curve, packaging
+mode and runtime hashes. Compilation uses the published Orbis fixture containing
+the hook and workflow; run-scoped images and labels bind that fixture separately
+from the unchanged normal runtime. Source review or a passing older fixture does
+not qualify changed pins, cold-cache builds or deployment resource limits.
 
 The reuse is the existing native fixture setup and Docker lifecycle, not a port
 of the older Cosmos `bin/orbis-node/src/tests/integration.rs` bodies. No production

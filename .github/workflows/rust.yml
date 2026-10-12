@@ -15,7 +15,7 @@ on:
       trust_revision:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
-        default: 4b58e16a9711baa8bafd63cf01d66b97d4af626c
+        default: 8c3dfa70eee62f1b2d3d27cae7941ce4d6ed73d5
       restart_curve:
         description: Curve for focused restart qualification
         type: choice
