@@ -104,6 +104,11 @@ def main():
         run(['docker', 'network', 'create', network])
         settings = json.loads(capture(['docker', 'network', 'inspect', '--format', '{{json .IPAM.Config}}', network]))
         subnet = next(ipaddress.ip_network(row['Subnet']) for row in settings if ipaddress.ip_network(row['Subnet']).version == 4)
+        if subnet.num_addresses <= 12:
+            raise ValueError('fixture subnet is too small for endpoint addresses')
+        # Static endpoint IPs require an explicitly configured subnet.
+        run(['docker', 'network', 'rm', network])
+        run(['docker', 'network', 'create', '--subnet', str(subnet), network])
         directories, routes = [], []
         for member in range(2):
             directory = output / f'node-{member}'
