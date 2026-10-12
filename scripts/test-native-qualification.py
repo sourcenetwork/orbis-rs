@@ -10,6 +10,7 @@ import unittest
 namespace = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
 verify = namespace['verify_fixture_changes']
 soak_result = namespace['soak_result']
+churn_result = namespace['churn_result']
 polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
 verified_fixture_source = namespace['verified_fixture_source']
@@ -222,6 +223,312 @@ class PolynomialSummary(unittest.TestCase):
         text = 'native_polynomial_state=' + json.dumps(self.record())
         for content in ['', text + '\n' + text, 'native_polynomial_state={broken}']:
             self.assertIsNone(polynomial_result(content))
+
+
+class ChurnResult(unittest.TestCase):
+    def test_complete_churn_is_retained(self):
+        record = {'changes': 5, 'reentries': 4, 'crash_restarts': 10}
+        self.assertEqual(churn_result('native_threshold_churn=' + json.dumps(record)), record)
+
+    def test_partial_or_private_results_are_rejected(self):
+        for update in ({'changes': 4}, {'reentries': 3}, {'crash_restarts': 9},
+                       {'changes': 5.0}, {'reentries': True}, {'private_key': 'private'}):
+            record = {'changes': 5, 'reentries': 4, 'crash_restarts': 10}
+            record.update(update)
+            with self.subTest(fields=update):
+                self.assertIsNone(churn_result('native_threshold_churn=' + json.dumps(record)))
+
+    def test_missing_malformed_or_duplicate_completion_is_rejected(self):
+        valid = 'native_threshold_churn={"changes":5,"reentries":4,"crash_restarts":10}'
+        for tail in ('', 'native_threshold_churn={broken}', valid + '\n' + valid):
+            with self.subTest(tail=tail):
+                self.assertIsNone(churn_result(tail))
+
+    def test_churn_failure_retains_location_without_private_message(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>panicked at bin/orbis-node/tests/support/native_pet/member_churn.rs:42:17: '
+                              'private-value</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['locations'], [
+            {'source': 'support/native_pet/member_churn.rs', 'line': 42, 'column': 17}])
+        self.assertNotIn('private-value', json.dumps(result))
+
+    def test_shared_helper_failure_retains_only_known_source_and_phase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native PET phase=paired-dkg private-key=private-value\n'
+                              'native PET phase=member-replacement-restart\n'
+                              'native PET phase=/private/secret\n'
+                              'panicked at tests/support/native_pet/signing.rs:97:62: private-value\n'
+                              'tests/support/pre_scenario.rs:14:3 private-value'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['pet_phase'], 'member-replacement-restart')
+        self.assertEqual(result['cases'][0]['locations'], [
+            {'source': 'support/native_pet/signing.rs', 'line': 97, 'column': 62},
+            {'source': 'support/pre_scenario.rs', 'line': 14, 'column': 3}])
+        for private in ('private-value', 'private-key', '/private/secret'):
+            self.assertNotIn(private, json.dumps(result))
+
+    def test_rpc_failure_exports_closed_codes_and_error_classes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>panicked at tests/support/native_pet/signing.rs:95:65: '
+                              'Status { code: DeadlineExceeded, message: "Timeout waiting for responses: private-value" }\n'
+                              'Status { code: PrivateUnknown, message: "private-value" }\n'
+                              'Status { code: Unavailable, message: "Ring reshare in progress, try again shortly" }'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['rpc_codes'], ['DeadlineExceeded', 'Unavailable'])
+        self.assertEqual(result['cases'][0]['sign_error_classes'], ['reshare_in_progress', 'response_timeout'])
+        for private in ('private-value', 'PrivateUnknown'):
+            self.assertNotIn(private, json.dumps(result))
+
+
+class SigningRestartDiagnostics(unittest.TestCase):
+    def collect(self, directory):
+        return namespace['signing_restart_diagnostics'](directory)
+
+    def test_restart_events_are_numeric_and_private_fields_are_omitted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for member in (2, 3):
+                parent = root / 'orbis-native-1-fixture' / f'node-{member}'
+                parent.mkdir(parents=True)
+                (parent / 'pet-replacement-restart.log').write_text(
+                    'private-key jwt request-id node-key\n'
+                    'Sign Coordinator: Received NonceRequest\n'
+                    'Sign peer request failed error=private-response\n'
+                    'No nonce state found for request_id private-request\n')
+            result = self.collect(root)
+            self.assertTrue(result['available'])
+            for member in result['members']:
+                self.assertEqual(member['counters']['nonce_requests'], 1)
+                self.assertEqual(member['counters']['sign_peer_errors'], 1)
+                self.assertEqual(member['counters']['missing_nonce'], 1)
+                self.assertEqual(member['counters']['signatures_recovered'], 0)
+            self.assertNotIn('private', json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+
+    def test_log_tail_is_bounded_and_truncation_is_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / 'orbis-native-1-fixture' / 'node-2'
+            parent.mkdir(parents=True)
+            (parent / 'pet-replacement-restart.log').write_bytes(
+                b'Sign Coordinator: Received NonceRequest\n' + b'x' * (1024 * 1024) +
+                b'\nSign Coordinator: Local signing failed\n')
+            result = self.collect(root)
+            self.assertFalse(result['available'])
+            self.assertTrue(result['members'][0]['tail_truncated'])
+            self.assertEqual(result['members'][0]['counters']['nonce_requests'], 0)
+            self.assertEqual(result['members'][0]['counters']['local_signing_errors'], 1)
+
+    def test_symlinks_and_missing_or_ambiguous_fixtures_are_not_read(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual(self.collect(root), {'available': False, 'members': []})
+            parent = root / 'orbis-native-1-fixture' / 'node-2'
+            parent.mkdir(parents=True)
+            private = root / 'private'
+            private.write_text('Sign Coordinator: Local signing failed\n')
+            (parent / 'pet-replacement-restart.log').symlink_to(private)
+            result = self.collect(root)
+            self.assertFalse(result['members'][0]['log_available'])
+            (root / 'orbis-native-2-fixture').mkdir()
+            self.assertEqual(self.collect(root), {'available': False, 'members': []})
+
+
+    def test_churn_promotion_events_use_all_four_fixed_logs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for member in range(4):
+                parent = root / 'orbis-native-1-fixture' / f'node-{member}'
+                parent.mkdir(parents=True)
+                (parent / 'churn-diagnostic.log').write_text(
+                    'Reshare: promoted staged bundle after chain confirmation secret=private-value\n'
+                    'Reshare: local PET promotion not ready ring=private-key\n')
+            result = namespace['signing_restart_diagnostics'](
+                root, 'churn-diagnostic.log', tuple(range(4)))
+            self.assertTrue(result['available'])
+            self.assertEqual([member['member'] for member in result['members']], [0, 1, 2, 3])
+            for member in result['members']:
+                self.assertEqual(member['counters']['main_promotions'], 1)
+                self.assertEqual(member['counters']['local_pet_not_ready'], 1)
+            self.assertNotIn('private', json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+            with self.assertRaises(ValueError):
+                namespace['signing_restart_diagnostics'](root, '../private-key')
+
+    def test_last_phase_distinguishes_churn_from_completed_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native PET phase=member-replacement-restart\n'
+                              'native PET phase=churn-round-start round=1\n'
+                              'native PET phase=churn-finalized round=1\n'
+                              'native PET phase=/private/key round=123\n'
+                              'panicked at tests/support/native_pet.rs:646:9: private-value'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['cases'][0]['pet_phase'], 'churn-finalized')
+        self.assertEqual(result['cases'][0]['churn_round'], 1)
+        self.assertNotIn('private', json.dumps(result))
+
+
+    def test_peer_rejection_counts_and_configuration_omit_identifiers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parent = root / 'orbis-native-1-fixture' / 'node-0'
+            parent.mkdir(parents=True)
+            (parent / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: nonce response node_id does not match authenticated peer private=private-value\n'
+                'Sign Coordinator: Failed to verify share signature=private-key\n'
+                'Sign Coordinator: Initiating signing peer_count=99999 threshold=2 self_in_list=true interactive=true\n'
+                'Sign Coordinator: Initiating signing peer_count=2 threshold=2 '
+                'self_in_list=\x1b[32mtrue\x1b[0m interactive=true request_id=private-value\n')
+            result = namespace['signing_restart_diagnostics'](root, 'churn-diagnostic.log', (0,))
+        member = result['members'][0]
+        self.assertEqual(member['counters']['peer_nonce_id_mismatches'], 1)
+        self.assertEqual(member['counters']['peer_signature_verification_errors'], 1)
+        self.assertEqual(member['last_signing_configuration'],
+                         {'peer_count': 2, 'threshold': 2, 'self_in_list': True, 'interactive': True})
+        self.assertNotIn('private', json.dumps(result))
+        self.assertNotIn('99999', json.dumps(result))
+
+    def test_failed_signing_exports_only_bounded_member_cycle_and_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / 'junit.xml'
+            report.write_text('<testsuite><testcase name="native_pet_member_churn" time="3">'
+                              '<failure>native_churn_sign member=0 cycle=110\n'
+                              'native_churn_sign member=99 cycle=99999\n'
+                              'Status { code: FailedPrecondition, message: "Insufficient shares: got 1, need 2" }'
+                              '</failure></testcase></testsuite>')
+            result = namespace['lifecycle_results'](report, ['native_pet_member_churn'])
+        case = result['cases'][0]
+        self.assertEqual(case['churn_signing'], {'member': 0, 'cycle': 110})
+        self.assertEqual(case['insufficient_shares'], {'got': 1, 'need': 2})
+        self.assertNotIn('99999', json.dumps(result))
+
+
+    def test_transport_errors_are_correlated_to_private_request_and_peer(self):
+        peers = {'a' * 64: 0, 'b' * 64: 2}
+        tail = ('Sign Coordinator: Initiating signing request_id=private-request peer_count=2 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Nonce peer request failed request_id=private-request peer_id=' + 'a' * 64 +
+                ' error=Network communication error: private-key timed out\n'
+                'Nonce peer request failed request_id=unknown-private peer_id=' + 'b' * 64 + '\n'
+                'Sign Coordinator: Initiating signing request_id=private-report peer_count=1 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Sign Coordinator: Successfully recovered signature request_id=private-report\n')
+        attempts = namespace['signing_attempts'](tail, peers)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]['peer_errors'],
+                         [{'phase': 'nonce', 'member': 0, 'class': 'communication', 'transport_phase': None, 'timed_out': True}])
+        self.assertFalse(attempts[0]['recovered'])
+        self.assertTrue(attempts[1]['recovered'])
+        self.assertNotIn('private', json.dumps(attempts))
+        self.assertNotIn('a' * 64, json.dumps(attempts))
+
+    def test_transport_timeout_exports_only_the_known_exchange_phase(self):
+        peers = {'a' * 64: 0}
+        for phase in ('connecting', 'opening', 'sending', 'receiving', 'validating', 'private-key'):
+            with self.subTest(phase=phase):
+                tail = ('Sign Coordinator: Initiating signing request_id=private-request peer_count=2 '
+                        'threshold=2 self_in_list=true interactive=true\n'
+                        'Nonce peer request failed request_id=private-request peer_id=' + 'a' * 64 +
+                        ' error=Timeout waiting for responses: Peer exchange timed out while ' + phase +
+                        ' for private-peer\n')
+                attempts = namespace['signing_attempts'](tail, peers)
+                error = attempts[0]['peer_errors'][0]
+                self.assertEqual(error['transport_phase'], None if phase == 'private-key' else phase)
+                self.assertNotIn('private', json.dumps(attempts))
+                self.assertNotIn('a' * 64, json.dumps(attempts))
+
+    def test_nonce_delivery_is_correlated_across_members_without_exporting_ids(self):
+        peers = {'a' * 64: 0, 'd' * 64: 3}
+        receiver_log = ('Sign Coordinator: Received NonceRequest request_id=nonce-private-round '
+                        'sender_peer=' + 'd' * 64 + '\n'
+                        'Sign Coordinator: Received NonceRequest request_id=nonce-private-other '
+                        'sender_peer=' + 'a' * 64 + '\n')
+        received = namespace['received_nonce_requests'](receiver_log, peers)
+        coordinator_log = ('Sign Coordinator: Initiating signing request_id=private-round peer_count=2 '
+                           'threshold=2 self_in_list=true interactive=true\n'
+                           'Nonce peer request failed request_id=private-round peer_id=' + 'a' * 64 +
+                           ' error=Timeout waiting for responses: private-error\n')
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {0: received}, 3)
+        self.assertTrue(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {0: received}, 0)
+        self.assertFalse(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        attempts = namespace['signing_attempts'](coordinator_log, peers, {}, 3)
+        self.assertIsNone(attempts[0]['peer_errors'][0]['nonce_request_observed'])
+        self.assertNotIn('private', json.dumps(attempts))
+        self.assertNotIn('a' * 64, json.dumps(attempts))
+
+    def test_failure_log_collection_links_coordinator_to_receiver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / 'orbis-native-1-fixture'
+            (fixture / 'node-0').mkdir(parents=True)
+            (fixture / 'node-3').mkdir()
+            (fixture / 'diagnostic-peer-routes.json').write_text(
+                json.dumps([character * 64 for character in 'abcd']))
+            (fixture / 'node-0' / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: Received NonceRequest request_id=nonce-private-round '
+                'sender_peer=' + 'd' * 64 + '\n')
+            (fixture / 'node-3' / 'churn-diagnostic.log').write_text(
+                'Sign Coordinator: Initiating signing request_id=private-round peer_count=2 '
+                'threshold=2 self_in_list=true interactive=true\n'
+                'Nonce peer request failed request_id=private-round peer_id=' + 'a' * 64 +
+                ' error=Timeout waiting for responses: private-error\n')
+            result = namespace['signing_restart_diagnostics'](
+                root, 'churn-diagnostic.log', tuple(range(4)))
+        error = result['members'][3]['signing_attempts'][0]['peer_errors'][0]
+        self.assertTrue(error['nonce_request_observed'])
+        self.assertFalse(result['available'])
+        self.assertNotIn('private', json.dumps(result))
+
+    def test_nonce_delivery_rejects_unknown_senders_and_bounds_retained_events(self):
+        peer = 'a' * 64
+        tail = ('Sign Coordinator: Received NonceRequest request_id=nonce-private-unknown sender_peer=' +
+                'b' * 64 + '\n' + ''.join(
+                    'Sign Coordinator: Received NonceRequest request_id=nonce-private-' + str(index) +
+                    ' sender_peer=' + peer + '\n' for index in range(300)))
+        received = namespace['received_nonce_requests'](tail, {peer: 0})
+        self.assertEqual(len(received), 256)
+        self.assertNotIn(('private-unknown', 0), received)
+        self.assertNotIn(('private-0', 0), received)
+        self.assertIn(('private-299', 0), received)
+
+    def test_private_peer_routes_are_bounded_and_symlinks_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'diagnostic-peer-routes.json'
+            path.write_text(json.dumps([character * 64 for character in 'abcd']))
+            self.assertEqual(namespace['fixture_peer_indices'](root)['a' * 64], 0)
+            path.write_bytes(b'x' * 4097)
+            self.assertEqual(namespace['fixture_peer_indices'](root), {})
+            path.unlink()
+            private = root / 'private'
+            private.write_text(json.dumps([character * 64 for character in 'abcd']))
+            path.symlink_to(private)
+            self.assertEqual(namespace['fixture_peer_indices'](root), {})
+
+    def test_correlated_attempt_exports_are_bounded(self):
+        tail = ''.join('Sign Coordinator: Initiating signing request_id=private-' + str(index) +
+                       ' peer_count=2 threshold=2 self_in_list=true interactive=true\n'
+                       for index in range(100))
+        attempts = namespace['signing_attempts'](tail, {})
+        self.assertEqual(len(attempts), 16)
+        self.assertNotIn('private', json.dumps(attempts))
 
 
 if __name__ == '__main__':

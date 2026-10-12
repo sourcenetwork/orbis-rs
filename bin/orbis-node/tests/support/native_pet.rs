@@ -4,7 +4,13 @@ use alloy_sol_types::SolCall;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
 };
-use std::time::Duration;
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
 use tonic::transport::Endpoint;
 use vera_client::{
     create_scoped_bearer_token,
@@ -53,12 +59,63 @@ pub mod soak;
 #[path = "native_pet/polynomial_state.rs"]
 mod polynomial_state;
 
+#[path = "native_pet/member_churn.rs"]
+mod member_churn;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
     MemberReplacement,
+    MemberChurn,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
+}
+
+struct ChurnFailureLogs {
+    project: String,
+    directory: PathBuf,
+}
+
+impl Drop for ChurnFailureLogs {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for member in 0..4 {
+            let destination = self
+                .directory
+                .join(format!("node-{member}/churn-diagnostic.log"));
+            let saved = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(destination)
+                .and_then(|file| {
+                    Command::new("timeout")
+                        .args([
+                            "10s",
+                            "docker",
+                            "compose",
+                            "--project-name",
+                            &self.project,
+                            "-f",
+                            super::NATIVE_COMPOSE_FILE,
+                            "logs",
+                            "--tail",
+                            "10000",
+                            "--no-color",
+                            "--no-log-prefix",
+                            &super::orbis_service(member),
+                        ])
+                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                        .stdout(Stdio::from(file))
+                        .stderr(Stdio::null())
+                        .status()
+                })
+                .is_ok_and(|status| status.success());
+            eprintln!("native_churn_log member={member} saved={saved}");
+        }
+    }
 }
 
 /// Run the shared paired-DKG scenario through the native adapter. The adapter
@@ -90,11 +147,15 @@ pub async fn run(scenario: Scenario) {
         Scenario::Lifecycle => (9075, false),
         Scenario::ScheduledRefresh => (9077, false),
         Scenario::MemberReplacement => (9078, false),
+        Scenario::MemberChurn => (9082, false),
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
     let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
-    let signing = if matches!(scenario, Scenario::MemberReplacement) {
+    let signing = if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
         Some(signing::Signing::create(&workflow, &keys, "native-member-replacement").await)
     } else {
         None
@@ -117,6 +178,11 @@ pub async fn run(scenario: Scenario) {
         headers: _headers,
         ..
     } = workflow;
+
+    let _failure_logs = matches!(scenario, Scenario::MemberChurn).then(|| ChurnFailureLogs {
+        project: cluster.project_name().to_owned(),
+        directory: base.path().to_owned(),
+    });
 
     let reader = Reader::new(vera_client::rings::ring_deployment_label(
         root.0, deployment,
@@ -289,12 +355,15 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(&client, id, &trusted).await;
-    if matches!(scenario, Scenario::MemberReplacement) {
+    if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
         let signing = signing.as_ref().unwrap();
         signing.denied(&addresses[0], &reader, 0).await;
         permission.set(&signing.id, true).await;
         signing.verify(&addresses[0], &reader, 1).await;
-        member_replacement::MemberReplacement {
+        let replacement = member_replacement::MemberReplacement {
             cluster: &cluster,
             client: &client,
             trusted: &trusted,
@@ -310,9 +379,16 @@ pub async fn run(scenario: Scenario) {
             base: base.path(),
             addresses: &addresses,
             infos: &infos,
+        };
+        if matches!(scenario, Scenario::MemberChurn) {
+            replacement
+                .run_churn(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
+        } else {
+            replacement
+                .run(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
         }
-        .run(&mut nodes, &reader, &audit, documents, &baseline)
-        .await;
         return;
     }
     let previous = client
