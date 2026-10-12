@@ -13,8 +13,8 @@ import xml.etree.ElementTree as ET
 
 RUNTIME = "20dfa47de9ad5ae5fe4c7748089dea5be286b556"
 VERA = "64488334864dd03033513df389b7fb03d348452d"
-# Source-verified Linux amd64 images from run 38172581653.
-VERA_DIGEST = "sha256:a137e467a7aabcd04beed1bf4976364a6b7ff2b33ffde7096817c692e818396c"
+# Normal Orbis images: run 38172581653. Vera image: run 38256681358.
+VERA_DIGEST = "sha256:95ed0e721b7f3c98a2afdcb3a33adbbf2c7743a7085f5775bac73c4b8ee9f4a1"
 RUNTIME_DIGESTS = {
     "bls12-381": "sha256:8bccba8f1b907d3c197dca2fec570c6b9d06a237694b79f04a6534ebeee78e73",
     "jubjub": "sha256:c818f7232fbfaa977ac667bca69b6e8b827fefe95f8cb2b20477e778496a4457"
