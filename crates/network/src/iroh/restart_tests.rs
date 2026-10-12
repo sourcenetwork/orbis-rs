@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-const PROTOCOL: &[u8] = crate::protocol::V0.sign;
+const PROTOCOL: &[u8] = crate::protocol::V0.sign_alpn;
 const CHILD: &str = "iroh::tests::restart::transport_server_child";
 const DEADLINE: Duration = Duration::from_secs(10);
 
