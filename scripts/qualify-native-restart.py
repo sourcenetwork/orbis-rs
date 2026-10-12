@@ -433,6 +433,20 @@ def signing_attempts(tail, peers, received=None, coordinator=None, routes=None):
     return list(attempts.values())[-16:]
 
 
+def fixture_handshake(fixture):
+    try:
+        descriptor = os.open(fixture / 'diagnostic-peer-handshake.json',
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 512:
+                return []
+            content = stream.read(513).decode('utf-8')
+        return handshake_probes('native_churn_handshake ' + content)
+    except (OSError, UnicodeError):
+        return []
+
+
 def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log', selected=(2, 3)):
     """Export bounded counters from fixed private fixture logs."""
     if filename not in ('pet-replacement-restart.log', 'churn-diagnostic.log') or any(
@@ -525,7 +539,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
             member['signing_attempts'] = signing_attempts(
                 tails[member['member']], peer_indices, received, member['member'], routes)
     return {'available': all(member['log_available'] for member in members),
-            'members': members}
+            'members': members, 'handshake_probes_after_failure': fixture_handshake(fixtures[0])}
 
 
 def qualify():

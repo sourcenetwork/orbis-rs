@@ -7,7 +7,9 @@ use local_storage::r#trait::LocalStorageKeys;
 use network::{Network, NetworkImpl, PeerId};
 use proto::info_service::GetNodeInfoResponse;
 use std::{
+    fs::OpenOptions,
     net::{Ipv4Addr, SocketAddrV4},
+    os::unix::fs::OpenOptionsExt,
     panic::AssertUnwindSafe,
     time::Duration,
 };
@@ -17,7 +19,12 @@ struct Peers<'a> {
     infos: &'a [GetNodeInfoResponse],
 }
 
-async fn probe_signing_route(peer: &str, sender: usize, receiver: usize, cycle: u64) {
+async fn probe_signing_route(
+    peer: &str,
+    sender: usize,
+    receiver: usize,
+    cycle: u64,
+) -> serde_json::Value {
     let started = std::time::Instant::now();
     let mut phase = "setup";
     let outcome = tokio::time::timeout(Duration::from_secs(10), async {
@@ -37,16 +44,15 @@ async fn probe_signing_route(peer: &str, sender: usize, receiver: usize, cycle: 
         result.map(|_| ())
     })
     .await;
-    eprintln!(
-        "native_churn_handshake {}",
-        serde_json::json!({
-            "failed_member": sender, "receiver": receiver, "cycle": cycle, "phase": phase,
-            "origin": "harness",
-            "address_present": peer.contains('@'),
-            "connected": matches!(&outcome, Ok(Ok(()))), "timed_out": outcome.is_err(),
-            "elapsed_ms": started.elapsed().as_millis(),
-        })
-    );
+    let record = serde_json::json!({
+        "failed_member": sender, "receiver": receiver, "cycle": cycle, "phase": phase,
+        "origin": "harness",
+        "address_present": peer.contains('@'),
+        "connected": matches!(&outcome, Ok(Ok(()))), "timed_out": outcome.is_err(),
+        "elapsed_ms": started.elapsed().as_millis(),
+    });
+    eprintln!("native_churn_handshake {record}");
+    record
 }
 
 pub(super) struct Committee {
@@ -279,13 +285,24 @@ impl MemberReplacement<'_> {
             if let Err(payload) = signed {
                 // Probe after failure so extra handshakes cannot affect successful signing.
                 let receiver = *participants.iter().find(|peer| *peer != index).unwrap();
-                probe_signing_route(
+                let diagnostic = probe_signing_route(
                     &peers.infos[receiver].p2p_address,
                     *index,
                     receiver,
                     message,
                 )
                 .await;
+                let retained = (|| -> std::io::Result<()> {
+                    let output = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(self.base.join("diagnostic-peer-handshake.json"))?;
+                    serde_json::to_writer(output, &diagnostic).map_err(std::io::Error::other)
+                })();
+                if retained.is_err() {
+                    eprintln!("native_churn_handshake_retention_failed");
+                }
                 std::panic::resume_unwind(payload);
             }
         }

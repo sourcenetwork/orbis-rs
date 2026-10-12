@@ -15,6 +15,7 @@ polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
 verified_fixture_source = namespace['verified_fixture_source']
 handshake_probes = namespace['handshake_probes']
+fixture_handshake = namespace['fixture_handshake']
 
 
 class HandshakeProbes(unittest.TestCase):
@@ -45,6 +46,21 @@ class HandshakeProbes(unittest.TestCase):
         content = '\n'.join('native_churn_handshake ' + json.dumps(dict(self.record, elapsed_ms=index))
                             for index in range(12))
         self.assertEqual([row['elapsed_ms'] for row in handshake_probes(content)], list(range(4, 12)))
+
+    def test_private_file_retains_evidence_and_rejects_links_and_oversized_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / 'diagnostic-peer-handshake.json'
+            self.assertEqual(fixture_handshake(root), [])
+            path.write_text(json.dumps(self.record))
+            self.assertEqual(fixture_handshake(root), [self.record])
+            path.write_text(' ' * 513)
+            self.assertEqual(fixture_handshake(root), [])
+            path.unlink()
+            other = root / 'other.json'
+            other.write_text(json.dumps(self.record))
+            path.symlink_to(other)
+            self.assertEqual(fixture_handshake(root), [])
 
 
 class FixtureSource(unittest.TestCase):
