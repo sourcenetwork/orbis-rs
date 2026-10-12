@@ -1,17 +1,17 @@
 # Opt-in hosted native Trust ring qualification
 
-The existing Rust workflow accepts `scope: full` (the default), `common`,
-`native`, or `gateway`. Full retains the usual CI jobs; Common retains its existing focused
-checks. Gateway runs only the two normal Orbis image builds, matching native Vera
+The existing Rust workflow's `gateway` scope runs only the two normal Orbis image
+builds, matching native Vera
 image, one shared artifact build, and two focused curve jobs. It does not run the
 legacy suites or build/use the unsafe diagnostic image.
 
-The intended Trust fixture revision is
-`11630c1a0b3241bed2799a6c162c4c8e16a4e502`. The immutable manual input is checked
-against its checkout, native Dockerfile pin and Defra workflow pin. The native Vera and Defra revisions are declared in
-`scripts/native_trust_hosted.py`; the Vera runtime pin is also in
-`docker/NATIVE_VERA_REF`. These must match the native SDK and fixture dependency
-revisions when selecting a compatible Trust build.
+The default Trust fixture revision is selected in the workflow's immutable
+`trust_revision` input. The driver checks it against the checkout, native Dockerfile
+pin and Defra workflow pin. Native Vera and Defra revisions are declared in
+`scripts/native_trust_hosted.py`; validation exports them as the workflow's checkout
+refs. The Vera daemon pin in `docker/NATIVE_VERA_REF` must agree. Orbis's native SDK
+revision remains separately pinned in its package manifests; the driver validates
+that binding independently rather than requiring SDK and daemon source equality.
 
 The artifact job builds Defra's normal native CLI once, stages it, and removes
 only its own new target directory. A single BuildKit bake graph uses the real

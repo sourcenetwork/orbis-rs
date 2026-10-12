@@ -45,6 +45,12 @@ def revision(value):
     return value
 
 
+def write_source_outputs(path):
+    sources = {'vera': revision(VERA), 'defra': revision(DEFRA)}
+    with path.open('a') as output:
+        output.write(''.join(f'{name}={value}\n' for name, value in sources.items()))
+
+
 def runtime_revision(root, fixture, requested):
     fixture = revision(fixture)
     runtime = revision(requested) if requested is not None else fixture
@@ -585,7 +591,11 @@ def main():
         if args.phase == 'build' and not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:[a-z0-9_.-]+', args.image or ''):
             raise Failure()
         root = Path(__file__).resolve().parents[1]
-        if args.phase != 'validate':
+        if args.phase == 'validate':
+            output = os.environ.get('GITHUB_OUTPUT')
+            if output:
+                write_source_outputs(Path(output))
+        else:
             if args.output is None:
                 raise Failure()
             args.output.mkdir(mode=0o700)

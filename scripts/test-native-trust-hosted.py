@@ -20,6 +20,37 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_validation_exports_immutable_source_pins(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'outputs'
+            with patch.dict(os.environ, {'GITHUB_OUTPUT': str(path)}), \
+                    patch('sys.argv', ['driver', 'validate', '--trust-ref', 'a' * 40]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(driver.main(), 0)
+            self.assertEqual(dict(line.split('=', 1) for line in path.read_text().splitlines()),
+                             {'vera': driver.VERA, 'defra': driver.DEFRA})
+
+    def test_invalid_source_pin_never_writes_partial_workflow_outputs(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'outputs'
+            path.write_text('other=retained\n')
+            for field in ('VERA', 'DEFRA'):
+                for value in ('main', 'A' * 40, 'a' * 40 + '\ninjected=true'):
+                    with self.subTest(field=field, value=value), patch.object(driver, field, value), \
+                            patch.dict(os.environ, {'GITHUB_OUTPUT': str(path)}), \
+                            patch('sys.argv', ['driver', 'validate', '--trust-ref', 'a' * 40]), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(driver.main(), 1)
+                    self.assertEqual(path.read_text(), 'other=retained\n')
+
+    def test_gateway_checkout_refs_use_exported_sources(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/rust.yml').read_text()
+        for repository, source in (('vera.rs', 'vera'), ('defradb.rs', 'defra')):
+            checkout = re.search(r'repository: sourcenetwork/' + re.escape(repository)
+                                 + r'\s+ref: ([^\n]+)\s+path: \.native/' + source, workflow)
+            self.assertIsNotNone(checkout)
+            self.assertEqual(checkout[1], '${{ steps.sources.outputs.' + source + ' }}')
+
     def test_normal_runtime_labels_reject_diagnostic_features(self):
         for curve in ('bls12-381', 'jubjub'):
             labels = {
