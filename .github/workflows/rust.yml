@@ -722,6 +722,8 @@ jobs:
         run: cargo fetch --locked
       - name: Qualify fresh Iroh connections after a peer process crash
         run: python3 scripts/qualify-iroh-restart.py
+      - name: Check bounded bridge failure evidence
+        run: python3 scripts/test-iroh-bridge.py
       - name: Qualify fresh bidirectional dials on a Docker bridge
         run: python3 scripts/qualify-iroh-bridge.py
       - name: Retain bounded bridge result

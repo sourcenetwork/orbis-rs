@@ -4,12 +4,29 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import time
 import uuid
 
 CHILD = 'iroh::tests::restart::transport_server_child'
+
+
+def endpoint_summary(state, tail):
+    output = str(state.get('Error', '')) + '\n' + tail
+    patterns = {
+        'runtime_library_missing': 'error while loading shared libraries',
+        'permission_denied': 'permission denied',
+        'exec_format': 'exec format error',
+        'filesystem_missing': 'no such file or directory',
+    }
+    locations = re.findall(r'crates/network/src/iroh/restart_tests\.rs:([1-9][0-9]{0,5}):([1-9][0-9]{0,5})', output)
+    return {'running': state.get('Running'), 'exit_code': state.get('ExitCode'),
+            'oom_killed': state.get('OOMKilled'),
+            'error_kinds': [kind for kind, pattern in patterns.items() if pattern in output.lower()],
+            'panic_locations': [{'line': int(line), 'column': int(column)}
+                                for line, column in sorted(set(locations))[:4]]}
 
 
 def main():
@@ -68,6 +85,7 @@ def main():
         if len(executables) != 1:
             raise ValueError('transport test executable missing or ambiguous')
         proof['test_binary_sha256'] = hashlib.sha256(Path(executables[0]).read_bytes()).hexdigest()
+        proof['test_binary_mode'] = oct(Path(executables[0]).stat().st_mode & 0o777)
         context = output / 'image'
         context.mkdir(mode=0o700)
         shutil.copy2(executables[0], context / 'transport-test')
@@ -123,10 +141,20 @@ def main():
         proof['complete'] = True
         proof['stage'] = 'complete'
     finally:
+        proof['endpoint_states'] = []
         for container in containers:
-            with (output / (container + '.private.log')).open('w') as stream:
+            endpoint_log = output / (container + '.private.log')
+            with endpoint_log.open('w') as stream:
                 os.chmod(stream.name, 0o600)
                 subprocess.run(['docker', 'logs', container], stdout=stream, stderr=subprocess.STDOUT, timeout=30)
+            try:
+                state = json.loads(capture(['docker', 'inspect', '--format', '{{json .State}}', container]))
+                with endpoint_log.open('rb') as stream:
+                    stream.seek(max(0, endpoint_log.stat().st_size - 16384))
+                    tail = stream.read(16384).decode(errors='replace')
+                proof['endpoint_states'].append(endpoint_summary(state, tail))
+            except (RuntimeError, ValueError, subprocess.TimeoutExpired):
+                proof['endpoint_states'].append({'inspection_unavailable': True})
         if containers:
             subprocess.run(['docker', 'rm', '--force', *containers], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
         subprocess.run(['docker', 'network', 'rm', network], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
