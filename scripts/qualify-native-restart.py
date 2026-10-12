@@ -175,35 +175,6 @@ def polynomial_result(content):
     return result
 
 
-def handshake_probes(content):
-    records = []
-    fields = {'failed_member', 'receiver', 'cycle', 'phase', 'origin',
-              'connected', 'timed_out', 'elapsed_ms', 'address_present'}
-    cycles = {round * 100 + offset for round in range(1, 5) for offset in (0, 10)}
-    for payload in re.findall(r'native_churn_handshake (\{[^\n]{1,512}\})', content):
-        try:
-            record = json.loads(payload)
-        except ValueError:
-            continue
-        if not isinstance(record, dict) or set(record) != fields:
-            continue
-        if any(type(record[name]) is not int or not 0 <= record[name] <= 3
-               for name in ('failed_member', 'receiver')):
-            continue
-        if record['failed_member'] == record['receiver'] or type(record['cycle']) is not int or record['cycle'] not in cycles:
-            continue
-        if record['phase'] not in ('setup', 'connect') or record['origin'] != 'harness':
-            continue
-        if any(type(record[name]) is not bool for name in ('connected', 'timed_out', 'address_present')):
-            continue
-        if record['connected'] and (record['timed_out'] or record['phase'] != 'connect'):
-            continue
-        if type(record['elapsed_ms']) is not int or not 0 <= record['elapsed_ms'] <= 60000:
-            continue
-        records.append(record)
-    return records[-8:]
-
-
 def lifecycle_results(report, selected):
     """Expose only selected case names, durations and fixed failure classifications."""
     if not report.is_file() or report.stat().st_size > 2 * 1024 * 1024:
@@ -231,7 +202,6 @@ def lifecycle_results(report, selected):
         if failures:
             content = "\n".join(element.get("message", "") + "\n" +
                                 "".join(element.itertext()) for element in case)
-            record['handshake_probes_after_failure'] = handshake_probes(content)
             filenames = (
                 "native_startup.rs", "support/native_workflow.rs", "support/native_pet.rs",
                 "support/native_pet/dkg.rs", "support/native_pet/document.rs",
@@ -433,20 +403,6 @@ def signing_attempts(tail, peers, received=None, coordinator=None, routes=None):
     return list(attempts.values())[-16:]
 
 
-def fixture_handshake(fixture):
-    try:
-        descriptor = os.open(fixture / 'diagnostic-peer-handshake.json',
-                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > 512:
-                return []
-            content = stream.read(513).decode('utf-8')
-        return handshake_probes('native_churn_handshake ' + content)
-    except (OSError, UnicodeError):
-        return []
-
-
 def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log', selected=(2, 3)):
     """Export bounded counters from fixed private fixture logs."""
     if filename not in ('pet-replacement-restart.log', 'churn-diagnostic.log') or any(
@@ -539,7 +495,7 @@ def signing_restart_diagnostics(directory, filename='pet-replacement-restart.log
             member['signing_attempts'] = signing_attempts(
                 tails[member['member']], peer_indices, received, member['member'], routes)
     return {'available': all(member['log_available'] for member in members),
-            'members': members, 'handshake_probes_after_failure': fixture_handshake(fixtures[0])}
+            'members': members}
 
 
 def qualify():
