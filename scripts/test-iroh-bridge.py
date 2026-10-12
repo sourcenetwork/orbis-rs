@@ -3,6 +3,7 @@ from pathlib import Path
 import unittest
 
 summarize = runpy.run_path(str(Path(__file__).with_name('qualify-iroh-bridge.py')))['endpoint_summary']
+launch_error = runpy.run_path(str(Path(__file__).with_name('qualify-iroh-bridge.py')))['startup_error']
 
 
 class EndpointSummaryTests(unittest.TestCase):
@@ -28,6 +29,12 @@ class EndpointSummaryTests(unittest.TestCase):
                             'Error': 'exec /private/path: permission denied'}, '')
         self.assertEqual(denied['error_kinds'], ['permission_denied'])
         self.assertNotIn('/private/path', str(denied))
+
+    def test_launch_failure_masks_fixture_paths_and_ignores_application_output(self):
+        self.assertIsNone(launch_error('unrelated application payload', '/runner/private', 'container-123'))
+        message = 'docker: Error response from daemon: invalid bind source /runner/private/node-0 for container-123\nother payload'
+        result = launch_error(message, '/runner/private', 'container-123')
+        self.assertEqual(result, 'invalid bind source <fixture>/node-0 for <fixture-container>')
 
 
 if __name__ == '__main__':

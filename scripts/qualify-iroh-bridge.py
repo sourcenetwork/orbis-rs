@@ -29,6 +29,13 @@ def endpoint_summary(state, tail):
                                 for line, column in sorted(set(locations))[:4]]}
 
 
+def startup_error(tail, directory, prefix):
+    match = re.search(r'(?:docker: )?Error response from daemon: ([^\n]{1,1024})', tail)
+    if match is None:
+        return None
+    return match[1].replace(str(directory), '<fixture>').replace(prefix, '<fixture-container>')
+
+
 def main():
     output = Path(os.environ['RUNNER_TEMP']) / 'iroh-bridge-results'
     output.mkdir(mode=0o700, exist_ok=False)
@@ -105,13 +112,13 @@ def main():
             address = str(subnet.network_address + 10 + member)
             container = prefix + f'-node-{member}'
             proof['stage'] = 'startup'
+            containers.append(container)
             run(['docker', 'run', '-d', '--name', container, '--network', network, '--ip', address,
                  '--user', f'{os.getuid()}:{os.getgid()}', '--mount', f'type=bind,source={directory},target=/data',
                  '-e', 'ORBIS_IROH_RESTART_DIRECTORY=/data', '-e', 'ORBIS_IROH_RESTART_PORT=9001',
                  '-e', f'ORBIS_IROH_RESTART_SEED={2 + member}', '-e', 'ORBIS_IROH_RESTART_BIND_IP=0.0.0.0',
                  '-e', f'ORBIS_IROH_RESTART_ADVERTISED_IP={address}', '-e', 'ORBIS_IROH_RESTART_COMMANDS=1',
                  image, '--exact', CHILD, '--ignored', '--nocapture', '--test-threads=1'])
-            containers.append(container)
             routes.append(wait_file(directory / 'ready', container).decode())
         sequences = [0, 0]
         for cycle in range(3):
@@ -141,6 +148,10 @@ def main():
         proof['complete'] = True
         proof['stage'] = 'complete'
     finally:
+        if proof['stage'] == 'startup':
+            with log.open('rb') as stream:
+                stream.seek(max(0, log.stat().st_size - 16384))
+                proof['startup_error'] = startup_error(stream.read(16384).decode(errors='replace'), output, prefix)
         proof['endpoint_states'] = []
         for container in containers:
             endpoint_log = output / (container + '.private.log')
