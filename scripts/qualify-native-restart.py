@@ -12,9 +12,9 @@ import time
 import xml.etree.ElementTree as ET
 
 RUNTIME = "20dfa47de9ad5ae5fe4c7748089dea5be286b556"
-VERA = "f2097c1f544a2d36b570620ac301c228bcebd1f7"
-# Normal Orbis images: run 38172581653. Vera image: run 38293091379.
-VERA_DIGEST = "sha256:637373d4f1706ce0af438b3c04d0aacee2755da4a419001dff771f0bf5887a46"
+VERA = "f3c2a31619e633ec34036524958ad0283bc032f4"
+# Normal Orbis images: run 38172581653. Vera image: run 38303771208.
+VERA_DIGEST = "sha256:7d61c6f88f94c90ebe1f9ddb036731bc1285265f560f1e8cbec7d3eecf2a2c38"
 RUNTIME_DIGESTS = {
     "bls12-381": "sha256:8bccba8f1b907d3c197dca2fec570c6b9d06a237694b79f04a6534ebeee78e73",
     "jubjub": "sha256:c818f7232fbfaa977ac667bca69b6e8b827fefe95f8cb2b20477e778496a4457"

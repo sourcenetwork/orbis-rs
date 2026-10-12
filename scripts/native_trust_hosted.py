@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import time
 
-VERA = 'f2097c1f544a2d36b570620ac301c228bcebd1f7'
+VERA = 'f3c2a31619e633ec34036524958ad0283bc032f4'
 VERA_SDK = '9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf'
 DEFRA = '8cfd791fe7f3b69777c60b436f6b32c1a4447526'
 SELECTOR = 'native_trust_gateway_ring_dkg'
