@@ -6865,6 +6865,7 @@ dependencies = [
  "prometheus",
  "rand 0.8.6",
  "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
  "thiserror 1.0.69",

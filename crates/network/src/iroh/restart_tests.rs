@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-const PROTOCOL: &[u8] = b"orbis/restart-transport";
+const PROTOCOL: &[u8] = crate::protocol::V0.sign;
 const CHILD: &str = "iroh::tests::restart::transport_server_child";
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -94,21 +94,19 @@ async fn client(port: u16) -> IrohNetwork {
 }
 
 async fn echo(network: &IrohNetwork, peer: &PeerId) {
-    let connection = tokio::time::timeout(DEADLINE, network.connect(peer, PROTOCOL))
-        .await
-        .expect("cold peer connection deadline")
-        .unwrap();
-    let stream = connection.open_stream().await.unwrap();
-    stream
-        .send(Message::new(b"restart-check".as_slice(), PROTOCOL))
-        .await
-        .unwrap();
-    let response = tokio::time::timeout(DEADLINE, stream.recv())
-        .await
-        .expect("echo deadline")
-        .unwrap();
-    assert_eq!(response.data.as_ref(), b"restart-check");
-    connection.close().await.unwrap();
+    tokio::time::timeout(DEADLINE, async {
+        let connection = network.connect(peer, PROTOCOL).await.unwrap();
+        let stream = connection.open_stream().await.unwrap();
+        stream
+            .send(Message::new(b"restart-check".as_slice(), PROTOCOL))
+            .await
+            .unwrap();
+        let response = stream.recv().await.unwrap();
+        assert_eq!(response.data.as_ref(), b"restart-check");
+        connection.close().await.unwrap();
+    })
+    .await
+    .expect("cold transport roundtrip deadline");
 }
 
 #[tokio::test]
@@ -119,9 +117,18 @@ async fn transport_server_child() {
         .unwrap()
         .parse()
         .unwrap();
+    let seed = std::env::var("ORBIS_IROH_RESTART_SEED")
+        .map(|value| value.parse::<u8>().unwrap())
+        .unwrap_or(2);
+    let bind = std::env::var("ORBIS_IROH_RESTART_BIND_IP")
+        .map(|value| value.parse::<Ipv4Addr>().unwrap())
+        .unwrap_or(Ipv4Addr::LOCALHOST);
+    let advertised = std::env::var("ORBIS_IROH_RESTART_ADVERTISED_IP")
+        .map(|value| value.parse::<Ipv4Addr>().unwrap())
+        .unwrap_or(Ipv4Addr::LOCALHOST);
     let network = IrohNetwork::builder()
-        .secret_key(SecretKey::from_bytes(&[2; 32]))
-        .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+        .secret_key(SecretKey::from_bytes(&[seed; 32]))
+        .bind_addr_v4(SocketAddrV4::new(bind, port))
         .private_routes_only()
         .build()
         .await
@@ -132,7 +139,7 @@ async fn transport_server_child() {
         .accept(PROTOCOL.to_vec(), Arc::new(trait_tests::EchoHandler))
         .spawn()
         .unwrap();
-    let route = format!("{}@127.0.0.1:{port}", network.local_address().unwrap());
+    let route = format!("{}@{advertised}:{port}", network.local_address().unwrap());
     use std::io::Write;
     let mut ready = OpenOptions::new()
         .create_new(true)
@@ -143,6 +150,24 @@ async fn transport_server_child() {
     ready.write_all(route.as_bytes()).unwrap();
     drop(ready);
     std::fs::rename(directory.join("ready.tmp"), directory.join("ready")).unwrap();
+    if std::env::var_os("ORBIS_IROH_RESTART_COMMANDS").is_some() {
+        let mut completed = 0_u64;
+        loop {
+            let command = directory.join(format!("command-{}.json", completed + 1));
+            if let Ok(bytes) = std::fs::read(command) {
+                assert!(bytes.len() <= 1024, "transport command exceeds bound");
+                let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let peer = PeerId::from_bytes(request["peer"].as_str().unwrap().as_bytes());
+                echo(&network, &peer).await;
+                completed += 1;
+                let output = directory.join(format!("result-{completed}.json"));
+                let pending = output.with_extension("tmp");
+                std::fs::write(&pending, b"{\"echoed\":true}").unwrap();
+                std::fs::rename(pending, output).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     std::future::pending::<()>().await;
 }
 

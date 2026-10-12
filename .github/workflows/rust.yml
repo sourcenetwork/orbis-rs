@@ -722,6 +722,16 @@ jobs:
         run: cargo fetch --locked
       - name: Qualify fresh Iroh connections after a peer process crash
         run: python3 scripts/qualify-iroh-restart.py
+      - name: Qualify fresh bidirectional dials on a Docker bridge
+        run: python3 scripts/qualify-iroh-bridge.py
+      - name: Retain bounded bridge result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iroh-bridge-results
+          path: ${{ runner.temp }}/iroh-bridge-results/results.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Retain bounded transport result
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

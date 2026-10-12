@@ -19,7 +19,7 @@ def main():
     source, tree = git('rev-parse', 'HEAD'), git('rev-parse', 'HEAD^{tree}')
     if git('status', '--porcelain', '--untracked-files=no'):
         raise ValueError('transport qualification requires clean tracked source')
-    command = ['cargo', 'test', '--frozen', '--release', '-p', 'network', '--lib',
+    command = ['cargo', '+1.98.0', 'test', '--frozen', '--release', '-p', 'network', '--lib',
                CASE, '--', '--exact', '--nocapture', '--test-threads=1']
     log = output / 'transport.private.log'
     with log.open('x') as stream:
@@ -32,7 +32,7 @@ def main():
     observed = json.loads(samples[0]) if len(samples) == 1 else None
     expected = {'peer_crashes': 2, 'fresh_client_dials': 3, 'echoes': 3, 'loopback_only': True}
     proof = {'source': source, 'tree': tree, 'exit_code': completed.returncode,
-             'toolchain': subprocess.check_output(['rustc', '--version'], text=True).strip(),
+             'toolchain': subprocess.check_output(['rustc', '+1.98.0', '--version'], text=True).strip(),
              'case': CASE, 'observed': observed,
              'test_source_sha256': hashlib.sha256(Path('crates/network/src/iroh/restart_tests.rs').read_bytes()).hexdigest(),
              'compiler_errors': sorted(set(re.findall(r'error\[(E[0-9]{4})\]', tail)))[:8],
