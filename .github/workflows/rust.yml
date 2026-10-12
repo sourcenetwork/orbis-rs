@@ -30,6 +30,7 @@ on:
           - native_distributed_threshold_workflows
           - native_pet_threshold_workflows
           - native_pet_member_replacement
+          - native_pet_member_churn
           - native_pet_scheduled_refresh_after_restart
           - native_defra_signing
         default: all
@@ -208,7 +209,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -391,7 +392,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:

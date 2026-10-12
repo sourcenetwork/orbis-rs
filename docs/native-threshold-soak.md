@@ -7,7 +7,7 @@ by focused lifecycle qualification. The driver rejects production source changes
 against those images and clears test KDF overrides. It does not build a diagnostic
 runtime or change the production refresh interval.
 
-The focused driver selects Orbis runtime `68cf26d15fb554adfbab50df157e8e2d085463d4`
+The focused driver selects Orbis runtime `20dfa47de9ad5ae5fe4c7748089dea5be286b556`
 and Vera `9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf`. It pulls the pinned
 Linux amd64 images by digest and checks their source, backend and curve labels.
 The fault scope additionally requires the diagnostic image's unsafe-testing
@@ -53,6 +53,27 @@ does not establish capacity, a memory plateau, WAN behavior or prolonged refresh
 and membership churn. Scheduled refresh and member replacement have separate
 lifecycle cases. The soak requires a successful hosted run on each curve before
 its behavior can be described as qualified.
+
+## Repeated membership changes
+
+The opt-in `native_pet_member_churn` case replaces one member, then rotates four
+departures and reentries through the resulting four identities. Each change
+leaves exactly two active members for signing and PRE, requiring the incoming
+member's share. Ten crash restarts reuse the existing identities and encrypted
+stores. The case verifies paired polynomials, certified committee state, removal
+of departed secrets, and signing denial followed by recovery after regrant.
+All required signers stay alive until every entry point has been checked.
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=threshold \
+  -f restart_curve=both -f threshold_case=native_pet_member_churn
+```
+
+This ignored case uses the bounded `native-soak` profile with zero retries. The
+driver requires a successful test and a completion record reporting five changes,
+four reentries and ten crash restarts. It uploads bounded phase and state metadata;
+raw logs and secret material remain on the ephemeral runner. Successful isolated
+connection regressions do not establish this lifecycle's correctness.
 
 ## Local promotion after paired resharing
 
