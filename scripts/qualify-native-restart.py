@@ -175,6 +175,35 @@ def polynomial_result(content):
     return result
 
 
+def handshake_probes(content):
+    records = []
+    fields = {'failed_member', 'receiver', 'cycle', 'phase', 'origin',
+              'connected', 'timed_out', 'elapsed_ms'}
+    cycles = {round * 100 + offset for round in range(1, 5) for offset in (0, 10)}
+    for payload in re.findall(r'native_churn_handshake (\{[^\n]{1,512}\})', content):
+        try:
+            record = json.loads(payload)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or set(record) != fields:
+            continue
+        if any(type(record[name]) is not int or not 0 <= record[name] <= 3
+               for name in ('failed_member', 'receiver')):
+            continue
+        if record['failed_member'] == record['receiver'] or type(record['cycle']) is not int or record['cycle'] not in cycles:
+            continue
+        if record['phase'] not in ('setup', 'connect') or record['origin'] != 'harness':
+            continue
+        if any(type(record[name]) is not bool for name in ('connected', 'timed_out')):
+            continue
+        if record['connected'] and (record['timed_out'] or record['phase'] != 'connect'):
+            continue
+        if type(record['elapsed_ms']) is not int or not 0 <= record['elapsed_ms'] <= 60000:
+            continue
+        records.append(record)
+    return records[-8:]
+
+
 def lifecycle_results(report, selected):
     """Expose only selected case names, durations and fixed failure classifications."""
     if not report.is_file() or report.stat().st_size > 2 * 1024 * 1024:
@@ -202,6 +231,7 @@ def lifecycle_results(report, selected):
         if failures:
             content = "\n".join(element.get("message", "") + "\n" +
                                 "".join(element.itertext()) for element in case)
+            record['handshake_probes_after_failure'] = handshake_probes(content)
             filenames = (
                 "native_startup.rs", "support/native_workflow.rs", "support/native_pet.rs",
                 "support/native_pet/dkg.rs", "support/native_pet/document.rs",

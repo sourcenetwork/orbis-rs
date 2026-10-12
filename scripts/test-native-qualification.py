@@ -14,6 +14,36 @@ churn_result = namespace['churn_result']
 polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
 verified_fixture_source = namespace['verified_fixture_source']
+handshake_probes = namespace['handshake_probes']
+
+
+class HandshakeProbes(unittest.TestCase):
+    def setUp(self):
+        self.record = dict(failed_member=3, receiver=0, cycle=110, phase='connect',
+                           origin='harness', connected=True, timed_out=False, elapsed_ms=20)
+
+    def parse(self, record):
+        return handshake_probes('native_churn_handshake ' + json.dumps(record))
+
+    def test_retains_after_failure_origin_and_deadline_status(self):
+        self.assertEqual(self.parse(self.record), [self.record])
+        timeout = dict(self.record, connected=False, timed_out=True, elapsed_ms=10001)
+        self.assertEqual(self.parse(timeout), [timeout])
+
+    def test_rejects_payloads_that_could_leak_secrets(self):
+        self.assertEqual(self.parse(dict(self.record, secret='private material')), [])
+        self.assertEqual(self.parse(dict(self.record, origin='private material')), [])
+        self.assertEqual(handshake_probes('unrelated private output'), [])
+
+    def test_rejects_invalid_members_and_contradictory_states(self):
+        for changes in (dict(receiver=3), dict(failed_member=True), dict(cycle=True),
+                        dict(timed_out=True), dict(phase='setup'), dict(elapsed_ms=-1)):
+            self.assertEqual(self.parse(dict(self.record, **changes)), [])
+
+    def test_bounds_retained_records(self):
+        content = '\n'.join('native_churn_handshake ' + json.dumps(dict(self.record, elapsed_ms=index))
+                            for index in range(12))
+        self.assertEqual([row['elapsed_ms'] for row in handshake_probes(content)], list(range(4, 12)))
 
 
 class FixtureSource(unittest.TestCase):

@@ -2,8 +2,51 @@ use super::{
     endpoint, member_replacement::MemberReplacement, stored_bundle as store, wait_polynomials,
     Delivery, Document, Node, Permissions, Polynomials, PreChecks, Reader,
 };
+use futures::FutureExt;
 use local_storage::r#trait::LocalStorageKeys;
+use network::{Network, NetworkImpl, PeerId};
 use proto::info_service::GetNodeInfoResponse;
+use std::{
+    net::{Ipv4Addr, SocketAddrV4},
+    panic::AssertUnwindSafe,
+    time::Duration,
+};
+
+struct Peers<'a> {
+    addresses: &'a [String],
+    infos: &'a [GetNodeInfoResponse],
+}
+
+async fn probe_signing_route(peer: &str, sender: usize, receiver: usize, cycle: u64) {
+    let started = std::time::Instant::now();
+    let mut phase = "setup";
+    let outcome = tokio::time::timeout(Duration::from_secs(10), async {
+        let network = NetworkImpl::builder()
+            .bind_addr_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+            .private_routes_only()
+            .build()
+            .await?;
+        phase = "connect";
+        let result = network
+            .connect(
+                &PeerId::from_bytes(peer.as_bytes()),
+                network::protocol::V0.sign_alpn,
+            )
+            .await;
+        network.endpoint().close().await;
+        result.map(|_| ())
+    })
+    .await;
+    eprintln!(
+        "native_churn_handshake {}",
+        serde_json::json!({
+            "failed_member": sender, "receiver": receiver, "cycle": cycle, "phase": phase,
+            "origin": "harness",
+            "connected": matches!(&outcome, Ok(Ok(()))), "timed_out": outcome.is_err(),
+            "elapsed_ms": started.elapsed().as_millis(),
+        })
+    );
+}
 
 pub(super) struct Committee {
     pub infos: Vec<GetNodeInfoResponse>,
@@ -81,7 +124,10 @@ impl MemberReplacement<'_> {
                 );
             }
             self.check_churn_access(
-                &addresses,
+                &Peers {
+                    addresses: &addresses,
+                    infos: &infos,
+                },
                 &participants,
                 reader,
                 audit,
@@ -108,7 +154,10 @@ impl MemberReplacement<'_> {
             }
             self.assert_certified_state(&finalized, documents).await;
             self.check_churn_access(
-                &addresses,
+                &Peers {
+                    addresses: &addresses,
+                    infos: &infos,
+                },
                 &participants,
                 reader,
                 audit,
@@ -199,7 +248,7 @@ impl MemberReplacement<'_> {
 
     async fn check_churn_access(
         &self,
-        addresses: &[String],
+        peers: &Peers<'_>,
         participants: &[usize],
         reader: &Reader,
         audit: &str,
@@ -213,14 +262,26 @@ impl MemberReplacement<'_> {
         ));
         assert_eq!(recipient.signer.did_uri, reader.signer.did_uri);
         for index in participants {
-            let checks = PreChecks::new(endpoint(&addresses[*index]), &recipient, Some(audit));
+            let checks =
+                PreChecks::new(endpoint(&peers.addresses[*index]), &recipient, Some(audit));
             for (document, delivery) in documents {
                 checks.decrypt(document, delivery).await;
             }
             eprintln!("native_churn_sign member={index} cycle={message}");
-            self.signing
-                .verify(&addresses[*index], reader, message)
-                .await;
+            let signed = AssertUnwindSafe(self.signing.verify(
+                &peers.addresses[*index],
+                reader,
+                message,
+            ))
+            .catch_unwind()
+            .await;
+            if let Err(payload) = signed {
+                // Probe after failure so extra handshakes cannot affect successful signing.
+                let receiver = *participants.iter().find(|peer| *peer != index).unwrap();
+                probe_signing_route(&peers.infos[receiver].peer_id, *index, receiver, message)
+                    .await;
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 }
