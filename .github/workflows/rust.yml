@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery]
+        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery, vera-image]
         default: full
         required: true
       trust_revision:
@@ -209,7 +209,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'vera-image')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
