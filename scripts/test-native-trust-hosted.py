@@ -66,7 +66,7 @@ class Qualification(unittest.TestCase):
             with self.subTest(revision=requested), self.assertRaises(driver.Failure):
                 driver.runtime_revision(root, 'a' * 40, requested)
 
-    def test_native_sdk_and_docker_use_the_same_vera_revision(self):
+    def test_native_sdk_and_daemon_have_explicit_source_pins(self):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual((root / 'docker/NATIVE_VERA_REF').read_text().strip(), driver.VERA)
         compose = (root / 'docker/docker-compose-native-integration-test.yml').read_text()
@@ -82,12 +82,30 @@ class Qualification(unittest.TestCase):
                     self.assertIsNotNone(match, str(manifest.relative_to(root)))
                     declarations.append(match.group(1))
         self.assertTrue(declarations)
-        self.assertEqual(set(declarations), {driver.VERA})
+        self.assertEqual(set(declarations), {driver.VERA_SDK})
 
     def test_native_defra_fixture_uses_release_revision(self):
         root = Path(__file__).resolve().parents[1]
         reader = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))['revision']
         self.assertEqual(reader(root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)), driver.DEFRA)
+
+    def test_gateway_preflight_binds_sdk_and_verifier_independently(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            trust = Path(raw)
+            (trust / '.github/workflows').mkdir(parents=True)
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            (trust / '.github/workflows/native-gateway.yml').write_text(
+                'DEFRADB_REVISION: ' + driver.DEFRA + '\n')
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
+                    patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
+                self.assertEqual(driver.pins(root, trust, root, root, 'b' * 40)['vera'],
+                                 {'head': driver.VERA})
+                with patch.object(driver, 'VERA_SDK', 'c' * 40), self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
+                (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + 'c' * 40 + '\n')
+                with self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
 
     def test_gateway_preflight_rejects_defra_fixture_from_another_release(self):
         root = Path(__file__).resolve().parents[1]
