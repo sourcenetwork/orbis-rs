@@ -9,7 +9,7 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery]
+        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery, transport]
         default: full
         required: true
       trust_revision:
@@ -209,7 +209,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'transport')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -392,7 +392,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'transport')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -693,3 +693,40 @@ jobs:
           python3 scripts/native_trust_hosted.py run --trust-ref "$TRUST_REVISION" \
             --curve "${{ matrix.crypto }}" --artifacts "$RUNNER_TEMP/native-trust-download" \
             --output "$RUNNER_TEMP/native-trust-run"
+
+  transport-restart:
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'transport'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      RUST_LOG: warn
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang cmake pkg-config libssl-dev
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          key: native-transport-restart
+          cache-on-failure: true
+      - name: Fetch locked dependencies
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo fetch --locked
+      - name: Qualify fresh Iroh connections after a peer process crash
+        run: python3 scripts/qualify-iroh-restart.py
+      - name: Retain bounded transport result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: iroh-restart-results
+          path: ${{ runner.temp }}/iroh-restart-results/results.json
+          if-no-files-found: warn
+          retention-days: 14

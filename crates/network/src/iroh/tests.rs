@@ -4,14 +4,14 @@
 //! and includes iroh-specific test cases.
 
 use super::IrohNetwork;
-use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::tests as trait_tests;
+use crate::r#trait::{Connection, Message, Network, ProtocolHandler};
 use crate::{AuthenticatedMessage, PeerId, Result, SecretKey, Topic};
 use crate::{PubSubEvent, TopicId};
 use async_trait::async_trait;
 use std::net::SocketAddrV4;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 fn loopback() -> SocketAddrV4 {
     "127.0.0.1:0".parse().unwrap()
@@ -1937,3 +1937,7 @@ async fn iroh_authorized_connection_reserve_keeps_a_slot_for_the_committee() {
     committee_conn.close().await.unwrap();
     router.shutdown().await.unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[path = "restart_tests.rs"]
+mod restart;

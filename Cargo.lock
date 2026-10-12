@@ -6866,6 +6866,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serial_test",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

@@ -29,6 +29,7 @@ fault-injection = []
 shaping = []
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 bytes = { workspace = true }
 serial_test = "3.2.0"
