@@ -20,7 +20,8 @@ handshake_probes = namespace['handshake_probes']
 class HandshakeProbes(unittest.TestCase):
     def setUp(self):
         self.record = dict(failed_member=3, receiver=0, cycle=110, phase='connect',
-                           origin='harness', connected=True, timed_out=False, elapsed_ms=20)
+                           origin='harness', connected=True, timed_out=False, elapsed_ms=20,
+                           address_present=True)
 
     def parse(self, record):
         return handshake_probes('native_churn_handshake ' + json.dumps(record))

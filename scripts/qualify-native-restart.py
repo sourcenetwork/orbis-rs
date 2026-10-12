@@ -178,7 +178,7 @@ def polynomial_result(content):
 def handshake_probes(content):
     records = []
     fields = {'failed_member', 'receiver', 'cycle', 'phase', 'origin',
-              'connected', 'timed_out', 'elapsed_ms'}
+              'connected', 'timed_out', 'elapsed_ms', 'address_present'}
     cycles = {round * 100 + offset for round in range(1, 5) for offset in (0, 10)}
     for payload in re.findall(r'native_churn_handshake (\{[^\n]{1,512}\})', content):
         try:
@@ -194,7 +194,7 @@ def handshake_probes(content):
             continue
         if record['phase'] not in ('setup', 'connect') or record['origin'] != 'harness':
             continue
-        if any(type(record[name]) is not bool for name in ('connected', 'timed_out')):
+        if any(type(record[name]) is not bool for name in ('connected', 'timed_out', 'address_present')):
             continue
         if record['connected'] and (record['timed_out'] or record['phase'] != 'connect'):
             continue

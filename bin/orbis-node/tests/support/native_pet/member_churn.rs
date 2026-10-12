@@ -42,6 +42,7 @@ async fn probe_signing_route(peer: &str, sender: usize, receiver: usize, cycle: 
         serde_json::json!({
             "failed_member": sender, "receiver": receiver, "cycle": cycle, "phase": phase,
             "origin": "harness",
+            "address_present": peer.contains('@'),
             "connected": matches!(&outcome, Ok(Ok(()))), "timed_out": outcome.is_err(),
             "elapsed_ms": started.elapsed().as_millis(),
         })
@@ -278,8 +279,13 @@ impl MemberReplacement<'_> {
             if let Err(payload) = signed {
                 // Probe after failure so extra handshakes cannot affect successful signing.
                 let receiver = *participants.iter().find(|peer| *peer != index).unwrap();
-                probe_signing_route(&peers.infos[receiver].peer_id, *index, receiver, message)
-                    .await;
+                probe_signing_route(
+                    &peers.infos[receiver].p2p_address,
+                    *index,
+                    receiver,
+                    message,
+                )
+                .await;
                 std::panic::resume_unwind(payload);
             }
         }
