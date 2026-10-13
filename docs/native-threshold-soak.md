@@ -7,7 +7,7 @@ by focused lifecycle qualification. The driver rejects production source changes
 against those images and clears test KDF overrides. It does not build a diagnostic
 runtime or change the production refresh interval.
 
-The focused driver selects Orbis runtime `20dfa47de9ad5ae5fe4c7748089dea5be286b556`
+The focused driver selects Orbis runtime `9ebdeda8f475e917fd26fdfe37517497842f7040`
 and the Vera revision in [docker/NATIVE_VERA_REF](../docker/NATIVE_VERA_REF).
 The daemon and shared verifier use that Vera revision; Orbis's native SDK remains
 pinned independently in its package manifests. The driver pulls immutable Linux
@@ -15,6 +15,14 @@ amd64 Orbis images by digest and checks their source, backend and curve labels.
 It builds Vera from its pinned source without publishing, checks the Linux amd64
 image identity and source label, and records the daemon checksum. Lifecycle
 results include the selected sources and exact image IDs.
+The images were built at CI merge `bae0b000aa9f734ac878d92b5ff8b70a76bd67a0`,
+whose complete source tree equals the selected permanent revision. Image label
+checks require that build revision, while source reuse checks use the permanent
+revision. The driver records both. Normal image manifests/configurations were
+independently verified by digest, platform and labels; the selected image IDs
+also bind the gateway fixture's expected build label. Unrelated image identities
+retain exact source checks. This updates qualification inputs; successful new
+lifecycle/consumer results must be recorded separately from earlier runtime checks.
 The fault scope additionally requires the diagnostic image's unsafe-testing
 label; that image is not used by the soak. A newer fixture can reuse these images
 only when its changes belong to the driver's explicit fixture allowlist.
