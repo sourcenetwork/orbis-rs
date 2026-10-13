@@ -9,13 +9,13 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault, soak]
+        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery, vera-image]
         default: full
         required: true
       trust_revision:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
-        default: 11630c1a0b3241bed2799a6c162c4c8e16a4e502
+        default: 8c3dfa70eee62f1b2d3d27cae7941ce4d6ed73d5
       restart_curve:
         description: Curve for focused restart qualification
         type: choice
@@ -30,6 +30,7 @@ on:
           - native_distributed_threshold_workflows
           - native_pet_threshold_workflows
           - native_pet_member_replacement
+          - native_pet_member_churn
           - native_pet_scheduled_refresh_after_restart
           - native_defra_signing
         default: all
@@ -208,7 +209,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'vera-image')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -391,7 +392,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -473,6 +474,57 @@ jobs:
             --test native_startup \
             -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 
+  sign-peer-recovery:
+    name: Signing peer recovery (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'peer-recovery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      QUALIFICATION_CURVE: ${{ matrix.crypto }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+          path: candidate
+      - uses: dtolnay/rust-toolchain@1.98.0
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: native-restart-${{ matrix.crypto }}
+          cache-on-failure: true
+      - name: Fetch locked dependencies
+        working-directory: candidate
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo +1.98.0 fetch --locked
+      - name: Reproduce and fix signing connection retention
+        run: python3 scripts/qualify-sign-peer-recovery.py
+      - name: Retain bounded regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sign-peer-recovery-${{ matrix.crypto }}
+          path: ${{ runner.temp }}/sign-peer-recovery-${{ matrix.crypto }}/results.json
+          if-no-files-found: warn
+          retention-days: 14
+
   native-restart:
     name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
     if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold' || inputs.scope == 'fault' || inputs.scope == 'soak')
@@ -532,6 +584,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate immutable fixture input
+        id: sources
         env:
           TRUST_REVISION: ${{ inputs.trust_revision }}
         run: python3 scripts/native_trust_hosted.py validate --trust-ref "$TRUST_REVISION"
@@ -544,13 +597,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: sourcenetwork/vera.rs
-          ref: 1dab0c4562da551b1a7f00fcea643b914769891c
+          ref: ${{ steps.sources.outputs.vera }}
           path: .native/vera
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: sourcenetwork/defradb.rs
-          ref: 88e148a7387e00d9dd6fbf6ab78701d6e2bef452
+          ref: ${{ steps.sources.outputs.defra }}
           path: .native/defra
           persist-credentials: false
       - name: Install qualified native build dependencies
@@ -563,7 +616,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: native-trust-artifacts-${{ runner.os }}-88e148a7
+          key: native-trust-artifacts-${{ runner.os }}-${{ steps.sources.outputs.defra }}
       - uses: ./.github/actions/docker-builder
       - uses: docker/login-action@v3
         with:
