@@ -11,7 +11,10 @@ The focused driver selects Orbis runtime `20dfa47de9ad5ae5fe4c7748089dea5be286b5
 and the Vera revision in [docker/NATIVE_VERA_REF](../docker/NATIVE_VERA_REF).
 The daemon and shared verifier use that Vera revision; Orbis's native SDK remains
 pinned independently in its package manifests. The driver pulls immutable Linux
-amd64 images by digest and checks their source, backend and curve labels.
+amd64 Orbis images by digest and checks their source, backend and curve labels.
+It builds Vera from its pinned source without publishing, checks the Linux amd64
+image identity and source label, and records the daemon checksum. Lifecycle
+results include the selected sources and exact image IDs.
 The fault scope additionally requires the diagnostic image's unsafe-testing
 label; that image is not used by the soak. A newer fixture can reuse these images
 only when its changes belong to the driver's explicit fixture allowlist.

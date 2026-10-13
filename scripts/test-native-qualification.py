@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import Mock, patch
 
 namespace = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
 verify = namespace['verify_fixture_changes']
@@ -14,6 +15,7 @@ churn_result = namespace['churn_result']
 polynomial_result = namespace['polynomial_result']
 verified_image_id = namespace['verified_image_id']
 verified_fixture_source = namespace['verified_fixture_source']
+build_vera_image = namespace['build_vera_image']
 
 
 class FixtureSource(unittest.TestCase):
@@ -105,11 +107,50 @@ class RuntimeImages(unittest.TestCase):
             for diagnostic in (False, True):
                 variable, image, info = self.image(curve, diagnostic)
                 self.assertEqual(verified_image_id(info, variable, image, curve), info['Id'])
-            image = 'ghcr.io/sourcenetwork/orbis-rs/vera-native@' + namespace['VERA_DIGEST']
-            info = dict(Id='sha256:' + 'b' * 64, RepoDigests=[image], Os='linux',
+            image = 'sha256:' + 'b' * 64
+            info = dict(Id=image, RepoDigests=[], Os='linux',
                         Architecture='amd64',
                         Config={'Labels': {'org.opencontainers.image.revision': namespace['VERA']}})
             self.assertEqual(verified_image_id(info, 'ORBIS_NATIVE_VERA_IMAGE', image, curve), info['Id'])
+
+    def test_private_vera_requires_exact_identity_source_and_platform(self):
+        image = 'sha256:' + 'b' * 64
+        info = dict(Id=image, RepoDigests=[], Os='linux', Architecture='amd64',
+                    Config={'Labels': {'org.opencontainers.image.revision': namespace['VERA']}})
+        for changes in ({'Id': 'sha256:' + 'c' * 64}, {'Os': 'windows'},
+                        {'Architecture': 'arm64'}, {'Config': None},
+                        {'Config': {'Labels': {'org.opencontainers.image.revision': 'd' * 40}}}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                verified_image_id({**info, **changes}, 'ORBIS_NATIVE_VERA_IMAGE', image, 'bls12-381')
+
+    def test_private_vera_build_binds_source_before_returning_image_id(self):
+        image = 'sha256:' + 'b' * 64
+        info = dict(Id=image, RepoDigests=[], Os='linux', Architecture='amd64',
+                    Config={'Labels': {'org.opencontainers.image.revision': namespace['VERA']}})
+        capture = Mock(return_value=json.dumps([info]))
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('subprocess.run') as run, patch.dict(build_vera_image.__globals__, {'capture': capture}):
+                self.assertEqual(build_vera_image(Path(directory), {}, 'jubjub'), image)
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertIn('--load', command)
+                self.assertNotIn('--push', command)
+                self.assertEqual(command[command.index('--build-arg') + 1], 'VERA_REF=' + namespace['VERA'])
+                self.assertEqual(command[command.index('--platform') + 1], 'linux/amd64')
+                self.assertTrue(run.call_args.kwargs['check'])
+                self.assertEqual(run.call_args.kwargs['timeout'], 5400)
+                capture.assert_called_once_with(['docker', 'image', 'inspect', 'vera-native-qualification:' + namespace['VERA']])
+
+    def test_private_vera_build_rejects_ambiguous_or_mismatched_inspection(self):
+        info = dict(Id='sha256:' + 'b' * 64, Os='linux', Architecture='amd64',
+                    Config={'Labels': {'org.opencontainers.image.revision': namespace['VERA']}})
+        records = [{}, [], [info, info], [None], [{**info, 'Id': 'mutable:latest'}],
+                   [{**info, 'Config': {'Labels': {'org.opencontainers.image.revision': 'c' * 40}}}]]
+        for record in records:
+            with self.subTest(record=record), tempfile.TemporaryDirectory() as directory:
+                with patch('subprocess.run'), patch.dict(build_vera_image.__globals__, {'capture': lambda _: json.dumps(record)}):
+                    with self.assertRaises(ValueError):
+                        build_vera_image(Path(directory), {}, 'bls12-381')
 
     def test_wrong_source_curve_features_or_diagnostic_mode_are_rejected(self):
         for curve in ('bls12-381', 'jubjub'):

@@ -12,9 +12,7 @@ import time
 import xml.etree.ElementTree as ET
 
 RUNTIME = "20dfa47de9ad5ae5fe4c7748089dea5be286b556"
-VERA = "f3c2a31619e633ec34036524958ad0283bc032f4"
-# Normal Orbis images: run 38172581653. Vera image: run 38303771208.
-VERA_DIGEST = "sha256:7d61c6f88f94c90ebe1f9ddb036731bc1285265f560f1e8cbec7d3eecf2a2c38"
+VERA = "0c26e9e568c179790cc2f3eb9e48849b08e6173f"
 RUNTIME_DIGESTS = {
     "bls12-381": "sha256:8bccba8f1b907d3c197dca2fec570c6b9d06a237694b79f04a6534ebeee78e73",
     "jubjub": "sha256:c818f7232fbfaa977ac667bca69b6e8b827fefe95f8cb2b20477e778496a4457"
@@ -59,7 +57,12 @@ def verify_fixture_changes(changed):
 
 
 def verified_image_id(info, variable, image, curve):
-    if image not in info.get("RepoDigests", []):
+    if not isinstance(info, dict):
+        raise ValueError("invalid runtime image metadata")
+    local_vera = variable == "ORBIS_NATIVE_VERA_IMAGE" and re.fullmatch(r"sha256:[0-9a-f]{64}", image)
+    if local_vera and info.get("Id") != image:
+        raise ValueError("private Vera image ID does not match")
+    if not local_vera and image not in info.get("RepoDigests", []):
         raise ValueError("runtime image differs from the qualified build digest")
     if (info.get("Os"), info.get("Architecture")) != ("linux", "amd64"):
         raise ValueError("runtime image is not Linux amd64")
@@ -75,8 +78,9 @@ def verified_image_id(info, variable, image, curve):
             expected["io.sourcenetwork.orbis.unsafe-testing"] = "true"
     elif variable != "ORBIS_NATIVE_VERA_IMAGE":
         raise ValueError("unsupported runtime image")
-    labels = info["Config"].get("Labels") or {}
-    if any(labels.get(key) != value for key, value in expected.items()):
+    config = info.get("Config")
+    labels = config.get("Labels") if isinstance(config, dict) else None
+    if not isinstance(labels, dict) or any(labels.get(key) != value for key, value in expected.items()):
         raise ValueError("runtime image labels do not match the selected sources")
     if variable == "ORBIS_NATIVE_IMAGE" and labels.get("io.sourcenetwork.orbis.unsafe-testing") not in (None, "false"):
         raise ValueError("normal runtime image enables diagnostic features")
@@ -87,6 +91,24 @@ def verified_image_id(info, variable, image, curve):
 
 def capture(command):
     return subprocess.check_output(command, text=True).strip()
+
+
+def build_vera_image(output, env, curve):
+    tag = "vera-native-qualification:" + VERA
+    with (output / "vera-image-build.log").open("xb") as log:
+        subprocess.run([
+            "docker", "buildx", "build", "--load", "--provenance=false",
+            "--platform", "linux/amd64", "--tag", tag,
+            "--build-arg", "VERA_REF=" + VERA,
+            "--file", "docker/Dockerfile.native-vera-integration", "docker",
+        ], env=env, stdout=log, stderr=subprocess.STDOUT, check=True, timeout=5400)
+    records = json.loads(capture(["docker", "image", "inspect", tag]))
+    if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        raise ValueError("invalid private Vera image metadata")
+    image = records[0].get("Id")
+    if not isinstance(image, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
+        raise ValueError("invalid private Vera image ID")
+    return verified_image_id(records[0], "ORBIS_NATIVE_VERA_IMAGE", image, curve)
 
 
 def verified_fixture_source(runtime):
@@ -535,20 +557,29 @@ def qualify():
             del env[name]
     env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.98.0")
     repository = "ghcr.io/sourcenetwork/orbis-rs"
+    output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
+    output.mkdir(mode=0o700, exist_ok=False)
     images = {
         "ORBIS_NATIVE_IMAGE": f"{repository}/node-integration@{RUNTIME_DIGESTS[curve]}",
-        "ORBIS_NATIVE_VERA_IMAGE": f"{repository}/vera-native@{VERA_DIGEST}",
+        "ORBIS_NATIVE_VERA_IMAGE": build_vera_image(output, env, curve),
     }
     if suite == "fault":
         images["ORBIS_NATIVE_DIAGNOSTIC_IMAGE"] = (
             f"{repository}/node-integration@{DIAGNOSTIC_DIGESTS[curve]}"
         )
     for variable, image in images.items():
-        subprocess.run(["docker", "pull", image], check=True)
+        if variable != "ORBIS_NATIVE_VERA_IMAGE":
+            subprocess.run(["docker", "pull", image], check=True)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
         env[variable] = verified_image_id(info, variable, image, curve)
-    output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
-    output.mkdir(mode=0o700, exist_ok=False)
+    binary = capture(["docker", "run", "--rm", "--entrypoint", "sha256sum",
+                      env["ORBIS_NATIVE_VERA_IMAGE"], "/usr/local/bin/verad"])
+    if not re.fullmatch(r"[0-9a-f]{64}  /usr/local/bin/verad", binary):
+        raise ValueError("invalid private Vera executable checksum")
+    identity = {"fixture": source, "orbis_source": RUNTIME, "vera_source": VERA,
+                "images": {name: {"reference": image, "id": env[name]} for name, image in images.items()},
+                "vera_binary_sha256": binary[:64]}
+    (output / "runtime-identity.json").write_text(json.dumps(identity) + "\n")
     if churn:
         nodes = output / 'nodes'
         nodes.mkdir(mode=0o700)
@@ -590,6 +621,7 @@ def qualify():
         passed = result.returncode == 0
         if is_scenario:
             summary = lifecycle_results(report, selected)
+            summary["runtime_identity"] = identity
             if suite == "soak":
                 with log.open("rb") as stream:
                     stream.seek(max(0, log.stat().st_size - 65536))
