@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 RUNTIME = "9ebdeda8f475e917fd26fdfe37517497842f7040"
 IMAGE_REVISION = "bae0b000aa9f734ac878d92b5ff8b70a76bd67a0"
-VERA = "f3bbd7d2ed4559c43dab9e171d1bf70b0e639c64"
+VERA = "ce4e4636fa8bb0a1981df4cbf44246a4b3eb6570"
 RUNTIME_DIGESTS = {
     "bls12-381": "sha256:52bb5328ed807c2d2086d31c845fee4ed19b9a2308edbb7043ee3ec490a3b13b",
     "jubjub": "sha256:e606fd51b42b95842d9134fe745610df471ef0c57c668fb694e764318ddc1fa0"
