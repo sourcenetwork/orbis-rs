@@ -85,7 +85,7 @@ class FixtureSource(unittest.TestCase):
 class RuntimeImages(unittest.TestCase):
     def image(self, curve, diagnostic=False):
         labels = {
-            'org.opencontainers.image.revision': namespace['RUNTIME'],
+            'org.opencontainers.image.revision': namespace['IMAGE_REVISION'],
             'io.sourcenetwork.orbis.backend': 'native',
             'io.sourcenetwork.orbis.curve': curve,
             'io.sourcenetwork.orbis.integration-features': 'false',

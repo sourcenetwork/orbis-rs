@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import time
 
-VERA = '0c26e9e568c179790cc2f3eb9e48849b08e6173f'
+VERA = 'e48e1d8f9f701da94554a176d913131e2e6a5277'
 VERA_SDK = '9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf'
 DEFRA = '8cfd791fe7f3b69777c60b436f6b32c1a4447526'
 SELECTOR = 'native_trust_gateway_ring_dkg'
@@ -302,9 +302,14 @@ def restore(directory, destination, expected_orbis, expected_trust):
     return manifest
 
 
-def verify_runtime_labels(labels, runtime, curve):
+def verify_runtime_labels(labels, runtime, curve, image_id=None):
+    qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+    image_revision = runtime
+    if (image_id is not None and runtime == qualified['RUNTIME']
+            and image_id == qualified['RUNTIME_IMAGE_IDS'].get(curve)):
+        image_revision = qualified['IMAGE_REVISION']
     expected = {
-        'org.opencontainers.image.revision': runtime,
+        'org.opencontainers.image.revision': image_revision,
         'io.sourcenetwork.orbis.backend': 'native',
         'io.sourcenetwork.orbis.curve': curve,
         'io.sourcenetwork.orbis.integration-features': 'false',
@@ -407,7 +412,7 @@ def run(root, args, output):
     if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
         raise Failure()
     labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_IMAGE']]))[0]['Config']['Labels']
-    verify_runtime_labels(labels, runtime, args.curve)
+    verify_runtime_labels(labels, runtime, args.curve, images['ORBIS_NATIVE_IMAGE'])
     vera_labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_VERA_IMAGE']]))[0]['Config']['Labels']
     if vera_labels.get('org.opencontainers.image.revision') != VERA:
         raise Failure()
@@ -469,6 +474,7 @@ def run(root, args, output):
                 raise Failure()
         source(root, manifest['sources']['orbis']['head'])
         (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime,
+            'orbis_image_revision': labels['org.opencontainers.image.revision'],
                                                       'vera_sdk_revision': VERA_SDK, 'binary_sha256': binary_hash,
             'images': {**images, 'trust': gateway_image}, 'image_binary_sha256': image_binaries, 'curve': args.curve, 'executions': 2, 'passed': 2,
             'production_kdf_stores': 6, 'go_tests': 2, 'ring_records_checked': 16}, indent=2) + '\n')

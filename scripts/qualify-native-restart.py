@@ -11,15 +11,20 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "20dfa47de9ad5ae5fe4c7748089dea5be286b556"
-VERA = "0c26e9e568c179790cc2f3eb9e48849b08e6173f"
+RUNTIME = "9ebdeda8f475e917fd26fdfe37517497842f7040"
+IMAGE_REVISION = "bae0b000aa9f734ac878d92b5ff8b70a76bd67a0"
+VERA = "e48e1d8f9f701da94554a176d913131e2e6a5277"
 RUNTIME_DIGESTS = {
-    "bls12-381": "sha256:8bccba8f1b907d3c197dca2fec570c6b9d06a237694b79f04a6534ebeee78e73",
-    "jubjub": "sha256:c818f7232fbfaa977ac667bca69b6e8b827fefe95f8cb2b20477e778496a4457"
+    "bls12-381": "sha256:52bb5328ed807c2d2086d31c845fee4ed19b9a2308edbb7043ee3ec490a3b13b",
+    "jubjub": "sha256:e606fd51b42b95842d9134fe745610df471ef0c57c668fb694e764318ddc1fa0"
+}
+RUNTIME_IMAGE_IDS = {
+    "bls12-381": "sha256:0292155d49692cd7f47d122c3d08aec05c132760c0c30f56b554c801e181fc99",
+    "jubjub": "sha256:a0fa607932462434f37f09be813f12c14f47ad05788cd0a0559a654aa3b2d034"
 }
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:72f0525990b883702a82f2274f280a24aa1552741df3f695fc3b9493436d6565",
-    "jubjub": "sha256:dbe29ebe856d1a8a9a0fee8cf79bf4d01ac7d3d59f72a00e4a8a53f9e6c70756"
+    "bls12-381": "sha256:aa46d5c4cfc7e5b62834293c4d8f37615040110ab65068a08aac80210ccc8392",
+    "jubjub": "sha256:b0916e12dc064204107ebad2311ab33db41b13c14e5e01a89edea161d0996a23"
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",
@@ -69,7 +74,7 @@ def verified_image_id(info, variable, image, curve):
     expected = {"org.opencontainers.image.revision": VERA}
     if variable in ("ORBIS_NATIVE_IMAGE", "ORBIS_NATIVE_DIAGNOSTIC_IMAGE"):
         expected = {
-            "org.opencontainers.image.revision": RUNTIME,
+            "org.opencontainers.image.revision": IMAGE_REVISION,
             "io.sourcenetwork.orbis.backend": "native",
             "io.sourcenetwork.orbis.curve": curve,
             "io.sourcenetwork.orbis.integration-features": "false",
@@ -576,7 +581,8 @@ def qualify():
                       env["ORBIS_NATIVE_VERA_IMAGE"], "/usr/local/bin/verad"])
     if not re.fullmatch(r"[0-9a-f]{64}  /usr/local/bin/verad", binary):
         raise ValueError("invalid private Vera executable checksum")
-    identity = {"fixture": source, "orbis_source": RUNTIME, "vera_source": VERA,
+    identity = {"fixture": source, "orbis_source": RUNTIME,
+                "orbis_image_source": IMAGE_REVISION, "vera_source": VERA,
                 "images": {name: {"reference": image, "id": env[name]} for name, image in images.items()},
                 "vera_binary_sha256": binary[:64]}
     (output / "runtime-identity.json").write_text(json.dumps(identity) + "\n")
