@@ -1,4 +1,7 @@
-use defra_core::signing::{RemoteSigner, SigningAuthorization};
+use defra_core::{
+    signing::{RemoteSigner, SignFailure, SigningAuthorization},
+    thread_bounds::MaybeBoxFuture,
+};
 use std::sync::{Arc, RwLock};
 
 pub struct Signer {
@@ -16,6 +19,12 @@ impl Signer {
             signer_did: client.signer_did().to_owned(),
             client: RwLock::new(Arc::new(client)),
         }
+    }
+
+    pub async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, SignFailure> {
+        let mut signatures = self.sign_batch(vec![Arc::from(data)], None).await;
+        assert_eq!(signatures.len(), 1, "one result per signing payload");
+        signatures.pop().unwrap()
     }
 
     pub fn reconnect(&self, client: defra_orbis::OrbisClient) {
@@ -47,4 +56,17 @@ impl RemoteSigner for Signer {
         let client = Arc::clone(&self.client.read().unwrap());
         client.sign_sync(data, authorization)
     }
+
+    fn sign_batch(
+        &self,
+        payloads: Vec<Arc<[u8]>>,
+        authorization: Option<SigningAuthorization>,
+    ) -> MaybeBoxFuture<'static, Vec<Result<Vec<u8>, SignFailure>>> {
+        let client = Arc::clone(&self.client.read().unwrap());
+        client.sign_batch(payloads, authorization)
+    }
 }
+
+#[cfg(test)]
+#[path = "defra_signer_tests.rs"]
+mod tests;
