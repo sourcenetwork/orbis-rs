@@ -128,7 +128,8 @@ def pins(root, trust, vera, defra, trust_ref):
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
         raise Failure()
-    if f'DEFRADB_REVISION: {DEFRA}' not in (trust / '.github/workflows/native-gateway.yml').read_text():
+    selected = json.loads((trust / '.github/native-ring-versions.json').read_text())
+    if not isinstance(selected, dict) or selected.get('vera') != VERA or selected.get('defra') != DEFRA:
         raise Failure()
     return sources
 

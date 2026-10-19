@@ -149,11 +149,20 @@ class Qualification(unittest.TestCase):
             (trust / '.github/workflows').mkdir(parents=True)
             (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
             (trust / '.github/workflows/native-gateway.yml').write_text(
-                'DEFRADB_REVISION: ' + driver.DEFRA + '\n')
+                'ref: ${{ needs.runtimes.outputs.defra }}\n')
+            (trust / '.github/native-ring-versions.json').write_text(
+                json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
             with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
                     patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
                 self.assertEqual(driver.pins(root, trust, root, root, 'b' * 40)['vera'],
                                  {'head': driver.VERA})
+                selected = trust / '.github/native-ring-versions.json'
+                for altered in ({'vera': driver.VERA, 'defra': 'c' * 40},
+                                {'vera': 'c' * 40, 'defra': driver.DEFRA}, [], {}):
+                    selected.write_text(json.dumps(altered))
+                    with self.assertRaises(driver.Failure):
+                        driver.pins(root, trust, root, root, 'b' * 40)
+                selected.write_text(json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
                 with patch.object(driver, 'VERA_SDK', 'c' * 40), self.assertRaises(driver.Failure):
                     driver.pins(root, trust, root, root, 'b' * 40)
                 (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + 'c' * 40 + '\n')
@@ -167,7 +176,8 @@ class Qualification(unittest.TestCase):
             (trust / '.github/workflows').mkdir(parents=True)
             (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
             selected = 'c' * 40
-            (trust / '.github/workflows/native-gateway.yml').write_text('DEFRADB_REVISION: ' + selected + '\n')
+            (trust / '.github/native-ring-versions.json').write_text(
+                json.dumps({'vera': driver.VERA, 'defra': selected}))
             with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
                     patch.object(driver, 'DEFRA', selected), \
                     patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
