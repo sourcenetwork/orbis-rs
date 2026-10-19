@@ -194,6 +194,7 @@ class FixtureChanges(unittest.TestCase):
             '.github/workflows/upgrade-compatibility.yml',
             'bin/orbis-node/tests/support/native_trust_gateway/runner.rs',
             'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs',
+            'bin/orbis-node/tests/support/defra_signer_tests.rs',
         ])
 
     def test_runtime_change_is_rejected_even_with_approved_fixtures(self):

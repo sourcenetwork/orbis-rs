@@ -38,6 +38,7 @@ FIXTURE_FILES = {
     "bin/orbis-node/tests/native_startup.rs",
     "bin/orbis-node/src/sign/v0/coordinator/network_tests.rs",
     "bin/orbis-node/tests/support/defra_signer.rs",
+    "bin/orbis-node/tests/support/defra_signer_tests.rs",
     "bin/orbis-node/tests/support/defra_documents.rs",
     "bin/orbis-node/tests/support/defra_peers.rs",
     "bin/orbis-node/tests/support/native_pet.rs",
