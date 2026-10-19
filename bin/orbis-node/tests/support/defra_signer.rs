@@ -1,4 +1,7 @@
-use defra_core::signing::{RemoteSigner, SigningAuthorization};
+use defra_core::{
+    signing::{RemoteSigner, SignFailure, SigningAuthorization},
+    thread_bounds::MaybeBoxFuture,
+};
 use std::sync::{Arc, RwLock};
 
 pub struct Signer {
@@ -46,5 +49,14 @@ impl RemoteSigner for Signer {
     ) -> Result<Vec<u8>, String> {
         let client = Arc::clone(&self.client.read().unwrap());
         client.sign_sync(data, authorization)
+    }
+
+    fn sign_batch(
+        &self,
+        payloads: Vec<Arc<[u8]>>,
+        authorization: Option<SigningAuthorization>,
+    ) -> MaybeBoxFuture<'static, Vec<Result<Vec<u8>, SignFailure>>> {
+        let client = Arc::clone(&self.client.read().unwrap());
+        client.sign_batch(payloads, authorization)
     }
 }

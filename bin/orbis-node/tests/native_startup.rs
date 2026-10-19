@@ -802,6 +802,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
                 derivation_id.clone(),
                 derived_key.to_bytes().unwrap(),
                 service_identity.clone(),
+                defra_edge::on_demand().unwrap().clone(),
             )
             .await
             .unwrap(),
@@ -931,6 +932,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             derivation_id.clone(),
             derived_key.to_bytes().unwrap(),
             service_identity.clone(),
+            defra_edge::on_demand().unwrap().clone(),
         )
         .await
         .unwrap(),
