@@ -812,16 +812,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let documents =
         defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
     #[cfg(feature = "bls12-381")]
-    let defra_sign = || {
-        let defra = std::sync::Arc::clone(&defra);
-        tokio::task::spawn_blocking(move || {
-            defra_core::signing::RemoteSigner::sign_sync(
-                defra.as_ref(),
-                b"native Vera threshold signing",
-                None,
-            )
-        })
-    };
+    let defra_sign = || defra.sign(b"native Vera threshold signing");
 
     let message = b"native Vera threshold signing".to_vec();
     let sign_request = || {
@@ -848,7 +839,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("denied").await.is_err());
         assert_eq!(documents.count().await, 0);
     }
@@ -876,10 +871,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     #[cfg(feature = "bls12-381")]
     let (documents, peers, created) = {
-        let defra_signature = defra_sign()
-            .await
-            .unwrap()
-            .expect("Defra threshold signature");
+        let defra_signature = defra_sign().await.expect("Defra threshold signature");
         assert_eq!(defra_signature, signature.to_bytes().unwrap());
         let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
         peers.verify_replication().await;
@@ -915,7 +907,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("policy-revoked").await.is_err());
         assert_eq!(documents.count().await, 1);
     }
@@ -958,7 +954,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("policy-recreated").await.is_err());
         assert_eq!(documents.count().await, 1);
     }
@@ -975,10 +975,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     confirmed(&client, regranted.transaction_hash, &trusted).await;
     #[cfg(feature = "bls12-381")]
-    assert_eq!(
-        defra_sign().await.unwrap().unwrap(),
-        signature.to_bytes().unwrap()
-    );
+    assert_eq!(defra_sign().await.unwrap(), signature.to_bytes().unwrap());
     #[cfg(feature = "jubjub")]
     {
         let signed = signing
@@ -1011,7 +1008,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("revoked").await.is_err());
         assert_eq!(documents.count().await, 1);
         documents.verify(&created, defra.signer_did()).await;

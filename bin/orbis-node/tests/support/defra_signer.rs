@@ -21,6 +21,12 @@ impl Signer {
         }
     }
 
+    pub async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, SignFailure> {
+        let mut signatures = self.sign_batch(vec![Arc::from(data)], None).await;
+        assert_eq!(signatures.len(), 1, "one result per signing payload");
+        signatures.pop().unwrap()
+    }
+
     pub fn reconnect(&self, client: defra_orbis::OrbisClient) {
         assert_eq!(client.public_key_bytes(), self.public_key);
         assert_eq!(client.public_key_hex(), self.public_key_hex);
@@ -60,3 +66,7 @@ impl RemoteSigner for Signer {
         client.sign_batch(payloads, authorization)
     }
 }
+
+#[cfg(test)]
+#[path = "defra_signer_tests.rs"]
+mod tests;
