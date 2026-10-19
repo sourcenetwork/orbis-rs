@@ -391,6 +391,42 @@ class Qualification(unittest.TestCase):
             self.assertNotIn('cache-to', target)
         self.assertNotIn('push=true', json.dumps(config))
 
+    def test_actions_cache_is_private_and_keeps_local_exports(self):
+        config = driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40,
+                             local=True, actions_cache=True)
+        for target in config['target'].values():
+            self.assertEqual(target['output'], ['type=docker'])
+            self.assertEqual(target['cache-from'], ['type=gha,scope=trust-native-linux,version=2'])
+        self.assertEqual(config['target']['gateway']['cache-to'],
+                         ['type=gha,scope=trust-native-linux,version=2,mode=max'])
+        self.assertNotIn('type=registry', json.dumps(config))
+        self.assertNotIn('push=true', json.dumps(config))
+        with self.assertRaises(driver.Failure):
+            driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40,
+                        actions_cache=True)
+
+    def test_prebuilt_defra_requires_matching_source_profile_and_bytes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'Cargo.lock').write_text('locked')
+            artifacts = root / 'artifacts'
+            artifacts.mkdir()
+            (artifacts / 'defra').write_bytes(b'normal binary')
+            manifest = {'version': 1, 'role': 'defra', 'rust': '1.98.0', 'profile': 'release',
+                        'target': 'x86_64-unknown-linux-gnu',
+                        'source': {'revision': driver.DEFRA, 'lock_sha256': driver.sha(root / 'Cargo.lock')},
+                        'sha256': {'defra': driver.sha(artifacts / 'defra')}}
+            path = artifacts / 'manifest.json'
+            path.write_text(json.dumps(manifest))
+            driver.restore_defra(artifacts, root, root / 'staged')
+            self.assertEqual((root / 'staged').read_bytes(), b'normal binary')
+            for key, value in [('rust', '1.99.0'), ('profile', 'dev'), ('role', 'vera'),
+                               ('source', {'revision': 'a' * 40, 'lock_sha256': manifest['source']['lock_sha256']}),
+                               ('sha256', {'defra': 'a' * 64})]:
+                path.write_text(json.dumps({**manifest, key: value}))
+                with self.assertRaises(driver.Failure):
+                    driver.restore_defra(artifacts, root, root / 'staged')
+
     def test_local_image_requires_exact_loaded_identity_without_pull(self):
         image = 'sha256:' + 'a' * 64
         with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value=image):
