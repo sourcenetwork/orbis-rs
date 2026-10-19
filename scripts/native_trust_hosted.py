@@ -128,7 +128,8 @@ def pins(root, trust, vera, defra, trust_ref):
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
         raise Failure()
-    if f'DEFRADB_REVISION: {DEFRA}' not in (trust / '.github/workflows/native-gateway.yml').read_text():
+    selected = json.loads((trust / '.github/native-ring-versions.json').read_text())
+    if not isinstance(selected, dict) or selected.get('vera') != VERA or selected.get('defra') != DEFRA:
         raise Failure()
     return sources
 
@@ -141,7 +142,7 @@ def builder_go_version(trust):
     return 'go version go' + versions[0] + ' linux/amd64'
 
 
-def bake(trust, image, trust_ref, local=False):
+def bake(trust, image, trust_ref, local=False, actions_cache=False):
     # Both targets share the exact context, Dockerfile and args in one BuildKit
     # graph. The final target remains the real distroless production stage.
     common = {'context': str(trust), 'dockerfile': 'Dockerfile.native',
@@ -154,6 +155,12 @@ def bake(trust, image, trust_ref, local=False):
         gateway.pop('cache-from')
     else:
         gateway['cache-to'] = [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache,mode=max']
+    if actions_cache:
+        if not local:
+            raise Failure()
+        common['cache-from'] = ['type=gha,scope=trust-native-linux,version=2']
+        gateway['cache-from'] = common['cache-from']
+        gateway['cache-to'] = ['type=gha,scope=trust-native-linux,version=2,mode=max']
     return {'group': {'default': {'targets': ['builder', 'gateway']}}, 'target': {
         'builder': {**common, 'target': 'builder', 'tags': ['trust-ring-builder:local'], 'output': ['type=docker']},
         'gateway': gateway}}
@@ -177,17 +184,21 @@ def build(root, args, output):
     for directory in ('bin', 'lib', 'include'):
         (payload / directory).mkdir(parents=True, mode=0o700)
     STAGE = 15
-    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image)))
+    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image, getattr(args, 'actions_cache', False))))
     # Keep the build context within Bake's working directory; no filesystem entitlement is needed.
     command(bake_command(output, check=True), trust, env, output / 'trust-bake-check.log', 300)
     # This one private target is never shared with other source checkouts.
     target = output / 'defra-target'
     env['CARGO_TARGET_DIR'] = str(target)
     STAGE = 20
-    command(['cargo', '+1.98.0', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
-            defra, env, output / 'defra-build.log')
-    shutil.copy2(target / 'release/defra', payload / 'bin/defra')
-    shutil.rmtree(target)  # Only this newly-created job-private target; downloaded dependencies remain cached.
+    prebuilt = getattr(args, 'defra_artifacts', None)
+    if prebuilt is None:
+        command(['cargo', '+1.98.0', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
+                defra, env, output / 'defra-build.log')
+        shutil.copy2(target / 'release/defra', payload / 'bin/defra')
+        shutil.rmtree(target)
+    else:
+        restore_defra(Path(prebuilt), defra, payload / 'bin/defra')
     env.pop('CARGO_TARGET_DIR')
     STAGE = 30
     command(bake_command(output), trust, env, output / 'trust-build.log')
@@ -250,6 +261,20 @@ def build(root, args, output):
     (output / 'native-trust-artifacts.sha256').write_text(sha(archive) + '\n')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as result:
         result.write('trust_image=' + image_ref + '\n')
+
+
+def restore_defra(directory, source_root, destination):
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    expected = {'revision': revision(DEFRA), 'lock_sha256': sha(source_root / 'Cargo.lock')}
+    binary = directory / 'defra'
+    if (manifest.get('role') != 'defra' or manifest.get('version') != 1
+            or manifest.get('rust') != '1.98.0' or manifest.get('profile') != 'release'
+            or manifest.get('target') != 'x86_64-unknown-linux-gnu'
+            or manifest.get('source') != expected or set(manifest.get('sha256', {})) != {'defra'}
+            or binary.is_symlink() or not binary.is_file()
+            or sha(binary) != manifest['sha256']['defra']):
+        raise Failure()
+    shutil.copy2(binary, destination)
 
 
 def fixture_build_command(trust, payload):
@@ -585,6 +610,8 @@ def main():
     parser.add_argument('--output', type=Path)
     for name in ('trust', 'vera', 'defra', 'image', 'artifacts'):
         parser.add_argument('--' + name)
+    parser.add_argument('--defra-artifacts', help='Verified normal-release Defra artifacts from the caller build')
+    parser.add_argument('--actions-cache', action='store_true', help='Use the private caller repository Actions cache')
     parser.add_argument('--local-image', action='store_true', help='Transfer the gateway image privately without publishing it')
     parser.add_argument('--curve', choices=('bls12-381', 'jubjub'))
     args = parser.parse_args()
