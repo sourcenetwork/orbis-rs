@@ -49,31 +49,32 @@ hyper = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf", optional = true }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129", optional = true }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129", optional = true }
 commonware-codec = { version = "2026.9.0", optional = true }
 k256 = { workspace = true, optional = true }
 
 [dev-dependencies]
-acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "7d67ddbbb0d3d671b95dfe322b920e2e943c1daa" }
-defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526", default-features = false, features = ["p2p"] }
-defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526", default-features = false, features = ["iroh-transport"] }
-defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526", default-features = false, features = ["native"] }
-defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
+defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "60bc10e91827b153ec8ed87361f695814ec486e7" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 did-key.workspace = true
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "8cfd791fe7f3b69777c60b436f6b32c1a4447526" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 alloy-primitives = "1"
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf" }
-vera-acp = { package = "acp", git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
 alloy-sol-types = "1"
 authz = { path = "../../crates/authz", features = ["test-helpers"] }
 bulletin = { path = "../../crates/bulletin", features = ["dummy-type"] }

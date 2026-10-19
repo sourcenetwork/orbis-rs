@@ -85,7 +85,7 @@ class FixtureSource(unittest.TestCase):
 class RuntimeImages(unittest.TestCase):
     def image(self, curve, diagnostic=False):
         labels = {
-            'org.opencontainers.image.revision': namespace['RUNTIME'],
+            'org.opencontainers.image.revision': namespace['IMAGE_REVISION'],
             'io.sourcenetwork.orbis.backend': 'native',
             'io.sourcenetwork.orbis.curve': curve,
             'io.sourcenetwork.orbis.integration-features': 'false',
@@ -194,6 +194,7 @@ class FixtureChanges(unittest.TestCase):
             '.github/workflows/upgrade-compatibility.yml',
             'bin/orbis-node/tests/support/native_trust_gateway/runner.rs',
             'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs',
+            'bin/orbis-node/tests/support/defra_signer_tests.rs',
         ])
 
     def test_runtime_change_is_rejected_even_with_approved_fixtures(self):
