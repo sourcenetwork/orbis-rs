@@ -13,7 +13,7 @@ use authz::{
     r#trait::Authz,
     startup::{AuthzFactory, AuthzStartupError, PreparedAuthz},
 };
-use common::startup::{ConnectionPhase, PrepareContext, StartupProgress};
+use common::startup::{PrepareContext, StartupProgress};
 use serde::{de::DeserializeOwned, Deserialize};
 use std::{
     io::Read,
@@ -149,6 +149,12 @@ impl<A: PreparedAuthz, B: PreparedBulletin> PreparedNodeServices<A, B> {
     /// Connect authorization first, then connect/register the bulletin. The
     /// ordering keeps the shared progress state monotonic and avoids creating
     /// durable bulletin registration if authorization cannot start.
+    ///
+    /// Deliberately does not report any phase of its own here — each
+    /// implementation's `connect` reports the phases it actually goes
+    /// through (e.g. the vera backends report `Connecting`; native has none
+    /// to report). A blanket `Connecting` here would be wrong for native,
+    /// which never talks to a chain.
     pub async fn connect_and_register(
         self,
         registration: NodeRegistration,
@@ -159,7 +165,6 @@ impl<A: PreparedAuthz, B: PreparedBulletin> PreparedNodeServices<A, B> {
             authz,
             bulletin,
         } = self;
-        progress.set_phase(ConnectionPhase::Connecting);
         let authz = authz.connect(progress).await?;
         let bulletin = Box::new(bulletin)
             .connect_and_register(registration, progress)
