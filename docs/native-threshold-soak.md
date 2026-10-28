@@ -7,6 +7,13 @@ by focused lifecycle qualification. The driver rejects production source changes
 against those images and clears test KDF overrides. It does not build a diagnostic
 runtime or change the production refresh interval.
 
+The focused driver selects Orbis runtime `68cf26d15fb554adfbab50df157e8e2d085463d4`
+and Vera `9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf`. It pulls the pinned
+Linux amd64 images by digest and checks their source, backend and curve labels.
+The fault scope additionally requires the diagnostic image's unsafe-testing
+label; that image is not used by the soak. A newer fixture can reuse these images
+only when its changes belong to the driver's explicit fixture allowlist.
+
 Each cycle rotates its entry point among the three Orbis members. It revokes and
 regrants one of four certified relationships: the stored document, the inline
 document, the signing derivation or the PET audit target. Denials must have the
