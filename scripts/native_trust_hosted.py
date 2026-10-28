@@ -15,7 +15,8 @@ import tarfile
 import tempfile
 import time
 
-VERA = '9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf'
+VERA = '0c26e9e568c179790cc2f3eb9e48849b08e6173f'
+VERA_SDK = '9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf'
 DEFRA = '8cfd791fe7f3b69777c60b436f6b32c1a4447526'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
@@ -42,6 +43,12 @@ def revision(value):
     if not re.fullmatch('[0-9a-f]{40}', value):
         raise Failure()
     return value
+
+
+def write_source_outputs(path):
+    sources = {'vera': revision(VERA), 'defra': revision(DEFRA)}
+    with path.open('a') as output:
+        output.write(''.join(f'{name}={value}\n' for name, value in sources.items()))
 
 
 def runtime_revision(root, fixture, requested):
@@ -116,7 +123,7 @@ def pins(root, trust, vera, defra, trust_ref):
         ('orbis', root, os.environ['GITHUB_SHA']), ('trust', trust, trust_ref),
         ('vera', vera, VERA), ('defra', defra, DEFRA))}
     references = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))
-    if references['revision'](root) != VERA or references['revision'](
+    if references['revision'](root) != VERA_SDK or references['revision'](
             root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)) != DEFRA:
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
@@ -461,7 +468,8 @@ def run(root, args, output):
             if sha(binary) != binary_hash or any(sha(artifacts / name) != value for name, value in manifest['binary_sha256'].items()):
                 raise Failure()
         source(root, manifest['sources']['orbis']['head'])
-        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime, 'binary_sha256': binary_hash,
+        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime,
+                                                      'vera_sdk_revision': VERA_SDK, 'binary_sha256': binary_hash,
             'images': {**images, 'trust': gateway_image}, 'image_binary_sha256': image_binaries, 'curve': args.curve, 'executions': 2, 'passed': 2,
             'production_kdf_stores': 6, 'go_tests': 2, 'ring_records_checked': 16}, indent=2) + '\n')
     finally:
@@ -583,7 +591,11 @@ def main():
         if args.phase == 'build' and not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:[a-z0-9_.-]+', args.image or ''):
             raise Failure()
         root = Path(__file__).resolve().parents[1]
-        if args.phase != 'validate':
+        if args.phase == 'validate':
+            output = os.environ.get('GITHUB_OUTPUT')
+            if output:
+                write_source_outputs(Path(output))
+        else:
             if args.output is None:
                 raise Failure()
             args.output.mkdir(mode=0o700)

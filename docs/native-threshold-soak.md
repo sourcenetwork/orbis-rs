@@ -7,9 +7,14 @@ by focused lifecycle qualification. The driver rejects production source changes
 against those images and clears test KDF overrides. It does not build a diagnostic
 runtime or change the production refresh interval.
 
-The focused driver selects Orbis runtime `68cf26d15fb554adfbab50df157e8e2d085463d4`
-and Vera `9d5c2b9ea7cb971a7871028b7b0b22d488a7ecbf`. It pulls the pinned
-Linux amd64 images by digest and checks their source, backend and curve labels.
+The focused driver selects Orbis runtime `20dfa47de9ad5ae5fe4c7748089dea5be286b556`
+and the Vera revision in [docker/NATIVE_VERA_REF](../docker/NATIVE_VERA_REF).
+The daemon and shared verifier use that Vera revision; Orbis's native SDK remains
+pinned independently in its package manifests. The driver pulls immutable Linux
+amd64 Orbis images by digest and checks their source, backend and curve labels.
+It builds Vera from its pinned source without publishing, checks the Linux amd64
+image identity and source label, and records the daemon checksum. Lifecycle
+results include the selected sources and exact image IDs.
 The fault scope additionally requires the diagnostic image's unsafe-testing
 label; that image is not used by the soak. A newer fixture can reuse these images
 only when its changes belong to the driver's explicit fixture allowlist.
@@ -53,3 +58,62 @@ does not establish capacity, a memory plateau, WAN behavior or prolonged refresh
 and membership churn. Scheduled refresh and member replacement have separate
 lifecycle cases. The soak requires a successful hosted run on each curve before
 its behavior can be described as qualified.
+
+## Repeated membership changes
+
+The opt-in `native_pet_member_churn` case replaces one member, then rotates four
+departures and reentries through the resulting four identities. Each change
+leaves exactly two active members for signing and PRE, requiring the incoming
+member's share. Ten crash restarts reuse the existing identities and encrypted
+stores. The case verifies paired polynomials, certified committee state, removal
+of departed secrets, and signing denial followed by recovery after regrant.
+All required signers stay alive until every entry point has been checked.
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=threshold \
+  -f restart_curve=both -f threshold_case=native_pet_member_churn
+```
+
+This ignored case uses the bounded `native-soak` profile with zero retries. The
+driver requires a successful test and a completion record reporting five changes,
+four reentries and ten crash restarts. It uploads bounded phase and state metadata;
+raw logs and secret material remain on the ephemeral runner. Successful isolated
+connection regressions do not establish this lifecycle's correctness.
+
+## Local promotion after paired resharing
+
+A certified ring update establishes the new committee and threshold. It proves
+that the publishing member staged its PET bundle; another member may still be
+finishing its own PET computation. Each continuing member waits up to 150 seconds
+for its local pending PET bundle before promoting the main bundle. The pending
+bundle must match the ring ID, committee and threshold. The complete certified
+ring payload must still match the confirmation observed before the wait.
+
+A missing or unrelated PET bundle, a read failure, or a superseding ring update
+preserves the active pair and durable pending recovery material. The attempt is
+released, and startup reconciliation can resolve the retained material against
+certified state. Main and PET persistence remain separate writes; this staging
+gate does not establish atomic persistence across a crash between those writes.
+
+Paused-time cleanup tests cover delayed local staging, unavailable and unrelated
+PET material, superseded confirmation, and the existing main-only promotion,
+cancellation and confirmation-timeout paths.
+
+## Signing connection recovery
+
+Each signing exchange retains its pooled parent connection before opening a
+stream. A connection, send, receive or deadline failure removes that exact
+parent from the pool; a later failure cannot remove a concurrently installed
+replacement. The next caller opens a fresh connection. A received response that
+fails protocol validation does not invalidate an otherwise responsive transport.
+
+The exchange keeps the existing ten-second deadline through response validation.
+Timeout errors identify connection acquisition, stream opening, sending,
+receiving or response validation. The transport never repeats a request after
+sending it: a responder may already have consumed authorization or nonce state.
+A retry must start a new signing request with fresh authorization and nonces.
+
+Focused transport regressions cover blocked stream opening, receive timeout,
+broken sends, successful reuse, protocol rejection and a late timeout racing a
+replacement. These tests do not qualify real member-churn recovery; that requires
+the native lifecycle case against the resulting normal runtime images.

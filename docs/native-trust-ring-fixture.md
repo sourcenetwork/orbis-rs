@@ -55,8 +55,15 @@ failure helpers may print logs. The Go process group is terminated on unwind;
 container cleanup on abrupt external cancellation still depends on the outer
 Docker runner. Publish only the fixed success marker and test counts.
 
-This source is not yet compiled or executed. The existing native lifecycle CI
-selection is unchanged and does not invoke this cross-repository fixture. Building
-the matching Go executable/verifier, normal runtime images, running both curves
-and both gateway packaging modes, and adding remote CI orchestration remain
-qualification work. A source review alone does not establish DKG or restart success.
+The Trust repository's `Native ring gateway` workflow builds the matching
+artifacts and runs both curves with executable and container gateways. It retains
+bounded results and source, image and binary provenance. Failure diagnostics
+distinguish the ring mode, transport/backend read failures and the last certified
+Pending state's key and confirmation presence, without exporting identifiers,
+keys or remote error text. The two-minute activation deadline and all state and
+key assertions remain unchanged.
+
+The separate native lifecycle CI selection does not invoke this ignored fixture.
+Qualification applies to the recorded sources, runtime images and packaging
+modes; a source review or another lifecycle result cannot establish this
+contract's DKG or gateway-restart success.
