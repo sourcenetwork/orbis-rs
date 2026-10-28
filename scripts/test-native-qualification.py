@@ -3,6 +3,7 @@ from pathlib import Path
 import unittest
 
 verify = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))['verify_fixture_changes']
+soak_result = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))['soak_result']
 
 
 class FixtureChanges(unittest.TestCase):
@@ -32,6 +33,28 @@ class FixtureChanges(unittest.TestCase):
         for changed in ['../' + path, './' + path, path + '.bak', path + '/../../src/node.rs']:
             with self.subTest(path=changed), self.assertRaises(ValueError):
                 verify([changed])
+
+
+class SoakSummary(unittest.TestCase):
+    def test_completed_soak_has_only_bounded_numeric_evidence(self):
+        result = soak_result('native_threshold_soak={"cycles":120,"active_seconds":901,"restarts":3}')
+        self.assertEqual(result, dict(cycles=120, active_seconds=901, restarts=3))
+
+    def test_missing_duplicate_or_malformed_evidence_is_rejected(self):
+        good = 'native_threshold_soak={"cycles":120,"active_seconds":901,"restarts":3}'
+        for text in ['', good + '\n' + good, 'native_threshold_soak={broken}']:
+            with self.subTest(text=text):
+                self.assertIsNone(soak_result(text))
+
+    def test_incomplete_or_private_fields_cannot_be_published(self):
+        import json
+        for overrides in [dict(cycles=0), dict(cycles=True), dict(cycles=1801),
+                          dict(active_seconds=899), dict(active_seconds=1801),
+                          dict(restarts=2), dict(restarts=4), dict(private_key='secret')]:
+            result = dict(cycles=120, active_seconds=901, restarts=3)
+            result.update(overrides)
+            with self.subTest(fields=overrides):
+                self.assertIsNone(soak_result('native_threshold_soak=' + json.dumps(result)))
 
 
 if __name__ == '__main__':
