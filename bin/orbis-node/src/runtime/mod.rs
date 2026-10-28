@@ -11,8 +11,8 @@ use crate::dkg::v0::coordinator::soft_stall::spawn_dkg_soft_stall_worker;
 use crate::helpers::authorized_peers::{spawn_authorized_peer_refresh, RingAuthorizedPeers};
 use crate::helpers::create_routers::create_router_with_all_handlers;
 use crate::helpers::launch::{
-    db_path, derive_secret_key_bytes, ensure_node_info, get_network_key_secret, get_password,
-    network_peer_address, resolve_runtime_base_path, Args, CorsPolicy,
+    db_path, derive_secret_key_bytes, get_network_key_secret, get_password, network_peer_address,
+    registration_from_network, resolve_runtime_base_path, Args, CorsPolicy,
 };
 use crate::info::InfoServiceImpl;
 use crate::store_secret::StoreSecretServiceImpl;
@@ -73,8 +73,8 @@ pub(crate) struct InitializedNode {
 
 /// Full run function that initializes and runs the server
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let backend = backend::Configuration::load(&args)?;
-    let (authz_name, bulletin_name) = backend.names();
+    let (authz_name, bulletin_name) = backend::NAMES;
+    let (authz_name, bulletin_name) = (authz_name.to_string(), bulletin_name.to_string());
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -176,10 +176,8 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
-        let backend = backend
-            .prepare(&args, &local_storage, &runtime_base_path)
-            .await?;
-        let identity = backend.identity.clone();
+        let prepared = backend::prepare(&args, &local_storage, &runtime_base_path)?;
+        let identity = prepared.identity().clone();
         let bootstrap_info_server = bootstrap::start_bootstrap_info_server_with_identity(
             args.addr.parse()?,
             network.clone(),
@@ -194,17 +192,11 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
         let bootstrap_status = bootstrap_info_server.status();
         let init_result = async move {
-            let services = backend.connect(&bootstrap_status).await?;
-            ensure_node_info(
-                services.bulletin.as_ref(),
-                &identity.node_key,
-                network.as_ref(),
-                &args,
-            )
-            .await
-            .map_err(|e| format!("Failed to ensure node info: {e}"))?;
-            services.registration_complete(&bootstrap_status);
-            let backend::Services {
+            let registration = registration_from_network(network.as_ref(), &args)?;
+            let services = prepared
+                .connect_and_register(registration, &bootstrap_status)
+                .await?;
+            let bulletin::startup::ConnectedNodeServices {
                 authz, bulletin, ..
             } = services;
 

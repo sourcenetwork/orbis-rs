@@ -169,8 +169,9 @@ fn observe(timestamp: u64, config: &NativeConfig) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let config =
-        NativeConfig::load(&args.vera_config).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let raw: bulletin::native::NativeBulletinConfig =
+        serde_json::from_slice(&read_bounded(&args.vera_config, 16 * 1024)?)?;
+    let config = NativeConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Command::RingId { request, actor } = &args.command {
         let RingCommand::Create(ring) = ring_command(request)? else {
             bail!("ring-id requires a Create request")

@@ -6,9 +6,10 @@ mod config;
 mod pet_tests;
 #[cfg(test)]
 mod reshare_tests;
+#[cfg(feature = "startup")]
 pub mod startup;
 pub use backend::NativeBulletin;
-pub use config::{ConfigError, NativeConfig};
+pub use config::{ConfigError, NativeBulletinConfig, NativeConfig};
 
 use std::path::Path;
 

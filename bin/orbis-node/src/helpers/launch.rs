@@ -3,10 +3,7 @@ use crate::constants::{
 };
 use crate::error::PasswordError;
 use crate::helpers::identity::{canonicalize_peer_id, extract_node_part, validate_peer_id};
-use bulletin::{
-    error::BulletinError,
-    r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo},
-};
+use bulletin::r#trait::NodeInfo;
 use clap::{Parser, ValueEnum};
 #[cfg(any(feature = "harness", test))]
 use common::blockchain::{ChainConfig, TxSigner};
@@ -22,23 +19,6 @@ use tonic::codegen::http::HeaderValue;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use url::{Position, Url};
 use zeroize::Zeroizing;
-
-/// Parses `--chain-gas-multiplier`, rejecting anything that couldn't be a
-/// sane safety margin: it only ever multiplies the simulated gas estimate
-/// upward before broadcasting, so a non-finite, zero, or sub-1.0 value would
-/// silently under-fund (or corrupt) every transaction instead of adding
-/// headroom.
-fn parse_gas_multiplier(value: &str) -> Result<f64, String> {
-    let parsed: f64 = value
-        .parse()
-        .map_err(|_| format!("invalid gas multiplier {value:?}: not a number"))?;
-    if !parsed.is_finite() || parsed < 1.0 {
-        return Err(format!(
-            "invalid gas multiplier {value:?}: must be a finite number that is at least 1.0"
-        ));
-    }
-    Ok(parsed)
-}
 
 /// Parse a `usize` CLI option that must be at least 1. The network ingress
 /// budgets reject a zero limit at build time (`Semaphore::new(0)` would stall
@@ -202,9 +182,15 @@ impl CorsPolicy {
 #[command(name = "orbis-node")]
 #[command(about = "Orbis DkgService gRPC server")]
 pub struct Args {
-    /// Native Vera endpoint and independently provisioned deployment trust (JSON file).
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["authz_grpc", "bulletin_grpc", "chain_rpc", "chain_rest", "chain_id", "denom", "fee_granter", "chain_gas_multiplier", "allow_insecure_rpc"])]
-    pub vera_config: Option<PathBuf>,
+    /// Node services configuration (JSON file): an `authz` section and a
+    /// `bulletin` section, each in the shape the build's compiled-in
+    /// `AuthzFactoryImpl`/`BulletinFactoryImpl` expects. Omit to use every
+    /// field's default (works for the vera/cosmos backends against a
+    /// default-everything local chain; the native backends have no sensible
+    /// default endpoint or trust root, so omitting this for a native build
+    /// fails fast with a clear missing-field error).
+    #[arg(long, value_name = "PATH")]
+    pub services_config: Option<PathBuf>,
     /// Address to bind the server to
     #[arg(short, long, default_value = "[::1]:50051")]
     pub addr: String,
@@ -224,48 +210,6 @@ pub struct Args {
     /// Log level for tracing
     #[arg(short, long, default_value = "info")]
     pub log_level: LogLevel,
-    /// AuthZ GRPC (chain GRPC endpoint probably)
-    #[arg(short = 'z', long, default_value = "http://localhost:9090")]
-    pub authz_grpc: Option<String>,
-    /// Bulletin GRPC (chain GRPC endpoint probably)
-    #[arg(short = 'b', long, default_value = "http://localhost:9090")]
-    pub bulletin_grpc: Option<String>,
-    /// Chain RPC URL (Tendermint RPC endpoint)
-    #[arg(long, default_value = "http://localhost:26657")]
-    pub chain_rpc: Option<String>,
-    /// Chain REST URL (Cosmos REST API endpoint)
-    #[arg(long, default_value = "http://localhost:1317")]
-    pub chain_rest: Option<String>,
-    /// Accept a plaintext `http://` chain RPC/REST endpoint whose host is not
-    /// loopback or on a private network. The node trusts RPC/REST responses
-    /// (authorization decisions, bulletin records) as-is, so a plaintext
-    /// channel to an untrusted host is a security risk — prefer an `https://`
-    /// endpoint or a locally reachable chain node. Only set this when the
-    /// endpoint is in fact reached over a network you control (VPN/overlay).
-    #[arg(long, env = "ORBIS_ALLOW_INSECURE_RPC", default_value_t = false)]
-    pub allow_insecure_rpc: bool,
-    /// Chain ID used when signing transactions
-    #[arg(long)]
-    pub chain_id: Option<String>,
-    /// denomination of chain gas tokens
-    #[arg(long)]
-    pub denom: Option<String>,
-    /// Bech32 address of an account that has granted this node a fee
-    /// allowance (Cosmos SDK x/feegrant). When set, outgoing transactions
-    /// request that account's fee grant instead of paying from the node's
-    /// own balance. The grant must already exist on chain. When unset, the
-    /// node pays its own transaction fees as usual.
-    ///
-    /// Not persisted: like the other chain connection flags, this must be
-    /// passed on every invocation. The signing key is the only thing this
-    /// node persists to disk; the fee grant itself lives in Vera's
-    /// chain state, not here.
-    #[arg(long)]
-    pub fee_granter: Option<String>,
-    /// Safety multiplier applied to simulated chain gas before broadcasting transactions.
-    /// Increase this when concurrent writers can change state between simulation and delivery.
-    #[arg(long, value_parser = parse_gas_multiplier)]
-    pub chain_gas_multiplier: Option<f64>,
     /// Address for Prometheus metrics HTTP server (e.g., "0.0.0.0:9090")
     #[arg(short = 'm', long)]
     pub metrics_addr: Option<String>,
@@ -483,12 +427,15 @@ impl NetworkIngressArgs {
 }
 
 /// Ensure the node has a matching x/orbis NodeInfo record before serving traffic.
-pub async fn ensure_node_info(
-    bulletin: &(dyn Bulletin + Send + Sync),
-    node_key: &str,
+/// Compute this node's registration payload from local network identity and
+/// CLI args. `bulletin` has no dependency on `network`, so this has to
+/// happen at the node level, before handing the result to
+/// `PreparedBulletin::connect_and_register` (which owns the actual
+/// read/compare/create against the connected backend).
+pub fn registration_from_network(
     network: &dyn Network,
     args: &Args,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<bulletin::startup::NodeRegistration, Box<dyn std::error::Error>> {
     let controller_key = args.node_controller_key.trim();
     if controller_key.is_empty() {
         return Err("--node-controller-key is required to create or verify node info".into());
@@ -508,72 +455,13 @@ pub async fn ensure_node_info(
     let peer_id = canonicalize_peer_id(&peer_id)
         .map_err(|error| format!("invalid --node-peer-id/derived peer_id {peer_id}: {error}"))?;
 
-    let existing = match bulletin
-        .read(node_key.to_string(), BulletinKind::NodeInfo)
-        .await
-    {
-        Ok(post) => Some(NodeInfo::try_from(post)?),
-        Err(BulletinError::NotFound { .. }) => None,
-        Err(err) => return Err(err.into()),
-    };
-
-    if let Some(existing) = existing {
-        let identity_matches = existing_peer_identity_matches(&existing.peer_id, &peer_id)
-            .map_err(|error| {
-                format!(
-                    "existing node info for node_key {} has invalid peer_id {}: {}",
-                    node_key, existing.peer_id, error
-                )
-            })?;
-        if !identity_matches {
-            return Err(format!(
-                "existing node info for node_key {} has peer_id {}, expected {}",
-                node_key, existing.peer_id, peer_id
-            )
-            .into());
-        }
-        if existing.controller_key != controller_key {
-            return Err(format!(
-                "existing node info for node_key {} has controller_key {}, expected {}",
-                node_key, existing.controller_key, controller_key
-            )
-            .into());
-        }
-
-        if !args.node_whitelisted_policy_ids.is_empty()
-            || !args.node_whitelisted_ring_ids.is_empty()
-        {
-            tracing::warn!(
-                node_key = %node_key,
-                policy_id_count = args.node_whitelisted_policy_ids.len(),
-                ring_id_count = args.node_whitelisted_ring_ids.len(),
-                "Existing node info found; ignoring startup whitelist flags because controller-owned updates must use UpdateNodeInfo"
-            );
-        }
-        tracing::info!(
-            node_key = %node_key,
-            peer_id = %peer_id,
-            "Existing node info matches local identity"
-        );
-        return Ok(());
-    }
-
-    let node_info = build_node_info_from_args(peer_id.clone(), controller_key, args);
-    let payload: Vec<u8> = node_info.try_into()?;
-    let created_node_key = bulletin.post(BulletinWriteKind::NodeInfo, payload).await?;
-    if created_node_key != node_key {
-        return Err(format!(
-            "bulletin created node info under key {}, expected {}",
-            created_node_key, node_key
-        )
-        .into());
-    }
-    tracing::info!(
-        node_key = %node_key,
-        peer_id = %peer_id,
-        "Created node info"
-    );
-    Ok(())
+    let info = build_node_info_from_args(peer_id, controller_key, args);
+    Ok(bulletin::startup::NodeRegistration {
+        controller_key: info.controller_key,
+        peer_id: info.peer_id,
+        whitelisted_policy_ids: info.whitelisted_policy_ids,
+        whitelisted_ring_ids: info.whitelisted_ring_ids,
+    })
 }
 
 pub(crate) fn existing_peer_identity_matches(
@@ -894,7 +782,7 @@ pub fn create_and_store_node_key(
     local_storage: LocalStorageImpl,
     config: ChainConfig,
     runtime_base_path: &Path,
-) -> Result<TxSigner, bulletin::startup::StartupError> {
+) -> Result<TxSigner, bulletin::startup::BulletinStartupError> {
     #[cfg(feature = "integration-test")]
     let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
     #[cfg(not(feature = "integration-test"))]
@@ -1094,42 +982,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_chain_id_argument() {
+    fn parses_services_config_argument() {
         let args = Args::try_parse_from([
             "orbis-node",
             "--node-controller-key",
             "controller-key",
-            "--chain-id",
-            "vera-dev",
-        ])
-        .expect("parse arguments");
-
-        assert_eq!(args.chain_id.as_deref(), Some("vera-dev"));
-    }
-
-    #[test]
-    fn parses_fee_granter_argument() {
-        let args = Args::try_parse_from([
-            "orbis-node",
-            "--node-controller-key",
-            "controller-key",
-            "--fee-granter",
-            "vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt",
+            "--services-config",
+            "config/services.json",
         ])
         .expect("parse arguments");
 
         assert_eq!(
-            args.fee_granter.as_deref(),
-            Some("vera12d9hjf0639k995venpv675sju9ltsvf8u5c9jt")
+            args.services_config,
+            Some(PathBuf::from("config/services.json"))
         );
     }
 
     #[test]
-    fn fee_granter_defaults_to_none() {
+    fn services_config_defaults_to_none() {
         let args = Args::try_parse_from(["orbis-node", "--node-controller-key", "controller-key"])
             .expect("parse arguments");
 
-        assert_eq!(args.fee_granter, None);
+        assert_eq!(args.services_config, None);
     }
 
     #[test]

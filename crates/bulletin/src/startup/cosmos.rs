@@ -1,6 +1,6 @@
 //! Cosmos identity support shared by chain and injected bulletin startup.
 
-use super::{NodeIdentity, StartupError};
+use super::{BulletinStartupError, NodeIdentity};
 use common::blockchain::{ChainConfig, TxSigner};
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::{fs, path::Path};
@@ -17,10 +17,10 @@ pub fn identity(signer: &TxSigner) -> NodeIdentity {
 pub fn read_signer(
     storage: &impl LocalStorage,
     config: ChainConfig,
-) -> Result<TxSigner, StartupError> {
+) -> Result<TxSigner, BulletinStartupError> {
     let bytes = storage
         .get_encrypted(LocalStorageKeys::NodeSigningKey)?
-        .ok_or(StartupError::MissingIdentity)?;
+        .ok_or(BulletinStartupError::MissingIdentity)?;
     Ok(TxSigner::from_hex_key(
         std::str::from_utf8(&bytes)?,
         config,
@@ -34,8 +34,8 @@ pub fn prepare_signer(
     config: ChainConfig,
     base: &Path,
     initial_key: Option<&str>,
-) -> Result<TxSigner, StartupError> {
-    fs::create_dir_all(base).map_err(|source| StartupError::Io {
+) -> Result<TxSigner, BulletinStartupError> {
+    fs::create_dir_all(base).map_err(|source| BulletinStartupError::Io {
         operation: "create identity directory",
         path: base.into(),
         source,
@@ -61,7 +61,7 @@ pub fn prepare_signer(
     };
     let signer = TxSigner::from_hex_key(&encoded, config)?;
     let path = base.join("public_key.txt");
-    fs::write(&path, signer.address()).map_err(|source| StartupError::Io {
+    fs::write(&path, signer.address()).map_err(|source| BulletinStartupError::Io {
         operation: "write public identity",
         path,
         source,

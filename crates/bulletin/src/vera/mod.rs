@@ -1,5 +1,6 @@
 //! Vera-backed bulletin implementation.
 
+#[cfg(feature = "startup")]
 pub mod startup;
 
 use crate::{

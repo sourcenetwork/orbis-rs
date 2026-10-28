@@ -1,8 +1,11 @@
 //! Native identity preparation and durable worker connection.
 
-use super::{decode_node_signing_key, NativeBulletin, NativeConfig, NativeVeraClient};
-use crate::startup::{ConnectionPhase, NodeIdentity, PreparedBulletin, StartupError};
+use super::{
+    decode_node_signing_key, NativeBulletin, NativeBulletinConfig, NativeConfig, NativeVeraClient,
+};
+use crate::startup::{BulletinFactory, BulletinStartupError, NodeIdentity, PreparedBulletin};
 use async_trait::async_trait;
+use common::startup::{PrepareContext, StartupProgress};
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     redb::RedbStorage,
@@ -14,6 +17,23 @@ use std::{
 };
 use vera_client::VeraClient;
 use zeroize::Zeroizing;
+
+pub struct NativeBulletinFactory;
+
+impl BulletinFactory for NativeBulletinFactory {
+    const NAME: &'static str = "bulletin/native";
+    type Config = NativeBulletinConfig;
+    type Prepared = PreparedNativeBulletin;
+
+    fn prepare(
+        config: Self::Config,
+        context: PrepareContext<'_>,
+    ) -> Result<Self::Prepared, BulletinStartupError> {
+        let config = NativeConfig::try_from(config)
+            .map_err(|e| BulletinStartupError::Configuration(e.to_string()))?;
+        PreparedNativeBulletin::prepare(config, context.storage, context.runtime_base_path)
+    }
+}
 
 pub struct PreparedNativeBulletin {
     identity: NodeIdentity,
@@ -27,7 +47,7 @@ impl PreparedNativeBulletin {
         config: NativeConfig,
         storage: &RedbStorage,
         base: &Path,
-    ) -> Result<Self, StartupError> {
+    ) -> Result<Self, BulletinStartupError> {
         Ok(Self {
             identity: initialize_identity(storage, base)?,
             config,
@@ -43,13 +63,13 @@ impl PreparedBulletin for PreparedNativeBulletin {
         &self.identity
     }
     fn name(&self) -> &'static str {
-        "native Vera"
+        "bulletin/native"
     }
 
     async fn connect(
         self: Box<Self>,
-        _progress: &(dyn Fn(ConnectionPhase) + Send + Sync),
-    ) -> Result<Arc<dyn crate::r#trait::Bulletin + Send + Sync>, StartupError> {
+        _progress: &dyn StartupProgress,
+    ) -> Result<Arc<dyn crate::r#trait::Bulletin + Send + Sync>, BulletinStartupError> {
         tokio::time::timeout(self.config.timeout, async {
             let writer = NativeVeraClient::open(
                 VeraClient::new(&self.config.endpoint),
@@ -78,7 +98,7 @@ impl PreparedBulletin for PreparedNativeBulletin {
 pub fn initialize_identity(
     storage: &RedbStorage,
     base: &Path,
-) -> Result<NodeIdentity, StartupError> {
+) -> Result<NodeIdentity, BulletinStartupError> {
     let stored = storage.get_encrypted(LocalStorageKeys::NodeSigningKey)?;
     let authority = match stored.as_ref() {
         Some(bytes) => decode_node_signing_key(bytes)?,
@@ -99,13 +119,13 @@ pub fn initialize_identity(
         )?;
     }
     let node_key = hex::encode(authority.verifying_key().to_sec1_bytes());
-    fs::create_dir_all(base).map_err(|source| StartupError::Io {
+    fs::create_dir_all(base).map_err(|source| BulletinStartupError::Io {
         operation: "create identity directory",
         path: base.into(),
         source,
     })?;
     let path = base.join("public_key.txt");
-    fs::write(&path, &node_key).map_err(|source| StartupError::Io {
+    fs::write(&path, &node_key).map_err(|source| BulletinStartupError::Io {
         operation: "write public identity",
         path,
         source,
