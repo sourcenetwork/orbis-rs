@@ -63,8 +63,9 @@ ignore = [
     "RUSTSEC-2024-0344",
 
     # tendermint-rpc 0.40.4 is the latest tendermint-rpc release and its
-    # http-client feature still pins reqwest 0.11 / rustls-webpki 0.101.x.
-    # We removed its websocket-client feature and use reqwest 0.12 elsewhere.
+    # http-client feature still pins reqwest 0.11 / rustls 0.21.12 /
+    # rustls-webpki 0.101.7. We removed its websocket-client feature and use
+    # reqwest 0.12 elsewhere.
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
     "RUSTSEC-2026-0104",
@@ -75,6 +76,49 @@ ignore = [
     # severity (unbounded empty DATA frames from a malicious peer). Revisit
     # alongside the other tendermint-rpc entries above.
     "RUSTSEC-2026-0258",
+    # Same pinned rustls 0.21.12 / rustls-webpki 0.101.7 (via tendermint-rpc's
+    # reqwest 0.11 / hyper-rustls 0.24.2), published after the entries above
+    # were added — same root cause, same fix path (drop tendermint-rpc's
+    # http-client feature, or wait for a tendermint-rpc release off reqwest 0.11).
+    "RUSTSEC-2026-0346", # Debug impls for rustls client session values expose TLS secrets
+    "RUSTSEC-2026-0349", # unauthenticated ServerHello can downgrade to classical key exchange
+    "RUSTSEC-2026-0382", # rustls-webpki certificate verification may accept distrusted intermediates
+
+    # crypto-bigint timing side-channel (RUSTSEC-2026-0387, fixed >=0.7.6),
+    # reachable through two pinned paths that resolve to two different old
+    # crypto-bigint versions, so a lockfile bump can't clear either:
+    #  - crypto-bigint 0.4.9, via elliptic-curve 0.12.3 -> ecdsa 0.14.8 ->
+    #    p256 0.11.1 -> did-key 0.2.1. Not reachable: did-key here only ever
+    #    exercises its Ed25519 arm (see the did-key block above); the P256
+    #    arm (and so this crypto-bigint path) is compiled in but never
+    #    called.
+    #  - crypto-bigint 0.5.5, via elliptic-curve 0.13.8 -> ecdsa 0.16.9 ->
+    #    k256 0.13.4 -> cosmrs 0.22.0 (the latest cosmrs release). This path
+    #    *is* live — cosmrs uses k256 for Cosmos tx/account secp256k1
+    #    signing — and isn't accepted as unreachable, only as currently
+    #    unfixable: our own workspace k256 pin can bump to 0.14.x (which
+    #    pulls the fixed crypto-bigint 0.7.x) independently, but cosmrs
+    #    0.22.0 still pins k256 "^0.13" internally, so the vulnerable
+    #    version stays in the tree regardless until cosmrs releases against
+    #    a newer k256. Revisit when it does.
+    "RUSTSEC-2026-0387",
+
+    # zstd/zstd-safe (fixed in zstd >=0.14.3, zstd-safe >=8.2.0) via
+    # commonware-storage's journal frame compression — the only path either
+    # crate has in this tree, and pinned by commonware-storage's own
+    # workspace Cargo.toml (zstd = "0.13.3"), external to this repo.
+    # None of the three flaws are reachable: `journal/frame.rs` only ever
+    # calls `zstd::bulk::compress`/`bulk::Decompressor::decompress` with an
+    # explicit output size, resetting its context before each frame. All
+    # three advisories are specifically about the *streaming* encoder/decoder
+    # (`with_context` reuse across an abandoned stream; legacy-frame failure
+    # in `DCtx::decompress_stream`) or the `seekable` feature — RUSTSEC-2026-0403's
+    # own text calls out that the bulk API it is not affected. Revisit once
+    # commonware-storage (or whichever fork this workspace's
+    # `iverc/commonware-upstream` patch tracks) bumps zstd/zstd-safe.
+    "RUSTSEC-2026-0391", # with_context stream reuse leaks data across streams
+    "RUSTSEC-2026-0398", # Seekable::decompress Vec::set_len past capacity
+    "RUSTSEC-2026-0403", # legacy-frame decompress failure exposes uninitialized memory
 ]
 
 # ---------------------------------------------------------------------------
