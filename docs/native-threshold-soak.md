@@ -1,0 +1,127 @@
+# Native threshold soak
+
+The opt-in `soak` scope keeps one four-validator Vera deployment and one
+three-member Orbis ring alive for a fifteen-minute measured interval. Both BLS
+and Jubjub run against the same immutable normal runtime image revisions used
+by focused lifecycle qualification. The driver rejects production source changes
+against those images and clears test KDF overrides. It does not build a diagnostic
+runtime or change the production refresh interval.
+
+The focused driver selects Orbis runtime `9ebdeda8f475e917fd26fdfe37517497842f7040`
+and the Vera revision in [docker/NATIVE_VERA_REF](../docker/NATIVE_VERA_REF).
+The daemon and shared verifier use that Vera revision; Orbis's native SDK remains
+pinned independently in its package manifests. The driver pulls immutable Linux
+amd64 Orbis images by digest and checks their source, backend and curve labels.
+It builds Vera from its pinned source without publishing, checks the Linux amd64
+image identity and source label, and records the daemon checksum. Lifecycle
+results include the selected sources and exact image IDs.
+The images were built at CI merge `bae0b000aa9f734ac878d92b5ff8b70a76bd67a0`,
+whose complete source tree equals the selected permanent revision. Image label
+checks require that build revision, while source reuse checks use the permanent
+revision. The driver records both. Normal image manifests/configurations were
+independently verified by digest, platform and labels; the selected image IDs
+also bind the gateway fixture's expected build label. Unrelated image identities
+retain exact source checks. This updates qualification inputs; successful new
+lifecycle/consumer results must be recorded separately from earlier runtime checks.
+The fault scope additionally requires the diagnostic image's unsafe-testing
+label; that image is not used by the soak. A newer fixture can reuse these images
+only when its changes belong to the driver's explicit fixture allowlist.
+
+Each cycle rotates its entry point among the three Orbis members. It revokes and
+regrants one of four certified relationships: the stored document, the inline
+document, the signing derivation or the PET audit target. Denials must have the
+exact authorization status. After regrant, two concurrent PRE calls must recover
+the original plaintexts and a threshold signature over a new cycle message must
+verify against the independently derived key and fail against the bare ring key.
+The certified ring record must remain unchanged. At least twenty cycles must
+complete; failed operations are not retried.
+
+All Orbis members are killed and restarted near one-third and two-thirds of the
+interval, using their existing containers and encrypted stores. The harness
+checks member identities and both public polynomials and refreshes endpoints.
+After the interval it revokes the documents and signing derivation, restarts all
+members again and checks denial through every entry point while the audit grant
+remains active. Regrant must restore verified signing and decryption at every
+member. The stored document must remain identical and the inline document must
+remain absent from the bulletin.
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=soak -f restart_curve=both
+```
+
+The Rust test is ignored in ordinary CI and selected exactly once by the focused
+driver with the `native-soak` nextest profile and zero retries. Its thirty-minute
+outer deadline includes provisioning, the fifteen-minute interval and the final
+restart checks. The separate profile leaves existing lifecycle deadlines unchanged.
+The measured interval includes restart downtime; it is not fifteen minutes of
+uninterrupted successful requests.
+
+Only the selected test status/duration and bounded numeric cycle, elapsed-time
+and restart counts are uploaded. Raw RPC responses, stores, keys and logs stay
+private on the ephemeral runner. A missing, malformed or incomplete completion
+record fails qualification even if JUnit reports success.
+
+This fixture covers a bounded single-host workload with fixed membership. It
+does not establish capacity, a memory plateau, WAN behavior or prolonged refresh
+and membership churn. Scheduled refresh and member replacement have separate
+lifecycle cases. The soak requires a successful hosted run on each curve before
+its behavior can be described as qualified.
+
+## Repeated membership changes
+
+The opt-in `native_pet_member_churn` case replaces one member, then rotates four
+departures and reentries through the resulting four identities. Each change
+leaves exactly two active members for signing and PRE, requiring the incoming
+member's share. Ten crash restarts reuse the existing identities and encrypted
+stores. The case verifies paired polynomials, certified committee state, removal
+of departed secrets, and signing denial followed by recovery after regrant.
+All required signers stay alive until every entry point has been checked.
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=threshold \
+  -f restart_curve=both -f threshold_case=native_pet_member_churn
+```
+
+This ignored case uses the bounded `native-soak` profile with zero retries. The
+driver requires a successful test and a completion record reporting five changes,
+four reentries and ten crash restarts. It uploads bounded phase and state metadata;
+raw logs and secret material remain on the ephemeral runner. Successful isolated
+connection regressions do not establish this lifecycle's correctness.
+
+## Local promotion after paired resharing
+
+A certified ring update establishes the new committee and threshold. It proves
+that the publishing member staged its PET bundle; another member may still be
+finishing its own PET computation. Each continuing member waits up to 150 seconds
+for its local pending PET bundle before promoting the main bundle. The pending
+bundle must match the ring ID, committee and threshold. The complete certified
+ring payload must still match the confirmation observed before the wait.
+
+A missing or unrelated PET bundle, a read failure, or a superseding ring update
+preserves the active pair and durable pending recovery material. The attempt is
+released, and startup reconciliation can resolve the retained material against
+certified state. Main and PET persistence remain separate writes; this staging
+gate does not establish atomic persistence across a crash between those writes.
+
+Paused-time cleanup tests cover delayed local staging, unavailable and unrelated
+PET material, superseded confirmation, and the existing main-only promotion,
+cancellation and confirmation-timeout paths.
+
+## Signing connection recovery
+
+Each signing exchange retains its pooled parent connection before opening a
+stream. A connection, send, receive or deadline failure removes that exact
+parent from the pool; a later failure cannot remove a concurrently installed
+replacement. The next caller opens a fresh connection. A received response that
+fails protocol validation does not invalidate an otherwise responsive transport.
+
+The exchange keeps the existing ten-second deadline through response validation.
+Timeout errors identify connection acquisition, stream opening, sending,
+receiving or response validation. The transport never repeats a request after
+sending it: a responder may already have consumed authorization or nonce state.
+A retry must start a new signing request with fresh authorization and nonces.
+
+Focused transport regressions cover blocked stream opening, receive timeout,
+broken sends, successful reuse, protocol rejection and a late timeout racing a
+replacement. These tests do not qualify real member-churn recovery; that requires
+the native lifecycle case against the resulting normal runtime images.

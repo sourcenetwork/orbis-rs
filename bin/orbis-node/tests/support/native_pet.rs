@@ -4,7 +4,13 @@ use alloy_sol_types::SolCall;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetPetRingStateRequest, GetRingStateRequest,
 };
-use std::time::Duration;
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
 use tonic::transport::Endpoint;
 use vera_client::{
     create_scoped_bearer_token,
@@ -44,12 +50,72 @@ mod stored_bundle;
 #[path = "native_pet/member_replacement.rs"]
 mod member_replacement;
 
+#[path = "native_pet/signing.rs"]
+mod signing;
+
+#[path = "native_pet/soak.rs"]
+pub mod soak;
+
+#[path = "native_pet/polynomial_state.rs"]
+mod polynomial_state;
+
+#[path = "native_pet/member_churn.rs"]
+mod member_churn;
+
 pub enum Scenario {
     Lifecycle,
     ScheduledRefresh,
     MemberReplacement,
+    MemberChurn,
     #[cfg(feature = "unsafe-testing")]
     ReportFault,
+}
+
+struct ChurnFailureLogs {
+    project: String,
+    directory: PathBuf,
+}
+
+impl Drop for ChurnFailureLogs {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        for member in 0..4 {
+            let destination = self
+                .directory
+                .join(format!("node-{member}/churn-diagnostic.log"));
+            let saved = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(destination)
+                .and_then(|file| {
+                    Command::new("timeout")
+                        .args([
+                            "10s",
+                            "docker",
+                            "compose",
+                            "--project-name",
+                            &self.project,
+                            "-f",
+                            super::NATIVE_COMPOSE_FILE,
+                            "logs",
+                            "--tail",
+                            "10000",
+                            "--no-color",
+                            "--no-log-prefix",
+                            &super::orbis_service(member),
+                        ])
+                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                        .stdout(Stdio::from(file))
+                        .stderr(Stdio::null())
+                        .status()
+                })
+                .is_ok_and(|status| status.success());
+            eprintln!("native_churn_log member={member} saved={saved}");
+        }
+    }
 }
 
 /// Run the shared paired-DKG scenario through the native adapter. The adapter
@@ -81,10 +147,19 @@ pub async fn run(scenario: Scenario) {
         Scenario::Lifecycle => (9075, false),
         Scenario::ScheduledRefresh => (9077, false),
         Scenario::MemberReplacement => (9078, false),
+        Scenario::MemberChurn => (9082, false),
         #[cfg(feature = "unsafe-testing")]
         Scenario::ReportFault => (9076, true),
     };
     let (workflow, keys, baseline) = dkg_scenario(deployment, report_fault).await;
+    let signing = if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
+        Some(signing::Signing::create(&workflow, &keys, "native-member-replacement").await)
+    } else {
+        None
+    };
     let super::native_workflow::NativeWorkflow {
         cluster,
         client,
@@ -94,7 +169,7 @@ pub async fn run(scenario: Scenario) {
         actor,
         base,
         mut nodes,
-        addresses,
+        mut addresses,
         infos,
         worker,
         policy,
@@ -103,6 +178,11 @@ pub async fn run(scenario: Scenario) {
         headers: _headers,
         ..
     } = workflow;
+
+    let _failure_logs = matches!(scenario, Scenario::MemberChurn).then(|| ChurnFailureLogs {
+        project: cluster.project_name().to_owned(),
+        directory: base.path().to_owned(),
+    });
 
     let reader = Reader::new(vera_client::rings::ring_deployment_label(
         root.0, deployment,
@@ -141,6 +221,13 @@ pub async fn run(scenario: Scenario) {
     for id in [&stored.id, &inline.id, &audit, &wrong_audit] {
         let registered = client
             .native_register_object(&worker, policy_bytes, id, "document")
+            .await
+            .unwrap();
+        confirmed(&client, registered.transaction_hash, &trusted).await;
+    }
+    if let Some(signing) = &signing {
+        let registered = client
+            .native_register_object(&worker, policy_bytes, &signing.id, "document")
             .await
             .unwrap();
         confirmed(&client, registered.transaction_hash, &trusted).await;
@@ -268,8 +355,15 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     let id = client.send_native_tx(&wire).await.unwrap();
     confirmed(&client, id, &trusted).await;
-    if matches!(scenario, Scenario::MemberReplacement) {
-        member_replacement::MemberReplacement {
+    if matches!(
+        scenario,
+        Scenario::MemberReplacement | Scenario::MemberChurn
+    ) {
+        let signing = signing.as_ref().unwrap();
+        signing.denied(&addresses[0], &reader, 0).await;
+        permission.set(&signing.id, true).await;
+        signing.verify(&addresses[0], &reader, 1).await;
+        let replacement = member_replacement::MemberReplacement {
             cluster: &cluster,
             client: &client,
             trusted: &trusted,
@@ -278,14 +372,23 @@ pub async fn run(scenario: Scenario) {
             controller: &controller,
             worker: &worker,
             policy: &policy,
+            policy_bytes,
+            signing,
             ring_id: &ring_id,
             keys: &keys,
             base: base.path(),
             addresses: &addresses,
             infos: &infos,
+        };
+        if matches!(scenario, Scenario::MemberChurn) {
+            replacement
+                .run_churn(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
+        } else {
+            replacement
+                .run(&mut nodes, &reader, &audit, documents, &baseline)
+                .await;
         }
-        .run(&mut nodes, &reader, &audit, documents, &baseline)
-        .await;
         return;
     }
     let previous = client
@@ -364,9 +467,12 @@ pub async fn run(scenario: Scenario) {
     for index in 0..2 {
         let log = base.path().join(format!("node-{index}/pet-restart.log"));
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
+        assert_eq!(recovered.peer_id, infos[index].peer_id);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
+        assert_eq!(recovered.public_address, infos[index].public_address);
         assert_eq!(recovered.managed_ring_count, 1);
     }
     assert_eq!(
@@ -381,6 +487,7 @@ pub async fn run(scenario: Scenario) {
         .unwrap();
     assert_eq!(restored.state, RingState::Active { keys });
     assert_eq!(restored.current_settings().peer_node_keys, target);
+    let surviving = surviving.reconnect(endpoint(&addresses[1]));
     for (document, delivery) in documents {
         surviving.decrypt(document, delivery).await;
     }
@@ -469,21 +576,39 @@ async fn wait_polynomials(
     if let Some(previous) = previous {
         assert_eq!(previous.len(), addresses.len());
     }
-    tokio::time::timeout(Duration::from_secs(60), async {
+    assert!(addresses.len() <= 4);
+    let mut observed = vec![polynomial_state::Member::default(); addresses.len()];
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
         loop {
-            let mut states = Vec::new();
-            for addr in addresses {
+            let mut states: Vec<Polynomials> = Vec::new();
+            observed.fill(polynomial_state::Member::default());
+            for (index, addr) in addresses.iter().enumerate() {
                 let mut client = InfoServiceClient::connect(endpoint(addr)).await.unwrap();
+                observed[index].connected = Some(true);
                 let main = client
                     .get_ring_state(GetRingStateRequest {
                         ring_pk_hex: keys.public_key.clone(),
                     })
                     .await;
+                observed[index].main = polynomial_state::Response::observe(
+                    main.as_ref()
+                        .map(|response| response.get_ref().public_polynomial.as_str())
+                        .map_err(|error| error.code()),
+                    previous.map(|old| old[index].main.as_str()),
+                    states.first().map(|first| first.main.as_str()),
+                );
                 let pet = client
                     .get_pet_ring_state(GetPetRingStateRequest {
                         ring_id: ring_id.into(),
                     })
                     .await;
+                observed[index].pet = polynomial_state::Response::observe(
+                    pet.as_ref()
+                        .map(|response| response.get_ref().public_polynomial.as_str())
+                        .map_err(|error| error.code()),
+                    previous.map(|old| old[index].pet.as_str()),
+                    states.first().map(|first| first.pet.as_str()),
+                );
                 match (main, pet) {
                     (Ok(main), Ok(pet)) => states.push(Polynomials {
                         main: main.into_inner().public_polynomial,
@@ -508,6 +633,14 @@ async fn wait_polynomials(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await
-    .expect("all members must hold the same main and PET polynomial generation")
+    .await;
+    result.unwrap_or_else(|error| {
+        eprintln!(
+            "native_polynomial_state={}",
+            serde_json::json!({
+                "members": addresses.len(), "previous": previous.is_some(), "responses": observed,
+            })
+        );
+        panic!("all members must hold the same main and PET polynomial generation: {error}");
+    })
 }
