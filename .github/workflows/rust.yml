@@ -193,6 +193,8 @@ jobs:
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
     - name: Check private Go failure diagnostics
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup trust_go_failure_
+    - name: Check bounded polynomial observations
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup native_polynomial_state_
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
