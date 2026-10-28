@@ -58,7 +58,7 @@ async fn address(node: &EmbeddedNode) -> String {
 }
 
 impl Peers {
-    pub async fn new(path: &Path, signer: Arc<defra_orbis::OrbisClient>) -> Self {
+    pub async fn new(path: &Path, signer: Arc<super::defra_signer::Signer>) -> Self {
         let signer_did = signer.signer_did().to_owned();
         signing::store_identity(
             &signer_did,

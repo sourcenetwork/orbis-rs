@@ -25,6 +25,10 @@ mod native_pet;
 mod native_trust_gateway;
 
 #[cfg(feature = "bls12-381")]
+#[path = "support/defra_signer.rs"]
+mod defra_signer;
+
+#[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
 
@@ -408,10 +412,16 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("password"), "native-dkg-test").unwrap();
     fs::copy(base.join("node-0/vera.json"), directory.join("vera.json")).unwrap();
-    let extra_env = [(
-        "ORBIS_NATIVE_NODE4_DIR".to_string(),
-        directory.display().to_string(),
-    )];
+    let extra_env = [
+        (
+            "ORBIS_NATIVE_NODE4_DIR".to_string(),
+            directory.display().to_string(),
+        ),
+        (
+            "ORBIS_NATIVE_NODE4_USER".to_string(),
+            test_support::bind_mount_user(&directory).unwrap(),
+        ),
+    ];
     cluster.build_service("node4", &extra_env);
     cluster.bring_up_services(&["node4"], &extra_env);
     let endpoint = cluster
@@ -488,7 +498,6 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -496,7 +505,6 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -504,7 +512,6 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
@@ -549,14 +556,12 @@ async fn native_dkg_and_pre() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_member_replacement() {
     native_pet::run(native_pet::Scenario::MemberReplacement).await;
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
@@ -690,9 +695,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         let directory = base.path().join(format!("node-{index}"));
         let log = directory.join("restart.log");
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
+        assert_eq!(recovered.peer_id, infos[index].peer_id);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
+        assert_eq!(recovered.public_address, infos[index].public_address);
         assert_eq!(recovered.managed_ring_count, 1);
         let state = InfoServiceClient::connect(format!("http://{}", addresses[index]))
             .await
@@ -751,32 +759,33 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     )
     .unwrap();
     #[cfg(feature = "bls12-381")]
-    let defra = {
-        let service_identity = std::sync::Arc::new(
-            defra_identity::RawIdentity::from_ed25519(
-                defra_crypto::Ed25519PrivateKey::from_bytes(
-                    &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
-                )
-                .unwrap(),
+    let service_identity = std::sync::Arc::new(
+        defra_identity::RawIdentity::from_ed25519(
+            defra_crypto::Ed25519PrivateKey::from_bytes(
+                &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
             )
             .unwrap(),
-        );
+        )
+        .unwrap(),
+    );
+    #[cfg(feature = "bls12-381")]
+    let defra = {
         assert_eq!(
             defra_identity::Identity::did(service_identity.as_ref())
                 .unwrap()
                 .to_string(),
             reader.did_uri
         );
-        std::sync::Arc::new(
+        std::sync::Arc::new(defra_signer::Signer::new(
             defra_orbis::OrbisClient::new(
                 format!("http://{}", addresses[1]),
                 derivation_id.clone(),
                 derived_key.to_bytes().unwrap(),
-                service_identity,
+                service_identity.clone(),
             )
             .await
             .unwrap(),
-        )
+        ))
     };
     #[cfg(feature = "bls12-381")]
     let documents =
@@ -892,8 +901,20 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     nodes[1].stop().await;
     let log = base.path().join("node-1/policy-edit-restart.log");
     nodes[1] = Node::restart(cluster.project_name(), 1, &log);
+    addresses[1] = nodes[1].endpoint();
     let recovered = nodes[1].ready(&addresses[1], &log).await;
     assert_eq!(recovered.node_key, infos[1].node_key);
+    #[cfg(feature = "bls12-381")]
+    defra.reconnect(
+        defra_orbis::OrbisClient::new(
+            format!("http://{}", addresses[1]),
+            derivation_id.clone(),
+            derived_key.to_bytes().unwrap(),
+            service_identity.clone(),
+        )
+        .await
+        .unwrap(),
+    );
     signing = SignServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[1]))
             .unwrap()
@@ -1320,9 +1341,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut started = false;
-            for (index, node) in nodes.iter().take(nodes.len() - 1).enumerate() {
+            for node in nodes.iter().take(nodes.len() - 1) {
                 node.0.refresh_logs().await.unwrap();
-                if tokio::fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                if tokio::fs::read_to_string(&node.0.log)
                     .await
                     .unwrap()
                     .contains("forwarding pending reshare to canonical next-committee leader")
@@ -1363,6 +1384,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             .path()
             .join(format!("node-{index}/reshare-restart.log"));
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
     }
@@ -1444,6 +1466,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .is_none());
     nodes[0].stop().await;
     nodes[1].stop().await;
+    let pre_endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[2]))
+        .unwrap()
+        .timeout(Duration::from_secs(30));
+    pre = PreServiceClient::connect(pre_endpoint).await.unwrap();
     let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[3]))
         .unwrap()
         .timeout(Duration::from_secs(30));

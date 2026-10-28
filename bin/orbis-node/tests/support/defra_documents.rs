@@ -32,7 +32,7 @@ impl Drop for SigningGuard {
 }
 
 impl Documents {
-    pub async fn new(path: &Path, signer: Arc<defra_orbis::OrbisClient>) -> Self {
+    pub async fn new(path: &Path, signer: Arc<super::defra_signer::Signer>) -> Self {
         let db =
             Arc::new(defra_db::DB::new(defra_storage::RegolithStore::open(path).unwrap()).unwrap());
         db.create_collection(defra_schema::CollectionVersion::new(
