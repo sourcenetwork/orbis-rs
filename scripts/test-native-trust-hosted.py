@@ -19,6 +19,29 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_same_runtime_needs_no_source_exception(self):
+        with patch.object(driver, 'capture') as capture:
+            for requested in (None, 'a' * 40):
+                self.assertEqual(driver.runtime_revision(Path('/root'), 'a' * 40, requested), 'a' * 40)
+            capture.assert_not_called()
+
+    def test_runtime_reuse_allows_only_exact_fixture_changes(self):
+        root = Path(__file__).resolve().parents[1]
+        fixture = 'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs'
+        with patch.object(driver, 'capture', return_value=fixture + '\n') as capture:
+            self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
+            self.assertEqual(capture.call_args.args[0], [
+                'git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                '--name-only', 'b' * 40, 'a' * 40, '--'])
+        for changed in ('bin/orbis-node/src/node.rs', 'Cargo.lock', 'docker/Dockerfile',
+                        fixture + '.bak', '../' + fixture):
+            with self.subTest(path=changed), patch.object(driver, 'capture', return_value=changed), \
+                    self.assertRaises(ValueError):
+                driver.runtime_revision(root, 'a' * 40, 'b' * 40)
+        for requested in ('develop', 'A' * 40, 'b' * 39, '--help'):
+            with self.subTest(revision=requested), self.assertRaises(driver.Failure):
+                driver.runtime_revision(root, 'a' * 40, requested)
+
     def test_native_sdk_and_docker_use_the_same_vera_revision(self):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual((root / 'docker/NATIVE_VERA_REF').read_text().strip(), driver.VERA)

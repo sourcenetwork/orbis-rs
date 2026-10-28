@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import signal
 import subprocess
@@ -41,6 +42,17 @@ def revision(value):
     if not re.fullmatch('[0-9a-f]{40}', value):
         raise Failure()
     return value
+
+
+def runtime_revision(root, fixture, requested):
+    fixture = revision(fixture)
+    runtime = revision(requested) if requested is not None else fixture
+    if runtime != fixture:
+        changed = capture(['git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                           '--name-only', runtime, fixture, '--'], root).splitlines()
+        guard = runpy.run_path(str(root / 'scripts/qualify-native-restart.py'))
+        guard['verify_fixture_changes'](changed)
+    return runtime
 
 
 def environment():
@@ -337,6 +349,8 @@ def run(root, args, output):
     artifacts = output / 'artifacts'
     manifest = restore(Path(args.artifacts), artifacts, os.environ['GITHUB_SHA'], args.trust_ref)
     source(root, manifest['sources']['orbis']['head'])
+    runtime = runtime_revision(root, manifest['sources']['orbis']['head'],
+                               env.get('ORBIS_NATIVE_RUNTIME_REVISION'))
     env['CARGO_TARGET_DIR'] = str(output / 'target')
     STAGE = 70
     stdout = output / 'compile.jsonl'
@@ -372,7 +386,7 @@ def run(root, args, output):
     if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
         raise Failure()
     labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_IMAGE']]))[0]['Config']['Labels']
-    if labels.get('org.opencontainers.image.revision') != manifest['sources']['orbis']['head'] or labels.get('io.sourcenetwork.orbis.backend') != 'native' or labels.get('io.sourcenetwork.orbis.curve') != args.curve or labels.get('io.sourcenetwork.orbis.integration-features') != 'false':
+    if labels.get('org.opencontainers.image.revision') != runtime or labels.get('io.sourcenetwork.orbis.backend') != 'native' or labels.get('io.sourcenetwork.orbis.curve') != args.curve or labels.get('io.sourcenetwork.orbis.integration-features') != 'false':
         raise Failure()
     vera_labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_VERA_IMAGE']]))[0]['Config']['Labels']
     if vera_labels.get('org.opencontainers.image.revision') != VERA:
@@ -432,7 +446,7 @@ def run(root, args, output):
             if sha(binary) != binary_hash or any(sha(artifacts / name) != value for name, value in manifest['binary_sha256'].items()):
                 raise Failure()
         source(root, manifest['sources']['orbis']['head'])
-        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'binary_sha256': binary_hash,
+        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime, 'binary_sha256': binary_hash,
             'images': {**images, 'trust': gateway_image}, 'image_binary_sha256': image_binaries, 'curve': args.curve, 'executions': 2, 'passed': 2,
             'production_kdf_stores': 6, 'go_tests': 2, 'ring_records_checked': 16}, indent=2) + '\n')
     finally:
