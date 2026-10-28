@@ -83,6 +83,18 @@ struct State {
     exit_code: i32,
 }
 
+/// Container UID/GID for a directory owned by the fixture.
+pub fn bind_mount_user(directory: &Path) -> io::Result<String> {
+    let metadata = fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "fixture must be a directory",
+        ));
+    }
+    Ok(format!("{}:{}", metadata.uid(), metadata.gid()))
+}
+
 /// One Compose service with a private bind-mounted store and explicit lifecycle.
 /// Linux host networking preserves the fixture's loopback-only peer endpoints.
 pub struct ContainerNode {
@@ -117,12 +129,12 @@ impl ContainerNode {
         let private = control.path().to_owned();
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700))?;
         let compose = private.join("compose.json");
-        let owner = fs::metadata(&directory)?;
+        let user = bind_mount_user(&directory)?;
         let environment: std::collections::BTreeMap<_, _> = environment.iter().copied().collect();
         let spec = serde_json::json!({"services": {"node": {
             "image": image.image(), "entrypoint": [image.entrypoint()], "command": args,
             "network_mode": "host", "working_dir": directory,
-            "user": format!("{}:{}", owner.uid(), owner.gid()),
+            "user": user,
             "volumes": [{"type": "bind", "source": root, "target": root}],
             "environment": environment, "stop_signal": "SIGINT", "stop_grace_period": "10s"
         }}});
@@ -341,6 +353,24 @@ fn private_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bind_mount_user_rejects_files_and_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        fs::write(&file, "fixture").unwrap();
+        assert_eq!(
+            bind_mount_user(&file).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(root.path(), &link).unwrap();
+        assert_eq!(
+            bind_mount_user(&link).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(bind_mount_user(root.path()).is_ok());
+    }
+
     #[test]
     fn private_paths_reject_external_stores_and_symlinked_logs() {
         let fixture = tempfile::tempdir().unwrap();

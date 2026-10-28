@@ -35,7 +35,12 @@ mod defra_documents;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
+    time::Duration,
+};
 use vera_client::VeraClient;
 use vera_harness::cluster::KeySet;
 
@@ -174,19 +179,30 @@ impl Node {
         })
     }
 
-    /// Restart a previously-brought-up node in place (same service, same
-    /// fixture directory, same bind address — all already baked into the
-    /// Compose service). Replaces the old `Node::start`/`start_bound` (which
-    /// created a fresh `ContainerNode` each call); callers that used to pass
-    /// `base`/`addr`/`controller`/`bind` now only need the node's index,
-    /// since none of that varies between a node's launches anymore.
+    /// Restart the same container and its persisted state. Docker may reassign
+    /// its published port; callers must refresh the endpoint before reconnecting.
     fn restart(project_name: &str, index: usize, log: &Path) -> Self {
         let node = Self::attach(project_name, index, log);
         node.0.start_service();
         node
     }
 
-    async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
+    fn endpoint(&self) -> String {
+        test_support::compose_discover_endpoint(
+            NATIVE_COMPOSE_FILE,
+            &self.0.project_name,
+            &self.0.service,
+            50051,
+        )
+        .strip_prefix("http://")
+        .expect("Compose endpoint must use HTTP")
+        .to_owned()
+    }
+
+    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+        let mut connections = 0_u32;
+        let mut responses = 0_u32;
+        let mut last_status = None;
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 assert!(
@@ -194,8 +210,11 @@ impl Node {
                     "node exited; logs retained privately"
                 );
                 if let Ok(mut client) = InfoServiceClient::connect(format!("http://{addr}")).await {
+                    connections += 1;
                     if let Ok(response) = client.get_node_info(GetNodeInfoRequest {}).await {
+                        responses += 1;
                         let info = response.into_inner();
+                        last_status = Some(info.status);
                         assert!(!matches!(
                             info.status(),
                             NodeStatus::ConnectingToChain
@@ -213,6 +232,36 @@ impl Node {
         .await
         .unwrap_or_else(|_| {
             self.0.retain_logs().unwrap();
+            use std::io::{Read, Seek, SeekFrom};
+            let mut tail = Vec::new();
+            let log_read = fs::File::open(&self.0.log).and_then(|mut file| {
+                let length = file.metadata()?.len();
+                file.seek(SeekFrom::Start(length.saturating_sub(65_536)))?;
+                file.take(65_536).read_to_end(&mut tail)
+            });
+            let text = String::from_utf8_lossy(&tail);
+            let endpoint = test_support::compose_discover_endpoint(
+                NATIVE_COMPOSE_FILE,
+                &self.0.project_name,
+                &self.0.service,
+                50051,
+            );
+            eprintln!(
+                "native_readiness={}",
+                serde_json::json!({
+                    "restart": log.file_name().is_some_and(|name| name == "restart.log"),
+                    "connections": connections,
+                    "responses": responses,
+                    "last_status": last_status,
+                    "endpoint_changed": endpoint.trim_start_matches("http://") != addr,
+                    "log_read": log_read.is_ok(),
+                    "password_loaded": text.contains("Password loaded from file"),
+                    "network_initializing": text.contains("Initializing network"),
+                    "bootstrap_started": text.contains("Bootstrap info service started"),
+                    "permission_denied": text.contains("Permission denied"),
+                    "runtime_panicked": text.contains("panicked at"),
+                })
+            );
             panic!("startup timed out; logs retained privately")
         })
     }
@@ -313,6 +362,10 @@ fn bring_up_orbis_nodes(
         )
         .unwrap();
         extra_env.push((
+            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
+            test_support::bind_mount_user(&dir).expect("node fixture owner"),
+        ));
+        extra_env.push((
             format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
             dir.display().to_string(),
         ));
@@ -372,7 +425,6 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -419,10 +471,16 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .join("native-vera")
         .join(root)
         .join("state.json");
+    let metadata = fs::metadata(&journal).unwrap();
+    let owner = fs::metadata(base.path()).unwrap();
+    assert_eq!(metadata.uid(), owner.uid());
+    assert_eq!(metadata.gid(), owner.gid());
+    assert_eq!(metadata.permissions().mode() & 0o077, 0);
     let before = fs::read(&journal).unwrap();
     let log = base.path().join("restart.log");
     let mut restarted = Node::restart(cluster.project_name(), 0, &log);
-    let second_info = restarted.ready(addr, &log).await;
+    let restarted_addr = restarted.endpoint();
+    let second_info = restarted.ready(&restarted_addr, &log).await;
     assert_eq!(first_info.node_key, second_info.node_key);
     assert_eq!(first_info.peer_id, second_info.peer_id);
     restarted.stop().await;
