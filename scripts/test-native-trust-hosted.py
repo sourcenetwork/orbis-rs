@@ -80,6 +80,28 @@ class Qualification(unittest.TestCase):
                 self.assertEqual(driver.runtime_revision(Path('/root'), 'a' * 40, requested), 'a' * 40)
             capture.assert_not_called()
 
+    def test_ci_build_revision_requires_the_pinned_runtime_and_image_identity(self):
+        qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+        for curve in ('bls12-381', 'jubjub'):
+            labels = {
+                'org.opencontainers.image.revision': qualified['IMAGE_REVISION'],
+                'io.sourcenetwork.orbis.backend': 'native',
+                'io.sourcenetwork.orbis.curve': curve,
+                'io.sourcenetwork.orbis.integration-features': 'false',
+            }
+            image = qualified['RUNTIME_IMAGE_IDS'][curve]
+            driver.verify_runtime_labels(labels, qualified['RUNTIME'], curve, image)
+            for runtime, identity in [(qualified['RUNTIME'], None),
+                                      (qualified['RUNTIME'], 'sha256:' + 'a' * 64),
+                                      ('a' * 40, image)]:
+                with self.subTest(curve=curve, runtime=runtime, identity=identity), \
+                        self.assertRaises(driver.Failure):
+                    driver.verify_runtime_labels(labels, runtime, curve, identity)
+            with self.assertRaises(driver.Failure):
+                driver.verify_runtime_labels(dict(labels, **{
+                    'org.opencontainers.image.revision': qualified['RUNTIME']}),
+                    qualified['RUNTIME'], curve, image)
+
     def test_runtime_reuse_allows_only_exact_fixture_changes(self):
         root = Path(__file__).resolve().parents[1]
         fixture = 'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs'

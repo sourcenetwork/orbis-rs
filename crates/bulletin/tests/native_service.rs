@@ -1,4 +1,5 @@
 use alloy_primitives::{Bytes, B256};
+use alloy_sol_types::SolCall;
 use bulletin::{
     native::{NativeBulletin, NativeVeraClient},
     r#trait::{
@@ -658,11 +659,42 @@ async fn native_report_and_reshare_recover_certified_completion() {
     backend.submit_report(report).await.unwrap();
     assert_eq!(retained, std::fs::read(&journal).unwrap());
 
-    let granted = client
+    let denied = client
         .native_set_relationship(&worker, policy_bytes, "ring", &ring_id, "operator", &actor)
         .await
+        .unwrap_err();
+    assert!(matches!(
+        denied,
+        vera_client::ClientError::TxReverted { .. }
+    ));
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let grant_token = create_scoped_bearer_token(
+        &authority,
+        worker.did(),
+        deployment,
+        now,
+        now + 300,
+        DelegationScope::PolicyCommands,
+    )
+    .unwrap();
+    let grant =
+        vera_acp::Relationship::with_entity("ring", &ring_id, "operator", actor.parse().unwrap());
+    let call = vera_modules::acp::abi::IAcp::bearerPolicyCmdCall {
+        bearerToken: grant_token,
+        policyId: policy_bytes,
+        cmd: serde_json::to_vec(&vera_modules::acp::types::PolicyCmd::SetRelationship(grant))
+            .unwrap()
+            .into(),
+    }
+    .abi_encode();
+    let wire = worker
+        .sign_native_tx(vera_client::ACP_ADDRESS, call.into())
         .unwrap();
-    receipt(&client, granted.transaction_hash, &trusted).await;
+    let granted = client.send_native_tx(&wire).await.unwrap();
+    receipt(&client, granted, &trusted).await;
     let current = client
         .read_threshold_ring(&ring_id, 1, &trusted)
         .await

@@ -104,8 +104,7 @@ jobs:
     - uses: actions/checkout@v4
     - name: Check native qualification source guards
       run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-qualification.py
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo registry / index
       uses: Swatinem/rust-cache@v2
       with:
@@ -117,7 +116,7 @@ jobs:
     - name: Install cargo-deny
       uses: taiki-e/install-action@v2
       with:
-        tool: cargo-deny
+        tool: cargo-deny@0.20.2
     - name: Check licences
       run: cargo deny check
     # jubjub-wasm is consumed only as a compiled wasm32-unknown-unknown binary
@@ -147,8 +146,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -172,8 +170,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -181,17 +178,15 @@ jobs:
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Check native dependency boundary
-      run: |
-        cargo tree --locked --color never -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --edges normal,build --prefix none > "$RUNNER_TEMP/native-dependencies.txt"
-        if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' "$RUNNER_TEMP/native-dependencies.txt"; then
-          echo "Native node includes Cosmos transport dependencies"
-          exit 1
-        fi
+      run: bash scripts/check-native-dependencies.sh "${{ matrix.crypto }}"
     - name: Check native node and bulletin
       run: |
         cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
     - name: Check reshare participant selection
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::selection::tests -- --test-threads=1
+    - name: Check native authorization and revision anchors
+      if: matrix.crypto == 'bls12-381'
+      run: cargo test --locked -p authz --no-default-features --features native --lib native::tests -- --test-threads=1
     - name: Compile native lifecycle scenarios
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
     - name: Check private Go failure diagnostics
@@ -242,7 +237,7 @@ jobs:
         build-args: |
           ENABLE_INTEGRATION_TEST=${{ matrix.backend == 'native' && 'false' || 'true' }}
           BACKEND=${{ matrix.backend }}
-          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
+          RUST_IMAGE=rust:1.98.0-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
         cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
@@ -264,7 +259,7 @@ jobs:
         build-args: |
           ENABLE_INTEGRATION_TEST=false
           BACKEND=native
-          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
+          RUST_IMAGE=rust:1.98.0-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: |
           type=gha,scope=integ-native-${{ matrix.crypto }}
@@ -290,8 +285,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -323,8 +317,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -363,8 +356,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
