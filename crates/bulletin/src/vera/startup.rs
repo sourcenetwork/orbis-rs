@@ -9,10 +9,10 @@ use common::{
     startup::{ConnectionPhase, PrepareContext, StartupProgress},
 };
 use local_storage::r#trait::LocalStorage;
-use std::{path::Path, sync::Arc};
+use std::{marker::PhantomData, path::Path, sync::Arc};
 
 /// Minimum account balance the node waits for before registering itself.
-/// Also the threshold the devnet-only `ensure_funded` bootstrap (below) tops
+/// Also the threshold the devnet-only startup policy tops
 /// an account up to, so a brand-new integration-test node isn't stuck
 /// waiting on a balance nothing will ever supply. Exposed for test harnesses
 /// that construct a `VeraBulletin` directly (bypassing this factory) and
@@ -31,26 +31,61 @@ pub struct VeraBulletinConfig {
     pub fee_granter: Option<String>,
 }
 
-pub struct VeraBulletinFactory;
+#[async_trait]
+pub trait VeraStartupPolicy: Send + 'static {
+    fn initial_signing_key() -> Option<String>;
 
-impl BulletinFactory for VeraBulletinFactory {
+    async fn ensure_funded(
+        _address: String,
+        _config: ChainConfigBuilder,
+        _minimum: u64,
+    ) -> Result<(), BulletinStartupError> {
+        Ok(())
+    }
+}
+
+pub struct ProductionVeraStartup;
+
+#[async_trait]
+impl VeraStartupPolicy for ProductionVeraStartup {
+    fn initial_signing_key() -> Option<String> {
+        None
+    }
+}
+
+pub struct VeraBulletinFactory<P = ProductionVeraStartup>(PhantomData<P>);
+
+pub struct ValidatedVeraBulletinConfig {
+    chain: ChainConfigBuilder,
+    fee_granter: Option<String>,
+}
+
+impl<P: VeraStartupPolicy> BulletinFactory for VeraBulletinFactory<P> {
     const NAME: &'static str = "bulletin/vera";
     type Config = VeraBulletinConfig;
-    type Prepared = PreparedVeraBulletin;
+    type ValidatedConfig = ValidatedVeraBulletinConfig;
+    type Prepared = PreparedVeraBulletin<P>;
 
-    fn prepare(
-        config: Self::Config,
-        context: PrepareContext<'_>,
-    ) -> Result<Self::Prepared, BulletinStartupError> {
+    fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, BulletinStartupError> {
         config
             .chain
             .validate()
             .map_err(BulletinStartupError::Configuration)?;
-        #[cfg(feature = "integration-test-cosmos")]
-        let initial_key = std::env::var("ORBIS_SIGNING_KEY").ok();
-        #[cfg(not(feature = "integration-test-cosmos"))]
-        let initial_key: Option<String> = None;
-        PreparedVeraBulletin::prepare(
+        if let Some(granter) = config.fee_granter.as_deref() {
+            TxSigner::validate_fee_granter(granter)?;
+        }
+        Ok(ValidatedVeraBulletinConfig {
+            chain: config.chain,
+            fee_granter: config.fee_granter,
+        })
+    }
+
+    fn prepare(
+        config: Self::ValidatedConfig,
+        context: PrepareContext<'_>,
+    ) -> Result<Self::Prepared, BulletinStartupError> {
+        let initial_key = P::initial_signing_key();
+        PreparedVeraBulletin::<P>::prepare(
             context.storage,
             context.runtime_base_path,
             config.chain,
@@ -61,16 +96,17 @@ impl BulletinFactory for VeraBulletinFactory {
     }
 }
 
-pub struct PreparedVeraBulletin {
+pub struct PreparedVeraBulletin<P: VeraStartupPolicy> {
     identity: NodeIdentity,
     config: ChainConfigBuilder,
     signer: TxSigner,
     minimum_balance: Option<u64>,
+    policy: PhantomData<P>,
 }
 
-impl PreparedVeraBulletin {
+impl<P: VeraStartupPolicy> PreparedVeraBulletin<P> {
     pub fn prepare(
-        storage: &impl LocalStorage,
+        storage: &(impl LocalStorage + ?Sized),
         base: &Path,
         config: ChainConfigBuilder,
         fee_granter: Option<&str>,
@@ -87,12 +123,13 @@ impl PreparedVeraBulletin {
             config,
             signer,
             minimum_balance,
+            policy: PhantomData,
         })
     }
 }
 
 #[async_trait]
-impl PreparedBulletin for PreparedVeraBulletin {
+impl<P: VeraStartupPolicy> PreparedBulletin for PreparedVeraBulletin<P> {
     fn identity(&self) -> &NodeIdentity {
         &self.identity
     }
@@ -106,11 +143,10 @@ impl PreparedBulletin for PreparedVeraBulletin {
     ) -> Result<Arc<dyn crate::r#trait::Bulletin + Send + Sync>, BulletinStartupError> {
         progress.set_phase(ConnectionPhase::Connecting);
         progress.set_phase(ConnectionPhase::WaitingForFunding);
-        #[cfg(feature = "integration-test-cosmos")]
         if let Some(minimum) = self.minimum_balance {
-            common::blockchain::cosmos::funding::ensure_funded(
+            P::ensure_funded(
                 self.identity.public_address.clone(),
-                self.config.clone().build(),
+                self.config.clone(),
                 minimum,
             )
             .await?;

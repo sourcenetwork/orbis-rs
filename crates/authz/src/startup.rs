@@ -10,17 +10,19 @@ use std::sync::Arc;
 
 /// Selects and constructs one `Authz` implementation. `Config` is loaded by
 /// `serde` as part of the node's single services-config file (see
-/// `bulletin::startup::NodeServicesConfig`); `prepare` does whatever local
-/// (non-network) validation and setup the implementation needs before the
-/// network connection in `PreparedAuthz::connect`.
+/// `bulletin::startup::NodeServicesConfig`). `validate` is side-effect free;
+/// `prepare` may use local storage after every selected service has validated.
 pub trait AuthzFactory {
     /// Diagnostics name (logging/tracing), e.g. `"authz/native"`.
     const NAME: &'static str;
     type Config: DeserializeOwned;
+    type ValidatedConfig;
     type Prepared: PreparedAuthz;
 
+    fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, AuthzStartupError>;
+
     fn prepare(
-        config: Self::Config,
+        config: Self::ValidatedConfig,
         context: PrepareContext<'_>,
     ) -> Result<Self::Prepared, AuthzStartupError>;
 }

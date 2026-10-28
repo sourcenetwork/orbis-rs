@@ -15,10 +15,9 @@ use std::path::Path;
 
 use alloy_primitives::{Bytes, B256};
 use k256::ecdsa::SigningKey;
-use local_storage::{
-    r#trait::{LocalStorage, LocalStorageKeys},
-    redb::RedbStorage,
-};
+use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
+#[cfg(test)]
+use local_storage::redb::RedbStorage;
 use vera_client::{
     nodes::{encode_node_request, sign_node_request, NodeRead, NodeRequest},
     threshold_objects::{
@@ -80,7 +79,7 @@ impl NativeVeraClient {
         deployment_root: [u8; 32],
         deployment_id: u64,
         directory: &Path,
-        storage: &RedbStorage,
+        storage: &(impl LocalStorage + ?Sized),
     ) -> Result<Self, ClientError> {
         let bytes = storage
             .get_encrypted(LocalStorageKeys::NodeSigningKey)

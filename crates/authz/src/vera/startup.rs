@@ -17,15 +17,20 @@ pub struct VeraAuthzFactory;
 impl AuthzFactory for VeraAuthzFactory {
     const NAME: &'static str = "authz/vera";
     type Config = ChainConfigBuilder;
+    type ValidatedConfig = ChainConfigBuilder;
     type Prepared = PreparedVeraAuthz;
 
-    fn prepare(
-        config: Self::Config,
-        _context: PrepareContext<'_>,
-    ) -> Result<Self::Prepared, AuthzStartupError> {
+    fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, AuthzStartupError> {
         config
             .validate()
             .map_err(AuthzStartupError::Configuration)?;
+        Ok(config)
+    }
+
+    fn prepare(
+        config: Self::ValidatedConfig,
+        _context: PrepareContext<'_>,
+    ) -> Result<Self::Prepared, AuthzStartupError> {
         Ok(PreparedVeraAuthz { config })
     }
 }

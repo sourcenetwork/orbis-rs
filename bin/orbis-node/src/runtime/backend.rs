@@ -6,15 +6,22 @@
 use crate::helpers::launch::Args;
 use authz::{startup::AuthzFactory, AuthzFactoryImpl};
 use bulletin::{
-    startup::{BulletinFactory, BulletinStartupError, PreparedNodeServices, ServicesFactory},
+    startup::{
+        BulletinFactory, NodeServicesStartupError, PreparedNodeServices, ServicesFactory,
+        ValidatedNodeServicesConfig,
+    },
     BulletinFactoryImpl,
 };
 use common::startup::PrepareContext;
 use local_storage::LocalStorageImpl;
 use std::path::Path;
 
-pub(super) type Error = BulletinStartupError;
+pub(super) type Error = NodeServicesStartupError;
 type Factory = ServicesFactory<AuthzFactoryImpl, BulletinFactoryImpl>;
+pub(super) type Config = ValidatedNodeServicesConfig<
+    <AuthzFactoryImpl as AuthzFactory>::ValidatedConfig,
+    <BulletinFactoryImpl as BulletinFactory>::ValidatedConfig,
+>;
 pub(super) type Prepared = PreparedNodeServices<
     <AuthzFactoryImpl as AuthzFactory>::Prepared,
     <BulletinFactoryImpl as BulletinFactory>::Prepared,
@@ -25,12 +32,15 @@ pub(super) const NAMES: (&str, &str) = (
     <BulletinFactoryImpl as BulletinFactory>::NAME,
 );
 
+pub(super) fn load(args: &Args) -> Result<Config, Error> {
+    Factory::load_and_validate(args.services_config.as_deref())
+}
+
 pub(super) fn prepare(
-    args: &Args,
+    config: Config,
     storage: &LocalStorageImpl,
     base: &Path,
 ) -> Result<Prepared, Error> {
-    let config = Factory::load(args.services_config.as_deref())?;
     Factory::prepare(
         config,
         PrepareContext {

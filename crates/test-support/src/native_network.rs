@@ -397,19 +397,19 @@ impl NativeTestNetwork {
     }
 
     /// Hex-encoded (no `0x` prefix) deployment root, ready to drop straight
-    /// into a `vera.json` fixture's `deployment_root` field.
+    /// into a `services.json` fixture's `deployment_root` field.
     pub fn deployment_root_hex(&self) -> &str {
         &self.root_hex
     }
 
     /// Hex-encoded consensus public key, ready to drop straight into a
-    /// `vera.json` fixture's `consensus_key` field.
+    /// `services.json` fixture's `consensus_key` field.
     pub fn consensus_key_hex(&self) -> &str {
         &self.consensus_key_hex
     }
 
     /// A validator's Compose service name (`vera1`..`vera4`), the endpoint an
-    /// Orbis-node container reaches it at (e.g. a `vera.json` fixture's
+    /// Orbis-node container reaches it at (e.g. a `services.json` fixture's
     /// `"endpoint"` field should be `http://{name}:{VERA_RPC_PORT}` — these
     /// containers share this cluster's bridge network, so the service name
     /// resolves; a host-published port, by contrast, is only reachable from

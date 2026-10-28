@@ -57,7 +57,9 @@ pub enum LocalStorageKeys {
 }
 
 pub trait LocalStorage {
-    fn name() -> String;
+    fn name() -> String
+    where
+        Self: Sized;
     /// Open (or create) storage whose `*_encrypted` values are protected at rest
     /// by a key derived from `password`. Opening an existing database with the
     /// wrong password fails rather than silently re-keying.

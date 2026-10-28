@@ -306,6 +306,30 @@ impl ChainConfigBuilder {
                 ));
             }
         }
+        let config = self.clone().build();
+        config
+            .validate_endpoints()
+            .map_err(|error| error.to_string())?;
+        for (label, endpoint) in [("rpc_url", &config.rpc_url), ("rest_url", &config.rest_url)] {
+            let url = reqwest::Url::parse(endpoint)
+                .map_err(|error| format!("invalid {label} {endpoint:?}: {error}"))?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return Err(format!(
+                    "invalid {label} {endpoint:?}: expected an HTTP(S) URL with a host"
+                ));
+            }
+        }
+        tonic::transport::Endpoint::from_shared(config.grpc_url.clone())
+            .map_err(|error| format!("invalid grpc_url {:?}: {error}", config.grpc_url))?;
+        if config.chain_id.trim().is_empty()
+            || config.account_prefix.trim().is_empty()
+            || config.default_gas_limit == 0
+            || config.gas_price.denom.trim().is_empty()
+            || !config.gas_price.amount.is_finite()
+            || config.gas_price.amount < 0.0
+        {
+            return Err("chain identity, account prefix, gas limit, denomination, and gas price must be valid and non-empty".into());
+        }
         Ok(())
     }
 

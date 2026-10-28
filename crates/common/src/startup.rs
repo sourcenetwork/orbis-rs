@@ -34,6 +34,6 @@ impl<F: Fn(ConnectionPhase) + Send + Sync> StartupProgress for F {
 /// Storage and filesystem handles shared by every backend's `prepare` step.
 #[derive(Clone, Copy)]
 pub struct PrepareContext<'a> {
-    pub storage: &'a local_storage::LocalStorageImpl,
+    pub storage: &'a dyn local_storage::r#trait::LocalStorage,
     pub runtime_base_path: &'a Path,
 }

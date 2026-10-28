@@ -42,15 +42,21 @@ pub struct NativeAuthzConfig {
 
 pub struct NativeAuthzFactory;
 
+pub struct ValidatedNativeAuthzConfig {
+    endpoint: String,
+    root: [u8; 32],
+    trusted: ConsensusPublicKey,
+    maximum_age: u64,
+    timeout: Duration,
+}
+
 impl AuthzFactory for NativeAuthzFactory {
     const NAME: &'static str = "authz/native";
     type Config = NativeAuthzConfig;
+    type ValidatedConfig = ValidatedNativeAuthzConfig;
     type Prepared = PreparedNativeAuthz;
 
-    fn prepare(
-        config: Self::Config,
-        _context: PrepareContext<'_>,
-    ) -> Result<Self::Prepared, AuthzStartupError> {
+    fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, AuthzStartupError> {
         let endpoint = url::Url::parse(&config.endpoint).map_err(|e| {
             AuthzStartupError::Configuration(format!("invalid native Vera endpoint: {e}"))
         })?;
@@ -87,12 +93,25 @@ impl AuthzFactory for NativeAuthzFactory {
                 "deployment root and time bounds must be nonzero".into(),
             ));
         }
-        Ok(PreparedNativeAuthz {
+        Ok(ValidatedNativeAuthzConfig {
             endpoint: endpoint.into(),
             root,
             trusted,
             maximum_age: config.max_evidence_age_secs,
             timeout: Duration::from_secs(config.request_timeout_secs),
+        })
+    }
+
+    fn prepare(
+        config: Self::ValidatedConfig,
+        _context: PrepareContext<'_>,
+    ) -> Result<Self::Prepared, AuthzStartupError> {
+        Ok(PreparedNativeAuthz {
+            endpoint: config.endpoint,
+            root: config.root,
+            trusted: config.trusted,
+            maximum_age: config.maximum_age,
+            timeout: config.timeout,
         })
     }
 }

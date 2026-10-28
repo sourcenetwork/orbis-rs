@@ -15,7 +15,7 @@ pub fn identity(signer: &TxSigner) -> NodeIdentity {
 
 /// Read an existing encrypted key; a storage error never generates a replacement.
 pub fn read_signer(
-    storage: &impl LocalStorage,
+    storage: &(impl LocalStorage + ?Sized),
     config: ChainConfig,
 ) -> Result<TxSigner, BulletinStartupError> {
     let bytes = storage
@@ -30,7 +30,7 @@ pub fn read_signer(
 /// Prepare the stored signing identity and its public address file.
 /// `initial_key` is used only when storage has no existing identity.
 pub fn prepare_signer(
-    storage: &impl LocalStorage,
+    storage: &(impl LocalStorage + ?Sized),
     config: ChainConfig,
     base: &Path,
     initial_key: Option<&str>,
@@ -52,14 +52,16 @@ pub fn prepare_signer(
                     Zeroizing::new(hex::encode(bytes.as_ref()))
                 }
             };
-            storage.set_encrypted(
-                LocalStorageKeys::NodeSigningKey,
-                Zeroizing::new(key.as_bytes().to_vec()),
-            )?;
             key
         }
     };
     let signer = TxSigner::from_hex_key(&encoded, config)?;
+    if stored.is_none() {
+        storage.set_encrypted(
+            LocalStorageKeys::NodeSigningKey,
+            Zeroizing::new(encoded.as_bytes().to_vec()),
+        )?;
+    }
     let path = base.join("public_key.txt");
     fs::write(&path, signer.address()).map_err(|source| BulletinStartupError::Io {
         operation: "write public identity",
@@ -67,4 +69,36 @@ pub fn prepare_signer(
         source,
     })?;
     Ok(signer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use local_storage::{r#trait::LocalStorage, redb::RedbStorage};
+
+    #[test]
+    fn invalid_initial_key_is_not_persisted() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let storage = RedbStorage::new(
+            "password".into(),
+            directory
+                .path()
+                .join("identity.redb")
+                .to_string_lossy()
+                .into(),
+        )
+        .expect("open storage");
+
+        assert!(prepare_signer(
+            &storage,
+            ChainConfig::local(),
+            directory.path(),
+            Some("not-a-signing-key"),
+        )
+        .is_err());
+        assert!(storage
+            .get_encrypted(LocalStorageKeys::NodeSigningKey)
+            .expect("read identity")
+            .is_none());
+    }
 }

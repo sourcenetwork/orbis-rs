@@ -75,6 +75,9 @@ pub(crate) struct InitializedNode {
 pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let (authz_name, bulletin_name) = backend::NAMES;
     let (authz_name, bulletin_name) = (authz_name.to_string(), bulletin_name.to_string());
+    // Parse and semantically validate every selected service before prompting
+    // for a storage password, persisting identities, or opening networking.
+    let services_config = backend::load(&args)?;
     // Initialize tracing with optional Loki support
     init_tracing(&args)?;
     let cors_policy = CorsPolicy::from_args(&args)
@@ -176,7 +179,7 @@ pub async fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 .map_err(|e| format!("Failed to initialize network: {}", e))?,
         );
-        let prepared = backend::prepare(&args, &local_storage, &runtime_base_path)?;
+        let prepared = backend::prepare(services_config, &local_storage, &runtime_base_path)?;
         let identity = prepared.identity().clone();
         let bootstrap_info_server = bootstrap::start_bootstrap_info_server_with_identity(
             args.addr.parse()?,

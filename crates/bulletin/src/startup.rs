@@ -10,7 +10,8 @@ pub mod cosmos;
 mod services;
 
 pub use services::{
-    ConnectedNodeServices, NodeServicesConfig, PreparedNodeServices, ServicesFactory,
+    ConnectedNodeServices, NodeServicesConfig, NodeServicesStartupError, PreparedNodeServices,
+    ServicesFactory, ValidatedNodeServicesConfig,
 };
 
 use crate::{
@@ -44,17 +45,19 @@ pub struct NodeRegistration {
 
 /// Selects and constructs one `Bulletin` implementation. `Config` is loaded
 /// by `serde` as part of the node's single services-config file (see
-/// [`NodeServicesConfig`]); `prepare` does whatever local (non-network)
-/// validation and identity setup the implementation needs before the network
-/// connection in `PreparedBulletin::connect`.
+/// [`NodeServicesConfig`]). `validate` is side-effect free; `prepare` may
+/// initialize the local identity after every selected service has validated.
 pub trait BulletinFactory {
     /// Diagnostics name (logging/tracing), e.g. `"bulletin/native"`.
     const NAME: &'static str;
     type Config: DeserializeOwned;
+    type ValidatedConfig;
     type Prepared: PreparedBulletin;
 
+    fn validate(config: Self::Config) -> Result<Self::ValidatedConfig, BulletinStartupError>;
+
     fn prepare(
-        config: Self::Config,
+        config: Self::ValidatedConfig,
         context: PrepareContext<'_>,
     ) -> Result<Self::Prepared, BulletinStartupError>;
 }
@@ -120,23 +123,6 @@ pub enum BulletinStartupError {
     Timeout(#[from] tokio::time::error::Elapsed),
     #[error("node registration failed: {0}")]
     Registration(String),
-    #[error("authorization connection failed")]
-    Authorization(#[from] authz::startup::AuthzStartupError),
-}
-
-/// Case-insensitive comparison of the hex node-id portion of a peer id
-/// (before any `@address` suffix). Deliberately reimplemented here in
-/// miniature rather than reusing `orbis-node`'s own peer-id validation, which
-/// is used far beyond registration (DKG/PRE/Sign/reporting) and shouldn't
-/// become something this crate depends on. A malformed existing on-chain
-/// record simply compares unequal (rejected as a mismatch below) rather than
-/// getting its own "invalid peer_id" diagnostic — a node-level nuance this
-/// crate doesn't own.
-fn peer_identity_matches(existing: &str, expected: &str) -> bool {
-    fn node_part(peer_id: &str) -> &str {
-        peer_id.split('@').next().unwrap_or(peer_id)
-    }
-    node_part(existing).eq_ignore_ascii_case(node_part(expected))
 }
 
 /// Ensure the node has a matching `NodeInfo` record before serving traffic.
@@ -156,7 +142,19 @@ pub async fn ensure_node_info(
     };
 
     if let Some(existing) = existing {
-        if !peer_identity_matches(&existing.peer_id, &registration.peer_id) {
+        let identity_matches = match common::peer_id::peer_identity_matches(
+            &existing.peer_id,
+            &registration.peer_id,
+        ) {
+            Ok(matches) => matches,
+            Err(error) => {
+                return Err(BulletinStartupError::Registration(format!(
+                    "existing node info for node_key {node_key} has invalid peer_id {}: {error}",
+                    existing.peer_id
+                )));
+            }
+        };
+        if !identity_matches {
             return Err(BulletinStartupError::Registration(format!(
                 "existing node info for node_key {node_key} has peer_id {}, expected {}",
                 existing.peer_id, registration.peer_id
@@ -230,8 +228,9 @@ mod tests {
     async fn ensure_node_info_keeps_existing_whitelists() {
         let bulletin = DummyBulletin::new().await.expect("create bulletin");
         let node_key = "node-key-existing";
+        let peer_id = "ab".repeat(32);
         let existing = NodeInfo {
-            peer_id: "peer-existing".to_string(),
+            peer_id: peer_id.clone(),
             controller_key: "controller-key".to_string(),
             whitelisted_policy_ids: vec!["existing-policy".to_string()],
             whitelisted_ring_ids: vec!["ring-existing".to_string()],
@@ -241,7 +240,7 @@ mod tests {
             .expect("seed node info");
         let registration = registration(
             "controller-key",
-            "peer-existing",
+            &peer_id,
             vec!["new-policy"],
             vec!["new-ring"],
         );
@@ -270,7 +269,7 @@ mod tests {
         let bulletin = DummyBulletin::new().await.expect("create bulletin");
         let node_key = "node-key-peer-mismatch";
         let existing = NodeInfo {
-            peer_id: "different-peer".to_string(),
+            peer_id: "ab".repeat(32),
             controller_key: "controller-key".to_string(),
             whitelisted_policy_ids: vec![],
             whitelisted_ring_ids: vec![],
@@ -278,7 +277,7 @@ mod tests {
         bulletin
             .set_node_info(node_key.to_string(), existing)
             .expect("seed node info");
-        let registration = registration("controller-key", "expected-peer", vec![], vec![]);
+        let registration = registration("controller-key", &"cd".repeat(32), vec![], vec![]);
 
         let err = ensure_node_info(&bulletin, node_key, &registration)
             .await
@@ -290,8 +289,9 @@ mod tests {
     async fn ensure_node_info_fails_when_existing_controller_mismatches() {
         let bulletin = DummyBulletin::new().await.expect("create bulletin");
         let node_key = "node-key-controller-mismatch";
+        let peer_id = "ab".repeat(32);
         let existing = NodeInfo {
-            peer_id: "peer-existing".to_string(),
+            peer_id: peer_id.clone(),
             controller_key: "different-controller".to_string(),
             whitelisted_policy_ids: vec![],
             whitelisted_ring_ids: vec![],
@@ -299,12 +299,36 @@ mod tests {
         bulletin
             .set_node_info(node_key.to_string(), existing)
             .expect("seed node info");
-        let registration = registration("controller-key", "peer-existing", vec![], vec![]);
+        let registration = registration("controller-key", &peer_id, vec![], vec![]);
 
         let err = ensure_node_info(&bulletin, node_key, &registration)
             .await
             .expect_err("controller mismatch should fail");
         assert!(err.to_string().contains("controller_key"));
+    }
+
+    #[tokio::test]
+    async fn ensure_node_info_rejects_a_malformed_existing_route() {
+        let bulletin = DummyBulletin::new().await.expect("create bulletin");
+        let node_key = "node-key-invalid-peer";
+        let peer_id = "ab".repeat(32);
+        bulletin
+            .set_node_info(
+                node_key.to_owned(),
+                NodeInfo {
+                    peer_id: format!("{peer_id}@invalid-route"),
+                    controller_key: "controller-key".to_owned(),
+                    whitelisted_policy_ids: vec![],
+                    whitelisted_ring_ids: vec![],
+                },
+            )
+            .expect("seed node info");
+        let registration = registration("controller-key", &peer_id, vec![], vec![]);
+
+        let error = ensure_node_info(&bulletin, node_key, &registration)
+            .await
+            .expect_err("malformed stored route should fail");
+        assert!(error.to_string().contains("invalid peer_id"));
     }
 
     // The "no existing record" / create path isn't exercised against

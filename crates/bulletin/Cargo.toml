@@ -38,7 +38,7 @@ cosmos-identity = ["common/cosmos", "dep:local-storage", "dep:zeroize", "dep:get
 # Devnet-only account funding inside the Vera factory's `connect_and_register`
 # (see `common::blockchain::cosmos::funding`). Not part of a production build.
 integration-test-cosmos = ["common/integration-test-cosmos"]
-native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "local-storage/redb", "dep:zeroize", "dep:getrandom"]
+native = ["dep:commonware-codec", "dep:url", "dep:vera-client", "dep:vera-domain", "dep:vera-crypto", "dep:alloy-primitives", "dep:k256", "dep:local-storage", "dep:zeroize", "dep:getrandom"]
 # Selects `DummyBulletin` as the production `BulletinImpl` (mutually
 # exclusive with `vera`, enforced below). Implies `dummy-type` since that's
 # what actually compiles the module this re-exports.
@@ -54,11 +54,7 @@ jubjub = ["dep:crypto", "crypto/jubjub"]
 # The `BulletinFactory`/`PreparedBulletin` traits, the services composer and
 # factory impls. Separate from `native`/`vera` (which just compile the
 # backend module for direct use — `cli-tool`'s admin tooling needs those
-# without ever touching a factory) so a build that never constructs a
-# factory doesn't need `common/startup`'s `PrepareContext`, which in turn
-# needs a concrete storage backend resolved (`local-storage/redb` or
-# `/memory`) — a requirement only the one real caller (orbis-node) actually
-# has. Implies `authz/startup` since the composer references
+# without ever touching a factory). Implies `authz/startup` since the composer references
 # `authz::startup::{AuthzFactory, PreparedAuthz}` directly.
 startup = ["common/startup", "authz/startup"]
 # Select the corresponding `BulletinFactoryImpl`. Implies `startup` since
@@ -79,5 +75,6 @@ serial_test = "3.2.0"
 tokio = { workspace = true, features = ["full", "process"] }
 # Vera-backend tests use the Docker integration harness (VeraTestContainer).
 test-support = { path = "../test-support" }
+local-storage = { path = "../local-storage", features = ["redb"] }
 [lints]
 workspace = true

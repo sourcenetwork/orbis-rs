@@ -1,4 +1,6 @@
 pub mod error;
+#[cfg(feature = "integration-test-cosmos")]
+mod integration_startup;
 #[cfg(feature = "native")]
 pub mod native;
 #[cfg(feature = "startup")]
@@ -45,7 +47,10 @@ compile_error!(
 
 #[cfg(feature = "select-native")]
 pub use native::startup::NativeBulletinFactory as BulletinFactoryImpl;
-#[cfg(feature = "select-vera")]
-pub use vera::startup::VeraBulletinFactory as BulletinFactoryImpl;
+#[cfg(all(feature = "select-vera", not(feature = "integration-test-cosmos")))]
+pub type BulletinFactoryImpl = vera::startup::VeraBulletinFactory;
+#[cfg(all(feature = "select-vera", feature = "integration-test-cosmos"))]
+pub type BulletinFactoryImpl =
+    vera::startup::VeraBulletinFactory<integration_startup::IntegrationTestVeraStartup>;
 
 pub mod reporting;

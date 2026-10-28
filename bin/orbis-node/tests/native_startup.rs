@@ -252,7 +252,7 @@ fn orbis_service(index: usize) -> String {
 }
 
 /// Bring up `count` Orbis-node services (`node1..node{count}`) against an
-/// already-running validator cluster: write each node's `vera.json`/`password`
+/// already-running validator cluster: write each node's `services.json`/`password`
 /// fixture, build the shared node image once (avoiding the build race
 /// `crates/test-support/src/network/native.rs`'s `bring_up_orbis_nodes` doc
 /// comment describes), bring all of them up together, and return each one's
@@ -302,12 +302,19 @@ fn bring_up_orbis_nodes(
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("password"), "native-dkg-test").unwrap();
         fs::write(
-            dir.join("vera.json"),
+            dir.join("services.json"),
             serde_json::to_vec(&serde_json::json!({
-                "endpoint": chain_endpoint,
-                "deployment_id": cluster.deployment(),
-                "deployment_root": cluster.deployment_root_hex(),
-                "consensus_key": cluster.consensus_key_hex(),
+                "authz": {
+                    "endpoint": chain_endpoint,
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
+                "bulletin": {
+                    "endpoint": chain_endpoint,
+                    "deployment_id": cluster.deployment(),
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
             }))
             .unwrap(),
         )
@@ -344,7 +351,7 @@ const COMPOSE_NODE_CONTROLLER_KEY: &str =
 
 /// Bring up the dynamic 4th node (`node4`, `profiles: ["node4"]` in
 /// `docker/docker-compose-native-integration-test.yml`) against an
-/// already-running cluster/node1-3, reusing `node-0`'s `vera.json` (same
+/// already-running cluster/node1-3, reusing `node-0`'s `services.json` (same
 /// chain, same deployment). Returns the new node's handle and discovered
 /// `host:port` gRPC endpoint. Replaces the old ad hoc
 /// `TcpListener::bind("127.0.0.1:0")` + `Node::start` dance (that reserved an
@@ -354,7 +361,11 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
     let directory = base.join("node-3");
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("password"), "native-dkg-test").unwrap();
-    fs::copy(base.join("node-0/vera.json"), directory.join("vera.json")).unwrap();
+    fs::copy(
+        base.join("node-0/services.json"),
+        directory.join("services.json"),
+    )
+    .unwrap();
     let extra_env = [(
         "ORBIS_NATIVE_NODE4_DIR".to_string(),
         directory.display().to_string(),

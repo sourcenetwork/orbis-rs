@@ -29,10 +29,7 @@ test-helpers = []
 # The `AuthzFactory`/`PreparedAuthz` traits and factory impls. Separate from
 # `native`/`vera` (which just compile the backend module for direct use —
 # `cli-tool`'s admin tooling needs those without ever touching a factory) so
-# a build that never constructs a factory doesn't need `common/startup`'s
-# `PrepareContext`, which in turn needs a concrete storage backend resolved
-# (`local-storage/redb` or `/memory`) — a requirement only the one real
-# caller (orbis-node) actually has.
+# a build that never constructs a factory doesn't need the shared startup API.
 startup = ["common/startup"]
 # Select the corresponding `AuthzFactoryImpl`. Implies `startup` since
 # selecting one *is* constructing a factory.

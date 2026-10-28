@@ -509,26 +509,6 @@ pub const GRPC_CONCURRENCY_LIMIT_PER_CONNECTION: usize = 128;
 pub const GRPC_MAX_CONCURRENT_STREAMS: u32 = 256;
 
 // ============================================================================
-// Peer ID Validation Constants
-// ============================================================================
-
-/// Maximum allowed length for peer ID strings in bytes
-///
-/// Peer IDs are used to identify nodes in the network. This limit prevents
-/// DoS attacks via oversized peer ID strings. The value of 256 bytes provides
-/// ample space for peer IDs (which are typically hex-encoded Ed25519 public
-/// keys plus optional socket addresses) while preventing abuse.
-pub const MAX_PEER_ID_LENGTH: usize = 256;
-
-/// Expected length for hex-encoded Ed25519 public key (node ID)
-///
-/// Ed25519 public keys are 32 bytes, which when hex-encoded become 64
-/// characters. This is the standard format for node IDs in the iroh network.
-/// This constant is used to validate that peer IDs contain properly formatted
-/// node IDs.
-pub const EXPECTED_HEX_NODE_ID_LENGTH: usize = 64;
-
-// ============================================================================
 // Password Configuration Constants
 // ============================================================================
 

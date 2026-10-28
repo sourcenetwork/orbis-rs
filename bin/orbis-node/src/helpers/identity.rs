@@ -1,68 +1,8 @@
-use crate::constants::{EXPECTED_HEX_NODE_ID_LENGTH, MAX_PEER_ID_LENGTH};
 use crate::error::PeerIdValidationError;
 use crate::helpers::ring::RingConfig;
+pub use common::peer_id::{canonicalize_peer_id, validate_peer_id};
 use network::Network;
-use std::net::SocketAddr;
 use std::sync::Arc;
-
-fn is_valid_address(addr_str: &str) -> bool {
-    if addr_str.parse::<SocketAddr>().is_ok() {
-        return true;
-    }
-    let Some(colon_pos) = addr_str.rfind(':') else {
-        return false;
-    };
-    let host = &addr_str[..colon_pos];
-    let port = &addr_str[colon_pos + 1..];
-    port.parse::<u16>().is_ok_and(|port| port != 0)
-        && !host.is_empty()
-        && host
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
-        && !host.starts_with('-')
-        && !host.ends_with('-')
-}
-
-pub fn validate_peer_id(peer_id: &str) -> Result<(), PeerIdValidationError> {
-    if peer_id.is_empty() {
-        return Err(PeerIdValidationError::Empty);
-    }
-    if peer_id.len() > MAX_PEER_ID_LENGTH {
-        return Err(PeerIdValidationError::TooLong {
-            length: peer_id.len(),
-            max: MAX_PEER_ID_LENGTH,
-        });
-    }
-
-    let mut parts = peer_id.splitn(2, '@');
-    let node_id = parts.next().unwrap_or_default();
-    if node_id.len() != EXPECTED_HEX_NODE_ID_LENGTH {
-        return Err(PeerIdValidationError::InvalidNodeIdLength {
-            length: node_id.len(),
-            expected: EXPECTED_HEX_NODE_ID_LENGTH,
-        });
-    }
-    if !node_id.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(PeerIdValidationError::InvalidCharacters(format!(
-            "Node ID must contain only hexadecimal characters (0-9, a-f, A-F), got: {}",
-            &node_id[..node_id.len().min(20)]
-        )));
-    }
-
-    if let Some(addr) = parts.next() {
-        if addr.is_empty() {
-            return Err(PeerIdValidationError::InvalidFormat(
-                "Socket address after '@' cannot be empty".to_string(),
-            ));
-        }
-        if !is_valid_address(addr) {
-            return Err(PeerIdValidationError::InvalidSocketAddr(format!(
-                "Cannot parse '{addr}' as a valid address (expected ip:port or hostname:port)"
-            )));
-        }
-    }
-    Ok(())
-}
 
 pub fn validate_all_peer_ids(peer_ids: &[String]) -> Result<(), (String, PeerIdValidationError)> {
     peer_ids
@@ -80,18 +20,8 @@ pub fn validate_all_peer_ids(peer_ids: &[String]) -> Result<(), (String, PeerIdV
 /// the system (chain-sourced `NodeInfo.peer_id`, or a locally derived/operator
 /// -supplied ID) keeps every downstream comparison and dial consistent
 /// regardless of the casing an operator originally typed or pasted.
-pub fn canonicalize_peer_id(peer_id: &str) -> Result<String, PeerIdValidationError> {
-    validate_peer_id(peer_id)?;
-    let mut parts = peer_id.splitn(2, '@');
-    let node_id = parts.next().unwrap_or_default().to_lowercase();
-    Ok(match parts.next() {
-        Some(addr) => format!("{node_id}@{addr}"),
-        None => node_id,
-    })
-}
-
 pub fn extract_node_part(peer_id: &str) -> String {
-    peer_id.split('@').next().unwrap_or(peer_id).to_string()
+    common::peer_id::node_part(peer_id).to_string()
 }
 
 pub fn is_self_peer_id(network: &Arc<dyn Network>, peer_id_str: &str) -> bool {

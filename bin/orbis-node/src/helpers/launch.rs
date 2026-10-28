@@ -2,7 +2,7 @@ use crate::constants::{
     PASSWORD_ENV_VAR, PASSWORD_FILE_NAME, SECRET_KEY_ENV_VAR, SECRET_KEY_FILE_NAME,
 };
 use crate::error::PasswordError;
-use crate::helpers::identity::{canonicalize_peer_id, extract_node_part, validate_peer_id};
+use crate::helpers::identity::canonicalize_peer_id;
 use bulletin::r#trait::NodeInfo;
 use clap::{Parser, ValueEnum};
 #[cfg(any(feature = "harness", test))]
@@ -464,14 +464,12 @@ pub fn registration_from_network(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn existing_peer_identity_matches(
     existing_peer_id: &str,
     expected_peer_id: &str,
 ) -> Result<bool, crate::error::PeerIdValidationError> {
-    validate_peer_id(existing_peer_id)?;
-    validate_peer_id(expected_peer_id)?;
-    Ok(extract_node_part(existing_peer_id)
-        .eq_ignore_ascii_case(&extract_node_part(expected_peer_id)))
+    common::peer_id::peer_identity_matches(existing_peer_id, expected_peer_id)
 }
 
 pub fn build_node_info_from_args(peer_id: String, controller_key: &str, args: &Args) -> NodeInfo {

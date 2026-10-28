@@ -49,11 +49,6 @@ hyper = { workspace = true }
 http-body-util = { workspace = true }
 hyper-util = { workspace = true }                                                                                                                                                                                                                                                                                                                                                                                
 
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c", optional = true }
-commonware-codec = { version = "2026.9.0", optional = true }
-k256 = { workspace = true, optional = true }
-
 [dev-dependencies]
 acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "2720b61c1475133581b920240b191a5efc13fc26" }
 defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "88e148a7387e00d9dd6fbf6ab78701d6e2bef452", default-features = false, features = ["p2p"] }
@@ -90,10 +85,14 @@ cli-tool = { path = "../cli-tool", default-features = false }
 tempfile = { workspace = true }
 # Docker Compose integration-test harness (Vera + orbis-node containers).
 test-support = { path = "../../crates/test-support", default-features = false }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "1dab0c4562da551b1a7f00fcea643b914769891c" }
+commonware-codec = "2026.9.0"
+k256 = { workspace = true }
 
 [[test]]
 name = "native_startup"
-required-features = ["native"]
+required-features = ["integration-test-native"]
 
 [features]
 # Combined convenience feature for the common "fully native" build, kept for
@@ -102,8 +101,8 @@ required-features = ["native"]
 # `authz-native`/`bulletin-native` below are independently selectable, so a
 # build can also mix one native side with the other's vera implementation.
 native = ["authz-native", "bulletin-native"]
-authz-native = ["authz/native", "authz/select-native", "dep:vera-client", "dep:vera-domain", "dep:commonware-codec", "dep:k256", "local-storage/redb"]
-bulletin-native = ["bulletin/native", "bulletin/select-native", "test-support/native", "dep:vera-client", "dep:vera-domain", "dep:commonware-codec", "dep:k256", "local-storage/redb"]
+authz-native = ["authz/native", "authz/select-native", "local-storage/redb"]
+bulletin-native = ["bulletin/native", "bulletin/select-native", "local-storage/redb"]
 default = ["local-storage/redb", "bls12-381", "authz-vera", "bulletin-vera", "network/iroh"]
 bls12-381 = ["crypto/bls12-381", "cli-tool?/bls12-381", "common/bls12-381", "bulletin/bls12-381"]
 jubjub = ["crypto/jubjub", "cli-tool?/jubjub", "common/jubjub", "bulletin/jubjub"]
@@ -118,7 +117,7 @@ iroh = ["network/iroh"]
 # run anything — this alone doesn't pull in either chain client.
 integration-test = ["cli-tool", "unsafe-testing"]
 # Adds Cosmos/SourceHub wiring on top of the shared base.
-integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "test-support/cosmos"]
+integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "bulletin/integration-test-cosmos", "test-support/cosmos"]
 # Adds native Vera wiring on top of the shared base — does NOT pull in
 # authz-vera/bulletin-vera/cosmos (see test-support's own `cosmos` default
 # feature, which this crate explicitly opts out of above).
