@@ -8,8 +8,10 @@ mod pet_tests;
 mod reshare_tests;
 #[cfg(feature = "startup")]
 pub mod startup;
+mod worker_store;
 pub use backend::NativeBulletin;
 pub use config::{ConfigError, NativeBulletinConfig, NativeConfig};
+pub use worker_store::open_native_worker;
 
 use std::path::Path;
 
@@ -86,22 +88,8 @@ impl NativeVeraClient {
             .map_err(|e| ClientError::Signing(e.to_string()))?
             .ok_or_else(|| ClientError::Signing("node signing key is missing".into()))?;
         let authority = decode_node_signing_key(&bytes)?;
-        let worker = NativeWorker::open(
-            directory,
-            deployment_id,
-            |name| {
-                storage
-                    .get_encrypted(LocalStorageKeys::NativeWorkerKey(name.into()))
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| "native worker key is missing".to_owned())
-            },
-            |name, bytes| {
-                storage.set_encrypted(
-                    LocalStorageKeys::NativeWorkerKey(name.into()),
-                    Zeroizing::new(bytes.to_vec()),
-                )
-            },
-        )?;
+        let worker =
+            crate::native::open_native_worker(storage, directory, deployment_root, deployment_id)?;
         Ok(Self {
             client,
             trusted,
@@ -720,8 +708,10 @@ mod tests {
         let journal: serde_json::Value =
             serde_json::from_slice(&std::fs::read(directory.join("state.json")).unwrap()).unwrap();
         storage
-            .delete(LocalStorageKeys::NativeWorkerKey(
-                journal["key_name"].as_str().unwrap().into(),
+            .delete(worker_store::test_key(
+                [7; 32],
+                9001,
+                journal["key_name"].as_str().unwrap(),
             ))
             .unwrap();
         assert!(open(9001).is_err());

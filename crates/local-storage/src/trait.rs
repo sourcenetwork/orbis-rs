@@ -52,8 +52,24 @@ pub enum LocalStorageKeys {
     /// `ring_id` and a main key's `aggregate_pk.to_string()` share no
     /// structural guarantee against collision.
     PendingResharePetBundle(String),
-    /// Independent native submission key, encrypted at rest.
-    NativeWorkerKey(String),
+    /// Opaque namespaced secret, encrypted at rest. `local-storage` never
+    /// interprets `namespace` or `name` — it only serializes them into the
+    /// slot's key, and (via the backend's existing slot-AAD mechanism, which
+    /// already binds every slot's serialized key into its own AEAD AAD) the
+    /// ciphertext too, so no namespace can read, overwrite, or have its
+    /// ciphertext substituted into another namespace's or worker's slot.
+    /// Callers own carving up `name` within their namespace (e.g. scoping it
+    /// to a deployment) — this variant only guarantees the namespace itself
+    /// is isolated.
+    NamespacedSecret(EncryptedStorageKey),
+}
+
+/// A caller-defined namespace plus an opaque name within it. See
+/// [`LocalStorageKeys::NamespacedSecret`].
+#[derive(Debug, Clone, Deserialize, Serialize, Eq, Hash, PartialEq)]
+pub struct EncryptedStorageKey {
+    pub namespace: String,
+    pub name: String,
 }
 
 pub trait LocalStorage {
