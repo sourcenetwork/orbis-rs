@@ -13,6 +13,8 @@ use vera_client::{
 use vera_domain::{ConsensusPublicKey, LightBlock};
 
 pub mod error;
+#[cfg(feature = "startup")]
+pub mod startup;
 pub use error::Error;
 
 pub struct NativeAuth {

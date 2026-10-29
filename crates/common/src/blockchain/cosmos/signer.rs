@@ -59,11 +59,21 @@ impl TxSigner {
     /// chain (e.g. via `verad tx feegrant grant`) or transactions will
     /// be rejected by Vera's ante handler.
     pub fn with_fee_granter(mut self, granter: &str) -> Result<Self> {
-        let granter = granter
-            .parse::<AccountId>()
-            .map_err(|e| BlockchainError::Signing(format!("Invalid fee granter address: {}", e)))?;
+        let granter = Self::parse_fee_granter(granter)?;
         self.fee_granter = Some(granter);
         Ok(self)
+    }
+
+    /// Validate an operator-supplied fee-granter address without requiring a
+    /// signer or touching local key storage.
+    pub fn validate_fee_granter(granter: &str) -> Result<()> {
+        Self::parse_fee_granter(granter).map(|_| ())
+    }
+
+    fn parse_fee_granter(granter: &str) -> Result<AccountId> {
+        granter
+            .parse::<AccountId>()
+            .map_err(|e| BlockchainError::Signing(format!("Invalid fee granter address: {e}")))
     }
 
     /// Create a TxSigner from a hex-encoded private key.

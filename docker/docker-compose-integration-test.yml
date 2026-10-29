@@ -82,7 +82,9 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    volumes:
+      - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
@@ -118,7 +120,9 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    volumes:
+      - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
@@ -154,7 +158,9 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    volumes:
+      - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"
@@ -191,7 +197,9 @@ services:
       # local-test fixture like the fixed password/keys above.
       - ORBIS_LOCAL_STORAGE_KDF_M_COST_KIB=8
       - ORBIS_LOCAL_STORAGE_KDF_T_COST=1
-    command: ["--addr", "0.0.0.0:50051", "--log-level", "debug", "--authz-grpc", "http://vera:9090", "--bulletin-grpc", "http://vera:9090", "--chain-rpc", "http://vera:26657", "--chain-rest", "http://vera:1317", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    command: ["--services-config", "/etc/orbis/services.json", "--addr", "0.0.0.0:50051", "--log-level", "debug", "--metrics-addr", "0.0.0.0:9090", "--reshare-interval-secs", "5", "--node-controller-key", "024f4e2ad99c34d60b9ba6283c9431a8418af8673212961f97a77b6377fcd05b62"]
+    volumes:
+      - ./services-config-vera.json:/etc/orbis/services.json:ro
     ports:
       - "127.0.0.1::50051"
       - "127.0.0.1::9090"

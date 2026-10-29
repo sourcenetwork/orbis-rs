@@ -19,7 +19,7 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
-        MIN_NODE_BALANCE, PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
@@ -34,6 +34,7 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::r#trait::{Bulletin, BulletinWriteKind, NodeInfo};
+use bulletin::vera::startup::MIN_NODE_BALANCE;
 use bulletin::BulletinImpl;
 use common::blockchain::{
     events::ReportEventSubscription, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
@@ -236,20 +237,11 @@ async fn setup_fault_three_node_network_with_reshare_interval(
         let grpc_bind = format!("127.0.0.1:{}", port);
         let config = NodeConfig {
             args: Args {
-                vera_config: None,
+                services_config: None,
                 addr: grpc_bind.clone(),
                 cors_allow_origins: vec![],
                 cors_permissive: false,
                 log_level: LogLevel::Info,
-                authz_grpc: None,
-                bulletin_grpc: None,
-                chain_rest: None,
-                chain_rpc: None,
-                allow_insecure_rpc: false,
-                chain_id: None,
-                denom: None,
-                fee_granter: None,
-                chain_gas_multiplier: None,
                 metrics_addr: None,
                 loki_url: None,
                 runtime_base_path: None,

@@ -218,8 +218,11 @@ fn split_scheme_host(raw: &str) -> Option<(&str, &str)> {
     Some((scheme, host))
 }
 
-/// Builder for ChainConfig.
-#[derive(Debug, Default, Clone)]
+/// Builder for ChainConfig. Every field is independently optional, so this
+/// doubles as the directly-`Deserialize`-able shape for the `authz`/`bulletin`
+/// Vera factories' services-config sections.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChainConfigBuilder {
     pub chain_id: Option<String>,
     pub rpc_url: Option<String>,
@@ -286,6 +289,48 @@ impl ChainConfigBuilder {
     pub fn allow_insecure_rpc(mut self, allow_insecure_rpc: Option<bool>) -> Self {
         self.allow_insecure_rpc = allow_insecure_rpc;
         self
+    }
+
+    /// Reject a gas multiplier that could never be a sane safety margin: it
+    /// only ever multiplies the simulated gas estimate upward before
+    /// broadcasting, so a non-finite, zero, or sub-1.0 value would silently
+    /// under-fund (or corrupt) every transaction instead of adding headroom.
+    /// Checked here (by every caller that builds a `ChainConfigBuilder` from
+    /// operator-supplied config) rather than at parse time, since this is a
+    /// plain data struct with no parse step of its own.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if let Some(multiplier) = self.gas_multiplier {
+            if !multiplier.is_finite() || multiplier < 1.0 {
+                return Err(format!(
+                    "invalid gas multiplier {multiplier:?}: must be a finite number that is at least 1.0"
+                ));
+            }
+        }
+        let config = self.clone().build();
+        config
+            .validate_endpoints()
+            .map_err(|error| error.to_string())?;
+        for (label, endpoint) in [("rpc_url", &config.rpc_url), ("rest_url", &config.rest_url)] {
+            let url = reqwest::Url::parse(endpoint)
+                .map_err(|error| format!("invalid {label} {endpoint:?}: {error}"))?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return Err(format!(
+                    "invalid {label} {endpoint:?}: expected an HTTP(S) URL with a host"
+                ));
+            }
+        }
+        tonic::transport::Endpoint::from_shared(config.grpc_url.clone())
+            .map_err(|error| format!("invalid grpc_url {:?}: {error}", config.grpc_url))?;
+        if config.chain_id.trim().is_empty()
+            || config.account_prefix.trim().is_empty()
+            || config.default_gas_limit == 0
+            || config.gas_price.denom.trim().is_empty()
+            || !config.gas_price.amount.is_finite()
+            || config.gas_price.amount < 0.0
+        {
+            return Err("chain identity, account prefix, gas limit, denomination, and gas price must be valid and non-empty".into());
+        }
+        Ok(())
     }
 
     /// Build the ChainConfig. Uses local defaults for any unset values.

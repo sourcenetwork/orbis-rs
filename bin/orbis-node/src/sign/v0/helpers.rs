@@ -585,7 +585,12 @@ pub fn validate_sign_claims(
 
     if let Some(message) = message {
         let expected = Sha256::digest(message);
-        if token.claims.message_sha256 != expected.as_slice() {
+        // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65
+        // ("please upgrade to generic-array 1.x"), but sha2/digest 0.10 have no
+        // non-deprecated path off it yet; the API itself is unaffected.
+        #[allow(deprecated)]
+        let matches = token.claims.message_sha256 == expected.as_slice();
+        if !matches {
             return Err(SignError::Unauthorized(
                 "Token message_sha256 does not match request message".to_string(),
             ));

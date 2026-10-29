@@ -12,7 +12,7 @@ use crate::{
     helpers::{
         launch::{
             build_node_info_from_args, create_and_store_node_key, derive_secret_key_bytes,
-            ensure_node_info, existing_peer_identity_matches, CorsPolicy, LogLevel,
+            existing_peer_identity_matches, CorsPolicy, LogLevel,
         },
         test_helpers::{cleanup_db, test_db_path},
     },
@@ -28,7 +28,7 @@ use crate::{
 use authz::r#trait::Authz;
 use authz::AuthzImpl;
 use bulletin::dummy::DummyBulletin;
-use bulletin::r#trait::{Bulletin, BulletinKind, NodeInfo};
+use bulletin::r#trait::Bulletin;
 use common::blockchain::ChainConfigBuilder;
 use crypto::{DkgImpl, PreImpl, SignImpl};
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
@@ -97,20 +97,11 @@ async fn make_test_node_config(
     );
     let config = NodeConfig {
         args: Args {
-            vera_config: None,
+            services_config: None,
             addr: addr.to_string(),
             cors_allow_origins: vec![],
             cors_permissive: false,
             log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            allow_insecure_rpc: false,
-            chain_id: None,
-            denom: None,
-            fee_granter: None,
-            chain_gas_multiplier: None,
             metrics_addr: None,
             loki_url: None,
             runtime_base_path: None,
@@ -181,20 +172,11 @@ fn node_info_test_args(
     ring_ids: Vec<&str>,
 ) -> Args {
     Args {
-        vera_config: None,
+        services_config: None,
         addr: "127.0.0.1:0".to_string(),
         cors_allow_origins: vec![],
         cors_permissive: false,
         log_level: LogLevel::Info,
-        authz_grpc: None,
-        bulletin_grpc: None,
-        chain_rest: None,
-        chain_rpc: None,
-        allow_insecure_rpc: false,
-        chain_id: None,
-        denom: None,
-        fee_granter: None,
-        chain_gas_multiplier: None,
         metrics_addr: None,
         loki_url: None,
         runtime_base_path: None,
@@ -355,41 +337,12 @@ fn test_build_node_info_from_args_stores_policy_ids_unchanged() {
     );
 }
 
-#[tokio::test]
-async fn test_ensure_node_info_keeps_existing_whitelists() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-existing";
-    let peer_id = hex::encode(network.local_peer_id().as_bytes());
-    let existing = NodeInfo {
-        peer_id,
-        controller_key: "controller-key".to_string(),
-        whitelisted_policy_ids: vec!["existing-policy".to_string()],
-        whitelisted_ring_ids: vec!["ring-existing".to_string()],
-    };
-    bulletin
-        .set_node_info(node_key.to_string(), existing.clone())
-        .expect("seed node info");
-    let args = node_info_test_args("controller-key", None, vec!["new-policy"], vec!["new-ring"]);
-
-    ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect("ensure node info");
-
-    let post = bulletin
-        .read(node_key.to_string(), BulletinKind::NodeInfo)
-        .await
-        .expect("read existing node info");
-    let node_info = NodeInfo::try_from(post).expect("parse node info");
-    assert_eq!(
-        node_info.whitelisted_policy_ids,
-        existing.whitelisted_policy_ids
-    );
-    assert_eq!(
-        node_info.whitelisted_ring_ids,
-        existing.whitelisted_ring_ids
-    );
-}
+// `ensure_node_info`'s registration logic (seed/compare/create NodeInfo) now
+// lives in `bulletin::startup` — see that crate's own tests for the
+// keeps-existing-whitelists / peer-mismatch / controller-mismatch cases
+// that used to be here. This file keeps only what's still node-local:
+// peer-id comparison semantics (below) and `build_node_info_from_args`
+// (above), neither of which moved.
 
 #[test]
 fn test_existing_routed_peer_address_keeps_the_same_identity() {
@@ -414,50 +367,6 @@ fn test_existing_peer_identity_rejects_invalid_expected_route() {
         result,
         Err(crate::error::PeerIdValidationError::InvalidSocketAddr(_))
     ));
-}
-
-#[tokio::test]
-async fn test_ensure_node_info_fails_when_existing_peer_mismatches() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-peer-mismatch";
-    let existing = NodeInfo {
-        peer_id: "different-peer".to_string(),
-        controller_key: "controller-key".to_string(),
-        whitelisted_policy_ids: vec![],
-        whitelisted_ring_ids: vec![],
-    };
-    bulletin
-        .set_node_info(node_key.to_string(), existing)
-        .expect("seed node info");
-    let args = node_info_test_args("controller-key", None, vec![], vec![]);
-
-    let err = ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect_err("peer mismatch should fail");
-    assert!(err.to_string().contains("peer_id"));
-}
-
-#[tokio::test]
-async fn test_ensure_node_info_fails_when_existing_controller_mismatches() {
-    let network = NetworkImpl::new().await.expect("create network");
-    let bulletin = DummyBulletin::new().await.expect("create bulletin");
-    let node_key = "node-key-controller-mismatch";
-    let existing = NodeInfo {
-        peer_id: hex::encode(network.local_peer_id().as_bytes()),
-        controller_key: "different-controller".to_string(),
-        whitelisted_policy_ids: vec![],
-        whitelisted_ring_ids: vec![],
-    };
-    bulletin
-        .set_node_info(node_key.to_string(), existing)
-        .expect("seed node info");
-    let args = node_info_test_args("controller-key", None, vec![], vec![]);
-
-    let err = ensure_node_info(&bulletin, node_key, &network, &args)
-        .await
-        .expect_err("controller mismatch should fail");
-    assert!(err.to_string().contains("controller_key"));
 }
 
 #[tokio::test]
@@ -878,20 +787,11 @@ async fn test_bootstrap_info_server_hands_off_to_full_server_on_same_port() {
     );
     let config = NodeConfig {
         args: Args {
-            vera_config: None,
+            services_config: None,
             addr: grpc_addr.to_string(),
             cors_allow_origins: vec!["http://localhost:5173".to_string()],
             cors_permissive: false,
             log_level: LogLevel::Info,
-            authz_grpc: None,
-            bulletin_grpc: None,
-            chain_rest: None,
-            chain_rpc: None,
-            allow_insecure_rpc: false,
-            chain_id: None,
-            denom: None,
-            fee_granter: None,
-            chain_gas_multiplier: None,
             metrics_addr: None,
             loki_url: None,
             runtime_base_path: None,

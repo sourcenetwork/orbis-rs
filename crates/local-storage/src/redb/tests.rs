@@ -4,7 +4,7 @@ use super::{
 };
 use crate::common::StoredKdfParams;
 use crate::error::LocalStorageError;
-use crate::r#trait::{LocalStorage, LocalStorageKeys};
+use crate::r#trait::{EncryptedStorageKey, LocalStorage, LocalStorageKeys};
 use crate::tests::{
     test_encrypted_data_persists, test_encrypted_functions, test_fails_with_wrong_password,
     test_new_creates_database, test_reopens_with_correct_password, test_set_get_contains_delete,
@@ -216,8 +216,11 @@ fn persisted_storage_tags_remain_stable() {
             b"\x07\0\0\0\x01\0\0\0\0\0\0\0r",
         ),
         (
-            LocalStorageKeys::NativeWorkerKey("r".into()),
-            b"\x08\0\0\0\x01\0\0\0\0\0\0\0r",
+            LocalStorageKeys::NamespacedSecret(EncryptedStorageKey {
+                namespace: "n".into(),
+                name: "r".into(),
+            }),
+            b"\x08\0\0\0\x01\0\0\0\0\0\0\0n\x01\0\0\0\0\0\0\0r",
         ),
     ];
     for (key, bytes) in fixtures {
@@ -258,10 +261,13 @@ fn published_identity_slots_reopen_without_aliasing() {
 }
 
 #[test]
-fn native_worker_identity_survives_restart_and_deletion() {
-    let path = test_db_path("native_worker_identity");
+fn namespaced_secret_survives_restart_and_deletion() {
+    let path = test_db_path("namespaced_secret");
     cleanup_db(&path);
-    let key = LocalStorageKeys::NativeWorkerKey("vera-worker-test".into());
+    let key = LocalStorageKeys::NamespacedSecret(EncryptedStorageKey {
+        namespace: "example-namespace/v1".into(),
+        name: "worker-test".into(),
+    });
     let history = LocalStorageKeys::RingPolyHistory("ring-public-key".into());
     let pending = LocalStorageKeys::PendingReshareBundle("ring-public-key".into());
     let db = RedbStorage::new("pw".into(), path.clone()).unwrap();

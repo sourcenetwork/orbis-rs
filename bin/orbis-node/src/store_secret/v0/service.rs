@@ -292,7 +292,12 @@ fn validate_store_secret_claims(
     req: &StoreSecretRequest,
 ) -> Result<(), StoreSecretError> {
     let expected = Sha256::digest(&req.encrypted_document);
-    if token.claims.encrypted_document_sha256 != expected.as_slice() {
+    // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+    // upgrade to generic-array 1.x"), but sha2/digest 0.10 have no non-deprecated
+    // path off it yet; the API itself is unaffected.
+    #[allow(deprecated)]
+    let matches = token.claims.encrypted_document_sha256 == expected.as_slice();
+    if !matches {
         return Err(StoreSecretError::Unauthorized(
             "Token encrypted_document_sha256 does not match request encrypted_document".to_string(),
         ));
