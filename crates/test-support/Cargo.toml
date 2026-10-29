@@ -10,6 +10,14 @@ publish = false
 
 [dependencies]
 common = { path = "../common", default-features = false }
+# Plain generated gRPC types/client only (tonic/tonic-prost/prost, no crypto-
+# feature coupling) — used by `node_readiness` to poll `InfoService` for both
+# backends. Deliberately not `cli-tool` (its default features hardcode a
+# crypto implementation, which would conflict with a jubjub build's feature
+# unification — see `admin/cosmos.rs`'s doc comment for why ring creation
+# stays out of this crate for the same reason).
+proto = { path = "../proto" }
+tonic = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }

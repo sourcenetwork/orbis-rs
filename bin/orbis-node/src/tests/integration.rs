@@ -19,6 +19,12 @@ mod reshare_scenario;
 #[path = "../../tests/support/sign_scenario.rs"]
 mod sign_scenario;
 
+// Harness-unification migration: the compile-time-selected test environment
+// for this backend. Not called by any test yet (that's a later migration
+// PR) — `#[allow(dead_code)]` until then.
+#[allow(unused_imports)]
+use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
+
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{BulletinKind, RingPayload};
 use common::blockchain::{

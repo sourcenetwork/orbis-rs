@@ -24,6 +24,16 @@ mod native_pet;
 #[path = "support/native_trust_gateway.rs"]
 mod native_trust_gateway;
 
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_environment.rs"]
+mod native_environment;
+// Harness-unification migration: the compile-time-selected test environment
+// for this backend. Not called by any test yet (that's a later migration
+// PR) — `#[allow(dead_code)]` until then.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[allow(unused_imports)]
+use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
+
 #[cfg(feature = "bls12-381")]
 #[path = "support/defra_signer.rs"]
 mod defra_signer;
