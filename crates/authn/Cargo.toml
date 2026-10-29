@@ -6,9 +6,10 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-did-key = { workspace = true }
+bs58 = "0.5"
+ring = "0.17"
+ed25519-dalek = "2.2"
 thiserror = { workspace = true }
-form_urlencoded = { workspace = true }
 serde = { workspace = true }
 base64 = { workspace = true }
 jsonwebtoken = "9"

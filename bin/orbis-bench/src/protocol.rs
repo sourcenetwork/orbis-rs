@@ -3,7 +3,6 @@ use authn::{create_authenticated_request, JwtSigner};
 use common::blockchain::VeraClient;
 use crypto::r#trait::{Secret, ThresholdDealer, ThresholdSigner};
 use crypto::{CryptoDeserialize, GroupAffine, PreImpl, ScalarField, SignImpl};
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, PatchedKeyPair};
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse,
     GetPetRingStateRequest, GetPetRingStateResponse, GetRingStateRequest, GetRingStateResponse,
@@ -515,7 +514,7 @@ pub async fn pre_call(
     client: &mut PreServiceClient<Channel>,
     fixture: &PreFixture,
 ) -> Result<PreMeasurement> {
-    let signer = JwtSigner::from_key_pair(did_key_pair(&fixture.reader_identity));
+    let signer = JwtSigner::from_seed(did_key_seed(&fixture.reader_identity));
     let (token, token_metadata) = signer.create_pre_jwt(
         fixture.reader_pk.clone(),
         &fixture.object_id,
@@ -616,7 +615,7 @@ pub async fn sign_call(
     fixture: &SignFixture,
     message: Vec<u8>,
 ) -> Result<SignMeasurement> {
-    let signer = JwtSigner::from_key_pair(did_key_pair(&fixture.reader_identity));
+    let signer = JwtSigner::from_seed(did_key_seed(&fixture.reader_identity));
     let token = signer.create_sign_jwt(&fixture.derivation_id, &message)?;
     let total_started = Instant::now();
     let request = create_authenticated_request(
@@ -643,9 +642,8 @@ pub async fn sign_call(
     })
 }
 
-fn did_key_pair(identity: &str) -> PatchedKeyPair {
-    let seed: [u8; 32] = Sha256::digest(identity.as_bytes()).into();
-    generate::<DidEd25519KeyPair>(Some(&seed))
+fn did_key_seed(identity: &str) -> [u8; 32] {
+    Sha256::digest(identity.as_bytes()).into()
 }
 
 fn unix_ms() -> u128 {

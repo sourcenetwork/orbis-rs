@@ -3,11 +3,11 @@
 use super::{parse_anchor_height, VeraAuth};
 use crate::r#trait::Authz;
 use crate::vera::{AccessCheckRequest, ValidWindow};
+use authn::JwtSigner;
 use common::blockchain::{
     acp::{Actor, Object, Relationship, Subject, SubjectKind},
     TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
 };
-use did_key::{generate, Ed25519KeyPair, Fingerprint};
 use test_support::VeraTestContainer;
 
 #[test]
@@ -104,8 +104,8 @@ async fn test_create_and_query_policy() {
     assert_eq!(policy.name, "test-policy");
 
     // Create DID for reader user
-    let key_pair = generate::<Ed25519KeyPair>(None);
-    let reader_did = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let reader_did = key_pair.did_uri;
 
     // Register a document object (must match policy resource "document")
     // The signer automatically becomes the owner when registering
@@ -262,17 +262,17 @@ async fn test_complex_policy_permissions() {
     println!("Policy ID: {}", policy_id);
 
     // 4. Create test users with different roles
-    let admin_key = generate::<Ed25519KeyPair>(None);
-    let admin_did = format!("did:key:{}", admin_key.fingerprint());
+    let admin_key = JwtSigner::new();
+    let admin_did = admin_key.did_uri;
 
-    let editor_key = generate::<Ed25519KeyPair>(None);
-    let editor_did = format!("did:key:{}", editor_key.fingerprint());
+    let editor_key = JwtSigner::new();
+    let editor_did = editor_key.did_uri;
 
-    let viewer_key = generate::<Ed25519KeyPair>(None);
-    let viewer_did = format!("did:key:{}", viewer_key.fingerprint());
+    let viewer_key = JwtSigner::new();
+    let viewer_did = viewer_key.did_uri;
 
-    let outsider_key = generate::<Ed25519KeyPair>(None);
-    let outsider_did = format!("did:key:{}", outsider_key.fingerprint());
+    let outsider_key = JwtSigner::new();
+    let outsider_did = outsider_key.did_uri;
 
     println!("Admin DID: {}", admin_did);
     println!("Editor DID: {}", editor_did);
@@ -521,8 +521,8 @@ async fn test_valid_window_in_range() {
         .expect("Failed to list policy IDs");
     let policy_id = &policy_ids.ids[0];
 
-    let key_pair = did_key::generate::<did_key::Ed25519KeyPair>(None);
-    let reader_did = format!("did:key:{}", did_key::Fingerprint::fingerprint(&key_pair));
+    let key_pair = JwtSigner::new();
+    let reader_did = key_pair.did_uri;
 
     let document = common::blockchain::acp::Object {
         resource: "document".to_string(),

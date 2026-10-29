@@ -767,9 +767,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     confirmed(&client, registered.transaction_hash, &trusted).await;
     let reader_seed = [91u8; 32];
-    let reader = JwtSigner::from_key_pair(did_key::generate::<did_key::Ed25519KeyPair>(Some(
-        &reader_seed,
-    )));
+    let reader = JwtSigner::from_seed(reader_seed);
     let public_key = crypto::GroupAffine::from_bytes(&hex::decode(&ring_pk).unwrap()).unwrap();
     let metadata = crypto::SignImpl::encode_metadata(&policy, "key", "sign");
     let derived_key = crypto::SignImpl::derive_public_key(

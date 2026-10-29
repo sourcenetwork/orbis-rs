@@ -19,9 +19,7 @@ pub struct Reader {
 
 impl Reader {
     pub fn new(chain_id: String) -> Self {
-        let signer = JwtSigner::from_key_pair(did_key::generate::<did_key::Ed25519KeyPair>(Some(
-            &[92; 32],
-        )));
+        let signer = JwtSigner::from_seed([92; 32]);
         let (secret, public) = crypto::helpers::generate_keypair().unwrap();
         Self {
             signer,

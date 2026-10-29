@@ -144,10 +144,7 @@ pub async fn run() {
     let minimum = grant_relay(&workflow, &operator_keys).await;
     // The Orbis authentication relay is Ed25519. It is distinct from the secp256k1
     // native submission relay and is only recorded as an allowed relay in this test.
-    let trusted_orbis_relay_did = authn::jwt_builder::JwtSigner::from_key_pair(
-        did_key::generate::<did_key::Ed25519KeyPair>(Some(&[43; 32])),
-    )
-    .did_uri;
+    let trusted_orbis_relay_did = authn::jwt_builder::JwtSigner::from_seed([43; 32]).did_uri;
     let descriptor = Descriptor {
         version: 1,
         endpoint: workflow.cluster.node(0).rpc_url(),

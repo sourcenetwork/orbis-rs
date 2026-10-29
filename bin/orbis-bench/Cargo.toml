@@ -15,7 +15,6 @@ cli-tool = { path = "../cli-tool", default-features = false }
 common = { path = "../../crates/common" }
 cosmrs = { workspace = true }
 crypto = { path = "../../crates/crypto", default-features = false }
-did-key = { workspace = true }
 futures = { workspace = true }
 hex = { workspace = true }
 network = { path = "../../crates/network", features = ["shaping"] }
