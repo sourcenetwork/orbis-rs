@@ -629,9 +629,14 @@ where
             continue;
         };
         let opened = Aes256Gcm::new_from_slice(&key).ok().and_then(|cipher| {
+            // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65
+            // ("please upgrade to generic-array 1.x"), but aes-gcm 0.10 has no
+            // non-deprecated path off it yet; the API itself is unaffected.
+            #[allow(deprecated)]
+            let nonce = Nonce::from_slice(&secret.nonce);
             cipher
                 .decrypt(
-                    Nonce::from_slice(&secret.nonce),
+                    nonce,
                     Payload {
                         msg: &secret.encrypted_data,
                         aad: &aad,
