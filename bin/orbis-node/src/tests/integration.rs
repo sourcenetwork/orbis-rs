@@ -9,6 +9,8 @@
 mod pet_dkg;
 #[path = "../../tests/support/pet_dkg_contract.rs"]
 mod pet_dkg_contract;
+#[path = "support/pet_dkg_scenario.rs"]
+mod pet_dkg_scenario;
 mod pet_reshare;
 #[path = "support/refresh_scenario.rs"]
 mod refresh_scenario;
@@ -169,29 +171,51 @@ async fn dkg_scenario(
     }
 }
 
-/// Fixed PET-enabled ring id for `cosmos_dkg`, genesis-seeded the same way
-/// `PET_RING_ID` is for `test_cli_calls_dkg_for_pet_ring` — distinct so the
-/// two tests' genesis fixtures never collide (each gets its own freshly
-/// started chain, but both are baked into this same file's constants).
-const DKG_SCENARIO_RING_ID: &str = "integration-test-dkg-scenario-ring";
-
 /// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
 /// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
 /// Proves the shared provision-trigger-finalize-verify scenario on its own, without
 /// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
-/// layers on top.
+/// layers on top. Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly —
+/// `pet_dkg::Cosmos`/`pet_dkg_contract` stay alive for that sibling test and
+/// `test_pet_ring_refresh_and_reshare`, migrated separately.
 #[tokio::test]
 #[serial_test::serial]
 async fn cosmos_dkg() {
-    let outcome = dkg_scenario(DKG_SCENARIO_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
-    assert!(
-        !outcome.keys.main.is_empty(),
-        "DKG must finalize the main key"
-    );
-    assert!(
-        outcome.keys.pet.as_ref().is_some_and(|pet| !pet.is_empty()),
-        "DKG must finalize the PET key"
-    );
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
+    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
+    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
 }
 
 /// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,

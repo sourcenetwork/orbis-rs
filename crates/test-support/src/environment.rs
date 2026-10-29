@@ -165,6 +165,7 @@ fn ring_genesis_json(ring: &RingFixture) -> serde_json::Value {
         // `create_ring_governance_with_ring` returns afterward.
         "policy_id": RING_GOVERNANCE_POLICY_ID,
         "reporting": reporting_json(&ring.reporting),
+        "requires_pet": ring.requires_pet,
     })
 }
 

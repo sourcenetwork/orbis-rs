@@ -41,6 +41,12 @@ mod native_environment;
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
 
+// Not gated on `unsafe-testing`: `native_dkg` (the only consumer) isn't
+// either, and this file needs no diagnostic-service capability.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "../src/tests/support/pet_dkg_scenario.rs"]
+mod pet_dkg_scenario;
+
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
@@ -632,18 +638,56 @@ async fn native_pet_threshold_workflows() {
 /// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
 /// Proves the shared provision-trigger-finalize-verify scenario on its
 /// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
+/// Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly — `dkg::Native`/
+/// `pet_dkg_contract` stay alive for `native_pet::run`'s five `Scenario`
+/// variants, migrated separately.
 #[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_dkg() {
-    let (_workflow, keys, _baseline) = native_pet::dkg_scenario(9079, false).await;
-    assert!(
-        !keys.public_key.is_empty(),
-        "DKG must finalize the main key"
-    );
-    assert!(
-        keys.pet_public_key.is_some_and(|pet| !pet.is_empty()),
-        "DKG must finalize the PET key"
-    );
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        // Native (unlike Cosmos) needs a *real* backing policy here —
+        // ring creation requires the submitter hold `creator` on a
+        // `ring_policy`-resource object registered under it.
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: policy_generations::definition(true, true),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: true,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
+    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
+    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
 }
 
 /// Native adapter for the shared standard-DKG lifecycle: StoreSecret,
