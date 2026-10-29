@@ -7,6 +7,7 @@ mod config;
 mod error;
 pub mod events;
 mod orbis;
+mod rpc;
 mod signer;
 
 use super::{BlockchainError, Result};
