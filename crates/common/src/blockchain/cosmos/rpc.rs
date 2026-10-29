@@ -134,6 +134,59 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn broadcasts_transaction_with_expected_wire_format() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut data = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert_ne!(count, 0);
+                data.extend_from_slice(&chunk[..count]);
+                if let Some(end) = data.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                    let headers = std::str::from_utf8(&data[..end]).unwrap();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap();
+                    if data.len() < end + 4 + length {
+                        continue;
+                    }
+                    let request: serde_json::Value =
+                        serde_json::from_slice(&data[end + 4..end + 4 + length]).unwrap();
+                    assert_eq!(request["method"], "broadcast_tx_sync");
+                    assert_eq!(request["params"]["tx"], "AQID");
+                    let body = serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result": {
+                        "codespace":"", "code":0, "data":"", "log":"", "hash":"11".repeat(32)
+                    }})
+                    .to_string();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).await.unwrap();
+                    break;
+                }
+            }
+        });
+        let response = TendermintClient::new(&format!("http://{address}"))
+            .unwrap()
+            .broadcast_tx_sync(vec![1, 2, 3])
+            .await
+            .unwrap();
+        assert!(response.code.is_ok());
+        assert_eq!(response.hash.to_string(), "11".repeat(32));
+        server.await.unwrap();
+    }
+
     async fn health_response(status: &str, body: &str) -> Error {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
