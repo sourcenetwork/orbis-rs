@@ -8,6 +8,8 @@ MANIFESTS = ("bin/cli-tool/Cargo.toml", "bin/orbis-node/Cargo.toml",
 
 def revision(root, repository="vera.rs", manifests=MANIFESTS):
     pins = []
+    if repository == "vera.rs":
+        manifests = ("Cargo.toml",)
     for name in manifests:
         declarations = [line for line in (root / name).read_text().splitlines()
                         if f'git = "https://github.com/sourcenetwork/{repository}"' in line]

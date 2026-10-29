@@ -171,3 +171,31 @@ async fn superseded_confirmation_cannot_promote_a_late_pet_bundle() {
     );
     cleanup_db(&db_path);
 }
+
+#[tokio::test(start_paused = true)]
+async fn missing_staged_main_bundle_does_not_promote_pet() {
+    let session_id = 9030;
+    let (app_state, _bulletin, info, db_path) = setup_pet("reshare_missing_main", session_id).await;
+    pending_pet(&info)
+        .save_pet(&app_state.local_storage, POST_ID)
+        .expect("stage PET bundle");
+    app_state
+        .dkg_session_state
+        .mark_reshare_promoted(&info.ready_key)
+        .await;
+    wait_for_reshare_bulletin_finalized(
+        app_state.clone(),
+        Some(RING_KEY.to_string()),
+        AttemptKey::test(session_id),
+        Some(POST_ID.to_string()),
+        ReshareCleanupOutcome::ContinuingCommittee(info),
+    )
+    .await;
+    assert_active_pair(&app_state, "old-poly");
+    assert!(
+        PendingReshareBundle::load_pet(&app_state.local_storage, POST_ID)
+            .expect("read pending PET bundle")
+            .is_some()
+    );
+    cleanup_db(&db_path);
+}

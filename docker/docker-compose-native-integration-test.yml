@@ -11,12 +11,10 @@
 # through Docker's own ephemeral published-port mapping, same as the Cosmos
 # file.
 #
-# To pin a different native Vera chain revision or crypto feature:
-#   VERA_REF=<40-char sha> ORBIS_INTEGRATION_CRYPTO=jubjub \
+# To use the pinned native Vera chain revision:
+#   VERA_REF=$(cat docker/NATIVE_VERA_REF) ORBIS_INTEGRATION_CRYPTO=jubjub \
 #     docker compose -f docker/docker-compose-native-integration-test.yml up --build -d
-# Defaults match docker/NATIVE_VERA_REF and bls12-381. (`crates/test-support`'s
-# Rust harness always sets VERA_REF explicitly from that file — this fallback
-# is only for a standalone `docker compose` invocation that bypasses it.)
+# The test harness reads docker/NATIVE_VERA_REF and sets VERA_REF explicitly.
 #
 # `ORBIS_NATIVE_VERA{1..4}_DIR` / `ORBIS_NATIVE_NODE{1..4}_DIR` / `ORBIS_NATIVE_DEPLOYMENT`
 # are set by crates/test-support/src/native_network.rs before bringing the
@@ -40,7 +38,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-982a617e7626a855bc9edce63d85385f74824129}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -65,7 +63,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-982a617e7626a855bc9edce63d85385f74824129}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -90,7 +88,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-982a617e7626a855bc9edce63d85385f74824129}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -115,7 +113,7 @@ services:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-982a617e7626a855bc9edce63d85385f74824129}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]

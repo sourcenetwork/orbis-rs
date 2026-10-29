@@ -7,10 +7,10 @@ legacy suites or build/use the unsafe diagnostic image.
 
 The default Trust fixture revision is selected in the workflow's immutable
 `trust_revision` input. The driver checks it against the checkout, native Dockerfile
-pin and Defra workflow pin. Native Vera and Defra revisions are declared in
+pin and the Vera and Defra revisions in `.github/native-ring-versions.json`. Native Vera and Defra revisions are declared in
 `scripts/native_trust_hosted.py`; validation exports them as the workflow's checkout
 refs. The Vera daemon pin in `docker/NATIVE_VERA_REF` must agree. Orbis's native SDK
-revision remains separately pinned in its package manifests; the driver validates
+revision remains separately pinned in the workspace manifest; the driver validates
 that binding independently rather than requiring SDK and daemon source equality.
 
 The artifact job builds Defra's normal native CLI once, stages it, and removes

@@ -80,25 +80,21 @@ where
                     )
                     && pending.expected_new_threshold == info.expected_new_threshold =>
             {
-                let post = match app_state
+                match app_state
                     .bulletin
                     .read(ring_id.to_string(), BulletinKind::Ring)
                     .await
                 {
-                    Ok(post) => post,
-                    Err(error) => {
-                        tracing::warn!(
-                            session_id = attempt.session_id(),
-                            ring_id,
-                            %error,
-                            "Reshare: failed to recheck confirmation before local promotion"
-                        );
-                        return None;
-                    }
-                };
-                match serde_json::from_slice::<RingPayload>(&post.payload) {
-                    Ok(payload) if payload == *confirmed_payload => return Some(pending),
-                    _ => return None,
+                    Ok(post) => match serde_json::from_slice::<RingPayload>(&post.payload) {
+                        Ok(payload) if payload == *confirmed_payload => return Some(pending),
+                        _ => return None,
+                    },
+                    Err(error) => tracing::warn!(
+                        session_id = attempt.session_id(),
+                        ring_id,
+                        %error,
+                        "Reshare: failed to recheck confirmation before local promotion"
+                    ),
                 }
             }
             Ok(_) => {}
@@ -351,9 +347,11 @@ async fn wait_for_reshare_bulletin_finalized<D>(
                             );
                         }
                     }
-                    if let (Some(ring_id), Some(pending)) =
-                        (ring_id_for_pet.as_deref(), pending_pet)
-                    {
+                    if let (true, Some(ring_id), Some(pending)) = (
+                        pending_bundle_resolved,
+                        ring_id_for_pet.as_deref(),
+                        pending_pet,
+                    ) {
                         match pending
                             .bundle
                             .save_by_pet_ring_key(&app_state.local_storage, ring_id)

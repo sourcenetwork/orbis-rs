@@ -662,7 +662,12 @@ def qualify():
                       "password_loaded", "network_initializing", "bootstrap_started",
                       "permission_denied", "runtime_panicked"}
             for payload in re.findall(r"native_readiness=(\{[^\n]*\})", tail)[:8]:
-                diagnostics = json.loads(payload)
+                try:
+                    diagnostics = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(diagnostics, dict):
+                    continue
                 if set(diagnostics) == fields and all(
                     value is None or isinstance(value, (bool, int))
                     for value in diagnostics.values()

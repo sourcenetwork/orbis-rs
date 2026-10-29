@@ -123,8 +123,7 @@ class Qualification(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         self.assertEqual((root / 'docker/NATIVE_VERA_REF').read_text().strip(), driver.VERA)
         compose = (root / 'docker/docker-compose-native-integration-test.yml').read_text()
-        defaults = re.findall(r'\$\{VERA_REF:-([0-9a-f]{40})\}', compose)
-        self.assertEqual(defaults, [driver.VERA] * 4)
+        self.assertEqual(compose.count('${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}'), 4)
         declarations = []
         manifests = [root / 'Cargo.toml', *root.glob('bin/*/Cargo.toml'),
                      *root.glob('crates/*/Cargo.toml')]

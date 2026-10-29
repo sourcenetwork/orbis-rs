@@ -42,8 +42,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Check out workflow actions
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .workflow-actions
+          persist-credentials: false
+
       - name: Configure Docker Hub cache
-        uses: ./.github/actions/docker-builder
+        uses: ./.workflow-actions/.github/actions/docker-builder
 
       - name: Run cross-commit upgrade gate
         shell: bash

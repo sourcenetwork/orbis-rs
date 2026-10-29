@@ -36,7 +36,8 @@ class FixtureSource(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.check_output(
-            ['git', '-c', 'user.name=iverc', '-c', 'user.email=ivanverch@gmail.com', *args],
+            ['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+             '-c', 'commit.gpgsign=false', *args],
             text=True, stderr=subprocess.DEVNULL).strip()
 
     def commit(self):
