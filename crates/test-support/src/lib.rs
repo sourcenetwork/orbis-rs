@@ -15,9 +15,13 @@
 //!   outside this lifecycle wrapper until shared scenarios require it.
 //! - `container` / `native_network` — native containers with explicit stop, crash
 //!   and restart control, enabled with the `native` feature.
+//! - [`fixture`] — backend-neutral [`fixture::ScenarioFixture`]/
+//!   [`fixture::TestEnvironment`] vocabulary; additive, not yet wired to
+//!   [`IntegrationBackend`] or any concrete backend.
 
 mod backend;
 mod compose;
+pub mod fixture;
 mod network;
 
 pub use admin::BackendAdmin;

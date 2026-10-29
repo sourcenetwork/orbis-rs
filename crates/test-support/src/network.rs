@@ -25,6 +25,7 @@ use crate::backend::IntegrationBackend;
 #[derive(Debug, Clone)]
 pub struct NodeInfo {
     pub grpc_endpoint: String,
+    pub node_key: String,
     pub peer_id: String,
     pub p2p_address: String,
     pub public_address: String,
