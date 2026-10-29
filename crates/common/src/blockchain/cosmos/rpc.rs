@@ -80,52 +80,58 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    async fn read_request(stream: &mut tokio::net::TcpStream) -> (String, serde_json::Value) {
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(count, 0);
+            data.extend_from_slice(&chunk[..count]);
+            if let Some(end) = data.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&data[..end]).unwrap();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                if data.len() >= end + 4 + length {
+                    let body = serde_json::from_slice(&data[end + 4..end + 4 + length]).unwrap();
+                    return (headers.to_owned(), body);
+                }
+            }
+        }
+    }
+
+    async fn respond(
+        stream: &mut tokio::net::TcpStream,
+        id: &serde_json::Value,
+        result: serde_json::Value,
+    ) {
+        let body = serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result}).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
     #[tokio::test]
     async fn sends_json_rpc_with_basic_auth_and_decodes_response() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let server =
-            tokio::spawn(async move {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut data = Vec::new();
-                let mut chunk = [0u8; 4096];
-                loop {
-                    let count = stream.read(&mut chunk).await.unwrap();
-                    assert_ne!(count, 0);
-                    data.extend_from_slice(&chunk[..count]);
-                    if let Some(end) = data.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                        let headers = std::str::from_utf8(&data[..end]).unwrap();
-                        let length = headers
-                            .lines()
-                            .find_map(|line| {
-                                let (name, value) = line.split_once(':')?;
-                                name.eq_ignore_ascii_case("content-length")
-                                    .then(|| value.trim().parse::<usize>().unwrap())
-                            })
-                            .unwrap();
-                        if data.len() < end + 4 + length {
-                            continue;
-                        }
-                        assert!(headers
-                            .lines()
-                            .any(|line| line
-                                .eq_ignore_ascii_case("authorization: Basic dXNlcjpwYXNz")));
-                        let request: serde_json::Value =
-                            serde_json::from_slice(&data[end + 4..end + 4 + length]).unwrap();
-                        assert_eq!(request["method"], "health");
-                        let body =
-                            serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result":{}})
-                                .to_string();
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
-                        stream.write_all(response.as_bytes()).await.unwrap();
-                        break;
-                    }
-                }
-            });
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (headers, request) = read_request(&mut stream).await;
+            assert!(headers
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Basic dXNlcjpwYXNz")));
+            assert_eq!(request["method"], "health");
+            respond(&mut stream, &request["id"], serde_json::json!({})).await;
+        });
         TendermintClient::new(&format!("http://user:pass@{address}"))
             .unwrap()
             .health()
@@ -140,42 +146,17 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let mut data = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let count = stream.read(&mut chunk).await.unwrap();
-                assert_ne!(count, 0);
-                data.extend_from_slice(&chunk[..count]);
-                if let Some(end) = data.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                    let headers = std::str::from_utf8(&data[..end]).unwrap();
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap();
-                    if data.len() < end + 4 + length {
-                        continue;
-                    }
-                    let request: serde_json::Value =
-                        serde_json::from_slice(&data[end + 4..end + 4 + length]).unwrap();
-                    assert_eq!(request["method"], "broadcast_tx_sync");
-                    assert_eq!(request["params"]["tx"], "AQID");
-                    let body = serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "result": {
-                        "codespace":"", "code":0, "data":"", "log":"", "hash":"11".repeat(32)
-                    }})
-                    .to_string();
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
-                    stream.write_all(response.as_bytes()).await.unwrap();
-                    break;
-                }
-            }
+            let (_, request) = read_request(&mut stream).await;
+            assert_eq!(request["method"], "broadcast_tx_sync");
+            assert_eq!(request["params"]["tx"], "AQID");
+            respond(
+                &mut stream,
+                &request["id"],
+                serde_json::json!({
+                    "codespace":"", "code":0, "data":"", "log":"", "hash":"11".repeat(32)
+                }),
+            )
+            .await;
         });
         let response = TendermintClient::new(&format!("http://{address}"))
             .unwrap()
