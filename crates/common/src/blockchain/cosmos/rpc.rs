@@ -173,6 +173,50 @@ mod tests {
         assert!(malformed.to_string().contains("serde"));
     }
 
+    #[tokio::test]
+    async fn tls_rejects_untrusted_certificates_and_accepts_configured_roots() {
+        use std::sync::Arc;
+        use tokio_rustls::rustls::{pki_types::PrivatePkcs8KeyDer, ServerConfig};
+        use tokio_rustls::TlsAcceptor;
+
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+        let certificate = cert.der().clone();
+        let private_key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.clone()], private_key.into())
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            assert!(acceptor.accept(stream).await.is_err());
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            let mut data = [0u8; 4096];
+            assert_ne!(stream.read(&mut data).await.unwrap(), 0);
+            let body = r#"{"jsonrpc":"2.0","id":"1","result":{}}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let endpoint = format!("https://localhost:{}", address.port());
+        let untrusted = TendermintClient::new(&endpoint).unwrap();
+        assert!(untrusted.health().await.is_err());
+        let mut trusted = TendermintClient::new(&endpoint).unwrap();
+        trusted.client = HttpClient::builder()
+            .add_root_certificate(reqwest::Certificate::from_der(certificate.as_ref()).unwrap())
+            .timeout(RPC_REQUEST_TIMEOUT)
+            .build()
+            .unwrap();
+        trusted.health().await.unwrap();
+        server.await.unwrap();
+    }
+
     #[test]
     fn rejects_non_http_rpc_url() {
         assert!(TendermintClient::new("file:///tmp/test").is_err());
