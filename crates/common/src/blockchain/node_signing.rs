@@ -81,11 +81,16 @@ mod tests {
 
         // Build the malleated (r, n - s) form: a well-formed signature encoding
         // for the same message and key.
+        // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+        // upgrade to generic-array 1.x"), but k256's elliptic-curve dep has no
+        // non-deprecated path off it yet; the API itself is unaffected.
+        #[allow(deprecated)]
         let s = Option::<Scalar>::from(Scalar::from_repr(FieldBytes::clone_from_slice(
             &low[32..64],
         )))
         .unwrap();
         let mut high = low.clone();
+        #[allow(deprecated)]
         high[32..64].copy_from_slice((-s).to_bytes().as_slice());
         let high_parsed = EcdsaSignature::try_from(high.as_slice())
             .expect("(r, n-s) is a structurally valid signature encoding");

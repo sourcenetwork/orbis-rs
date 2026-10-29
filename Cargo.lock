@@ -17,9 +17,9 @@ dependencies = [
  "datastore",
  "defra-core",
  "identity",
- "kovan 0.1.22",
+ "kovan",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3475,7 +3475,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c54e03a951783e8b327515db3f2a2fd0e3bed362a96b066f341ce66ed49b4ead"
 dependencies = [
  "data-encoding",
- "syn 3.0.9",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -3516,9 +3516,9 @@ dependencies = [
  "identity",
  "inputs",
  "kms",
- "kovan 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-map",
+ "kovan-queue",
  "lens",
  "multihash",
  "n0-future",
@@ -3526,7 +3526,7 @@ dependencies = [
  "query",
  "rand 0.8.8",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "reqwest 0.12.28",
  "schema",
  "serde",
@@ -3582,13 +3582,13 @@ dependencies = [
  "ciborium",
  "cid",
  "ipld-core",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan-map",
+ "kovan-queue",
  "multibase",
  "multihash",
  "rand 0.8.8",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
@@ -3622,9 +3622,9 @@ dependencies = [
  "hex",
  "hyper 1.12.0",
  "identity",
- "kovan 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-map",
+ "kovan-queue",
  "lens",
  "query",
  "rapidhash",
@@ -3658,7 +3658,7 @@ dependencies = [
  "events",
  "identity",
  "kms",
- "kovan-queue 0.1.22",
+ "kovan-queue",
  "lens",
  "mimalloc",
  "p2p",
@@ -3698,15 +3698,15 @@ dependencies = [
  "hex",
  "identity",
  "kms",
- "kovan 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-map",
+ "kovan-queue",
  "lens",
  "n0-future",
  "p2p",
  "query",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "replication-filter",
  "schema",
  "serde",
@@ -4153,7 +4153,7 @@ source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6524b3a331ab6520ae
 dependencies = [
  "defra-core",
  "n0-future",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -4313,7 +4313,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4346,7 +4346,7 @@ dependencies = [
  "bytes",
  "cid",
  "defra-core",
- "kovan 0.1.22",
+ "kovan",
  "rapidhash",
  "thiserror 2.0.21",
  "tracing",
@@ -5633,7 +5633,7 @@ dependencies = [
  "edge",
  "n0-future",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "tracing",
  "workers",
 ]
@@ -5917,7 +5917,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6341,11 +6341,11 @@ dependencies = [
  "futures",
  "identity",
  "inputs",
- "kovan 0.1.22",
- "kovan-map 0.1.22",
+ "kovan",
+ "kovan-map",
  "rand 0.8.8",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "serde",
  "serde_bytes",
  "thiserror 2.0.21",
@@ -6381,34 +6381,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "kovan"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30de8e1f374a1d4cb20f4031a771b0b9c34352c9fd35be65efd1407f71186675"
-dependencies = [
- "once_cell",
- "portable-atomic",
-]
-
-[[package]]
 name = "kovan-channel"
 version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "013b9b50403275599d3a1b505c83bc791458d12041d66dd3749eedf2acb1a41a"
 dependencies = [
  "crossbeam-utils",
- "kovan 0.1.22",
- "kovan-queue 0.1.22",
-]
-
-[[package]]
-name = "kovan-channel"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28714e9cbbaf6278719faa02950a2d6c7776fcdeb79f931c0880b13a769141a5"
-dependencies = [
- "crossbeam-utils",
- "kovan 0.2.2",
+ "kovan",
+ "kovan-queue",
 ]
 
 [[package]]
@@ -6418,17 +6398,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee9fda66cc131f283a3237413de11ed4488ca1cc3599d9ca5de934e67dc6a031"
 dependencies = [
  "foldhash 0.2.0",
- "kovan 0.1.22",
-]
-
-[[package]]
-name = "kovan-map"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba041f9f2d2a9912ea2b823a3db44af8d1070c558cd933e419ee69dac17c6143"
-dependencies = [
- "foldhash 0.2.0",
- "kovan 0.2.2",
+ "kovan",
 ]
 
 [[package]]
@@ -6438,17 +6408,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89c76a4c5d5ddb5c8976681c916200e4f9c5e71b70f061cf04232dabaff9c868"
 dependencies = [
  "crossbeam-utils",
- "kovan 0.1.22",
-]
-
-[[package]]
-name = "kovan-queue"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c446fe17daab001a9a8d2edc9b6f5fe8cb8f0fd29a90a4b4fbbf85d049897ee1"
-dependencies = [
- "crossbeam-utils",
- "kovan 0.2.2",
+ "kovan",
 ]
 
 [[package]]
@@ -6466,9 +6426,9 @@ dependencies = [
  "base64 0.23.1",
  "futures",
  "hex",
- "kovan-map 0.1.22",
+ "kovan-map",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7146,7 +7106,7 @@ dependencies = [
  "pin-project-lite",
  "rustc-hash",
  "rustls 0.23.46",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -7191,7 +7151,7 @@ checksum = "8d0160422832eea1cc11c34be04ee6d5a046452b0b46cfb14695d55a1f24c954"
 dependencies = [
  "cfg_aliases",
  "libc",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -7211,7 +7171,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7840,10 +7800,10 @@ dependencies = [
  "iroh-gossip",
  "iroh-tickets",
  "kms",
- "kovan 0.1.22",
- "kovan-channel 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-channel",
+ "kovan-map",
+ "kovan-queue",
  "lru",
  "multihash-codetable",
  "n0-future",
@@ -7851,7 +7811,7 @@ dependencies = [
  "postcard",
  "rand 0.9.5",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "serde",
  "serde_bytes",
  "serde_ipld_dagcbor",
@@ -8759,13 +8719,13 @@ dependencies = [
  "graphql-parser",
  "identity",
  "inputs",
- "kovan 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-map",
+ "kovan-queue",
  "lens",
  "rapidhash",
  "regex",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "schema",
  "serde",
  "serde_json",
@@ -8807,7 +8767,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls 0.23.46",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -8845,9 +8805,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9177,10 +9137,10 @@ dependencies = [
  "aes-gcm-siv",
  "getrandom 0.4.3",
  "js-sys",
- "kovan 0.1.22",
- "kovan-channel 0.1.22",
- "kovan-map 0.1.22",
- "kovan-queue 0.1.22",
+ "kovan",
+ "kovan-channel",
+ "kovan-map",
+ "kovan-queue",
  "libc",
  "loom",
  "lz4_flex",
@@ -9197,17 +9157,17 @@ dependencies = [
 
 [[package]]
 name = "regolith"
-version = "0.2.3"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "650ad12f8bf7f5430c17a29c2fad05c00a5f2730883d45b5f21da92938fa1b48"
+checksum = "41e4229e0c940e097792ae06705b5c32ce3bd950193ab6608a69abeb23d7b21d"
 dependencies = [
  "aes-gcm-siv",
  "getrandom 0.4.3",
  "js-sys",
- "kovan 0.2.2",
- "kovan-channel 0.2.2",
- "kovan-map 0.2.2",
- "kovan-queue 0.2.2",
+ "kovan",
+ "kovan-channel",
+ "kovan-map",
+ "kovan-queue",
  "libc",
  "loom",
  "lz4_flex",
@@ -9227,7 +9187,7 @@ name = "replication-filter"
 version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6524b3a331ab6520ae4fbf30ab69d7be92becc49#6524b3a331ab6520ae4fbf30ab69d7be92becc49"
 dependencies = [
- "kovan-map 0.1.22",
+ "kovan-map",
  "p2p",
  "query",
  "rapidhash",
@@ -9774,7 +9734,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9886,7 +9846,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs 1.0.11",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10805,7 +10765,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "schema",
  "serde",
  "serde_json",
@@ -11050,7 +11010,7 @@ version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6524b3a331ab6520ae4fbf30ab69d7be92becc49#6524b3a331ab6520ae4fbf30ab69d7be92becc49"
 dependencies = [
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "tracing",
 ]
 
@@ -11061,10 +11021,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -12682,7 +12642,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -13103,7 +13063,7 @@ source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6524b3a331ab6520ae
 dependencies = [
  "libc",
  "rapidhash",
- "regolith 0.2.3",
+ "regolith 0.2.1",
  "tracing",
 ]
 
@@ -13239,7 +13199,7 @@ source = "git+https://github.com/sourcenetwork/defradb.rs?rev=6524b3a331ab6520ae
 dependencies = [
  "async-trait",
  "identity",
- "kovan-map 0.1.22",
+ "kovan-map",
  "rapidhash",
  "serde",
  "serde_json",
