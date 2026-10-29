@@ -106,6 +106,10 @@ pub fn initialize_identity(
         },
     };
     let key_bytes = Zeroizing::new(authority.to_bytes());
+    // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+    // upgrade to generic-array 1.x"), but k256's elliptic-curve dep has no
+    // non-deprecated path off it yet; the API itself is unaffected.
+    #[allow(deprecated)]
     let encoded = Zeroizing::new(hex::encode(key_bytes.as_slice()));
     if stored.is_none() {
         storage.set_encrypted(
