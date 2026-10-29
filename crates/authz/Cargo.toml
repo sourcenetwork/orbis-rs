@@ -32,7 +32,7 @@ vera-harness = { workspace = true }
 alloy-primitives = "1"
 tokio = { workspace = true, features = ["full", "process"] }
 serial_test = "3.2.0"
-did-key = { workspace = true }
+authn = { path = "../authn" }
 # Vera-backend tests use the Docker integration harness (VeraTestContainer).
 test-support = { path = "../test-support" }
 
