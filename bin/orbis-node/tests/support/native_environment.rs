@@ -504,7 +504,15 @@ impl BulletinTestDriver for NativeTestEnvironment {
             requires_pet: record.config.requires_pet,
             pet_pk,
             confirmations: 0,
-            pending_reshare: settings.pending_reshare.is_some(),
+            new_peer_node_keys: settings
+                .pending_reshare
+                .as_ref()
+                .map(|target| target.peer_node_keys.clone())
+                .unwrap_or_default(),
+            new_threshold: settings
+                .pending_reshare
+                .as_ref()
+                .map(|target| target.threshold),
         })
     }
 
@@ -672,5 +680,12 @@ impl BulletinTestDriver for NativeTestEnvironment {
                 .await
                 .expect("backdate live native main bundle");
         }
+    }
+
+    /// Native's chain module has no reshare-cancellation command at all —
+    /// `vera_client::rings::RingUpdate` has no cancel variant, only
+    /// `StartReshare` (and unrelated updates) — so there's nothing to call.
+    async fn cancel_reshare(&self, _ring: &RingId) {
+        unimplemented!("NativeTestEnvironment::cancel_reshare: no RingUpdate variant exists")
     }
 }

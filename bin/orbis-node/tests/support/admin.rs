@@ -182,7 +182,15 @@ impl BackendAdmin for NativeAdmin<'_> {
             // Native's reconciliation model has no pending-confirmation list
             // the way Cosmos's `Ring.confirmations` does; always 0.
             confirmations: 0,
-            pending_reshare: settings.pending_reshare.is_some(),
+            new_peer_node_keys: settings
+                .pending_reshare
+                .as_ref()
+                .map(|target| target.peer_node_keys.clone())
+                .unwrap_or_default(),
+            new_threshold: settings
+                .pending_reshare
+                .as_ref()
+                .map(|target| target.threshold),
         })
     }
 

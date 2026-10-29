@@ -14,6 +14,18 @@ mod fault_injection;
 #[cfg(feature = "integration-test-cosmos")]
 mod integration;
 mod node;
+// Declared here (not inside `integration.rs`) so `cancel_ring_reshare.rs`
+// can reuse them too — both are siblings under this module.
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/pre_scenario.rs"]
+mod pre_scenario;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/sign_scenario.rs"]
+mod sign_scenario;
+// Harness-unification migration: the compile-time-selected test environment
+// for this backend.
+#[cfg(feature = "integration-test-cosmos")]
+use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 #[cfg(feature = "integration-test-cosmos")]
 mod pending_ring_cancellation;
 #[cfg(feature = "integration-test-cosmos")]

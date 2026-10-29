@@ -19,7 +19,7 @@ pub(super) async fn run(
         .await
         .expect("ring must exist before shared reshare");
     assert!(
-        !certified_before.pending_reshare,
+        !certified_before.pending_reshare(),
         "shared reshare must start from a settled ring"
     );
 
@@ -83,7 +83,7 @@ async fn wait_for_reshare_completion(
         if let Some(view) = environment.read_ring(ring).await {
             let mut members = view.peer_node_keys.clone();
             members.sort();
-            if !view.pending_reshare && members == target && view.threshold == threshold {
+            if !view.pending_reshare() && members == target && view.threshold == threshold {
                 return view;
             }
         }

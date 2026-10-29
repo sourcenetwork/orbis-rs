@@ -22,7 +22,9 @@ use crate::network::{CosmosNetwork, NodeInfo};
 use crate::node_readiness::wait_for_nodes_ready;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
 use bulletin::vera::VeraBulletin;
-use common::blockchain::{orbis::WhitelistTarget, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
+use common::blockchain::{
+    orbis::WhitelistTarget, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -53,6 +55,22 @@ const NODE_KEYS: [&str; 4] = [
 const RING_GOVERNANCE_POLICY_ID: &str =
     "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
 
+/// Deterministic secp256k1 key for a genesis-registered node with no
+/// running process behind it — e.g. a reshare target that can never ack,
+/// making the reshare provably stuck. Same value as
+/// `bin/orbis-node/src/tests/constants.rs::NODE_KEY_OFFLINE` (duplicated for
+/// the same reason `NODE_KEYS` is, above). Only one `NodeRole::Offline`
+/// node is supported today — `resolve_members` always resolves it to this
+/// one key regardless of which `FixtureId` a `NodeRef::Offline` names.
+const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
+
+/// P2P address seeded into `NODE_KEY_OFFLINE`'s genesis `NodeInfo` — passes
+/// peer-id validation but points at a host that doesn't exist in the
+/// Compose network, so every send to it fails. Same value as
+/// `bin/orbis-node/src/tests/constants.rs::OFFLINE_NODE_PEER_ID`.
+const OFFLINE_NODE_PEER_ID: &str =
+    "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
+
 fn reporting_json(reporting: &ReportingFixture) -> serde_json::Value {
     let backup_node_keys: Vec<&str> = reporting
         .backup_node_keys
@@ -81,11 +99,45 @@ fn resolve_members(members: &[NodeRef]) -> Vec<&'static str> {
         .iter()
         .map(|node| match node {
             NodeRef::Running(index) => NODE_KEYS[*index],
+            // A ring's *initial* membership is always `Running` today — an
+            // `Offline` node only ever becomes a *reshare target*
+            // (`TestEnvironmentImpl::update_membership`), which goes through
+            // `NODE_KEY_OFFLINE` directly in the scenario, not through a
+            // `RingFixture.members` entry. Not exercised by any fixture yet.
             NodeRef::Offline(_) | NodeRef::Backup(_) => panic!(
-                "CosmosTestEnvironment::provision: NodeRole::Offline/Backup isn't supported yet"
+                "CosmosTestEnvironment::provision: NodeRole::Offline/Backup isn't supported \
+                 as a ring's *initial* member yet"
             ),
         })
         .collect()
+}
+
+/// Genesis `node_infos` entries for every `NodeRole::Offline` node in the
+/// fixture — registered on-chain with no running process behind them.
+/// Whitelists each for every ring in the fixture; only one offline node and
+/// one ring are supported today (see `NODE_KEY_OFFLINE`'s doc comment).
+fn offline_node_infos_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> {
+    if !fixture
+        .nodes
+        .iter()
+        .any(|node| node.role == NodeRole::Offline)
+    {
+        return Vec::new();
+    }
+    let whitelisted_ring_ids: Vec<&str> = fixture
+        .rings
+        .iter()
+        .map(|ring| ring.id.0.as_str())
+        .collect();
+    vec![serde_json::json!({
+        "node_key": NODE_KEY_OFFLINE,
+        "node_info": {
+            "peer_id": OFFLINE_NODE_PEER_ID,
+            "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+            "whitelisted_policy_ids": [],
+            "whitelisted_ring_ids": whitelisted_ring_ids,
+        }
+    })]
 }
 
 fn ring_genesis_json(ring: &RingFixture) -> serde_json::Value {
@@ -156,16 +208,24 @@ impl TestEnvironment for CosmosTestEnvironment {
             fixture
                 .nodes
                 .iter()
-                .all(|node| node.role == NodeRole::Running),
-            "CosmosTestEnvironment::provision: only NodeRole::Running is supported today"
+                .all(|node| matches!(node.role, NodeRole::Running | NodeRole::Offline)),
+            "CosmosTestEnvironment::provision: only NodeRole::Running/Offline is supported today"
         );
 
-        let node_count = fixture.nodes.len();
+        let node_count = fixture
+            .nodes
+            .iter()
+            .filter(|node| node.role == NodeRole::Running)
+            .count();
         let mut builder = CosmosNetwork::builder().with_node_count(node_count);
-        if !fixture.rings.is_empty() {
+        let node_infos = offline_node_infos_json(&fixture);
+        if !fixture.rings.is_empty() || !node_infos.is_empty() {
             let rings: Vec<serde_json::Value> =
                 fixture.rings.iter().map(ring_genesis_json).collect();
-            builder = builder.with_module_genesis("orbis", serde_json::json!({ "rings": rings }));
+            builder = builder.with_module_genesis(
+                "orbis",
+                serde_json::json!({ "rings": rings, "node_infos": node_infos }),
+            );
         }
         let network = builder.build();
 
@@ -500,4 +560,23 @@ impl BulletinTestDriver for CosmosTestEnvironment {
     // `force_refresh_due` keeps the default no-op: this test ring is always
     // genesis-seeded with a short `pss_interval` (see `provision`), so a
     // refresh becomes due naturally within the scenario's own wait.
+
+    async fn cancel_reshare(&self, ring: &RingId) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for reshare cancellation");
+        let result = client
+            .orbis_cancel_ring_reshare_by_acp(&ring.0)
+            .await
+            .expect("cancel stuck Cosmos reshare");
+        assert!(
+            result.code == 0,
+            "cancel stuck Cosmos reshare failed: {}",
+            result.log
+        );
+    }
 }

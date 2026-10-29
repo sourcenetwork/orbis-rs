@@ -5,57 +5,70 @@
 //!     test_stale_pending_dkg_is_cancelled_on_vera -- --nocapture
 
 use crate::ring_state::RingIndexEntry;
-use common::blockchain::VeraClient;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
 };
-use test_support::IntegrationTestNetwork;
+use test_support::fixture::{
+    BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole, RingFixture,
+    ScenarioFixture, TestEnvironment,
+};
+use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 use tokio::time::{sleep, Duration, Instant};
-
-const RING_ID: &str = "integration-test-stale-pending-ring";
-const PSS_INTERVAL_SECS: u64 = 30;
-
-use super::constants::{reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3};
 
 #[tokio::test]
 #[serial_test::serial]
 async fn test_stale_pending_dkg_is_cancelled_on_vera() {
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": PSS_INTERVAL_SECS,
-                    "policy_id": "integration-test-policy",
-                    "reporting": reporting_genesis_json(1, &[], 3)
-                }]
-            }),
-        )
-        .build();
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(30),
+            requires_pet: false,
+            // No backing `PolicyFixture` needed: Cosmos's ring materializer
+            // always substitutes its own content-addressed governance
+            // policy here regardless, and this ring never finalizes DKG so
+            // nothing ever checks document/key-derivation authorization.
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
 
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+    let endpoints: Vec<String> = environment
+        .nodes()
+        .iter()
+        .map(|node| node.grpc_endpoint.clone())
+        .collect();
 
     let indexed_at_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time")
         .as_secs();
     let ring_index = vec![RingIndexEntry {
-        ring_pk_str: format!("pending:{RING_ID}"),
-        bulletin_post_id: RING_ID.to_string(),
+        ring_pk_str: format!("pending:{}", ring_id.0),
+        bulletin_post_id: ring_id.0.clone(),
         indexed_at_secs,
     }];
     let ring_index_bytes = serde_json::to_vec(&ring_index).expect("serialize RingIndex");
 
     for (index, endpoint) in endpoints.iter().enumerate() {
-        let mut unsafe_client = UnsafeTestingServiceClient::connect((*endpoint).to_string())
+        let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
             .await
             .unwrap_or_else(|error| {
                 panic!(
@@ -89,7 +102,7 @@ async fn test_stale_pending_dkg_is_cancelled_on_vera() {
             index + 1
         );
 
-        let info = cli_tool::query_node_info((*endpoint).to_string())
+        let info = cli_tool::query_node_info(endpoint.clone())
             .await
             .unwrap_or_else(|error| panic!("query node {} info: {error}", index + 1));
         assert_eq!(
@@ -100,22 +113,15 @@ async fn test_stale_pending_dkg_is_cancelled_on_vera() {
         );
     }
 
-    let chain_client = VeraClient::new(chain_config).await.expect("Vera client");
-    let initial_ring = chain_client
-        .orbis_read_ring(RING_ID)
+    let initial_ring = environment
+        .read_ring(&ring_id)
         .await
-        .expect("read pending ring")
         .expect("pending ring should exist before timeout");
     assert!(initial_ring.ring_pk.is_empty());
 
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
-        if chain_client
-            .orbis_read_ring(RING_ID)
-            .await
-            .expect("poll pending ring")
-            .is_none()
-        {
+        if environment.read_ring(&ring_id).await.is_none() {
             break;
         }
         assert!(
@@ -129,7 +135,7 @@ async fn test_stale_pending_dkg_is_cancelled_on_vera() {
     loop {
         let mut lengths = Vec::with_capacity(endpoints.len());
         for endpoint in &endpoints {
-            let mut unsafe_client = UnsafeTestingServiceClient::connect((*endpoint).to_string())
+            let mut unsafe_client = UnsafeTestingServiceClient::connect(endpoint.clone())
                 .await
                 .expect("connect unsafe testing service after cancellation");
             let stored = unsafe_client

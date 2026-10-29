@@ -10,18 +10,15 @@ mod pet_dkg;
 #[path = "../../tests/support/pet_dkg_contract.rs"]
 mod pet_dkg_contract;
 mod pet_reshare;
-#[path = "support/pre_scenario.rs"]
-mod pre_scenario;
 #[path = "support/refresh_scenario.rs"]
 mod refresh_scenario;
 #[path = "support/reshare_scenario.rs"]
 mod reshare_scenario;
-#[path = "support/sign_scenario.rs"]
-mod sign_scenario;
-
-// Harness-unification migration: the compile-time-selected test environment
-// for this backend.
-use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
+// `pre_scenario`/`sign_scenario` and the `TestEnvironmentImpl` alias are
+// declared once in `mod.rs` so `cancel_ring_reshare.rs` (a sibling module)
+// can reuse them too — loading the same file as two separate `mod` items
+// trips `clippy::duplicate_mod`.
+use super::{pre_scenario, sign_scenario, TestEnvironmentImpl};
 
 /// Scaffolding proving the harness-unification migration's fixture
 /// materialization (rings/policies) actually works against a real cluster,

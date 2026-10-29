@@ -321,6 +321,12 @@ pub trait BulletinTestDriver {
     /// uses a short enough interval (Cosmos's genesis-seeded rings always
     /// do) never needs to override this.
     async fn force_refresh_due(&self, _ring: &RingId, _ring_pk: &str, _members: &[String]) {}
+
+    /// Cancel an announced-but-stuck reshare, reverting `ring` to its
+    /// pre-reshare committee/threshold. Cosmos-only: native's chain module
+    /// has no equivalent `RingUpdate` variant (only `StartReshare`), so
+    /// implementations may `unimplemented!()`.
+    async fn cancel_reshare(&self, ring: &RingId);
 }
 
 #[cfg(test)]

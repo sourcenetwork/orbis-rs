@@ -334,7 +334,8 @@ impl BackendAdmin for CosmosAdmin {
             requires_pet: ring.requires_pet,
             pet_pk: ring.pet_pk,
             confirmations: ring.confirmations.len(),
-            pending_reshare: !ring.new_peer_node_keys.is_empty() || ring.new_threshold.is_some(),
+            new_peer_node_keys: ring.new_peer_node_keys,
+            new_threshold: ring.new_threshold,
         })
     }
 
