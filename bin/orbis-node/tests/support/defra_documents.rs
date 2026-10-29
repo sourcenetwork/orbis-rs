@@ -3,7 +3,8 @@ mod replication;
 
 use defra_core::{
     block::{Block, Signature},
-    signing::{self, SigningConfig, SigningKeyType},
+    signing::{SigningConfig, SigningKeyType},
+    RequestContext,
 };
 use defra_query::{
     mutator::{CreateResult, DocMutator},
@@ -21,18 +22,16 @@ pub struct Documents {
 }
 
 struct SigningGuard {
-    previous: Option<SigningConfig>,
     allowed: bool,
 }
 impl Drop for SigningGuard {
     fn drop(&mut self) {
-        signing::set_signing_config(self.previous.take());
         defra_core::block::go_verifiable_policy::allow_non_go_verifiable_signing(self.allowed);
     }
 }
 
 impl Documents {
-    pub async fn new(path: &Path, signer: Arc<defra_orbis::OrbisClient>) -> Self {
+    pub async fn new(path: &Path, signer: Arc<super::defra_signer::Signer>) -> Self {
         let db =
             Arc::new(defra_db::DB::new(defra_storage::RegolithStore::open(path).unwrap()).unwrap());
         db.create_collection(defra_schema::CollectionVersion::new(
@@ -67,15 +66,14 @@ impl Documents {
 
     pub async fn create(&self, name: &str) -> Result<CreateResult, String> {
         let _guard = SigningGuard {
-            previous: signing::get_signing_config(),
             allowed: defra_core::block::go_verifiable_policy::non_go_verifiable_signing_allowed(),
         };
-        signing::set_signing_config(Some(self.signer.clone()));
         defra_core::block::go_verifiable_policy::allow_non_go_verifiable_signing(true);
         let mut document = defra_document::Document::new();
         document.set("name", defra_document::NormalValue::String(name.into()));
+        let context = RequestContext::default().with_signing(Some(self.signer.clone()));
         defra_db::AutoCommitMutator::new(self.db.clone())
-            .create("Signed", document)
+            .create_as(&context, "Signed", document)
             .await
             .map_err(|error| error.to_string())
     }

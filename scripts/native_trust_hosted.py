@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import signal
 import subprocess
@@ -14,13 +15,15 @@ import tarfile
 import tempfile
 import time
 
-VERA = '1dab0c4562da551b1a7f00fcea643b914769891c'
-DEFRA = '88e148a7387e00d9dd6fbf6ab78701d6e2bef452'
+VERA = '982a617e7626a855bc9edce63d85385f74824129'
+VERA_SDK = '982a617e7626a855bc9edce63d85385f74824129'
+DEFRA = '6524b3a331ab6520ae4fbf30ab69d7be92becc49'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
 COMPLETED = 0
 COMMANDS = []
+IMAGE_ARCHIVE = 'gateway-image.tar'
 FILES = ('bin/defra', 'bin/trust-api', 'bin/trust-api.test', 'lib/libvera_verifier.so', 'include/vera_verifier.h')
 
 
@@ -42,6 +45,23 @@ def revision(value):
     return value
 
 
+def write_source_outputs(path):
+    sources = {'vera': revision(VERA), 'defra': revision(DEFRA)}
+    with path.open('a') as output:
+        output.write(''.join(f'{name}={value}\n' for name, value in sources.items()))
+
+
+def runtime_revision(root, fixture, requested):
+    fixture = revision(fixture)
+    runtime = revision(requested) if requested is not None else fixture
+    if runtime != fixture:
+        changed = capture(['git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                           '--name-only', runtime, fixture, '--'], root).splitlines()
+        guard = runpy.run_path(str(root / 'scripts/qualify-native-restart.py'))
+        guard['verify_fixture_changes'](changed)
+    return runtime
+
+
 def environment():
     result = dict(os.environ)
     exact = {'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'CARGO_BUILD_RUSTFLAGS', 'RUSTC', 'RUSTDOC',
@@ -60,12 +80,16 @@ def environment():
 
 
 def command(args, cwd, env, log, timeout=5400):
-    COMMANDS.append({'args': args, 'cwd': str(cwd), 'timeout': timeout})
+    record = {'args': args, 'cwd': str(cwd), 'timeout': timeout, 'returncode': None, 'timed_out': False}
+    COMMANDS.append(record)
     with log.open('wb') as output:
         process = subprocess.Popen(args, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT,
                                    start_new_session=True)
         try:
             status = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            record['timed_out'] = True
+            raise
         finally:
             if args[0] == 'sudo':
                 # The fixture group contains another UID; the invoking runner
@@ -77,7 +101,7 @@ def command(args, cwd, env, log, timeout=5400):
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            process.wait()
+            record['returncode'] = process.wait()
     if status:
         raise Failure()
 
@@ -98,26 +122,53 @@ def pins(root, trust, vera, defra, trust_ref):
     sources = {name: source(path, ref) for name, path, ref in (
         ('orbis', root, os.environ['GITHUB_SHA']), ('trust', trust, trust_ref),
         ('vera', vera, VERA), ('defra', defra, DEFRA))}
-    if capture([sys.executable, str(root / 'scripts/native-vera-ref.py')]) != VERA:
+    references = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))
+    if references['revision'](root) != VERA_SDK or references['revision'](
+            root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)) != DEFRA:
         raise Failure()
     if re.findall(r'^ARG VERA_REVISION=([0-9a-f]{40})$', (trust / 'Dockerfile.native').read_text(), re.M) != [VERA]:
         raise Failure()
-    if f'DEFRADB_REVISION: {DEFRA}' not in (trust / '.github/workflows/native-gateway.yml').read_text():
+    selected = json.loads((trust / '.github/native-ring-versions.json').read_text())
+    if not isinstance(selected, dict) or selected.get('vera') != VERA or selected.get('defra') != DEFRA:
         raise Failure()
     return sources
 
 
-def bake(trust, image, trust_ref):
+def builder_go_version(trust):
+    versions = re.findall(r'^FROM golang:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64} AS builder$',
+                          (trust / 'Dockerfile.native').read_text(), re.M)
+    if len(versions) != 1:
+        raise Failure()
+    return 'go version go' + versions[0] + ' linux/amd64'
+
+
+def bake(trust, image, trust_ref, local=False, actions_cache=False):
     # Both targets share the exact context, Dockerfile and args in one BuildKit
     # graph. The final target remains the real distroless production stage.
     common = {'context': str(trust), 'dockerfile': 'Dockerfile.native',
               'args': {'VERA_REVISION': VERA, 'VERSION': 'native-trust-rings', 'REVISION': trust_ref},
               'cache-from': [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache'],
               'platforms': ['linux/amd64']}
+    gateway = {**common, 'tags': [image], 'output': ['type=docker' if local else 'type=image,push=true']}
+    if local:
+        common.pop('cache-from')
+        gateway.pop('cache-from')
+    else:
+        gateway['cache-to'] = [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache,mode=max']
+    if actions_cache:
+        if not local:
+            raise Failure()
+        common['cache-from'] = ['type=gha,scope=trust-native-linux,version=2']
+        gateway['cache-from'] = common['cache-from']
+        gateway['cache-to'] = ['type=gha,scope=trust-native-linux,version=2,mode=max']
     return {'group': {'default': {'targets': ['builder', 'gateway']}}, 'target': {
         'builder': {**common, 'target': 'builder', 'tags': ['trust-ring-builder:local'], 'output': ['type=docker']},
-        'gateway': {**common, 'tags': [image], 'output': ['type=image,push=true'],
-                    'cache-to': [f'type=registry,ref={image.rsplit(":", 1)[0]}:buildcache,mode=max']}}}
+        'gateway': gateway}}
+
+
+def bake_command(output, check=False):
+    args = ['docker', 'buildx', 'bake', '--progress', 'plain', '--file', str(output / 'bake.json')]
+    return args + (['--check'] if check else ['--metadata-file', str(output / 'buildkit.json')])
 
 
 def build(root, args, output):
@@ -132,24 +183,40 @@ def build(root, args, output):
     payload = output / 'payload'
     for directory in ('bin', 'lib', 'include'):
         (payload / directory).mkdir(parents=True, mode=0o700)
+    STAGE = 15
+    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref, args.local_image, getattr(args, 'actions_cache', False))))
+    # Keep the build context within Bake's working directory; no filesystem entitlement is needed.
+    command(bake_command(output, check=True), trust, env, output / 'trust-bake-check.log', 300)
     # This one private target is never shared with other source checkouts.
     target = output / 'defra-target'
     env['CARGO_TARGET_DIR'] = str(target)
     STAGE = 20
-    command(['cargo', '+1.98.0', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
-            defra, env, output / 'defra-build.log')
-    shutil.copy2(target / 'release/defra', payload / 'bin/defra')
-    shutil.rmtree(target)  # Only this newly-created job-private target; downloaded dependencies remain cached.
+    prebuilt = getattr(args, 'defra_artifacts', None)
+    if prebuilt is None:
+        command(['cargo', '+1.98.0', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
+                defra, env, output / 'defra-build.log')
+        shutil.copy2(target / 'release/defra', payload / 'bin/defra')
+        shutil.rmtree(target)
+    else:
+        restore_defra(Path(prebuilt), defra, payload / 'bin/defra')
     env.pop('CARGO_TARGET_DIR')
     STAGE = 30
-    (output / 'bake.json').write_text(json.dumps(bake(trust, args.image, args.trust_ref)))
-    command(['docker', 'buildx', 'bake', '--file', str(output / 'bake.json'), '--metadata-file', str(output / 'buildkit.json')],
-            root, env, output / 'trust-build.log')
+    command(bake_command(output), trust, env, output / 'trust-build.log')
+    STAGE = 31
     meta = json.loads((output / 'buildkit.json').read_text())
-    digest = meta['gateway']['containerimage.digest']
-    if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
-        raise Failure()
-    image_ref = args.image + '@' + digest
+    if args.local_image:
+        STAGE = 32
+        image_ref = capture(['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'])
+        if not re.fullmatch('sha256:[0-9a-f]{64}', image_ref):
+            raise Failure()
+        command(['docker', 'image', 'save', '--output', str(payload / IMAGE_ARCHIVE), image_ref],
+                root, env, output / 'gateway-save.log')
+    else:
+        digest = meta['gateway']['containerimage.digest']
+        if not re.fullmatch('sha256:[0-9a-f]{64}', digest):
+            raise Failure()
+        image_ref = args.image + '@' + digest
+    STAGE = 33
     container = capture(['docker', 'create', 'trust-ring-builder:local', 'true'])
     try:
         for src, dst in (('/runtime/app/trust-api', 'bin/trust-api'),
@@ -162,17 +229,13 @@ def build(root, args, output):
         raise Failure()
     STAGE = 40
     go_version = capture(['docker', 'run', '--rm', '--network', 'none', '--entrypoint', 'go', 'trust-ring-builder:local', 'version'])
-    if go_version != 'go version go1.27.1 linux/amd64':
+    if go_version != builder_go_version(trust):
         raise Failure()
-    # Compile only the Go driver using the already-built production builder's
-    # toolchain, module downloads, verifier and Go cache. Never rebuild the gateway.
-    command(['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
-             '-e', 'GOFLAGS=-mod=readonly -p=2',
-             '-e', 'CGO_CFLAGS=-I/opt/vera/include', '-e', 'CGO_LDFLAGS=-L/opt/vera/lib',
-             '--mount', f'type=bind,src={payload / "bin"},dst=/out', '--entrypoint', 'go',
-             'trust-ring-builder:local', 'test', '-c', '-tags', 'vera_native', '-trimpath',
-             '-buildvcs=false', '-ldflags=-s -w', '-o', '/out/trust-api.test', './cmd/trust-api'],
+    # Production excludes test sources; mount the pinned checkout read-only.
+    command(fixture_build_command(trust, payload),
             trust, env, output / 'go-fixture-build.log')
+    if not (payload / 'bin/trust-api.test').is_file():
+        raise Failure()
     if pins(root, trust, vera, defra, args.trust_ref) != sources:
         raise Failure()
     env['LD_LIBRARY_PATH'] = str(payload / 'lib')
@@ -188,14 +251,40 @@ def build(root, args, output):
                 'source_files_sha256': {'trust/Dockerfile.native': sha(trust / 'Dockerfile.native'),
                     'trust/go.mod': sha(trust / 'go.mod'), 'trust/go.sum': sha(trust / 'go.sum'),
                     'orbis/Cargo.lock': sha(root / 'Cargo.lock'), 'defra/Cargo.lock': sha(defra / 'Cargo.lock')}}
+    if args.local_image:
+        manifest['image_archive_sha256'] = sha(payload / IMAGE_ARCHIVE)
     (payload / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
     archive = output / 'native-trust-artifacts.tar'
     with tarfile.open(archive, 'w') as tar:
-        for name in (*FILES, 'manifest.json'):
+        for name in (*FILES, 'manifest.json', *((IMAGE_ARCHIVE,) if args.local_image else ())):
             tar.add(payload / name, arcname=name, recursive=False)
     (output / 'native-trust-artifacts.sha256').write_text(sha(archive) + '\n')
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as result:
         result.write('trust_image=' + image_ref + '\n')
+
+
+def restore_defra(directory, source_root, destination):
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    expected = {'revision': revision(DEFRA), 'lock_sha256': sha(source_root / 'Cargo.lock')}
+    binary = directory / 'defra'
+    if (manifest.get('role') != 'defra' or manifest.get('version') != 1
+            or manifest.get('rust') != '1.98.0' or manifest.get('profile') != 'release'
+            or manifest.get('target') != 'x86_64-unknown-linux-gnu'
+            or manifest.get('source') != expected or set(manifest.get('sha256', {})) != {'defra'}
+            or binary.is_symlink() or not binary.is_file()
+            or sha(binary) != manifest['sha256']['defra']):
+        raise Failure()
+    shutil.copy2(binary, destination)
+
+
+def fixture_build_command(trust, payload):
+    return ['docker', 'run', '--rm', '--network', 'none', '--user', '0:0',
+            '-e', 'GOFLAGS=-mod=readonly -p=2',
+            '-e', 'CGO_CFLAGS=-I/opt/vera/include', '-e', 'CGO_LDFLAGS=-L/opt/vera/lib',
+            '--mount', f'type=bind,src={trust},dst=/fixture,readonly',
+            '--mount', f'type=bind,src={payload / "bin"},dst=/out', '--entrypoint', 'go',
+            'trust-ring-builder:local', '-C', '/fixture', 'test', '-c', '-tags', 'vera_native',
+            '-trimpath', '-buildvcs=false', '-ldflags=-s -w', '-o', '/out/trust-api.test', './cmd/trust-api']
 
 
 def restore(directory, destination, expected_orbis, expected_trust):
@@ -204,7 +293,11 @@ def restore(directory, destination, expected_orbis, expected_trust):
         raise Failure()
     with tarfile.open(archive) as tar:
         members = tar.getmembers()
-        if set(m.name for m in members) != {*FILES, 'manifest.json'} or len(members) != len(FILES) + 1:
+        names = [m.name for m in members]
+        expected = {*FILES, 'manifest.json'}
+        if IMAGE_ARCHIVE in names:
+            expected.add(IMAGE_ARCHIVE)
+        if set(names) != expected or len(names) != len(expected):
             raise Failure()
         if any(not m.isfile() for m in members):
             raise Failure()
@@ -225,7 +318,41 @@ def restore(directory, destination, expected_orbis, expected_trust):
         raise Failure()
     if any(sha(destination / name) != value for name, value in manifest['binary_sha256'].items()):
         raise Failure()
+    local_image = (destination / IMAGE_ARCHIVE).is_file()
+    if local_image != ('image_archive_sha256' in manifest):
+        raise Failure()
+    if local_image and (not re.fullmatch('sha256:[0-9a-f]{64}', manifest['trust_image']) or
+                        sha(destination / IMAGE_ARCHIVE) != manifest['image_archive_sha256']):
+        raise Failure()
     return manifest
+
+
+def verify_runtime_labels(labels, runtime, curve, image_id=None):
+    qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+    image_revision = runtime
+    if (image_id is not None and runtime == qualified['RUNTIME']
+            and image_id == qualified['RUNTIME_IMAGE_IDS'].get(curve)):
+        image_revision = qualified['IMAGE_REVISION']
+    expected = {
+        'org.opencontainers.image.revision': image_revision,
+        'io.sourcenetwork.orbis.backend': 'native',
+        'io.sourcenetwork.orbis.curve': curve,
+        'io.sourcenetwork.orbis.integration-features': 'false',
+    }
+    if any(labels.get(key) != value for key, value in expected.items()) or labels.get(
+            'io.sourcenetwork.orbis.unsafe-testing') not in (None, 'false'):
+        raise Failure()
+
+
+def image_id(root, env, image, log):
+    if not re.fullmatch('sha256:[0-9a-f]{64}', image):
+        command(['docker', 'pull', image], root, env, log)
+    identifier = capture(['docker', 'image', 'inspect', image, '--format', '{{.Id}}'])
+    if not re.fullmatch('sha256:[0-9a-f]{64}', identifier):
+        raise Failure()
+    if image.startswith('sha256:') and identifier != image:
+        raise Failure()
+    return identifier
 
 
 def test_binary(path, target, curve):
@@ -273,6 +400,8 @@ def run(root, args, output):
     artifacts = output / 'artifacts'
     manifest = restore(Path(args.artifacts), artifacts, os.environ['GITHUB_SHA'], args.trust_ref)
     source(root, manifest['sources']['orbis']['head'])
+    runtime = runtime_revision(root, manifest['sources']['orbis']['head'],
+                               env.get('ORBIS_NATIVE_RUNTIME_REVISION'))
     env['CARGO_TARGET_DIR'] = str(output / 'target')
     STAGE = 70
     stdout = output / 'compile.jsonl'
@@ -299,18 +428,16 @@ def run(root, args, output):
     STAGE = 80
     images = {}
     for name in ('ORBIS_NATIVE_IMAGE', 'ORBIS_NATIVE_VERA_IMAGE'):
-        command(['docker', 'pull', env[name]], root, env, output / (name + '.log'))
-        images[name] = capture(['docker', 'image', 'inspect', env[name], '--format', '{{.Id}}'])
-        if not re.fullmatch('sha256:[0-9a-f]{64}', images[name]):
-            raise Failure()
-    command(['docker', 'pull', manifest['trust_image']], root, env, output / 'gateway-pull.log')
-    gateway_image = capture(['docker', 'image', 'inspect', manifest['trust_image'], '--format', '{{.Id}}'])
+        images[name] = image_id(root, env, env[name], output / (name + '.log'))
+    if 'image_archive_sha256' in manifest:
+        command(['docker', 'image', 'load', '--input', str(artifacts / IMAGE_ARCHIVE)],
+                root, env, output / 'gateway-load.log')
+    gateway_image = image_id(root, env, manifest['trust_image'], output / 'gateway-pull.log')
     info = json.loads(capture(['docker', 'image', 'inspect', gateway_image]))[0]['Config']
     if info['User'] != '65532:65532' or info['Labels']['org.opencontainers.image.revision'] != args.trust_ref or info['Labels']['io.sourcenetwork.vera.revision'] != VERA:
         raise Failure()
     labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_IMAGE']]))[0]['Config']['Labels']
-    if labels.get('org.opencontainers.image.revision') != manifest['sources']['orbis']['head'] or labels.get('io.sourcenetwork.orbis.backend') != 'native' or labels.get('io.sourcenetwork.orbis.curve') != args.curve or labels.get('io.sourcenetwork.orbis.integration-features') != 'false':
-        raise Failure()
+    verify_runtime_labels(labels, runtime, args.curve, images['ORBIS_NATIVE_IMAGE'])
     vera_labels = json.loads(capture(['docker', 'image', 'inspect', images['ORBIS_NATIVE_VERA_IMAGE']]))[0]['Config']['Labels']
     if vera_labels.get('org.opencontainers.image.revision') != VERA:
         raise Failure()
@@ -342,6 +469,7 @@ def run(root, args, output):
             (private / 'bin').mkdir(mode=0o700)
             (private / 'lib').mkdir(mode=0o700)
             (private / 'state').mkdir(mode=0o700)
+            (private / 'home').mkdir(mode=0o700)
             for name in FILES:
                 if name.endswith('.h'):
                     continue
@@ -350,7 +478,8 @@ def run(root, args, output):
                 dst.chmod(0o555)
             shutil.copy2(binary, private / 'bin/native_startup')
             (private / 'bin/native_startup').chmod(0o555)
-            run_env = {**images, 'PATH': env['PATH'], 'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
+            run_env = {**images, 'PATH': env['PATH'], 'HOME': str(private / 'home'),
+                       'RUST_LOG': 'warn', 'VERA_E2E_KEEP': '1',
                        'VERA_E2E_DIR': str(private / 'state'), 'ORBIS_NATIVE_E2E_DIR': str(private / 'state'),
                        'LD_LIBRARY_PATH': str(private / 'lib'),
                        'TRUST_NATIVE_GATEWAY_TEST_BINARY': str(private / 'bin/trust-api.test'),
@@ -369,7 +498,9 @@ def run(root, args, output):
             if sha(binary) != binary_hash or any(sha(artifacts / name) != value for name, value in manifest['binary_sha256'].items()):
                 raise Failure()
         source(root, manifest['sources']['orbis']['head'])
-        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'binary_sha256': binary_hash,
+        (output / 'result.json').write_text(json.dumps({'source': manifest['sources'], 'orbis_runtime_revision': runtime,
+            'orbis_image_revision': labels['org.opencontainers.image.revision'],
+                                                      'vera_sdk_revision': VERA_SDK, 'binary_sha256': binary_hash,
             'images': {**images, 'trust': gateway_image}, 'image_binary_sha256': image_binaries, 'curve': args.curve, 'executions': 2, 'passed': 2,
             'production_kdf_stores': 6, 'go_tests': 2, 'ring_records_checked': 16}, indent=2) + '\n')
     finally:
@@ -424,6 +555,51 @@ def safe_diagnostics(output):
                 locations.add((2 if '/runner.rs' in filename else 1, int(number)))
     result['compiler_codes'] = sorted(codes)[:16]
     result['locations'] = [list(value) for value in sorted(locations)[:16]]
+    result['build'] = build_diagnostics(output)
+    return result
+
+
+def build_diagnostics(output):
+    result = {'disk_full': 0, 'killed': 0, 'exit_codes': [], 'rust_codes': [], 'go_locations': [],
+              'buildkit_metadata': int((output / 'buildkit.json').is_file()),
+              'gateway_archive': int((output / 'payload' / IMAGE_ARCHIVE).is_file()),
+              'command_status': sorted({record['returncode'] for record in COMMANDS
+                                        if isinstance(record.get('returncode'), int)})[:16],
+              'command_timeouts': sum(bool(record.get('timed_out')) for record in COMMANDS),
+              'failure_kinds': []}
+    patterns = {
+        'network': r'connection (?:refused|reset)|network is unreachable|i/o timeout|TLS handshake timeout|temporary failure in name resolution|failed to fetch',
+        'source_revision': r'not our ref|unknown revision|could not find remote ref|reference is not a tree',
+        'credentials': r'unauthorized|authentication required|permission denied|pull access denied',
+        'resources': r'resource temporarily unavailable|resourceexhausted|cannot allocate memory',
+        'export': r'failed to (?:export|load)|error exporting',
+        'toolchain': r'toolchain.*not installed|command not found|requires rustc|cannot find.*(?:clang|cc)',
+        'checksum': r'checksum mismatch|checksum.*changed|verification failed',
+        'docker_build': r'failed to solve|ERROR:',
+        'filesystem_entitlement': r'filesystem entitle|additional privileges|fs\.read|access[^\n]*outside',
+    }
+    kinds = set()
+    exit_codes, rust_codes, locations = set(), set(), set()
+    for name in ('defra-build.log', 'trust-bake-check.log', 'trust-build.log', 'go-fixture-build.log'):
+        path = output / name
+        if not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            stream.seek(0, 2)
+            stream.seek(max(0, stream.tell() - 4 * 1024 * 1024))
+            content = stream.read().decode(errors='replace')
+        kinds.update(kind for kind, pattern in patterns.items() if re.search(pattern, content, re.I))
+        result['disk_full'] += content.lower().count('no space left on device')
+        result['killed'] += len(re.findall(r'\bsignal: killed\b|\bSIGKILL\b|\bOOMKilled\b', content))
+        exit_codes.update(int(code) for code in re.findall(r'exit code: ([0-9]{1,3})\b', content) if int(code) < 256)
+        rust_codes.update(re.findall(r'error\[(E[0-9]{4})\]', content))
+        for filename, row, column in re.findall(r'\bcmd/trust-api/([a-z_]+\.go):([0-9]{1,6}):([0-9]{1,6}):', content):
+            if 0 < int(row) < 1000000 and 0 < int(column) < 1000000:
+                locations.add((filename, int(row), int(column)))
+    result['exit_codes'] = sorted(exit_codes)[:16]
+    result['rust_codes'] = sorted(rust_codes)[:16]
+    result['go_locations'] = [list(value) for value in sorted(locations)[:16]]
+    result['failure_kinds'] = sorted(kinds)
     return result
 
 
@@ -434,6 +610,9 @@ def main():
     parser.add_argument('--output', type=Path)
     for name in ('trust', 'vera', 'defra', 'image', 'artifacts'):
         parser.add_argument('--' + name)
+    parser.add_argument('--defra-artifacts', help='Verified normal-release Defra artifacts from the caller build')
+    parser.add_argument('--actions-cache', action='store_true', help='Use the private caller repository Actions cache')
+    parser.add_argument('--local-image', action='store_true', help='Transfer the gateway image privately without publishing it')
     parser.add_argument('--curve', choices=('bls12-381', 'jubjub'))
     args = parser.parse_args()
     os.umask(0o077)
@@ -445,7 +624,11 @@ def main():
         if args.phase == 'build' and not re.fullmatch(r'ghcr\.io/[a-z0-9_./-]+:[a-z0-9_.-]+', args.image or ''):
             raise Failure()
         root = Path(__file__).resolve().parents[1]
-        if args.phase != 'validate':
+        if args.phase == 'validate':
+            output = os.environ.get('GITHUB_OUTPUT')
+            if output:
+                write_source_outputs(Path(output))
+        else:
             if args.output is None:
                 raise Failure()
             args.output.mkdir(mode=0o700)

@@ -1,3 +1,6 @@
+#[path = "go_diagnostics.rs"]
+mod go_diagnostics;
+
 use super::private_file;
 use std::{
     io::Read as _,
@@ -45,7 +48,7 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .args([
             "-test.run=^TestNativeGatewayRingDKGContract$",
             "-test.v",
-            "-test.timeout=120s",
+            "-test.timeout=360s",
         ])
         .env("TRUST_NATIVE_RING_FIXTURE", descriptor)
         .stdout(output.try_clone().unwrap())
@@ -53,20 +56,31 @@ pub(super) async fn run(binary: &Path, descriptor: &Path, root: &Path) {
         .kill_on_drop(true);
     let mut child = command.spawn().expect("start compiled Trust ring contract");
     let _group = Group(child.id().expect("Go fixture process ID"));
-    let status = tokio::time::timeout(Duration::from_secs(125), child.wait())
+    // Allow the five-minute Go contract context and bounded child cleanup to finish.
+    let status = tokio::time::timeout(Duration::from_secs(365), child.wait())
         .await
-        .expect("Go ring contract exceeded the existing gateway test deadline")
+        .expect("Go ring contract exceeded its process deadline")
         .expect("wait for Go ring contract");
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let mut output = Vec::new();
+    std::fs::File::open(log)
+        .unwrap()
+        .take(LIMIT + 1)
+        .read_to_end(&mut output)
+        .unwrap();
+    let truncated = output.len() > LIMIT as usize;
+    output.truncate(LIMIT as usize);
+    let output = String::from_utf8_lossy(&output);
+    if !status.success() {
+        eprintln!(
+            "native Trust Go failure {}",
+            go_diagnostics::summarize(&output, status.code(), truncated)
+        );
+    }
     assert!(
         status.success(),
         "Go ring contract failed; details retained privately"
     );
-    let mut output = String::new();
-    std::fs::File::open(log)
-        .unwrap()
-        .take(4 * 1024 * 1024)
-        .read_to_string(&mut output)
-        .unwrap();
     assert_eq!(
         output
             .lines()

@@ -6,10 +6,12 @@ import io
 import json
 import os
 import re
+import runpy
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('driver', Path(__file__).with_name('native_trust_hosted.py'))
@@ -18,6 +20,187 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_validation_exports_immutable_source_pins(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'outputs'
+            with patch.dict(os.environ, {'GITHUB_OUTPUT': str(path)}), \
+                    patch('sys.argv', ['driver', 'validate', '--trust-ref', 'a' * 40]), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(driver.main(), 0)
+            self.assertEqual(dict(line.split('=', 1) for line in path.read_text().splitlines()),
+                             {'vera': driver.VERA, 'defra': driver.DEFRA})
+
+    def test_invalid_source_pin_never_writes_partial_workflow_outputs(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / 'outputs'
+            path.write_text('other=retained\n')
+            for field in ('VERA', 'DEFRA'):
+                for value in ('main', 'A' * 40, 'a' * 40 + '\ninjected=true'):
+                    with self.subTest(field=field, value=value), patch.object(driver, field, value), \
+                            patch.dict(os.environ, {'GITHUB_OUTPUT': str(path)}), \
+                            patch('sys.argv', ['driver', 'validate', '--trust-ref', 'a' * 40]), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(driver.main(), 1)
+                    self.assertEqual(path.read_text(), 'other=retained\n')
+
+    def test_gateway_checkout_refs_use_exported_sources(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/rust.yml').read_text()
+        for repository, source in (('vera.rs', 'vera'), ('defradb.rs', 'defra')):
+            checkout = re.search(r'repository: sourcenetwork/' + re.escape(repository)
+                                 + r'\s+ref: ([^\n]+)\s+path: \.native/' + source, workflow)
+            self.assertIsNotNone(checkout)
+            self.assertEqual(checkout[1], '${{ steps.sources.outputs.' + source + ' }}')
+
+    def test_normal_runtime_labels_reject_diagnostic_features(self):
+        for curve in ('bls12-381', 'jubjub'):
+            labels = {
+                'org.opencontainers.image.revision': 'a' * 40,
+                'io.sourcenetwork.orbis.backend': 'native',
+                'io.sourcenetwork.orbis.curve': curve,
+                'io.sourcenetwork.orbis.integration-features': 'false',
+            }
+            driver.verify_runtime_labels(labels, 'a' * 40, curve)
+            for value in ('false', 'true', '', 'unknown'):
+                labels['io.sourcenetwork.orbis.unsafe-testing'] = value
+                with self.subTest(curve=curve, value=value):
+                    if value == 'false':
+                        driver.verify_runtime_labels(labels, 'a' * 40, curve)
+                    else:
+                        with self.assertRaises(driver.Failure):
+                            driver.verify_runtime_labels(labels, 'a' * 40, curve)
+            labels['io.sourcenetwork.orbis.unsafe-testing'] = 'false'
+            for key in labels:
+                changed = dict(labels, **{key: 'wrong'})
+                with self.subTest(curve=curve, key=key), self.assertRaises(driver.Failure):
+                    driver.verify_runtime_labels(changed, 'a' * 40, curve)
+
+    def test_same_runtime_needs_no_source_exception(self):
+        with patch.object(driver, 'capture') as capture:
+            for requested in (None, 'a' * 40):
+                self.assertEqual(driver.runtime_revision(Path('/root'), 'a' * 40, requested), 'a' * 40)
+            capture.assert_not_called()
+
+    def test_ci_build_revision_requires_the_pinned_runtime_and_image_identity(self):
+        qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+        for curve in ('bls12-381', 'jubjub'):
+            labels = {
+                'org.opencontainers.image.revision': qualified['IMAGE_REVISION'],
+                'io.sourcenetwork.orbis.backend': 'native',
+                'io.sourcenetwork.orbis.curve': curve,
+                'io.sourcenetwork.orbis.integration-features': 'false',
+            }
+            image = qualified['RUNTIME_IMAGE_IDS'][curve]
+            driver.verify_runtime_labels(labels, qualified['RUNTIME'], curve, image)
+            for runtime, identity in [(qualified['RUNTIME'], None),
+                                      (qualified['RUNTIME'], 'sha256:' + 'a' * 64),
+                                      ('a' * 40, image)]:
+                with self.subTest(curve=curve, runtime=runtime, identity=identity), \
+                        self.assertRaises(driver.Failure):
+                    driver.verify_runtime_labels(labels, runtime, curve, identity)
+            with self.assertRaises(driver.Failure):
+                driver.verify_runtime_labels(dict(labels, **{
+                    'org.opencontainers.image.revision': qualified['RUNTIME']}),
+                    qualified['RUNTIME'], curve, image)
+
+    def test_runtime_reuse_allows_only_exact_fixture_changes(self):
+        root = Path(__file__).resolve().parents[1]
+        fixture = 'bin/orbis-node/tests/support/native_trust_gateway/go_diagnostics.rs'
+        with patch.object(driver, 'capture', return_value=fixture + '\n') as capture:
+            self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
+            self.assertEqual(capture.call_args.args[0], [
+                'git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
+                '--name-only', 'b' * 40, 'a' * 40, '--'])
+        for changed in ('bin/orbis-node/src/node.rs', 'Cargo.lock', 'docker/Dockerfile',
+                        fixture + '.bak', '../' + fixture):
+            with self.subTest(path=changed), patch.object(driver, 'capture', return_value=changed), \
+                    self.assertRaises(ValueError):
+                driver.runtime_revision(root, 'a' * 40, 'b' * 40)
+        for requested in ('develop', 'A' * 40, 'b' * 39, '--help'):
+            with self.subTest(revision=requested), self.assertRaises(driver.Failure):
+                driver.runtime_revision(root, 'a' * 40, requested)
+
+    def test_native_sdk_and_daemon_have_explicit_source_pins(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual((root / 'docker/NATIVE_VERA_REF').read_text().strip(), driver.VERA)
+        compose = (root / 'docker/docker-compose-native-integration-test.yml').read_text()
+        self.assertEqual(compose.count('${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}'), 4)
+        declarations = []
+        manifests = [root / 'Cargo.toml', *root.glob('bin/*/Cargo.toml'),
+                     *root.glob('crates/*/Cargo.toml')]
+        for manifest in manifests:
+            for line in manifest.read_text().splitlines():
+                if 'git = "https://github.com/sourcenetwork/vera.rs"' in line:
+                    match = re.search(r'rev = "([0-9a-f]{40})"', line)
+                    self.assertIsNotNone(match, str(manifest.relative_to(root)))
+                    declarations.append(match.group(1))
+        self.assertTrue(declarations)
+        self.assertEqual(set(declarations), {driver.VERA_SDK})
+
+    def test_native_defra_fixture_uses_release_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        reader = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))['revision']
+        self.assertEqual(reader(root, 'defradb.rs', ('bin/orbis-node/Cargo.toml',)), driver.DEFRA)
+
+    def test_gateway_preflight_binds_sdk_and_verifier_independently(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            trust = Path(raw)
+            (trust / '.github/workflows').mkdir(parents=True)
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            (trust / '.github/workflows/native-gateway.yml').write_text(
+                'ref: ${{ needs.runtimes.outputs.defra }}\n')
+            (trust / '.github/native-ring-versions.json').write_text(
+                json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
+                    patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
+                self.assertEqual(driver.pins(root, trust, root, root, 'b' * 40)['vera'],
+                                 {'head': driver.VERA})
+                selected = trust / '.github/native-ring-versions.json'
+                for altered in ({'vera': driver.VERA, 'defra': 'c' * 40},
+                                {'vera': 'c' * 40, 'defra': driver.DEFRA}, [], {}):
+                    selected.write_text(json.dumps(altered))
+                    with self.assertRaises(driver.Failure):
+                        driver.pins(root, trust, root, root, 'b' * 40)
+                selected.write_text(json.dumps({'vera': driver.VERA, 'defra': driver.DEFRA}))
+                with patch.object(driver, 'VERA_SDK', 'c' * 40), self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
+                (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + 'c' * 40 + '\n')
+                with self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
+
+    def test_gateway_preflight_rejects_defra_fixture_from_another_release(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as raw:
+            trust = Path(raw)
+            (trust / '.github/workflows').mkdir(parents=True)
+            (trust / 'Dockerfile.native').write_text('ARG VERA_REVISION=' + driver.VERA + '\n')
+            selected = 'c' * 40
+            (trust / '.github/native-ring-versions.json').write_text(
+                json.dumps({'vera': driver.VERA, 'defra': selected}))
+            with patch.dict(os.environ, {'GITHUB_SHA': 'a' * 40}), \
+                    patch.object(driver, 'DEFRA', selected), \
+                    patch.object(driver, 'source', side_effect=lambda path, ref: {'head': ref}):
+                with self.assertRaises(driver.Failure):
+                    driver.pins(root, trust, root, root, 'b' * 40)
+
+    def test_native_reference_reader_checks_every_declaration(self):
+        root = Path(__file__).resolve().parents[1]
+        reader = runpy.run_path(str(root / 'scripts/native-vera-ref.py'))['revision']
+        with tempfile.TemporaryDirectory() as raw:
+            fixture = Path(raw)
+            manifest = fixture / 'Cargo.toml'
+            first = 'one = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "' + 'a' * 40 + '" }\n'
+            second = first.replace('one =', 'two =')
+            manifest.write_text(first + second)
+            self.assertEqual(reader(fixture, 'defradb.rs', ('Cargo.toml',)), 'a' * 40)
+            for invalid in ('', first + second.replace('a' * 40, 'b' * 40),
+                            first + second.replace('a' * 40, 'main'),
+                            first + second.replace(', rev = "' + 'a' * 40 + '"', '')):
+                with self.subTest(declarations=invalid):
+                    manifest.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        reader(fixture, 'defradb.rs', ('Cargo.toml',))
+
     def test_gateway_matrix_does_not_reintroduce_cosmos_with_include(self):
         workflow = Path(__file__).resolve().parents[1].joinpath('.github/workflows/rust.yml').read_text()
         image = workflow.split('  image:\n', 1)[1].split('  # Compile every test binary', 1)[0]
@@ -56,7 +239,12 @@ class Qualification(unittest.TestCase):
             (root / 'executable.log').write_text("thread panicked at tests/support/native_trust_gateway.rs:123:4:\nsecret /private/key Elapsed\nthread panicked at /secret/file.rs:8:2:\n")
             result = driver.safe_diagnostics(root)
             self.assertEqual(result, {'compiler_errors': 2, 'compiler_codes': ['E0308'],
-                                     'panics': 2, 'elapsed': 1, 'locations': [[1, 123]]})
+                                     'panics': 2, 'elapsed': 1, 'locations': [[1, 123]],
+                                     'build': {'disk_full': 0, 'killed': 0, 'exit_codes': [],
+                                               'rust_codes': [], 'go_locations': [],
+                                               'buildkit_metadata': 0, 'gateway_archive': 0,
+                                               'command_status': [], 'command_timeouts': 0,
+                                               'failure_kinds': []}})
             encoded = json.dumps(result)
             for forbidden in ('secret', '/private', '/secret', '\x1b', 'rendered'):
                 self.assertNotIn(forbidden, encoded)
@@ -66,6 +254,74 @@ class Qualification(unittest.TestCase):
             with self.assertRaises(driver.Failure):
                 driver.revision(value)
         self.assertEqual(driver.revision('a' * 40), 'a' * 40)
+
+    def test_fixture_uses_read_only_test_sources_outside_production_context(self):
+        command = driver.fixture_build_command(Path('/pinned/trust'), Path('/private/payload'))
+        self.assertIn('type=bind,src=/pinned/trust,dst=/fixture,readonly', command)
+        self.assertIn('type=bind,src=/private/payload/bin,dst=/out', command)
+        self.assertEqual(command[command.index('trust-ring-builder:local') + 1:][:3], ['-C', '/fixture', 'test'])
+        self.assertEqual(command[command.index('--network') + 1], 'none')
+        self.assertIn('GOFLAGS=-mod=readonly -p=2', command)
+
+    def test_build_diagnostics_exclude_commands_assertions_and_private_paths(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'trust-build.log').write_text('private-key /private/keys error[E0308]\n'
+                '#42 1.01 cmd/trust-api/api_server.go:323:18: private assertion\n'
+                'no space left on device; signal: killed; exit code: 1\n'
+                'exit code: 999999; cmd/trust-api/api_server.go:0:0: invalid\n')
+            result = driver.build_diagnostics(root)
+            self.assertEqual(result['disk_full'], 1)
+            self.assertEqual(result['killed'], 1)
+            self.assertEqual(result['exit_codes'], [1])
+            self.assertEqual(result['rust_codes'], ['E0308'])
+            self.assertEqual(result['go_locations'], [['api_server.go', 323, 18]])
+            for forbidden in ('private-key', '/private', 'assertion', '999999'):
+                self.assertNotIn(forbidden, json.dumps(result))
+
+    def test_build_failure_classification_is_bounded_and_reports_command_status(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'trust-build.log').write_text('ERROR: failed to solve: failed to fetch /private/token\n'
+                'connection reset by peer; ResourceExhausted; unknown revision private-ref\n'
+                'additional privileges requested: fs.read=/private/context\n')
+            with patch.object(driver, 'COMMANDS', [{'returncode': 1, 'timed_out': False},
+                                                  {'returncode': -9, 'timed_out': True}]):
+                result = driver.build_diagnostics(root)
+            self.assertEqual(result['command_status'], [-9, 1])
+            self.assertEqual(result['command_timeouts'], 1)
+            self.assertEqual(result['failure_kinds'], ['docker_build', 'filesystem_entitlement', 'network', 'resources', 'source_revision'])
+            for forbidden in ('/private', 'token', 'private-ref', 'connection reset'):
+                self.assertNotIn(forbidden, json.dumps(result))
+
+    def test_bake_context_is_checked_before_compiling_defra(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            trust = root / 'trust'
+            trust.mkdir()
+            output = root / 'output'
+            output.mkdir()
+            args = SimpleNamespace(trust=str(trust), vera=str(root / 'vera'), defra=str(root / 'defra'),
+                                   trust_ref='a' * 40, image='ghcr.io/source/test:run', local_image=True)
+            def reject(command, cwd, env, log, timeout):
+                self.assertEqual(command[:3], ['docker', 'buildx', 'bake'])
+                self.assertIn('--check', command)
+                self.assertNotIn('--allow', command)
+                self.assertEqual(cwd, trust.resolve())
+                self.assertEqual(timeout, 300)
+                self.assertEqual(log.name, 'trust-bake-check.log')
+                graph = json.loads((output / 'bake.json').read_text())
+                self.assertEqual(graph['target']['gateway']['context'], str(cwd))
+                raise driver.Failure()
+            with patch.object(driver, 'pins', return_value={}), \
+                 patch.object(driver, 'capture', return_value='cargo 1.98.0 test'), \
+                 patch.object(driver, 'command', side_effect=reject) as command:
+                with self.assertRaises(driver.Failure):
+                    driver.build(root / 'orbis', args, output)
+                self.assertEqual(command.call_count, 1)
+            actual = driver.bake_command(output)
+            self.assertIn('--metadata-file', actual)
+            self.assertNotIn('--check', actual)
 
     def test_clears_inherited_overrides_without_changing_artifact_inputs(self):
         inherited = {'RUSTUP_TOOLCHAIN': 'nightly', 'RUSTC': '/secret/compiler',
@@ -120,6 +376,83 @@ class Qualification(unittest.TestCase):
                 with self.assertRaises(driver.Failure):
                     driver.outcome(path)
 
+    def test_go_version_is_bound_to_one_digest_pinned_builder(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / 'Dockerfile.native'
+            for version in ('1.27.1', '1.27.2'):
+                line = 'FROM golang:' + version + '-bookworm@sha256:' + 'a' * 64 + ' AS builder\n'
+                path.write_text(line)
+                self.assertEqual(driver.builder_go_version(root), 'go version go' + version + ' linux/amd64')
+                path.write_text(line + line)
+                with self.assertRaises(driver.Failure):
+                    driver.builder_go_version(root)
+            for content in ('FROM golang:latest AS builder\n', 'FROM golang:1.27.2-bookworm AS builder\n'):
+                path.write_text(content)
+                with self.assertRaises(driver.Failure):
+                    driver.builder_go_version(root)
+
+    def test_local_bake_never_publishes_or_reads_registry_cache(self):
+        config = driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40, local=True)
+        for target in config['target'].values():
+            self.assertEqual(target['output'], ['type=docker'])
+            self.assertNotIn('cache-from', target)
+            self.assertNotIn('cache-to', target)
+        self.assertNotIn('push=true', json.dumps(config))
+
+    def test_actions_cache_is_private_and_keeps_local_exports(self):
+        config = driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40,
+                             local=True, actions_cache=True)
+        for target in config['target'].values():
+            self.assertEqual(target['output'], ['type=docker'])
+            self.assertEqual(target['cache-from'], ['type=gha,scope=trust-native-linux,version=2'])
+        self.assertEqual(config['target']['gateway']['cache-to'],
+                         ['type=gha,scope=trust-native-linux,version=2,mode=max'])
+        self.assertNotIn('type=registry', json.dumps(config))
+        self.assertNotIn('push=true', json.dumps(config))
+        with self.assertRaises(driver.Failure):
+            driver.bake(Path('/checkout/trust'), 'ghcr.io/source/test:run', 'a' * 40,
+                        actions_cache=True)
+
+    def test_prebuilt_defra_requires_matching_source_profile_and_bytes(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / 'Cargo.lock').write_text('locked')
+            artifacts = root / 'artifacts'
+            artifacts.mkdir()
+            (artifacts / 'defra').write_bytes(b'normal binary')
+            manifest = {'version': 1, 'role': 'defra', 'rust': '1.98.0', 'profile': 'release',
+                        'target': 'x86_64-unknown-linux-gnu',
+                        'source': {'revision': driver.DEFRA, 'lock_sha256': driver.sha(root / 'Cargo.lock')},
+                        'sha256': {'defra': driver.sha(artifacts / 'defra')}}
+            path = artifacts / 'manifest.json'
+            path.write_text(json.dumps(manifest))
+            driver.restore_defra(artifacts, root, root / 'staged')
+            self.assertEqual((root / 'staged').read_bytes(), b'normal binary')
+            for key, value in [('rust', '1.99.0'), ('profile', 'dev'), ('role', 'vera'),
+                               ('source', {'revision': 'a' * 40, 'lock_sha256': manifest['source']['lock_sha256']}),
+                               ('sha256', {'defra': 'a' * 64})]:
+                path.write_text(json.dumps({**manifest, key: value}))
+                with self.assertRaises(driver.Failure):
+                    driver.restore_defra(artifacts, root, root / 'staged')
+
+    def test_local_image_requires_exact_loaded_identity_without_pull(self):
+        image = 'sha256:' + 'a' * 64
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value=image):
+            self.assertEqual(driver.image_id(Path('/root'), {}, image, Path('/log')), image)
+            execute.assert_not_called()
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value='sha256:' + 'b' * 64):
+            with self.assertRaises(driver.Failure):
+                driver.image_id(Path('/root'), {}, image, Path('/log'))
+            execute.assert_not_called()
+
+    def test_registry_image_is_pulled_and_resolved_to_immutable_identity(self):
+        image = 'ghcr.io/source/test@sha256:' + 'b' * 64
+        identifier = 'sha256:' + 'a' * 64
+        with patch.object(driver, 'command') as execute, patch.object(driver, 'capture', return_value=identifier):
+            self.assertEqual(driver.image_id(Path('/root'), {}, image, Path('/log')), identifier)
+            self.assertEqual(execute.call_args.args[0], ['docker', 'pull', image])
+
     def test_rejects_transfer_path_escape_and_wrong_source(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -136,10 +469,12 @@ class Qualification(unittest.TestCase):
                             ('orbis', 'a' * 40), ('trust', 'b' * 40), ('vera', driver.VERA), ('defra', driver.DEFRA))}}
             (payload / 'manifest.json').write_text(json.dumps(manifest))
             archive = root / 'native-trust-artifacts.tar'
-            def pack(extra=False):
+            def pack(extra=False, local=False):
                 with tarfile.open(archive, 'w') as tar:
                     for name in (*driver.FILES, 'manifest.json'):
                         tar.add(payload / name, arcname=name)
+                    if local:
+                        tar.add(payload / driver.IMAGE_ARCHIVE, arcname=driver.IMAGE_ARCHIVE)
                     if extra:
                         tar.add(payload / 'manifest.json', arcname='../private-secret')
                 (root / 'native-trust-artifacts.sha256').write_text(driver.sha(archive) + '\n')
@@ -151,6 +486,27 @@ class Qualification(unittest.TestCase):
             with self.assertRaises(driver.Failure):
                 driver.restore(root, root / 'escape', 'a' * 40, 'b' * 40)
             self.assertFalse((root / 'private-secret').exists())
+            (payload / driver.IMAGE_ARCHIVE).write_bytes(b'private-image-fixture')
+            manifest['trust_image'] = 'sha256:' + 'c' * 64
+            manifest['image_archive_sha256'] = driver.sha(payload / driver.IMAGE_ARCHIVE)
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            restored = driver.restore(root, root / 'local', 'a' * 40, 'b' * 40)
+            self.assertEqual(restored['trust_image'], manifest['trust_image'])
+            pack()
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'missing-image', 'a' * 40, 'b' * 40)
+            pack(local=True)
+            manifest['image_archive_sha256'] = 'd' * 64
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'changed-image', 'a' * 40, 'b' * 40)
+            del manifest['image_archive_sha256']
+            (payload / 'manifest.json').write_text(json.dumps(manifest))
+            pack(local=True)
+            with self.assertRaises(driver.Failure):
+                driver.restore(root, root / 'unrecorded-image', 'a' * 40, 'b' * 40)
 
     def test_failure_console_never_copies_raw_messages_or_paths(self):
         output = io.StringIO()

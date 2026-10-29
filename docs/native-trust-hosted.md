@@ -1,16 +1,17 @@
 # Opt-in hosted native Trust ring qualification
 
-The existing Rust workflow accepts `scope: full` (the default), `common`, or
-`gateway`. Full retains the usual CI jobs; Common retains its existing focused
-checks. Gateway runs only the two normal Orbis image builds, matching native Vera
+The existing Rust workflow's `gateway` scope runs only the two normal Orbis image
+builds, matching native Vera
 image, one shared artifact build, and two focused curve jobs. It does not run the
 legacy suites or build/use the unsafe diagnostic image.
 
-The intended Trust fixture revision is
-`11630c1a0b3241bed2799a6c162c4c8e16a4e502`. The immutable manual input is checked
-against its checkout, native Dockerfile pin and Defra workflow pin. Vera stays at
-`1dab0c4562da551b1a7f00fcea643b914769891c`; Defra stays at
-`88e148a7387e00d9dd6fbf6ab78701d6e2bef452`. No Cosmos/Go references are rewritten.
+The default Trust fixture revision is selected in the workflow's immutable
+`trust_revision` input. The driver checks it against the checkout, native Dockerfile
+pin and the Vera and Defra revisions in `.github/native-ring-versions.json`. Native Vera and Defra revisions are declared in
+`scripts/native_trust_hosted.py`; validation exports them as the workflow's checkout
+refs. The Vera daemon pin in `docker/NATIVE_VERA_REF` must agree. Orbis's native SDK
+revision remains separately pinned in the workspace manifest; the driver validates
+that binding independently rather than requiring SDK and daemon source equality.
 
 The artifact job builds Defra's normal native CLI once, stages it, and removes
 only its own new target directory. A single BuildKit bake graph uses the real
@@ -33,9 +34,10 @@ Each curve compiles only the `native_startup` target once and directly runs
 container. Both use UID/GID 65532 and the same staged artifacts. Every run must
 execute exactly one Rust test and one inner Go test, produce the exact paired-ring
 success marker, and assert persisted production KDF headers in all three stopped
-Orbis stores. Existing fixture readiness/receipt/DKG limits and Go 120/125-second
-bounds remain unchanged. The outer process watchdog is 600 seconds; it cannot
-extend the inner deadlines. Build-job limits are 120 minutes and native compilation
+Orbis stores. Fixture readiness, receipt and per-ring DKG limits are unchanged.
+The five-minute Go contract context runs within a 360-second test watchdog and a
+365-second Rust subprocess limit, including cleanup. The outer fixture watchdog
+is 600 seconds; it does not extend those inner deadlines. Build-job limits are 120 minutes and native compilation
 is bounded at 90 minutes.
 
 Private roots are fresh per packaging mode. Complete build/test logs, descriptor,
@@ -43,17 +45,21 @@ operation IDs, passwords and stores are never uploaded. Console output is fixed
 numeric status, stage, duration and execution counts. Bounded diagnostics add
 Rust compiler error counts/E-codes, panic/Elapsed counts and numeric line locations
 for the two known fixture files (IDs 1 and 2). They never include raw messages or
-paths. BuildKit/Go errors retain stage-only summaries; their private raw logs are
-not retained after the ephemeral runner is destroyed. The artifact upload contains
+paths. Go test failures retain source locations and a bounded set of exact ring
+assertion categories: certification deadline, missing ring or paired keys,
+terminal state, HTTP failure and response shape. The decoder rejects unknown,
+duplicate or untyped categories. A failed helper location alone does not identify
+which assertion fired. Private raw logs are not retained after the ephemeral
+runner is destroyed. The artifact upload contains
 only the explicit build products and hashes. Cleanup removes only the exact Trust
 fixture label and Compose containers mounted beneath these private roots, with
 no daemon-wide prune. Source and staged binary hashes are checked again afterward.
 
-This candidate is source-only. Hosted disk/RAM/time fit, cold-cache BuildKit
-behavior and all four curve/packaging runs remain unqualified. Compilation must
-use the eventual published Orbis commit that contains the companion hook and
-workflow; its run-scoped images and labels must bind that same commit. A passing
-older SDK fixture or this source review does not establish that qualification.
+A qualification result covers only its recorded source set, curve, packaging
+mode and runtime hashes. Compilation uses the published Orbis fixture containing
+the hook and workflow; run-scoped images and labels bind that fixture separately
+from the unchanged normal runtime. Source review or a passing older fixture does
+not qualify changed pins, cold-cache builds or deployment resource limits.
 
 The reuse is the existing native fixture setup and Docker lifecycle, not a port
 of the older Cosmos `bin/orbis-node/src/tests/integration.rs` bodies. No production
@@ -79,3 +85,21 @@ LD_LIBRARY_PATH="$VERIFIER_LIB_DIR" \
 The hosted driver performs the same selection for both curves and separately
 checks the unchanged production container as UID/GID 65532. It stages and hashes
 these artifacts first; no fresh or ad hoc Vera runtime replaces the selected image.
+
+
+The `native` scope selects the existing native backend checks and Compose-backed
+lifecycle suite for both curves, with the normal native Vera and Orbis images.
+It also builds the established diagnostic image for the fault-report scenario.
+The lifecycle suite includes restart, signing, encryption, PET member replacement
+and scheduled refresh. The Trust gateway fixture has its separate `gateway`
+scope and requires a matching immutable Trust revision.
+
+After adopting a source-consistent dependency lockfile, dispatch native lifecycle
+qualification with:
+
+```sh
+gh workflow run rust.yml --ref "$ORBIS_BRANCH" -f scope=native
+```
+
+Release qualification requires the results from that exact source and both
+curves; changing these pins does not establish a passing deployment.

@@ -125,6 +125,12 @@ ignore = [
 # Banned crates
 # ---------------------------------------------------------------------------
 [bans]
+# The Cosmos-only compatibility version is the sole exception. Other TLS
+# versions below the patched release are rejected independently of advisories.
+deny = [
+    { name = "rustls", version = "<0.21.12" },
+    { name = "rustls", version = ">0.21.12, <0.23.46" },
+]
 # Warn on duplicate versions of the same crate (common with large dep trees)
 multiple-versions = "warn"
 wildcards = "allow"

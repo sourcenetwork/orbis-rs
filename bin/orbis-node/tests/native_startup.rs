@@ -25,6 +25,10 @@ mod native_pet;
 mod native_trust_gateway;
 
 #[cfg(feature = "bls12-381")]
+#[path = "support/defra_signer.rs"]
+mod defra_signer;
+
+#[cfg(feature = "bls12-381")]
 #[path = "support/defra_peers.rs"]
 mod defra_peers;
 
@@ -35,7 +39,12 @@ mod defra_documents;
 use proto::info_service::{
     info_service_client::InfoServiceClient, GetNodeInfoRequest, GetNodeInfoResponse, NodeStatus,
 };
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs,
+    os::unix::fs::{MetadataExt, PermissionsExt},
+    path::Path,
+    time::Duration,
+};
 use vera_client::VeraClient;
 use vera_harness::cluster::KeySet;
 
@@ -174,19 +183,30 @@ impl Node {
         })
     }
 
-    /// Restart a previously-brought-up node in place (same service, same
-    /// fixture directory, same bind address — all already baked into the
-    /// Compose service). Replaces the old `Node::start`/`start_bound` (which
-    /// created a fresh `ContainerNode` each call); callers that used to pass
-    /// `base`/`addr`/`controller`/`bind` now only need the node's index,
-    /// since none of that varies between a node's launches anymore.
+    /// Restart the same container and its persisted state. Docker may reassign
+    /// its published port; callers must refresh the endpoint before reconnecting.
     fn restart(project_name: &str, index: usize, log: &Path) -> Self {
         let node = Self::attach(project_name, index, log);
         node.0.start_service();
         node
     }
 
-    async fn ready(&mut self, addr: &str, _log: &Path) -> GetNodeInfoResponse {
+    fn endpoint(&self) -> String {
+        test_support::compose_discover_endpoint(
+            NATIVE_COMPOSE_FILE,
+            &self.0.project_name,
+            &self.0.service,
+            50051,
+        )
+        .strip_prefix("http://")
+        .expect("Compose endpoint must use HTTP")
+        .to_owned()
+    }
+
+    async fn ready(&mut self, addr: &str, log: &Path) -> GetNodeInfoResponse {
+        let mut connections = 0_u32;
+        let mut responses = 0_u32;
+        let mut last_status = None;
         tokio::time::timeout(Duration::from_secs(40), async {
             loop {
                 assert!(
@@ -194,8 +214,11 @@ impl Node {
                     "node exited; logs retained privately"
                 );
                 if let Ok(mut client) = InfoServiceClient::connect(format!("http://{addr}")).await {
+                    connections += 1;
                     if let Ok(response) = client.get_node_info(GetNodeInfoRequest {}).await {
+                        responses += 1;
                         let info = response.into_inner();
+                        last_status = Some(info.status);
                         assert!(!matches!(
                             info.status(),
                             NodeStatus::ConnectingToChain
@@ -213,6 +236,36 @@ impl Node {
         .await
         .unwrap_or_else(|_| {
             self.0.retain_logs().unwrap();
+            use std::io::{Read, Seek, SeekFrom};
+            let mut tail = Vec::new();
+            let log_read = fs::File::open(&self.0.log).and_then(|mut file| {
+                let length = file.metadata()?.len();
+                file.seek(SeekFrom::Start(length.saturating_sub(65_536)))?;
+                file.take(65_536).read_to_end(&mut tail)
+            });
+            let text = String::from_utf8_lossy(&tail);
+            let endpoint = test_support::compose_discover_endpoint(
+                NATIVE_COMPOSE_FILE,
+                &self.0.project_name,
+                &self.0.service,
+                50051,
+            );
+            eprintln!(
+                "native_readiness={}",
+                serde_json::json!({
+                    "restart": log.file_name().is_some_and(|name| name == "restart.log"),
+                    "connections": connections,
+                    "responses": responses,
+                    "last_status": last_status,
+                    "endpoint_changed": endpoint.trim_start_matches("http://") != addr,
+                    "log_read": log_read.is_ok(),
+                    "password_loaded": text.contains("Password loaded from file"),
+                    "network_initializing": text.contains("Initializing network"),
+                    "bootstrap_started": text.contains("Bootstrap info service started"),
+                    "permission_denied": text.contains("Permission denied"),
+                    "runtime_panicked": text.contains("panicked at"),
+                })
+            );
             panic!("startup timed out; logs retained privately")
         })
     }
@@ -320,6 +373,10 @@ fn bring_up_orbis_nodes(
         )
         .unwrap();
         extra_env.push((
+            format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
+            test_support::bind_mount_user(&dir).expect("node fixture owner"),
+        ));
+        extra_env.push((
             format!("ORBIS_NATIVE_NODE{}_DIR", index + 1),
             dir.display().to_string(),
         ));
@@ -366,10 +423,16 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
         directory.join("services.json"),
     )
     .unwrap();
-    let extra_env = [(
-        "ORBIS_NATIVE_NODE4_DIR".to_string(),
-        directory.display().to_string(),
-    )];
+    let extra_env = [
+        (
+            "ORBIS_NATIVE_NODE4_DIR".to_string(),
+            directory.display().to_string(),
+        ),
+        (
+            "ORBIS_NATIVE_NODE4_USER".to_string(),
+            test_support::bind_mount_user(&directory).unwrap(),
+        ),
+    ];
     cluster.build_service("node4", &extra_env);
     cluster.bring_up_services(&["node4"], &extra_env);
     let endpoint = cluster
@@ -383,7 +446,6 @@ fn add_orbis_node4(cluster: &TestCluster, base: &Path) -> (Node, String) {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 async fn native_startup_registers_and_preserves_identity_on_restart() {
     let deployment = 9073;
     let trusted = *KeySet::builder()
@@ -430,10 +492,16 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
         .join("native-vera")
         .join(root)
         .join("state.json");
+    let metadata = fs::metadata(&journal).unwrap();
+    let owner = fs::metadata(base.path()).unwrap();
+    assert_eq!(metadata.uid(), owner.uid());
+    assert_eq!(metadata.gid(), owner.gid());
+    assert_eq!(metadata.permissions().mode() & 0o077, 0);
     let before = fs::read(&journal).unwrap();
     let log = base.path().join("restart.log");
     let mut restarted = Node::restart(cluster.project_name(), 0, &log);
-    let second_info = restarted.ready(addr, &log).await;
+    let restarted_addr = restarted.endpoint();
+    let second_info = restarted.ready(&restarted_addr, &log).await;
     assert_eq!(first_info.node_key, second_info.node_key);
     assert_eq!(first_info.peer_id, second_info.peer_id);
     restarted.stop().await;
@@ -441,7 +509,6 @@ async fn native_startup_registers_and_preserves_identity_on_restart() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[serial_test::serial(defra_signing)]
 async fn native_distributed_threshold_workflows() {
@@ -449,7 +516,6 @@ async fn native_distributed_threshold_workflows() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(feature = "bls12-381")]
 #[serial_test::serial(defra_signing)]
 async fn native_defra_signing() {
@@ -457,7 +523,6 @@ async fn native_defra_signing() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_threshold_workflows() {
     native_pet::run(native_pet::Scenario::Lifecycle).await;
@@ -502,17 +567,36 @@ async fn native_dkg_and_pre() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_member_replacement() {
     native_pet::run(native_pet::Scenario::MemberReplacement).await;
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: Compose-backed Orbis stop/restart lifecycle is unreliable; re-enable after restart coverage is redesigned in the shared test harness"]
+#[ignore = "requires focused native membership churn qualification"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_pet_member_churn() {
+    tokio::time::timeout(
+        Duration::from_secs(1200),
+        native_pet::run(native_pet::Scenario::MemberChurn),
+    )
+    .await
+    .expect("native membership churn must finish within twenty minutes");
+}
+
+#[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_pet_scheduled_refresh_after_restart() {
     native_pet::run(native_pet::Scenario::ScheduledRefresh).await;
+}
+
+#[tokio::test]
+#[ignore = "requires the focused native soak profile and normal runtime images"]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_threshold_soak() {
+    tokio::time::timeout(Duration::from_secs(1800), native_pet::soak::run())
+        .await
+        .expect("native threshold soak must finish within thirty minutes");
 }
 
 #[tokio::test]
@@ -523,7 +607,6 @@ async fn native_trust_gateway_ring_dkg() {
 }
 
 #[tokio::test]
-#[ignore = "temporarily disabled: the Compose harness inspects a container-owned native worker journal through a host bind mount, which is not portable; re-enable after fault-report verification uses a harness API"]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
@@ -643,9 +726,12 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         let directory = base.path().join(format!("node-{index}"));
         let log = directory.join("restart.log");
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
+        assert_eq!(recovered.peer_id, infos[index].peer_id);
         assert_eq!(recovered.p2p_address, infos[index].p2p_address);
+        assert_eq!(recovered.public_address, infos[index].public_address);
         assert_eq!(recovered.managed_ring_count, 1);
         let state = InfoServiceClient::connect(format!("http://{}", addresses[index]))
             .await
@@ -704,47 +790,40 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     )
     .unwrap();
     #[cfg(feature = "bls12-381")]
-    let defra = {
-        let service_identity = std::sync::Arc::new(
-            defra_identity::RawIdentity::from_ed25519(
-                defra_crypto::Ed25519PrivateKey::from_bytes(
-                    &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
-                )
-                .unwrap(),
+    let service_identity = std::sync::Arc::new(
+        defra_identity::RawIdentity::from_ed25519(
+            defra_crypto::Ed25519PrivateKey::from_bytes(
+                &defra_crypto::ed25519_key_from_seed(&reader_seed).unwrap(),
             )
             .unwrap(),
-        );
+        )
+        .unwrap(),
+    );
+    #[cfg(feature = "bls12-381")]
+    let defra = {
         assert_eq!(
             defra_identity::Identity::did(service_identity.as_ref())
                 .unwrap()
                 .to_string(),
             reader.did_uri
         );
-        std::sync::Arc::new(
+        std::sync::Arc::new(defra_signer::Signer::new(
             defra_orbis::OrbisClient::new(
                 format!("http://{}", addresses[1]),
                 derivation_id.clone(),
                 derived_key.to_bytes().unwrap(),
-                service_identity,
+                service_identity.clone(),
+                defra_edge::on_demand().unwrap().clone(),
             )
             .await
             .unwrap(),
-        )
+        ))
     };
     #[cfg(feature = "bls12-381")]
     let documents =
         defra_documents::Documents::new(&base.path().join("defra"), defra.clone()).await;
     #[cfg(feature = "bls12-381")]
-    let defra_sign = || {
-        let defra = std::sync::Arc::clone(&defra);
-        tokio::task::spawn_blocking(move || {
-            defra_core::signing::RemoteSigner::sign_sync(
-                defra.as_ref(),
-                b"native Vera threshold signing",
-                None,
-            )
-        })
-    };
+    let defra_sign = || defra.sign(b"native Vera threshold signing");
 
     let message = b"native Vera threshold signing".to_vec();
     let sign_request = || {
@@ -771,7 +850,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("denied").await.is_err());
         assert_eq!(documents.count().await, 0);
     }
@@ -799,10 +882,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     #[cfg(feature = "bls12-381")]
     let (documents, peers, created) = {
-        let defra_signature = defra_sign()
-            .await
-            .unwrap()
-            .expect("Defra threshold signature");
+        let defra_signature = defra_sign().await.expect("Defra threshold signature");
         assert_eq!(defra_signature, signature.to_bytes().unwrap());
         let peers = defra_peers::Peers::new(&base.path().join("peers"), defra.clone()).await;
         peers.verify_replication().await;
@@ -838,15 +918,32 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("policy-revoked").await.is_err());
         assert_eq!(documents.count().await, 1);
     }
     nodes[1].stop().await;
     let log = base.path().join("node-1/policy-edit-restart.log");
     nodes[1] = Node::restart(cluster.project_name(), 1, &log);
+    addresses[1] = nodes[1].endpoint();
     let recovered = nodes[1].ready(&addresses[1], &log).await;
     assert_eq!(recovered.node_key, infos[1].node_key);
+    #[cfg(feature = "bls12-381")]
+    defra.reconnect(
+        defra_orbis::OrbisClient::new(
+            format!("http://{}", addresses[1]),
+            derivation_id.clone(),
+            derived_key.to_bytes().unwrap(),
+            service_identity.clone(),
+            defra_edge::on_demand().unwrap().clone(),
+        )
+        .await
+        .unwrap(),
+    );
     signing = SignServiceClient::connect(
         tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[1]))
             .unwrap()
@@ -868,7 +965,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("policy-recreated").await.is_err());
         assert_eq!(documents.count().await, 1);
     }
@@ -885,10 +986,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .unwrap();
     confirmed(&client, regranted.transaction_hash, &trusted).await;
     #[cfg(feature = "bls12-381")]
-    assert_eq!(
-        defra_sign().await.unwrap().unwrap(),
-        signature.to_bytes().unwrap()
-    );
+    assert_eq!(defra_sign().await.unwrap(), signature.to_bytes().unwrap());
     #[cfg(feature = "jubjub")]
     {
         let signed = signing
@@ -921,7 +1019,11 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     );
     #[cfg(feature = "bls12-381")]
     {
-        assert!(defra_sign().await.unwrap().is_err());
+        assert!(defra_sign()
+            .await
+            .unwrap_err()
+            .message
+            .contains(&tonic::Code::Unauthenticated.to_string()));
         assert!(documents.create("revoked").await.is_err());
         assert_eq!(documents.count().await, 1);
         documents.verify(&created, defra.signer_did()).await;
@@ -1273,9 +1375,9 @@ async fn distributed_threshold_workflows(signing_only: bool) {
     let forwarding = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let mut started = false;
-            for (index, node) in nodes.iter().take(nodes.len() - 1).enumerate() {
+            for node in nodes.iter().take(nodes.len() - 1) {
                 node.0.refresh_logs().await.unwrap();
-                if tokio::fs::read_to_string(base.path().join(format!("node-{index}/restart.log")))
+                if tokio::fs::read_to_string(&node.0.log)
                     .await
                     .unwrap()
                     .contains("forwarding pending reshare to canonical next-committee leader")
@@ -1316,6 +1418,7 @@ async fn distributed_threshold_workflows(signing_only: bool) {
             .path()
             .join(format!("node-{index}/reshare-restart.log"));
         nodes[index] = Node::restart(cluster.project_name(), index, &log);
+        addresses[index] = nodes[index].endpoint();
         let recovered = nodes[index].ready(&addresses[index], &log).await;
         assert_eq!(recovered.node_key, infos[index].node_key);
     }
@@ -1397,6 +1500,10 @@ async fn distributed_threshold_workflows(signing_only: bool) {
         .is_none());
     nodes[0].stop().await;
     nodes[1].stop().await;
+    let pre_endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[2]))
+        .unwrap()
+        .timeout(Duration::from_secs(30));
+    pre = PreServiceClient::connect(pre_endpoint).await.unwrap();
     let endpoint = tonic::transport::Endpoint::from_shared(format!("http://{}", addresses[3]))
         .unwrap()
         .timeout(Duration::from_secs(30));
