@@ -777,10 +777,28 @@ fn host_ip(subnet_cidr: &str, offset: u32) -> String {
 /// was the deliberate choice here, not an oversight).
 fn native_vera_ref() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker/NATIVE_VERA_REF");
-    fs::read_to_string(&path)
+    let value = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
         .trim()
-        .to_string()
+        .to_string();
+    // `docker compose` re-interpolates this whole file — including the
+    // required (`:?`), no-default `VERA_REF` build arg — on *every*
+    // subcommand, not just `build`/`up`. Most of this module's and
+    // `compose.rs`'s helper fns (`service_running`, `report_compose_failure`,
+    // `stop_compose`, `compose_exit_code`, `compose_kill`, ...) only pass env
+    // to the one `Command` the caller that needed `build`/`up` set up, so any
+    // later compose invocation they make themselves would otherwise fail to
+    // interpolate and be mistaken for the validator having exited. Exporting
+    // it once, process-wide, means every such invocation inherits it too.
+    // Same idempotent-once convention as `use_fast_test_kdf` in orbis-node's
+    // `test_helpers`.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("VERA_REF").is_none() {
+            std::env::set_var("VERA_REF", &value);
+        }
+    });
+    value
 }
 
 #[cfg(test)]
