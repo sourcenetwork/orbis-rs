@@ -55,4 +55,14 @@ fn rejects_invalid_encodings_and_key_types() {
     ))
     .is_err());
     assert!(ed25519_public_key("did:web:example.com").is_err());
+
+    let invalid_point = (0u8..=255)
+        .map(|byte| [byte; 32])
+        .find(|bytes| ed25519_dalek::VerifyingKey::from_bytes(bytes).is_err())
+        .expect("invalid compressed point");
+    let mut encoded = vec![0xed, 0x01];
+    encoded.extend_from_slice(&invalid_point);
+    let did = format!("did:key:z{}", bs58::encode(encoded).into_string());
+    assert!(ed25519_public_key(&did).is_err());
+    assert!(crate::validate_relay_issuer(&did).is_err());
 }
