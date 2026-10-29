@@ -62,35 +62,16 @@ ignore = [
     "RUSTSEC-2022-0093",
     "RUSTSEC-2024-0344",
 
-    # tendermint-rpc 0.40.4 is the latest tendermint-rpc release and its
-    # http-client feature still pins reqwest 0.11 / rustls-webpki 0.101.x.
-    # We removed its websocket-client feature and use reqwest 0.12 elsewhere.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
-    # h2 0.3.27, pulled in transitively by the same pinned reqwest 0.11 /
-    # hyper 0.14 stack above (via tendermint-rpc's http-client feature) — no
-    # patched 0.3.x release exists (fix landed only in 0.4.16, already picked
-    # up by the newer h2 0.4.x line reqwest 0.12 resolves to elsewhere). Low
-    # severity (unbounded empty DATA frames from a malicious peer). Revisit
-    # alongside the other tendermint-rpc entries above.
-    "RUSTSEC-2026-0258",
-    # Only the Cosmos RPC stack retains rustls 0.21.12. Its default session
-    # store is unchanged and no TLS session secrets are formatted. The stack
-    # has no post-quantum groups; native builds exclude these dependents.
-    { id = "RUSTSEC-2026-0346", reason = "Legacy Cosmos RPC uses the default session store without secret Debug logging; native TLS is patched." },
-    { id = "RUSTSEC-2026-0349", reason = "Legacy Cosmos TLS has no post-quantum key exchange; native TLS is patched and excludes these transport versions." },
+
 ]
 
 # ---------------------------------------------------------------------------
 # Banned crates
 # ---------------------------------------------------------------------------
 [bans]
-# The Cosmos-only compatibility version is the sole exception. Other TLS
-# versions below the patched release are rejected independently of advisories.
+# Reject TLS versions older than the patched release.
 deny = [
-    { name = "rustls", version = "<0.21.12" },
-    { name = "rustls", version = ">0.21.12, <0.23.46" },
+    { name = "rustls", version = "<0.23.46" },
 ]
 # Warn on duplicate versions of the same crate (common with large dep trees)
 multiple-versions = "warn"
