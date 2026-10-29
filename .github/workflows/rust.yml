@@ -9,13 +9,31 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway]
+        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery, vera-image]
         default: full
         required: true
       trust_revision:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
-        default: 11630c1a0b3241bed2799a6c162c4c8e16a4e502
+        default: 8c3dfa70eee62f1b2d3d27cae7941ce4d6ed73d5
+      restart_curve:
+        description: Curve for focused restart qualification
+        type: choice
+        options: [both, bls12-381, jubjub]
+        default: both
+
+      threshold_case:
+        description: Case for focused threshold qualification
+        type: choice
+        options:
+          - all
+          - native_distributed_threshold_workflows
+          - native_pet_threshold_workflows
+          - native_pet_member_replacement
+          - native_pet_member_churn
+          - native_pet_scheduled_refresh_after_restart
+          - native_defra_signing
+        default: all
 
 permissions:
   contents: read
@@ -70,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -84,8 +102,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Update Rust stable
-      run: rustup update stable
+    - name: Check native qualification source guards
+      run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-qualification.py
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo registry / index
       uses: Swatinem/rust-cache@v2
       with:
@@ -95,9 +114,9 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all -- --check
     - name: Install cargo-deny
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
-        tool: cargo-deny
+        tool: cargo-deny@0.20.2
     - name: Check licences
       run: cargo deny check
     # jubjub-wasm is consumed only as a compiled wasm32-unknown-unknown binary
@@ -127,8 +146,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -152,8 +170,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -161,22 +178,25 @@ jobs:
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Check native dependency boundary
-      run: |
-        cargo tree --locked --color never -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --edges normal,build --prefix none > "$RUNNER_TEMP/native-dependencies.txt"
-        if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' "$RUNNER_TEMP/native-dependencies.txt"; then
-          echo "Native node includes Cosmos transport dependencies"
-          exit 1
-        fi
+      run: bash scripts/check-native-dependencies.sh "${{ matrix.crypto }}"
     - name: Check native node and bulletin
       run: |
         cargo clippy --locked -p orbis-node -p bulletin --lib --bins --no-default-features --features native,redb,iroh,${{ matrix.crypto }} -- -D warnings
+    - name: Check reshare participant selection
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib coordinator::reshare::selection::tests -- --test-threads=1
+    - name: Check native authorization and revision anchors
+      if: matrix.crypto == 'bls12-381'
+      run: cargo test --locked -p authz --no-default-features --features native --lib native::tests -- --test-threads=1
     - name: Compile native lifecycle scenarios
       run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup --no-run
+    - name: Check private Go failure diagnostics
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup trust_go_failure_
+    - name: Check bounded polynomial observations
+      run: cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --test native_startup native_polynomial_state_
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
         cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib bootstrap
-        cargo test --locked -p orbis-node --no-default-features --features native,redb,iroh,${{ matrix.crypto }} --lib native_identity_preserves_existing_keys_and_refuses_corruption
         cargo test --locked -p bulletin --no-default-features --features native,${{ matrix.crypto }} --lib native::
 
   # Build the orbis-node integration image once and push it to GHCR (cargo-chef
@@ -184,7 +204,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'vera-image')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -196,7 +216,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - uses: docker/setup-buildx-action@v3
+    - uses: ./.github/actions/docker-builder
     - uses: docker/login-action@v3
       with:
         registry: ghcr.io
@@ -217,7 +237,7 @@ jobs:
         build-args: |
           ENABLE_INTEGRATION_TEST=${{ matrix.backend == 'native' && 'false' || 'true' }}
           BACKEND=${{ matrix.backend }}
-          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
+          RUST_IMAGE=rust:1.98.0-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
         cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
@@ -228,12 +248,18 @@ jobs:
         context: .
         file: docker/Dockerfile
         target: native-diagnostic
+        labels: |
+          org.opencontainers.image.revision=${{ github.sha }}
+          io.sourcenetwork.orbis.backend=native
+          io.sourcenetwork.orbis.curve=${{ matrix.crypto }}
+          io.sourcenetwork.orbis.integration-features=false
+          io.sourcenetwork.orbis.unsafe-testing=true
         push: true
         tags: ${{ env.INTEG_IMAGE }}:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
         build-args: |
           ENABLE_INTEGRATION_TEST=false
           BACKEND=native
-          RUST_IMAGE=${{ matrix.backend == 'native' && 'rust:1.98.0-bookworm' || 'rust:latest' }}
+          RUST_IMAGE=rust:1.98.0-bookworm
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: |
           type=gha,scope=integ-native-${{ matrix.crypto }}
@@ -244,8 +270,7 @@ jobs:
   # `unit` / `integration` jobs restore.
   compile:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-compile-${{ strategy.job-index }}/spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
@@ -260,8 +285,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -269,7 +293,7 @@ jobs:
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Install cargo-nextest
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.crypto }})
@@ -278,8 +302,7 @@ jobs:
   unit:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: compile
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-unit-${{ strategy.job-index }}/spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
     strategy:
@@ -294,8 +317,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -304,7 +326,7 @@ jobs:
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Install cargo-nextest
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
         tool: cargo-nextest
     - name: Unit + in-process tests (${{ matrix.crypto }})
@@ -313,8 +335,7 @@ jobs:
   integration:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
     needs: [compile, image]
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-integration-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     env:
       RUSTFLAGS: -C link-arg=-fuse-ld=lld
       ORBIS_INTEGRATION_CRYPTO: ${{ matrix.crypto }}
@@ -330,11 +351,12 @@ jobs:
           - crypto: jubjub
             cargo_flags: --no-default-features --features=jubjub,redb,integration-test-cosmos,fault-injection,scale-testing
     steps:
+    - name: Verify on-demand runner
+      run: test "${RUNS_ON_INSTANCE_LIFECYCLE:-}" = on-demand
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - name: Update Rust stable
-      run: rustup update stable
+    - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
     - name: Cache cargo + target
       uses: Swatinem/rust-cache@v2
       with:
@@ -343,7 +365,7 @@ jobs:
     - name: Install protoc + lld
       run: sudo apt-get update && sudo apt-get install -y protobuf-compiler lld
     - name: Install cargo-nextest
-      uses: taiki-e/install-action@v2
+      uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
       with:
         tool: cargo-nextest
     - uses: docker/login-action@v3
@@ -362,7 +384,7 @@ jobs:
         --partition count:${{ matrix.shard }}/3
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'common'
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -372,7 +394,7 @@ jobs:
       - name: Read pinned native Vera revision
         id: vera
         run: echo "revision=$(cat docker/NATIVE_VERA_REF)" >> "$GITHUB_OUTPUT"
-      - uses: docker/setup-buildx-action@v3
+      - uses: ./.github/actions/docker-builder
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -393,8 +415,7 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full' || inputs.scope == 'native'
     name: Native lifecycle (${{ matrix.crypto }})
     needs: [image, native-vera-image]
-    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-${{ strategy.job-index }}/\
-      spot=pco/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
+    runs-on: runs-on=${{ github.run_id }}-${{ github.run_attempt }}-native-lifecycle-${{ strategy.job-index }}/spot=false/cpu=16+32/family=c6*+c7*/disk=large/extras=s3-cache
     timeout-minutes: 120
     strategy:
       fail-fast: false
@@ -405,6 +426,8 @@ jobs:
       ORBIS_NATIVE_DIAGNOSTIC_IMAGE: ghcr.io/${{ github.repository }}/node-integration:${{ github.sha }}-native-diagnostic-${{ matrix.crypto }}
       ORBIS_NATIVE_VERA_IMAGE: ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}
     steps:
+      - name: Verify on-demand runner
+        run: test "${RUNS_ON_INSTANCE_LIFECYCLE:-}" = on-demand
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -414,7 +437,7 @@ jobs:
           sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev protobuf-compiler
       - name: Install qualified toolchain
         run: rustup toolchain install 1.98.0 --profile minimal
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
         with:
           tool: cargo-nextest
       - name: Cache dependency downloads
@@ -443,6 +466,104 @@ jobs:
             --test native_startup \
             -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 
+  sign-peer-recovery:
+    name: Signing peer recovery (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'peer-recovery'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: [bls12-381, jubjub]
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      QUALIFICATION_CURVE: ${{ matrix.crypto }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 3
+          path: candidate
+      - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: native-restart-${{ matrix.crypto }}
+          cache-on-failure: true
+      - name: Fetch locked dependencies
+        working-directory: candidate
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: url.https://${{ secrets.PRIVATE_REPO_PAT }}@github.com/sourcenetwork/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/sourcenetwork/
+        run: cargo +1.98.0 fetch --locked
+      - name: Reproduce and fix signing connection retention
+        run: python3 scripts/qualify-sign-peer-recovery.py
+      - name: Retain bounded regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sign-peer-recovery-${{ matrix.crypto }}
+          path: ${{ runner.temp }}/sign-peer-recovery-${{ matrix.crypto }}/results.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  native-restart:
+    name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
+    if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold' || inputs.scope == 'fault' || inputs.scope == 'soak')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crypto: ${{ fromJSON(inputs.restart_curve == 'bls12-381' && '["bls12-381"]' || inputs.restart_curve == 'jubjub' && '["jubjub"]' || '["bls12-381", "jubjub"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
+        with:
+          tool: cargo-nextest
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: native-restart-${{ matrix.crypto }}
+          cache-targets: true
+          cache-on-failure: true
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Qualify native lifecycle
+        env:
+          NATIVE_RESTART_CURVE: ${{ matrix.crypto }}
+          NATIVE_RESTART_SUITE: ${{ inputs.scope }}
+          NATIVE_LIFECYCLE_CASE: ${{ inputs.threshold_case }}
+        run: python3 scripts/qualify-native-restart.py
+      - name: Retain bounded lifecycle results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: native-${{ inputs.scope }}-${{ matrix.crypto }}-results
+          path: ${{ runner.temp }}/native-${{ inputs.scope }}-${{ matrix.crypto }}/results.json
+          retention-days: 3
+          if-no-files-found: warn
+
   native-trust-artifacts:
     name: Build native Trust ring artifacts once
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.scope == 'gateway' }}
@@ -455,6 +576,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Validate immutable fixture input
+        id: sources
         env:
           TRUST_REVISION: ${{ inputs.trust_revision }}
         run: python3 scripts/native_trust_hosted.py validate --trust-ref "$TRUST_REVISION"
@@ -467,13 +589,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: sourcenetwork/vera.rs
-          ref: 1dab0c4562da551b1a7f00fcea643b914769891c
+          ref: ${{ steps.sources.outputs.vera }}
           path: .native/vera
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: sourcenetwork/defradb.rs
-          ref: 88e148a7387e00d9dd6fbf6ab78701d6e2bef452
+          ref: ${{ steps.sources.outputs.defra }}
           path: .native/defra
           persist-credentials: false
       - name: Install qualified native build dependencies
@@ -486,8 +608,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: native-trust-artifacts-${{ runner.os }}-88e148a7
-      - uses: docker/setup-buildx-action@v3
+          key: native-trust-artifacts-${{ runner.os }}-${{ steps.sources.outputs.defra }}
+      - uses: ./.github/actions/docker-builder
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io

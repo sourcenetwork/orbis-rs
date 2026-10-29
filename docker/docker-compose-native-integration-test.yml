@@ -11,12 +11,10 @@
 # through Docker's own ephemeral published-port mapping, same as the Cosmos
 # file.
 #
-# To pin a different native Vera chain revision or crypto feature:
-#   VERA_REF=<40-char sha> ORBIS_INTEGRATION_CRYPTO=jubjub \
+# To use the pinned native Vera chain revision:
+#   VERA_REF=$(cat docker/NATIVE_VERA_REF) ORBIS_INTEGRATION_CRYPTO=jubjub \
 #     docker compose -f docker/docker-compose-native-integration-test.yml up --build -d
-# Defaults match docker/NATIVE_VERA_REF and bls12-381. (`crates/test-support`'s
-# Rust harness always sets VERA_REF explicitly from that file — this fallback
-# is only for a standalone `docker compose` invocation that bypasses it.)
+# The test harness reads docker/NATIVE_VERA_REF and sets VERA_REF explicitly.
 #
 # `ORBIS_NATIVE_VERA{1..4}_DIR` / `ORBIS_NATIVE_NODE{1..4}_DIR` / `ORBIS_NATIVE_DEPLOYMENT`
 # are set by crates/test-support/src/native_network.rs before bringing the
@@ -34,12 +32,13 @@
 # them, and only then starts the containers.
 services:
   vera1:
+    user: "${ORBIS_NATIVE_VERA1_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-892cf0582e9d9395574cd5e8900988cb4a6ebd21}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -58,12 +57,13 @@ services:
       start_period: 30s
 
   vera2:
+    user: "${ORBIS_NATIVE_VERA2_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-892cf0582e9d9395574cd5e8900988cb4a6ebd21}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -82,12 +82,13 @@ services:
       start_period: 30s
 
   vera3:
+    user: "${ORBIS_NATIVE_VERA3_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-892cf0582e9d9395574cd5e8900988cb4a6ebd21}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -106,12 +107,13 @@ services:
       start_period: 30s
 
   vera4:
+    user: "${ORBIS_NATIVE_VERA4_USER:-0:0}"
     image: ${ORBIS_NATIVE_VERA_IMAGE:-orbis-vera-native:local}
     build:
       context: .
       dockerfile: Dockerfile.native-vera-integration
       args:
-        VERA_REF: ${VERA_REF:-892cf0582e9d9395574cd5e8900988cb4a6ebd21}
+        VERA_REF: ${VERA_REF:?Set VERA_REF from docker/NATIVE_VERA_REF}
     entrypoint: ["verad"]
     working_dir: /data
     command: ["--config", "/data/config.toml", "--data-dir", "/data", "--chain-id", "${ORBIS_NATIVE_DEPLOYMENT:-9000}", "validator", "--peers", "/data/peers.json", "--rpc-port", "8645", "--leader-timeout-ms", "500", "--notarization-timeout-ms", "1000", "--nullify-retry-ms", "2000"]
@@ -130,6 +132,7 @@ services:
       start_period: 30s
 
   node1:
+    user: "${ORBIS_NATIVE_NODE1_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -167,7 +170,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE1_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -185,6 +189,7 @@ services:
       start_period: 30s
 
   node2:
+    user: "${ORBIS_NATIVE_NODE2_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -222,7 +227,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE2_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -240,6 +246,7 @@ services:
       start_period: 30s
 
   node3:
+    user: "${ORBIS_NATIVE_NODE3_USER:-0:0}"
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
       context: ..
@@ -277,7 +284,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE3_IP}
     depends_on:
       vera1:
         condition: service_healthy
@@ -295,6 +303,7 @@ services:
       start_period: 30s
 
   node4:
+    user: "${ORBIS_NATIVE_NODE4_USER:-0:0}"
     profiles: ["node4"]
     image: ${ORBIS_NATIVE_IMAGE:-orbis-node-native:local}
     build:
@@ -333,7 +342,8 @@ services:
     ports:
       - "127.0.0.1::50051"
     networks:
-      - orbis-native-integration-network
+      orbis-native-integration-network:
+        ipv4_address: ${ORBIS_NATIVE_NODE4_IP}
     depends_on:
       vera1:
         condition: service_healthy

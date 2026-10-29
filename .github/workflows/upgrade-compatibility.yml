@@ -36,14 +36,26 @@ jobs:
         crypto: ${{ fromJSON(github.event_name == 'pull_request' && '["bls12-381","jubjub"]' || inputs.crypto == 'both' && '["bls12-381","jubjub"]' || format('["{0}"]', inputs.crypto)) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out workflow actions
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Check out upgrade target
+        uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.to_ref || github.sha }}
+          path: upgrade-target
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Configure Docker Hub cache
+        uses: ./.github/actions/docker-builder
+
       - name: Run cross-commit upgrade gate
         shell: bash
+        working-directory: upgrade-target
         # Pin the network launch revision so every target is checked against
         # the same compatibility baseline, including manual runs.
         # The harness auto-selects --fresh-target-chain when HEAD's

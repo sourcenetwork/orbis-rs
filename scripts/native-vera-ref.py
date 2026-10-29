@@ -6,11 +6,13 @@ import re
 MANIFESTS = ("bin/cli-tool/Cargo.toml", "bin/orbis-node/Cargo.toml",
              "crates/authz/Cargo.toml", "crates/bulletin/Cargo.toml", "crates/test-support/Cargo.toml")
 
-def revision(root):
+def revision(root, repository="vera.rs", manifests=MANIFESTS):
     pins = []
-    for name in MANIFESTS:
+    if repository == "vera.rs":
+        manifests = ("Cargo.toml",)
+    for name in manifests:
         declarations = [line for line in (root / name).read_text().splitlines()
-                        if 'git = "https://github.com/sourcenetwork/vera.rs"' in line]
+                        if f'git = "https://github.com/sourcenetwork/{repository}"' in line]
         if not declarations:
             raise ValueError("missing native SDK declarations")
         for line in declarations:

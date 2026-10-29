@@ -178,12 +178,33 @@ impl PeerConnectionPool {
         peer_id_str: &str,
         protocol: &[u8],
     ) -> Result<(Box<dyn Connection>, Arc<dyn PeerConnection>), network::error::NetworkError> {
+        self.open_stream_observed(network, peer_id_str, protocol, |_| {})
+            .await
+    }
+
+    /// Observe the parent before stream allocation can block. `None` means a
+    /// connection is being acquired; a timeout must not evict another caller's
+    /// replacement while that acquisition is still in progress.
+    pub(crate) async fn open_stream_observed<F>(
+        &self,
+        network: &Arc<dyn Network>,
+        peer_id_str: &str,
+        protocol: &[u8],
+        mut observe: F,
+    ) -> Result<(Box<dyn Connection>, Arc<dyn PeerConnection>), network::error::NetworkError>
+    where
+        F: FnMut(Option<&Arc<dyn PeerConnection>>) + Send,
+    {
+        observe(None);
         let conn = self.get_or_connect(network, peer_id_str, protocol).await?;
+        observe(Some(&conn));
         match conn.open_stream().await {
             Ok(stream) => Ok((stream, conn)),
             Err(_) => {
                 self.invalidate_if_same(peer_id_str, protocol, &conn).await;
+                observe(None);
                 let fresh = self.get_or_connect(network, peer_id_str, protocol).await?;
+                observe(Some(&fresh));
                 let stream = fresh.open_stream().await?;
                 Ok((stream, fresh))
             }
