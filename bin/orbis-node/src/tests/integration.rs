@@ -20,10 +20,70 @@ mod reshare_scenario;
 mod sign_scenario;
 
 // Harness-unification migration: the compile-time-selected test environment
-// for this backend. Not called by any test yet (that's a later migration
-// PR) — `#[allow(dead_code)]` until then.
-#[allow(unused_imports)]
+// for this backend.
 use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
+
+/// Scaffolding proving the harness-unification migration's fixture
+/// materialization (rings/policies) actually works against a real cluster,
+/// not just compiles — delete once a real scenario test uses
+/// `TestEnvironmentImpl` directly.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_test_environment_materializes_standard_fixture() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    const SCAFFOLD_POLICY_YAML: &str = r#"
+name: harness unification scaffold policy
+resources:
+- name: document
+  permissions:
+  - name: read
+    expr: reader
+  relations:
+  - name: reader
+    types:
+    - actor
+"#;
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: SCAFFOLD_POLICY_YAML.to_string(),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: false,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    assert_eq!(environment.fixture().policies.len(), 1);
+    assert_eq!(environment.fixture().rings.len(), 1);
+    assert!(!environment.fixture().policies[&policy].id.0.is_empty());
+    assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
+}
 
 use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{BulletinKind, RingPayload};
