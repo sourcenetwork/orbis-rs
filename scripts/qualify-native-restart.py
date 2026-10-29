@@ -96,7 +96,7 @@ def verified_image_id(info, variable, image, curve):
 
 
 def capture(command):
-    return subprocess.check_output(command, text=True).strip()
+    return subprocess.check_output(command, text=True, timeout=300).strip()
 
 
 def build_vera_image(output, env, curve):
@@ -532,7 +532,7 @@ def qualify():
     curve = os.environ["NATIVE_RESTART_CURVE"]
     if curve not in ("bls12-381", "jubjub"):
         raise ValueError("unsupported curve")
-    subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", RUNTIME], check=True)
+    subprocess.run(["git", "fetch", "--no-tags", "--depth=1", "origin", RUNTIME], check=True, timeout=600)
     source = verified_fixture_source(RUNTIME)
     if Path("docker/NATIVE_VERA_REF").read_text().strip() != VERA:
         raise ValueError("Vera source does not match the runtime image")
@@ -575,7 +575,7 @@ def qualify():
         )
     for variable, image in images.items():
         if variable != "ORBIS_NATIVE_VERA_IMAGE":
-            subprocess.run(["docker", "pull", image], check=True)
+            subprocess.run(["docker", "pull", image], check=True, timeout=1800)
         info = json.loads(capture(["docker", "image", "inspect", image]))[0]
         env[variable] = verified_image_id(info, variable, image, curve)
     binary = capture(["docker", "run", "--rm", "--entrypoint", "sha256sum",
@@ -619,7 +619,11 @@ def qualify():
             report.unlink(missing_ok=True)
         with log.open("x") as stream:
             os.chmod(log, 0o600)
-            result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT)
+            try:
+                result = subprocess.run(command, env=env, stdout=stream, stderr=subprocess.STDOUT,
+                                        timeout=5400)
+            except subprocess.TimeoutExpired:
+                result = subprocess.CompletedProcess(command, 124)
         if verified_fixture_source(RUNTIME) != source:
             raise ValueError("qualification source changed during execution")
         codes.append(result.returncode)
