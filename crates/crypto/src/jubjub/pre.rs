@@ -233,6 +233,10 @@ impl ThresholdDealer for ThresholdDealerNode {
 
         let mut nonce_bytes = [0u8; 12];
         rng.fill_bytes(&mut nonce_bytes);
+        // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+        // upgrade to generic-array 1.x"), but aes-gcm 0.10 has no non-deprecated path
+        // off it yet; the API itself is unaffected.
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(&nonce_bytes);
         let payload = Payload {
             msg: data,
@@ -391,6 +395,7 @@ impl ThresholdDealer for ThresholdDealerNode {
         // AAD = context_digest(context, U). A wrong context or commitment fails the open.
         let aad = context::context_digest(context, &secret.enc_cmt);
 
+        #[allow(deprecated)]
         let nonce = Nonce::from_slice(&secret.nonce);
         let payload = Payload {
             msg: secret.encrypted_data.as_ref(),

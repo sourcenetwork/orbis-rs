@@ -16,7 +16,7 @@ uuid = { version = "1.0", features = ["v4"] }
 crypto = { path = "../../crates/crypto", default-features = false }
 authn = { path = "../../crates/authn" }
 authz = { path = "../../crates/authz" }
-common = { path = "../../crates/common" }
+common = { path = "../../crates/common", features = ["integration-test-cosmos"] }
 bulletin = { path = "../../crates/bulletin", default-features = false, features = ["vera"] }
 hex = { workspace = true }
 serde = { workspace = true }

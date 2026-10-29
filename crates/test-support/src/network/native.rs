@@ -1,7 +1,7 @@
 //! Native arm of the dispatch wrapper: a validator cluster
 //! ([`crate::NativeTestNetwork`]) plus Orbis node containers, both on the
 //! *same* Docker Compose project (`docker/docker-compose-native-integration-test.yml`),
-//! brought up in two stages because each Orbis node's `vera.json` fixture
+//! brought up in two stages because each Orbis node's `services.json` fixture
 //! needs the chain's deployment root — only known once the validators have
 //! produced a block.
 //!
@@ -254,16 +254,23 @@ async fn bring_up_orbis_nodes(
         fs::create_dir_all(&dir).expect("create native orbis node fixture dir");
         fs::write(dir.join("password"), "native-dkg-test").expect("write node password fixture");
         fs::write(
-            dir.join("vera.json"),
+            dir.join("services.json"),
             serde_json::to_vec(&serde_json::json!({
-                "endpoint": endpoint,
-                "deployment_id": cluster.deployment(),
-                "deployment_root": cluster.deployment_root_hex(),
-                "consensus_key": cluster.consensus_key_hex(),
+                "authz": {
+                    "endpoint": endpoint,
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
+                "bulletin": {
+                    "endpoint": endpoint,
+                    "deployment_id": cluster.deployment(),
+                    "deployment_root": cluster.deployment_root_hex(),
+                    "consensus_key": cluster.consensus_key_hex(),
+                },
             }))
             .unwrap(),
         )
-        .expect("write node vera.json fixture");
+        .expect("write node services.json fixture");
         command.env(
             format!("ORBIS_NATIVE_NODE{}_USER", index + 1),
             crate::bind_mount_user(&dir).expect("node fixture owner"),

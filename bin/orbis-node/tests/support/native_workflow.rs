@@ -100,7 +100,7 @@ impl NativeWorkflow {
             std::env::var_os("ORBIS_NATIVE_E2E_DIR").map(PathBuf::from),
             std::env::var("VERA_E2E_KEEP").is_ok_and(|value| value == "1"),
         );
-        // Writes each node's `vera.json`/`password` fixture, builds the shared
+        // Writes each node's `services.json`/`password` fixture, builds the shared
         // node image once, and brings `node1..node3` up together — see
         // `bring_up_orbis_nodes`'s doc comment (native_startup.rs). `1`:
         // matches this function's pre-migration hardcoded

@@ -143,6 +143,11 @@ pub fn internal_chain_config() -> ChainConfig {
         .build()
 }
 
+/// Where [`run_upgrade_node`] writes [`stable_services_config`] before
+/// parsing [`stable_node_arguments`] — ephemeral container-local storage
+/// outside the `/data/dbs` volume, rewritten identically on every start.
+const STABLE_SERVICES_CONFIG_PATH: &str = "/data/services.json";
+
 pub fn stable_node_arguments(index: usize) -> Result<Vec<String>> {
     if !(1..=NODE_COUNT).contains(&index) {
         bail!("upgrade node index must be in 1..={NODE_COUNT}, got {index}");
@@ -153,16 +158,8 @@ pub fn stable_node_arguments(index: usize) -> Result<Vec<String>> {
         "0.0.0.0:50051".to_string(),
         "--log-level".to_string(),
         "info".to_string(),
-        "--authz-grpc".to_string(),
-        "http://sourcehub:9090".to_string(),
-        "--bulletin-grpc".to_string(),
-        "http://sourcehub:9090".to_string(),
-        "--chain-rpc".to_string(),
-        "http://sourcehub:26657".to_string(),
-        "--chain-rest".to_string(),
-        "http://sourcehub:1317".to_string(),
-        "--chain-gas-multiplier".to_string(),
-        "3".to_string(),
+        "--services-config".to_string(),
+        STABLE_SERVICES_CONFIG_PATH.to_string(),
         "--metrics-addr".to_string(),
         "0.0.0.0:9090".to_string(),
         "--runtime-base-path".to_string(),
@@ -176,7 +173,25 @@ pub fn stable_node_arguments(index: usize) -> Result<Vec<String>> {
     ])
 }
 
+/// The vera/vera `NodeServicesConfig` JSON matching the chain endpoints and
+/// gas multiplier the old, pre-factory-refactor `--authz-grpc`/`--bulletin-grpc`/
+/// `--chain-rpc`/`--chain-rest`/`--chain-gas-multiplier` flags used to set.
+fn stable_services_config() -> serde_json::Value {
+    let chain = serde_json::json!({
+        "grpc_url": "http://sourcehub:9090",
+        "rpc_url": "http://sourcehub:26657",
+        "rest_url": "http://sourcehub:1317",
+        "gas_multiplier": 3.0,
+    });
+    serde_json::json!({ "authz": chain, "bulletin": chain })
+}
+
 pub async fn run_upgrade_node(index: usize) -> Result<()> {
+    write_json(
+        Path::new(STABLE_SERVICES_CONFIG_PATH),
+        &stable_services_config(),
+    )
+    .context("write stable upgrade-node services config")?;
     let args = orbis_node::Args::try_parse_from(stable_node_arguments(index)?)
         .context("translate stable upgrade-node contract into current node arguments")?;
     orbis_node::run(args)

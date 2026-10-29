@@ -1,10 +1,7 @@
 use anyhow::{bail, ensure, Context, Result};
-use bulletin::native::{decode_node_signing_key, NativeConfig};
+use bulletin::native::{decode_node_signing_key, open_native_worker, NativeConfig};
 use clap::{Parser, Subcommand};
-use local_storage::{
-    r#trait::{LocalStorage, LocalStorageKeys},
-    redb::RedbStorage,
-};
+use local_storage::{r#trait::LocalStorage, redb::RedbStorage};
 use serde_json::json;
 use std::{
     fs,
@@ -130,21 +127,11 @@ fn open_worker(args: &Args, config: &NativeConfig) -> Result<NativeWorker> {
             .context("store path is not UTF-8")?
             .to_owned(),
     )?;
-    Ok(NativeWorker::open(
+    Ok(open_native_worker(
+        &storage,
         &base.join("worker"),
+        config.root,
         config.deployment_id,
-        |name| {
-            storage
-                .get_encrypted(LocalStorageKeys::NativeWorkerKey(name.into()))
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "worker key is missing".to_owned())
-        },
-        |name, bytes| {
-            storage.set_encrypted(
-                LocalStorageKeys::NativeWorkerKey(name.into()),
-                Zeroizing::new(bytes.to_vec()),
-            )
-        },
     )?)
 }
 
@@ -169,8 +156,9 @@ fn observe(timestamp: u64, config: &NativeConfig) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let config =
-        NativeConfig::load(&args.vera_config).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let raw: bulletin::native::NativeBulletinConfig =
+        serde_json::from_slice(&read_bounded(&args.vera_config, 16 * 1024)?)?;
+    let config = NativeConfig::try_from(raw).map_err(|e| anyhow::anyhow!(e.to_string()))?;
     if let Command::RingId { request, actor } = &args.command {
         let RingCommand::Create(ring) = ring_command(request)? else {
             bail!("ring-id requires a Create request")

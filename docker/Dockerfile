@@ -51,13 +51,19 @@ RUN case "$BACKEND" in \
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo chef cook --release --recipe-path recipe.json \
-      --bin orbis-node --no-default-features --features "$(cat /orbis-features)"
+      -p orbis-node --bin orbis-node --no-default-features --features "$(cat /orbis-features)"
 
 # 2. Build the workspace against the cooked deps. Only this layer re-runs on a
 #    source change, and it recompiles just the workspace crates.
+#
+# `-p orbis-node` (not just `--bin orbis-node`) matters here: without it, Cargo
+# scopes feature resolution to every workspace default-member, including
+# orbis-bench, which pins its own `orbis-node` dev-dependency to
+# `authz-vera`/`bulletin-vera` unconditionally — unifying those into this same
+# `orbis-node` crate instance and conflicting with a `native`-selected build.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    cargo build --release --locked --bin orbis-node --no-default-features \
+    cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features \
       --features "$(cat /orbis-features)" && \
     if [ "$BACKEND" = "native" ]; then \
       cargo tree --locked -p orbis-node --no-default-features --features "$(cat /orbis-features)" \
@@ -70,7 +76,7 @@ FROM builder AS native-diagnostic-builder
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     test "$BACKEND" = "native" && test "$ENABLE_INTEGRATION_TEST" = "false" && \
     features="$(cat /orbis-features),unsafe-testing" && \
-    cargo build --release --locked --bin orbis-node --no-default-features --features "$features" && \
+    cargo build --release --locked -p orbis-node --bin orbis-node --no-default-features --features "$features" && \
     cargo tree --locked -p orbis-node --no-default-features --features "$features" \
       --edges normal,build --prefix none > /native-diagnostic-dependencies.txt && \
     if grep -E '^(cosmrs|tendermint(-rpc|-config|-proto)?|cosmos-sdk-proto) v' /native-diagnostic-dependencies.txt; then exit 1; fi && \

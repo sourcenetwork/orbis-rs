@@ -10,6 +10,8 @@ use common::blockchain::{
     ChainConfigBuilder, VeraClient,
 };
 
+#[cfg(feature = "startup")]
+pub mod startup;
 #[cfg(test)]
 mod tests;
 

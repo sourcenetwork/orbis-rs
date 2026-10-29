@@ -37,6 +37,16 @@ impl BootstrapStatus {
     }
 }
 
+impl common::startup::StartupProgress for BootstrapStatus {
+    fn set_phase(&self, phase: common::startup::ConnectionPhase) {
+        self.set_status(match phase {
+            common::startup::ConnectionPhase::Connecting => NodeStatus::ConnectingToChain,
+            common::startup::ConnectionPhase::WaitingForFunding => NodeStatus::WaitingForFunding,
+            common::startup::ConnectionPhase::Funded => NodeStatus::Funded,
+        });
+    }
+}
+
 pub(crate) struct BootstrapInfoServer {
     local_addr: SocketAddr,
     status: BootstrapStatus,

@@ -44,7 +44,7 @@ Defined in [`Cargo.toml`](Cargo.toml):
 From [`helpers/launch.rs`](src/helpers/launch.rs) (`clap` **`Args`**):
 
 - **`--addr`** — gRPC bind (default `[::1]:50051`).
-- **`--authz-grpc`**, **`--bulletin-grpc`**, **`--chain-rpc`**, **`--chain-rest`**, **`--denom`** — chain endpoints for authz and bulletin.
+- **`--services-config`** — JSON file containing independent `authz` and `bulletin` sections for the implementations selected at compile time.
 - **`--metrics-addr`** — optional Prometheus scrape HTTP server.
 - **`--loki-url`** — optional Loki log shipping.
 - **`--runtime-base-path`** — base directory for runtime files. The database is stored as `<PATH>/dbs/orbis.<backend>` (`orbis.redb` with the default backend), and the node public key is written to `<PATH>/public_key.txt`.
@@ -90,8 +90,8 @@ storage and the node network identity key. Treat both as production secrets.
 
 ## Cosmos endpoint trust
 
-In Cosmos mode, the node **fully trusts** the Vera endpoints it is configured with
-(`--chain-rpc`, `--chain-rest`, `--bulletin-grpc`, `--authz-grpc`). Bulletin
+In Cosmos mode, the node **fully trusts** the Vera endpoints in the `authz` and
+`bulletin` sections of `--services-config`. Bulletin
 reads are plain RPC responses — there is **no light-client or Merkle-proof
 verification**. Everything security-critical flows from those reads: ring
 payloads and committee membership, peer routing (`NodeInfo`), reporting
@@ -101,17 +101,17 @@ this node.
 
 Operational rules:
 
-- **Run your own Vera full node** and point every chain endpoint flag at
+- **Run your own Vera full node** and point every chain endpoint setting at
   it — colocated on the same host or on an operator-controlled network path.
   Never use a third-party or public RPC endpoint for a production ring node.
 - If the chain node is not on localhost, protect the path to it (TLS and/or a
   private network); the RPC connection is the root of trust for this node.
-  This is **enforced**: `--chain-rpc` / `--chain-rest` are rejected at startup
+  This is **enforced**: `rpc_url` / `rest_url` are rejected at startup
   if they are plaintext `http://` to a host that is not loopback, RFC-1918 /
   unique-local / link-local / CGNAT, a single-label container/service name, or
   a `*.internal` / `*.local` / `*.lan` / `*.home.arpa` name. Use `https://`, a
   local/private endpoint, or — only if the endpoint is reached over a private
-  network you control — `--allow-insecure-rpc` (env `ORBIS_ALLOW_INSECURE_RPC`).
+  network you control — set `allow_insecure_rpc` in the relevant services-config section.
 - The `ring_state_sha256` bound into signed reporting statements limits
   *silent* divergence between honest nodes (statements built from different
   ring states will not co-sign), but it does not protect a node whose own RPC
@@ -225,28 +225,39 @@ signed requests cannot be reused. Encrypting clients and node verifiers must use
 matching ciphertext-context encoding.
 
 Select `jubjub` instead of `bls12-381` for the Jubjub crypto implementation. Start with
-`--vera-config /path/to/vera.json --node-controller-key <compressed-secp256k1-public-key>`.
+`--services-config /path/to/services.json --node-controller-key <compressed-secp256k1-public-key>`.
 The configuration selects native authorization and bulletin operations through the
 existing `Authz` and `Bulletin` traits. Both backends use the same bootstrap
 handoff, node initialization, request handlers and shutdown path. Backend setup
 provides the identity and service adapters. This build excludes the Cosmos SDK and
 CometBFT transport dependencies. Default builds retain the existing backend; adding
-`--features native` to a default build includes both. Native-only startup requires
-`--vera-config` and reports a missing configuration before opening node state.
+`--features native` to a default build is invalid because each trait selects exactly
+one implementation. Native-only startup requires `--services-config` and reports a
+missing or invalid configuration before prompting for storage credentials or opening
+node state.
 The separate `harness` and `integration-test` features retain the dependencies used
 by their existing test identities and fixtures.
 
-Supply the controller public key as 33 hex-encoded bytes. Existing connection and
-fee options cannot be combined with `--vera-config`.
+Supply the controller public key as 33 hex-encoded bytes. Authz and bulletin are
+configured independently even when both select the native implementation:
 
 ```json
 {
-  "endpoint": "http://127.0.0.1:8545",
-  "deployment_id": 9001,
-  "deployment_root": "<32-byte genesis digest, hex without prefix>",
-  "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
-  "max_evidence_age_secs": 30,
-  "request_timeout_secs": 30
+  "authz": {
+    "endpoint": "http://127.0.0.1:8545",
+    "deployment_root": "<32-byte genesis digest, hex without prefix>",
+    "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
+    "max_evidence_age_secs": 30,
+    "request_timeout_secs": 30
+  },
+  "bulletin": {
+    "endpoint": "http://127.0.0.1:8545",
+    "deployment_id": 9001,
+    "deployment_root": "<32-byte genesis digest, hex without prefix>",
+    "consensus_key": "<Commonware-encoded consensus public key, hex without prefix>",
+    "max_evidence_age_secs": 30,
+    "request_timeout_secs": 30
+  }
 }
 ```
 
@@ -255,7 +266,7 @@ trusted deployment configuration. The consensus key is separate from Orbis's nod
 and threshold service keys. Startup verifies the first certified revision against
 the configured genesis digest before opening the submission journal. Current reads
 reject stale evidence; the two time bounds default to 30 seconds. Configurations
-reject unknown and duplicate fields and are limited to 16 KiB.
+reject unknown and duplicate fields and the complete services file is limited to 64 KiB.
 
 Use `--runtime-base-path` for persistent node state and `ORBIS_PASSWORD_FILE` for the
 file holding its encryption password. Node signing keys use 64 hex characters in

@@ -1,21 +1,25 @@
 use commonware_codec::DecodeExt;
 use serde::Deserialize;
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::time::Duration;
 use vera_domain::ConsensusPublicKey;
 
-const MAX_CONFIG_BYTES: u64 = 16 * 1024;
-
-#[derive(Deserialize)]
+/// Raw, directly-`Deserialize`-able shape of the `bulletin` section of the
+/// node's services-config file — the `BulletinFactory::Config` for
+/// `NativeBulletinFactory`. Deliberately not shared with `authz::native`'s
+/// own config, even though a real deployment's values usually match: keeping
+/// them separate is what lets native bulletin pair with a non-native authz
+/// backend (or vice versa) instead of permanently coupling the two.
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigFile {
-    endpoint: String,
-    deployment_id: u64,
-    deployment_root: String,
-    consensus_key: String,
+pub struct NativeBulletinConfig {
+    pub endpoint: String,
+    pub deployment_id: u64,
+    pub deployment_root: String,
+    pub consensus_key: String,
     #[serde(default = "default_timeout")]
-    max_evidence_age_secs: u64,
+    pub max_evidence_age_secs: u64,
     #[serde(default = "default_timeout")]
-    request_timeout_secs: u64,
+    pub request_timeout_secs: u64,
 }
 
 fn default_timeout() -> u64 {
@@ -24,12 +28,6 @@ fn default_timeout() -> u64 {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("cannot read native Vera configuration")]
-    Read(#[from] std::io::Error),
-    #[error("native Vera configuration exceeds 16 KiB")]
-    TooLarge,
-    #[error("invalid native Vera configuration JSON")]
-    Json(#[from] serde_json::Error),
     #[error("invalid native Vera endpoint")]
     Url(#[from] url::ParseError),
     #[error("native Vera endpoint must be an HTTP(S) URL without credentials or a fragment")]
@@ -61,17 +59,13 @@ pub struct NativeConfig {
     pub timeout: Duration,
 }
 
-impl NativeConfig {
-    /// Read a bounded trust file, rejecting unknown or duplicate fields and invalid bounds.
-    pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let mut bytes = Vec::new();
-        fs::File::open(path)?
-            .take(MAX_CONFIG_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_CONFIG_BYTES {
-            return Err(ConfigError::TooLarge);
-        }
-        let raw: ConfigFile = serde_json::from_slice(&bytes)?;
+impl TryFrom<NativeBulletinConfig> for NativeConfig {
+    type Error = ConfigError;
+
+    /// Validate a deserialized `bulletin` config section: reject invalid
+    /// bounds and encodings. Unknown/duplicate fields are already rejected
+    /// by `NativeBulletinConfig`'s own `Deserialize` derive.
+    fn try_from(raw: NativeBulletinConfig) -> Result<Self, ConfigError> {
         let endpoint = url::Url::parse(&raw.endpoint)?;
         if !matches!(endpoint.scheme(), "http" | "https")
             || endpoint.host_str().is_none()
@@ -110,17 +104,19 @@ mod tests {
     use super::*;
     use commonware_codec::Encode;
 
+    fn load(value: &serde_json::Value) -> Result<NativeConfig, ()> {
+        let raw: NativeBulletinConfig = serde_json::from_value(value.clone()).map_err(|_| ())?;
+        NativeConfig::try_from(raw).map_err(|_| ())
+    }
+
     #[test]
     fn native_config_rejects_ambiguous_or_invalid_trust() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("vera.json");
         let valid = serde_json::json!({
             "endpoint": "http://127.0.0.1:8545", "deployment_id": 9001,
             "deployment_root": hex::encode([7; 32]),
             "consensus_key": hex::encode(vera_harness::cluster::KeySet::builder().seed(9001).build().unwrap().epoch_info().output.public().public().encode()),
         });
-        fs::write(&path, serde_json::to_vec(&valid).unwrap()).unwrap();
-        assert!(NativeConfig::load(&path).is_ok());
+        assert!(load(&valid).is_ok());
         for (key, value) in [
             (
                 "endpoint",
@@ -133,15 +129,16 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             invalid[key] = value;
-            fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
-            assert!(NativeConfig::load(&path).is_err(), "{key}");
+            assert!(load(&invalid).is_err(), "{key}");
         }
-        let duplicate = serde_json::to_string(&valid)
-            .unwrap()
-            .replace("{", "{\"deployment_id\":1,");
-        fs::write(&path, duplicate).unwrap();
-        assert!(NativeConfig::load(&path).is_err());
-        fs::write(&path, vec![b' '; MAX_CONFIG_BYTES as usize + 1]).unwrap();
-        assert!(NativeConfig::load(&path).is_err());
+        // Duplicate JSON keys are rejected by `NativeBulletinConfig`'s derived
+        // `Deserialize` itself (serde errors on a field visited twice) — test
+        // the raw text directly, since parsing into an untyped `Value` first
+        // would silently collapse the duplicate before this struct ever sees it.
+        let duplicate =
+            serde_json::to_string(&valid)
+                .unwrap()
+                .replacen('{', "{\"deployment_id\":1,", 1);
+        assert!(serde_json::from_str::<NativeBulletinConfig>(&duplicate).is_err());
     }
 }

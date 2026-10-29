@@ -410,19 +410,19 @@ impl NativeTestNetwork {
     }
 
     /// Hex-encoded (no `0x` prefix) deployment root, ready to drop straight
-    /// into a `vera.json` fixture's `deployment_root` field.
+    /// into a `services.json` fixture's `deployment_root` field.
     pub fn deployment_root_hex(&self) -> &str {
         &self.root_hex
     }
 
     /// Hex-encoded consensus public key, ready to drop straight into a
-    /// `vera.json` fixture's `consensus_key` field.
+    /// `services.json` fixture's `consensus_key` field.
     pub fn consensus_key_hex(&self) -> &str {
         &self.consensus_key_hex
     }
 
     /// A validator's Compose service name (`vera1`..`vera4`), the endpoint an
-    /// Orbis-node container reaches it at (e.g. a `vera.json` fixture's
+    /// Orbis-node container reaches it at (e.g. a `services.json` fixture's
     /// `"endpoint"` field should be `http://{name}:{VERA_RPC_PORT}` — these
     /// containers share this cluster's bridge network, so the service name
     /// resolves; a host-published port, by contrast, is only reachable from
@@ -777,10 +777,28 @@ fn host_ip(subnet_cidr: &str, offset: u32) -> String {
 /// was the deliberate choice here, not an oversight).
 pub(crate) fn native_vera_ref() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker/NATIVE_VERA_REF");
-    fs::read_to_string(&path)
+    let value = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
         .trim()
-        .to_string()
+        .to_string();
+    // `docker compose` re-interpolates this whole file — including the
+    // required (`:?`), no-default `VERA_REF` build arg — on *every*
+    // subcommand, not just `build`/`up`. Most of this module's and
+    // `compose.rs`'s helper fns (`service_running`, `report_compose_failure`,
+    // `stop_compose`, `compose_exit_code`, `compose_kill`, ...) only pass env
+    // to the one `Command` the caller that needed `build`/`up` set up, so any
+    // later compose invocation they make themselves would otherwise fail to
+    // interpolate and be mistaken for the validator having exited. Exporting
+    // it once, process-wide, means every such invocation inherits it too.
+    // Same idempotent-once convention as `use_fast_test_kdf` in orbis-node's
+    // `test_helpers`.
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        if std::env::var_os("VERA_REF").is_none() {
+            std::env::set_var("VERA_REF", &value);
+        }
+    });
+    value
 }
 
 #[cfg(test)]

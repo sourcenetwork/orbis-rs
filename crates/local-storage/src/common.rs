@@ -100,6 +100,10 @@ impl StoredKdfParams {
 pub fn encrypt_value(cipher: &Aes256Gcm, aad: &[u8], value: &[u8]) -> Result<Vec<u8>> {
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
+    // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+    // upgrade to generic-array 1.x"), but aes-gcm 0.10 has no non-deprecated path
+    // off it yet; the API itself is unaffected.
+    #[allow(deprecated)]
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -120,6 +124,7 @@ pub fn decrypt_value(cipher: &Aes256Gcm, aad: &[u8], encrypted: &[u8]) -> Result
         return Err(LocalStorageError::CorruptData);
     }
     let (nonce_bytes, ciphertext) = encrypted.split_at(12);
+    #[allow(deprecated)]
     let nonce = Nonce::from_slice(nonce_bytes);
 
     cipher
@@ -148,6 +153,7 @@ pub fn derive_cipher(
         .hash_password_into(password.as_bytes(), salt, key_bytes.as_mut())
         .map_err(|e| LocalStorageError::KeyDerivationError(e.to_string()))?;
 
+    #[allow(deprecated)]
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes.as_ref()));
     Ok((cipher, key_bytes))
 }

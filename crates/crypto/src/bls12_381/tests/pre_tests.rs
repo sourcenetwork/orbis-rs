@@ -371,9 +371,14 @@ fn test_reader_key_pop_blocks_cross_ciphertext_substitution() {
     let aes_key = ThresholdDealerNode::derive_key_from_point(&shared_point).expect("kdf");
     let cipher = Aes256Gcm::new(&aes_key.into());
     let aad = context_digest(&ctx_a, &secret_a.enc_cmt);
+    // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
+    // upgrade to generic-array 1.x"), but aes-gcm 0.10 has no non-deprecated path
+    // off it yet; the API itself is unaffected.
+    #[allow(deprecated)]
+    let nonce_a = Nonce::from_slice(&secret_a.nonce);
     let plaintext_a = cipher
         .decrypt(
-            Nonce::from_slice(&secret_a.nonce),
+            nonce_a,
             Payload {
                 msg: secret_a.encrypted_data.as_ref(),
                 aad: &aad,

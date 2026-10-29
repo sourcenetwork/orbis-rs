@@ -99,55 +99,7 @@ fn log_grpc_error(level: tracing::Level, service: &str, code: tonic::Code, error
     }
 }
 
-// ============================================================================
-// Peer ID Validation Errors
-// ============================================================================
-
-/// Error type for peer ID validation
-#[derive(Debug, Clone)]
-pub enum PeerIdValidationError {
-    /// Peer ID string is empty
-    Empty,
-    /// Peer ID string exceeds maximum length
-    TooLong { length: usize, max: usize },
-    /// Invalid format - missing or malformed node ID
-    InvalidFormat(String),
-    /// Invalid socket address in peer ID
-    InvalidSocketAddr(String),
-    /// Node ID part has incorrect length
-    InvalidNodeIdLength { length: usize, expected: usize },
-    /// Node ID contains invalid characters
-    InvalidCharacters(String),
-}
-
-impl std::fmt::Display for PeerIdValidationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PeerIdValidationError::Empty => write!(f, "Peer ID cannot be empty"),
-            PeerIdValidationError::TooLong { length, max } => {
-                write!(f, "Peer ID too long: {} bytes, maximum is {}", length, max)
-            }
-            PeerIdValidationError::InvalidFormat(msg) => {
-                write!(f, "Invalid peer ID format: {}", msg)
-            }
-            PeerIdValidationError::InvalidSocketAddr(msg) => {
-                write!(f, "Invalid socket address in peer ID: {}", msg)
-            }
-            PeerIdValidationError::InvalidNodeIdLength { length, expected } => {
-                write!(
-                    f,
-                    "Invalid node ID length: {} chars, expected {}",
-                    length, expected
-                )
-            }
-            PeerIdValidationError::InvalidCharacters(msg) => {
-                write!(f, "Node ID contains invalid characters: {}", msg)
-            }
-        }
-    }
-}
-
-impl std::error::Error for PeerIdValidationError {}
+pub use common::peer_id::PeerIdValidationError;
 
 // ============================================================================
 // Password Errors

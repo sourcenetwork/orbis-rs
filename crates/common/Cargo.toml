@@ -27,6 +27,7 @@ rand = { workspace = true, optional = true }
 backoff = { version = "0.4", features = ["tokio"], optional = true }
 futures = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
+local-storage = { path = "../local-storage", optional = true, default-features = false }
 
 [features]
 default = ["cosmos"]
@@ -49,6 +50,11 @@ cosmos = [
 ]
 bls12-381 = []
 jubjub = []
+# StartupProgress/PrepareContext shared by the `authz`/`bulletin` factory traits.
+startup = ["dep:local-storage"]
+# Devnet-only account funding (`blockchain::cosmos::funding`), used by
+# `cli-tool`'s integration-test helpers and `bulletin`'s Vera backend.
+integration-test-cosmos = ["cosmos"]
 
 [dev-dependencies]
 rcgen = "0.14"
