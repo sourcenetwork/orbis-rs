@@ -775,7 +775,7 @@ fn host_ip(subnet_cidr: &str, offset: u32) -> String {
 /// different chain revision than CI does. Bump both together when the SDK
 /// pin moves; nothing enforces they match automatically (manually maintained
 /// was the deliberate choice here, not an oversight).
-fn native_vera_ref() -> String {
+pub(crate) fn native_vera_ref() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docker/NATIVE_VERA_REF");
     fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))

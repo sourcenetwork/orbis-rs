@@ -22,6 +22,14 @@ pub(super) fn compose_command(compose_file: &str, project_name: &str) -> Command
             compose_file,
         ])
         .current_dir(env!("CARGO_MANIFEST_DIR").to_string() + "/../..");
+    #[cfg(all(unix, feature = "native"))]
+    if compose_file == crate::native_network::NATIVE_COMPOSE_FILE {
+        let revision = std::env::var("VERA_REF")
+            .ok()
+            .filter(|revision| !revision.is_empty())
+            .unwrap_or_else(crate::native_network::native_vera_ref);
+        command.env("VERA_REF", revision);
+    }
     command
 }
 
@@ -128,6 +136,23 @@ mod tests {
         assert_eq!(
             super::parse_published_port("127.0.0.1:49152\n"),
             Some(49152)
+        );
+    }
+
+    #[cfg(all(unix, feature = "native"))]
+    #[test]
+    fn native_compose_commands_supply_the_vera_revision() {
+        let command = super::compose_command(crate::native_network::NATIVE_COMPOSE_FILE, "test");
+        let value = command
+            .get_envs()
+            .find_map(|(key, value)| (key == "VERA_REF").then_some(value).flatten());
+        let expected = std::env::var("VERA_REF")
+            .ok()
+            .filter(|revision| !revision.is_empty())
+            .unwrap_or_else(crate::native_network::native_vera_ref);
+        assert_eq!(
+            value.and_then(|value| value.to_str()),
+            Some(expected.as_str())
         );
     }
 
