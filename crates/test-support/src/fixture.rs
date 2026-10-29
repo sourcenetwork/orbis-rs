@@ -16,7 +16,7 @@
 //! — this type family exists to stop describing that same state as raw JSON
 //! once per test, not to invent new scenario shapes.
 
-use crate::admin::{DocumentId, PolicyId, RingId, RingKeys, RingSpec, RingView};
+use crate::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
 use crate::network::NodeInfo;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -209,6 +209,24 @@ pub struct ProvisionedFixture {
 pub trait TestEnvironment: Sized {
     async fn provision(fixture: ScenarioFixture) -> Self;
     fn fixture(&self) -> &ProvisionedFixture;
+
+    /// The chain/deployment identifier scenario code needs to authenticate
+    /// backend-specific requests (e.g. a JWT's issuer-chain claim) — Cosmos's
+    /// chain id string, native's deployment label. Genuinely backend-specific
+    /// and cheap, so a plain sync getter rather than another driver trait.
+    fn chain_id(&self) -> String;
+
+    /// Whether `BulletinTestDriver::store_document`/`read_document` are real
+    /// on this backend — Cosmos: yes (`bulletin::vera`'s generic post
+    /// primitive); native: no equivalent direct-write path exists. Default
+    /// `false` so native needs no override. A scenario must check this
+    /// before calling `store_document` rather than relying on it panicking
+    /// — "never fake success, report unsupported explicitly" without a
+    /// generic `Capability<T>` wrapper type, now that there's exactly one
+    /// concrete environment per build to ask directly.
+    fn supports_direct_document_write(&self) -> bool {
+        false
+    }
 }
 
 /// Node lifecycle control, backend-neutral. Replaces direct
@@ -228,6 +246,13 @@ pub trait NetworkTestDriver {
 #[async_trait::async_trait]
 pub trait AuthorizationTestDriver {
     async fn create_policy(&self, definition: &str) -> PolicyId;
+
+    /// Register an ACP object under `policy` so a later `grant` can target
+    /// it. Both backends always did this as a required first step before
+    /// granting a relationship on a new object — split out as its own
+    /// method rather than folded into `grant`, since some callers (e.g. a
+    /// ring's own governance object) register without ever granting.
+    async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str);
 
     async fn grant(
         &self,
@@ -256,7 +281,10 @@ pub trait BulletinTestDriver {
 
     async fn read_ring(&self, ring: &RingId) -> Option<RingView>;
 
-    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingKeys;
+    /// Returns the full view (not just [`RingKeys`]) once `ring_pk` is set —
+    /// callers that only need the main key still get it via `.ring_pk`, but
+    /// `requires_pet`/`pet_pk`/`confirmations` no longer need a second read.
+    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView;
 
     async fn store_document(
         &self,
@@ -266,6 +294,33 @@ pub trait BulletinTestDriver {
     ) -> DocumentId;
 
     async fn read_document(&self, id: &DocumentId) -> Vec<u8>;
+
+    /// Register a key-derivation object and return its id. Deriving the
+    /// *public key* for it is pure curve math, identical on both backends —
+    /// that stays in scenario code (which already depends on `crypto`),
+    /// not here.
+    async fn register_key_derivation(
+        &self,
+        ring: &RingId,
+        derivation: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String;
+
+    /// Announce a committee/threshold change for `ring` and return once the
+    /// chain has accepted the *request* — not once the reshare completes;
+    /// waiting for completion is a scenario-level concern (same as DKG
+    /// finalization), using `read_ring`/`wait_for_finalized`.
+    async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32);
+
+    /// Force a PSS/share-refresh ceremony to become due right now for
+    /// `ring`, bypassing however long a real wait against its configured
+    /// `pss_interval` would take — a test-only diagnostic hook, not a
+    /// production operation. Default no-op: a backend whose ring already
+    /// uses a short enough interval (Cosmos's genesis-seeded rings always
+    /// do) never needs to override this.
+    async fn force_refresh_due(&self, _ring: &RingId, _ring_pk: &str, _members: &[String]) {}
 }
 
 #[cfg(test)]

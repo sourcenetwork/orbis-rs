@@ -18,6 +18,12 @@ pub(super) struct Keys {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DkgMode {
+    // No longer constructed on either backend now that the standard
+    // DKG/PRE scenario drives `TestEnvironmentImpl` directly instead of a
+    // `ScenarioBackend` impl — kept (not deleted) because `verify`'s match
+    // below still documents the non-PET assertion this mode used to select;
+    // removing it is PET-migration cleanup, not this PR's job.
+    #[allow(dead_code)]
     Standard,
     Pet,
 }

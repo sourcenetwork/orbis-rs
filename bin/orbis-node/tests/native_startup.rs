@@ -24,6 +24,15 @@ mod native_pet;
 #[path = "support/native_trust_gateway.rs"]
 mod native_trust_gateway;
 
+// A second, independent instance of the same source file `native_pet`'s own
+// `stored_bundle` submodule uses — `native_environment` is a sibling of
+// `native_pet` at this binary's root, not a descendant of it, so it cannot
+// reach `native_pet`'s copy through `super::`.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_pet/scheduled_store.rs"]
+#[allow(dead_code)]
+mod stored_bundle;
+
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 #[path = "support/native_environment.rs"]
 mod native_environment;
@@ -31,6 +40,31 @@ mod native_environment;
 // for this backend.
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/pre_scenario.rs"]
+mod pre_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/refresh_scenario.rs"]
+mod refresh_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/reshare_scenario.rs"]
+mod reshare_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/sign_scenario.rs"]
+mod sign_scenario;
 
 /// Scaffolding proving the harness-unification migration's fixture
 /// materialization (rings/policies) actually works against a real cluster,
@@ -614,20 +648,75 @@ async fn native_dkg() {
 
 /// Native adapter for the shared standard-DKG lifecycle: StoreSecret,
 /// authorized PRE, derived-key signing, refresh, and committee reshare. The
-/// scenario body is identical to `cosmos_dkg_and_pre`.
+/// scenario body is identical to `test_cli_calls_dkg_and_pre_endpoint` in
+/// `bin/orbis-node/src/tests/integration.rs`. Replaces the pre-harness-unification
+/// `native_dkg_and_pre`/`NativeHarness` version — this one drives
+/// `TestEnvironmentImpl` directly. `unsafe-testing` is required at compile
+/// time (not just runtime) because the refresh step forces a share rotation
+/// through the `UnsafeTestingService` diagnostic hook
+/// (`NativeTestEnvironment::force_refresh_due`), which only a diagnostic
+/// node image actually serves.
 #[tokio::test]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
 ))]
-async fn native_dkg_and_pre() {
-    let (object_id, derivation_id) = native_pet::dkg_pre_and_sign_scenario(9080).await;
+async fn test_cli_calls_dkg_and_pre_endpoint() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: policy_generations::definition(true, true),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            // Native's live `RingCommand::Create` enforces the same
+            // production minimum Cosmos bypasses by genesis-seeding (see
+            // `vera-modules::vera::rings::types::RingConfig::validate`) —
+            // so, unlike the Cosmos test, this can't just be short. Refresh
+            // is instead forced via `force_refresh_due` regardless of this
+            // value.
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: false,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+    let policy_id = environment.fixture().policies[&policy].id.clone();
+
+    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
+    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
+    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
     assert!(
-        !object_id.is_empty(),
+        !outcome.object_id.is_empty(),
         "the shared PRE scenario must store a document"
     );
     assert!(
-        !derivation_id.is_empty(),
+        !sign.derivation_id.is_empty(),
         "the shared Sign scenario must store a key derivation"
     );
 }

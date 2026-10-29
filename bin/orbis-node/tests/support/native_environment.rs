@@ -18,12 +18,17 @@
 //! `NativeTestEnvironment` yet since that's a later migration PR.
 #![allow(dead_code)]
 
-use super::{confirmed, submit};
+use super::{confirmed, stored_bundle, submit};
 use alloy_primitives::B256;
 use commonware_codec::Encode;
+use crypto::r#trait::CryptoDeserialize;
+use proto::unsafe_testing::{
+    unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
+    LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
+};
 use std::collections::HashMap;
 use std::time::Duration;
-use test_support::admin::{DocumentId, PolicyId, RingId, RingKeys, RingSpec, RingView};
+use test_support::admin::{DocumentId, PolicyId, RingId, RingSpec, RingView};
 use test_support::fixture::{
     AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
     PolicyHandle, ProvisionedFixture, RingHandle, ScenarioFixture, TestEnvironment,
@@ -33,7 +38,8 @@ use test_support::{IntegrationBackend, IntegrationTestNetwork, NativeTestNetwork
 use vera_client::{
     create_scoped_bearer_token,
     nodes::{encode_node_request, sign_node_request, NodeCommand, NodeRequest, NodeTarget},
-    rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState},
+    rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig, RingState, RingUpdate},
+    threshold_objects::{encode_threshold_object, KeyDerivation, ObjectKind, ThresholdObject},
     BlsSigner, DelegationScope, VeraClient,
 };
 use vera_domain::ConsensusPublicKey;
@@ -86,7 +92,7 @@ async fn create_ring(
         policy_id: spec.policy_id.0,
         peer_node_keys: members,
         threshold: spec.threshold,
-        pss_interval: 86_400,
+        pss_interval: spec.pss_interval.as_secs(),
         current_version: 0,
         requires_pet: spec.requires_pet,
         // `spec.nonce` is Cosmos-shaped (a string); native's ring-id
@@ -322,6 +328,7 @@ impl TestEnvironment for NativeTestEnvironment {
                 RingSpec {
                     node_keys: node_keys.clone(),
                     threshold: ring.threshold,
+                    pss_interval: ring.pss_interval,
                     policy_id: policy_id.clone(),
                     nonce: None,
                     trusted_auth_relay_dids: Vec::new(),
@@ -361,6 +368,10 @@ impl TestEnvironment for NativeTestEnvironment {
     fn fixture(&self) -> &ProvisionedFixture {
         &self.fixture
     }
+
+    fn chain_id(&self) -> String {
+        vera_client::rings::ring_deployment_label(self.root.0, DEPLOYMENT)
+    }
 }
 
 #[async_trait::async_trait]
@@ -392,6 +403,20 @@ impl AuthorizationTestDriver for NativeTestEnvironment {
             .unwrap();
         confirmed(&self.client, created.transaction_hash, &self.trusted).await;
         PolicyId(self.client.get_policy_ids().await.unwrap().pop().unwrap())
+    }
+
+    async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str) {
+        let registered = self
+            .client
+            .native_register_object(
+                &self.worker,
+                Self::policy_bytes(policy),
+                object_id,
+                resource,
+            )
+            .await
+            .expect("register shared scenario object");
+        confirmed(&self.client, registered.transaction_hash, &self.trusted).await;
     }
 
     async fn grant(
@@ -479,15 +504,16 @@ impl BulletinTestDriver for NativeTestEnvironment {
             requires_pet: record.config.requires_pet,
             pet_pk,
             confirmations: 0,
+            pending_reshare: settings.pending_reshare.is_some(),
         })
     }
 
-    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingKeys {
+    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView {
         tokio::time::timeout(timeout, async {
             loop {
                 if let Some(view) = self.read_ring(ring).await {
                     if !view.ring_pk.is_empty() {
-                        return RingKeys(view.ring_pk);
+                        return view;
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -497,16 +523,154 @@ impl BulletinTestDriver for NativeTestEnvironment {
         .unwrap_or_else(|_| panic!("Timed out waiting for ring {} to be finalized", ring.0))
     }
 
+    /// Native has no equivalent of Cosmos's generic `bulletin::vera` post
+    /// primitive to reuse for a direct, backend-admin-shortcut document
+    /// write — the only way to store a document is the real `StoreSecret`
+    /// gRPC flow this scenario already exercises. Same as before PR 4: not a
+    /// regression, this was always `Capability::Unsupported` on native.
     async fn store_document(
         &self,
         _ring: &RingId,
         _payload: &[u8],
         _reader_dids: &[String],
     ) -> DocumentId {
-        unimplemented!("NativeTestEnvironment::store_document: see NativeAdmin (Phase C)")
+        unimplemented!("NativeTestEnvironment::store_document: no direct-write path exists")
     }
 
-    async fn read_document(&self, _id: &DocumentId) -> Vec<u8> {
-        unimplemented!("NativeTestEnvironment::read_document: see store_document")
+    async fn read_document(&self, id: &DocumentId) -> Vec<u8> {
+        let record = self
+            .client
+            .read_threshold_object(ObjectKind::Document, &id.0, 1, &self.trusted)
+            .await
+            .expect("read shared scenario native document")
+            .record
+            .expect("shared scenario native document must exist");
+        let ThresholdObject::Document(document) = record.object else {
+            panic!("document lookup returned a key derivation")
+        };
+        serde_json::to_vec(&document).expect("serialize authoritative native document")
+    }
+
+    async fn register_key_derivation(
+        &self,
+        ring: &RingId,
+        derivation: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let derivation = KeyDerivation {
+            ring_id: ring.0.clone(),
+            derivation: derivation.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+        };
+        let object = ThresholdObject::KeyDerivation(derivation);
+        let derivation_id = object.id().expect("derive native key-derivation id");
+        let now = unix_now();
+        let token = create_scoped_bearer_token(
+            &self.controller,
+            self.worker.did(),
+            DEPLOYMENT,
+            now,
+            now + 300,
+            DelegationScope::StoreThresholdObject,
+        )
+        .expect("create native key-derivation delegation");
+        submit(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            encode_threshold_object(&object, &token).expect("encode native key derivation"),
+            "store shared Sign key derivation",
+            self.network.native().cluster(),
+        )
+        .await;
+        derivation_id
+    }
+
+    async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32) {
+        let record = self
+            .client
+            .read_threshold_ring(&ring.0, 1, &self.trusted)
+            .await
+            .expect("read native ring before shared reshare")
+            .record
+            .expect("shared reshare ring must exist");
+        let now = unix_now();
+        let token = create_scoped_bearer_token(
+            &self.controller,
+            self.worker.did(),
+            DEPLOYMENT,
+            now,
+            now + 300,
+            DelegationScope::ManageRings,
+        )
+        .expect("create native shared-reshare delegation");
+        submit(
+            &self.client,
+            &self.worker,
+            &self.trusted,
+            encode_ring_command(
+                &RingCommand::Update {
+                    ring_id: ring.0.clone(),
+                    expected_sequence: record.sequence,
+                    update: RingUpdate::StartReshare {
+                        peer_node_keys: Some(new_members),
+                        threshold: Some(new_threshold),
+                    },
+                },
+                &token,
+            )
+            .expect("encode native shared reshare"),
+            "start shared native reshare",
+            self.network.native().cluster(),
+        )
+        .await;
+    }
+
+    /// Native has no short-`pss_interval` escape hatch for a live-created
+    /// ring (unlike Cosmos's genesis seed) — so, same as the pre-migration
+    /// adapters, force a refresh due by backdating each member's persisted
+    /// bundle through the `UnsafeTestingService` diagnostic hook instead of
+    /// waiting out the real interval.
+    async fn force_refresh_due(&self, _ring: &RingId, ring_pk: &str, members: &[String]) {
+        let ring_key =
+            crypto::GroupAffine::from_bytes(&hex::decode(ring_pk).expect("ring public key is hex"))
+                .expect("ring public key must decode")
+                .to_string();
+        for node in self.nodes() {
+            let member = members
+                .iter()
+                .position(|node_key| node_key == &node.node_key)
+                .expect("native node must remain a ring member") as u32
+                + 1;
+            let storage_key = LocalStorageKey {
+                key_type: LocalStorageKeyType::RingKey as i32,
+                ring_key: ring_key.clone(),
+            };
+            let mut control = UnsafeTestingServiceClient::connect(node.grpc_endpoint.clone())
+                .await
+                .expect("connect native refresh test control");
+            let stored = control
+                .get_local_storage(GetLocalStorageRequest {
+                    key: Some(storage_key.clone()),
+                    access_mode: LocalStorageAccessMode::Encrypted as i32,
+                })
+                .await
+                .expect("read live native main bundle")
+                .into_inner();
+            assert!(stored.found, "native main bundle must exist");
+            let due = stored_bundle::Bundle::backdated(stored.value, ring_pk, member);
+            control
+                .set_local_storage(SetLocalStorageRequest {
+                    key: Some(storage_key),
+                    access_mode: LocalStorageAccessMode::Encrypted as i32,
+                    value: due,
+                })
+                .await
+                .expect("backdate live native main bundle");
+        }
     }
 }

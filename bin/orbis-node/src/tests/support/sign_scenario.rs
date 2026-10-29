@@ -1,8 +1,10 @@
 //! Shared policy-authorized derived-key signing conformance scenario.
 
-use super::{pet_dkg_contract::Keys, pre_scenario};
-use crypto::r#trait::{CryptoDeserialize, ThresholdSigner};
+use super::{pre_scenario, TestEnvironmentImpl};
+use crypto::r#trait::{CryptoDeserialize, CryptoSerialize, ThresholdSigner};
 use crypto::{GroupAffine, SignImpl};
+use test_support::admin::{PolicyId, RingId};
+use test_support::fixture::{AuthorizationTestDriver, BulletinTestDriver, NetworkTestDriver};
 use tokio::time::{sleep, Duration, Instant};
 
 const DERIVATION: &str = "shared-sign-derivation";
@@ -15,34 +17,38 @@ pub(super) struct Outcome {
     derived_pk: String,
 }
 
-pub(super) trait Backend: pre_scenario::Backend {
-    async fn post_key_derivation(
-        &self,
-        policy_id: &str,
-        derivation: &str,
-        resource: &str,
-        permission: &str,
-        ring_pk: &str,
-    ) -> (String, String);
-}
-
-pub(super) async fn run<B: Backend>(backend: &B, keys: &Keys, policy_id: &str) -> Outcome {
-    let (derivation_id, derived_pk) = backend
-        .post_key_derivation(
-            policy_id,
+pub(super) async fn run(
+    environment: &TestEnvironmentImpl,
+    ring: &RingId,
+    keys: &pre_scenario::Keys,
+    policy: &PolicyId,
+) -> Outcome {
+    let derivation_id = environment
+        .register_key_derivation(
+            ring,
             DERIVATION,
+            policy,
             pre_scenario::RESOURCE,
             pre_scenario::PERMISSION,
-            &keys.main,
         )
         .await;
     assert!(
         !derivation_id.is_empty(),
         "key derivation must return an object id"
     );
+    // Deriving the public key from the ring key is pure curve math,
+    // identical on both backends — computed here once instead of inside
+    // each backend's own key-derivation call, as the old adapters did.
+    let ring_pk = GroupAffine::from_bytes(&hex::decode(&keys.main).expect("ring key is hex"))
+        .expect("ring key must decode");
+    let metadata =
+        SignImpl::encode_metadata(&policy.0, pre_scenario::RESOURCE, pre_scenario::PERMISSION);
+    let derived_pk = SignImpl::derive_public_key(&ring_pk, DERIVATION.as_bytes(), Some(&metadata))
+        .expect("derive shared Sign public key");
+    let derived_pk = hex::encode(derived_pk.to_bytes().expect("serialize derived public key"));
 
     let unauthorized = cli_tool::do_sign(
-        backend.node_endpoint(),
+        environment.nodes()[0].grpc_endpoint.clone(),
         MESSAGE.to_vec(),
         derivation_id.clone(),
         Some(UNAUTHORIZED_SIGNER_SEED.to_string()),
@@ -54,17 +60,20 @@ pub(super) async fn run<B: Backend>(backend: &B, keys: &Keys, policy_id: &str) -
     pre_scenario::assert_policy_rejection("Sign without permission", &unauthorized);
 
     let signer_did = cli_tool::reader_did_from_seed(SIGNER_SEED);
-    backend
-        .authorize_object(
-            policy_id,
-            &derivation_id,
+    environment
+        .register_object(policy, pre_scenario::RESOURCE, &derivation_id)
+        .await;
+    environment
+        .grant(
+            policy,
             pre_scenario::RESOURCE,
+            &derivation_id,
             pre_scenario::RELATION,
             &signer_did,
         )
         .await;
 
-    verify_signature(backend, keys, &derivation_id, &derived_pk).await;
+    verify_signature(environment, keys, &derivation_id, &derived_pk).await;
 
     Outcome {
         derivation_id,
@@ -74,17 +83,27 @@ pub(super) async fn run<B: Backend>(backend: &B, keys: &Keys, policy_id: &str) -
 
 /// Reuse the derivation object created before a share-generation transition
 /// and verify that a new signature still uses the same derived public key.
-pub(super) async fn verify_existing<B: Backend>(backend: &B, keys: &Keys, outcome: &Outcome) {
-    verify_signature(backend, keys, &outcome.derivation_id, &outcome.derived_pk).await;
+pub(super) async fn verify_existing(
+    environment: &TestEnvironmentImpl,
+    keys: &pre_scenario::Keys,
+    outcome: &Outcome,
+) {
+    verify_signature(
+        environment,
+        keys,
+        &outcome.derivation_id,
+        &outcome.derived_pk,
+    )
+    .await;
 }
 
-async fn verify_signature<B: Backend>(
-    backend: &B,
-    keys: &Keys,
+async fn verify_signature(
+    environment: &TestEnvironmentImpl,
+    keys: &pre_scenario::Keys,
     derivation_id: &str,
     derived_pk: &str,
 ) {
-    let signed = sign_with_retry(backend, derivation_id).await;
+    let signed = sign_with_retry(environment, derivation_id).await;
     let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(
         &hex::decode(&signed.signature).expect("Sign signature is hex"),
     )
@@ -106,11 +125,14 @@ async fn verify_signature<B: Backend>(
     );
 }
 
-async fn sign_with_retry<B: Backend>(backend: &B, derivation_id: &str) -> cli_tool::SignResult {
+async fn sign_with_retry(
+    environment: &TestEnvironmentImpl,
+    derivation_id: &str,
+) -> cli_tool::SignResult {
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match cli_tool::do_sign(
-            backend.node_endpoint(),
+            environment.nodes()[0].grpc_endpoint.clone(),
             MESSAGE.to_vec(),
             derivation_id.to_string(),
             Some(SIGNER_SEED.to_string()),

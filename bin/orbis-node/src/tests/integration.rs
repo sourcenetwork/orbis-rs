@@ -10,13 +10,13 @@ mod pet_dkg;
 #[path = "../../tests/support/pet_dkg_contract.rs"]
 mod pet_dkg_contract;
 mod pet_reshare;
-#[path = "../../tests/support/pre_scenario.rs"]
+#[path = "support/pre_scenario.rs"]
 mod pre_scenario;
-#[path = "../../tests/support/refresh_scenario.rs"]
+#[path = "support/refresh_scenario.rs"]
 mod refresh_scenario;
-#[path = "../../tests/support/reshare_scenario.rs"]
+#[path = "support/reshare_scenario.rs"]
 mod reshare_scenario;
-#[path = "../../tests/support/sign_scenario.rs"]
+#[path = "support/sign_scenario.rs"]
 mod sign_scenario;
 
 // Harness-unification migration: the compile-time-selected test environment
@@ -177,7 +177,6 @@ async fn dkg_scenario(
 /// two tests' genesis fixtures never collide (each gets its own freshly
 /// started chain, but both are baked into this same file's constants).
 const DKG_SCENARIO_RING_ID: &str = "integration-test-dkg-scenario-ring";
-const PRE_SCENARIO_RING_ID: &str = "integration-test-pre-scenario-ring";
 
 /// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
 /// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
@@ -201,24 +200,79 @@ async fn cosmos_dkg() {
 /// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
 /// authorized PRE, derived-key signing, refresh, and committee reshare. Its
 /// native counterpart runs the same scenario body below the backend boundary
-/// in `native_startup.rs`.
+/// in `native_startup.rs`. Replaces the pre-harness-unification
+/// `cosmos_dkg_and_pre`/generic-`Backend`-trait version — this one drives
+/// `TestEnvironmentImpl` directly, through the compile-time-selected
+/// environment every other migrated test already uses.
 #[tokio::test]
 #[serial_test::serial]
-async fn cosmos_dkg_and_pre() {
-    let (mut backend, keys, local_state, outcome) =
-        pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
-            ring_id: PRE_SCENARIO_RING_ID,
-            expected_policy_id: RING_GOVERNANCE_POLICY_ID,
-            mode: pet_dkg_contract::DkgMode::Standard,
-        })
-        .await;
-    let sign = sign_scenario::run(&backend, &keys, &outcome.policy_id).await;
-    refresh_scenario::run(&mut backend, &keys, &local_state, &outcome, &sign).await;
-    reshare_scenario::run(&mut backend, &keys, &outcome, &sign).await;
-    assert!(
-        keys.pet.is_none(),
-        "standard DKG must not produce a PET key"
-    );
+async fn test_cli_calls_dkg_and_pre_endpoint() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    const DOCUMENT_POLICY_YAML: &str = r#"
+name: shared-dkg-pre-policy
+resources:
+- name: document
+  permissions:
+  - name: read
+    expr: reader
+  relations:
+  - name: reader
+    types:
+    - actor
+"#;
+
+    let policy = FixtureId::new("policy");
+    // Cosmos's ring materializer always substitutes its own
+    // content-addressed governance policy for whatever `RingFixture.policy`
+    // points at (see `CosmosTestEnvironment::provision`'s ring loop) — a
+    // distinct id so that substitution doesn't clobber `policy`'s own
+    // `DOCUMENT_POLICY_YAML` content, which the scenario actually needs for
+    // document/key-derivation authorization.
+    let ring_policy = FixtureId::new("ring-policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: DOCUMENT_POLICY_YAML.to_string(),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            // Short enough to refresh naturally within the scenario's own
+            // wait — genesis-seeded, so the chain's production minimum
+            // doesn't apply (see `CosmosTestEnvironment::provision`).
+            pss_interval: Duration::from_secs(5),
+            requires_pet: false,
+            policy: ring_policy,
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+    let policy_id = environment.fixture().policies[&policy].id.clone();
+
+    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
+    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
+    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
     assert!(
         !outcome.object_id.is_empty(),
         "the shared PRE scenario must store a document"
@@ -623,8 +677,7 @@ resources:
 ///
 /// 1. **Independent refresh** (`RefreshPet`): once the ring is live, the PET
 ///    bundle's own `last_pss` advances via the PSS scheduler exactly like the
-///    main key's does (`wait_for_pss_refresh_on_all_nodes`'s reference-test
-///    precedent), without any second external trigger.
+///    main key's does, without any second external trigger.
 /// 2. **Atomic reshare** (`ResharePet`, gated by `bulletin_update.rs`'s
 ///    atomicity gate): reshoring the ring's committee produces exactly one
 ///    bulletin post, and the PET bundle is confirmed to have moved to the new
@@ -1458,74 +1511,5 @@ async fn do_pre_inline_expect_success(
                 sleep(Duration::from_secs(3)).await;
             }
         }
-    }
-}
-
-async fn wait_for_pss_refresh_on_all_nodes(
-    endpoints: &[String],
-    ring_pk_hex: &str,
-    baselines: &[RingStateSnapshot],
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Vec<RingStateSnapshot> {
-    assert_eq!(
-        endpoints.len(),
-        baselines.len(),
-        "ring-state baselines must match endpoint count"
-    );
-
-    let deadline = Instant::now() + timeout;
-    let mut next_status_log = Instant::now() + Duration::from_secs(15);
-
-    loop {
-        let mut snapshots = Vec::with_capacity(endpoints.len());
-        let mut statuses = Vec::with_capacity(endpoints.len());
-        let mut all_refreshed = true;
-
-        for (idx, endpoint) in endpoints.iter().enumerate() {
-            match cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.to_string()).await {
-                Ok((public_polynomial, last_pss)) => {
-                    let baseline = &baselines[idx];
-                    let polynomial_changed = public_polynomial != baseline.public_polynomial;
-                    let timestamp_advanced = last_pss > baseline.last_pss;
-                    if !polynomial_changed && !timestamp_advanced {
-                        all_refreshed = false;
-                    }
-                    statuses.push(format!(
-                        "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
-                        idx + 1,
-                        polynomial_changed,
-                        timestamp_advanced,
-                        last_pss,
-                        baseline.last_pss,
-                    ));
-                    snapshots.push(RingStateSnapshot {
-                        public_polynomial,
-                        last_pss,
-                    });
-                }
-                Err(e) => {
-                    all_refreshed = false;
-                    statuses.push(format!("node{}: {}", idx + 1, e));
-                }
-            }
-        }
-
-        if all_refreshed && snapshots.len() == endpoints.len() {
-            return snapshots;
-        }
-
-        let now = Instant::now();
-        assert!(
-            now < deadline,
-            "PSS refresh did not complete on all nodes within {}s. Last observed: {}",
-            timeout.as_secs(),
-            statuses.join("; ")
-        );
-        if now >= next_status_log {
-            println!("Still waiting for PSS refresh: {}", statuses.join("; "));
-            next_status_log = now + Duration::from_secs(15);
-        }
-        sleep(poll_interval).await;
     }
 }

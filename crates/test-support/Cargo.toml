@@ -27,6 +27,12 @@ hex = { workspace = true }
 tokio = { workspace = true }
 
 bs58 = { version = "0.5", optional = true }
+# Only the `vera` feature (Cosmos's generic bulletin-post read/write
+# primitive — `Bulletin::read`/`post`, what the product itself uses for
+# documents/key-derivations) — no crypto-curve coupling, unlike `cli-tool`'s
+# default features. Used by `CosmosTestEnvironment`'s `register_key_derivation`/
+# `read_document`/`store_document`.
+bulletin = { path = "../bulletin", default-features = false, features = ["vera"], optional = true }
 commonware-codec = { version = "2026.9.0", optional = true }
 vera-client = { workspace = true, optional = true }
 vera-harness = { workspace = true, optional = true }
@@ -38,7 +44,7 @@ default = ["cosmos"]
 # Cosmos chain client. Kept the default so `authz`/`bulletin`'s existing
 # `test-support = { path = "..." }` dev-dependencies (no `default-features =
 # false`) keep getting it without a Cargo.toml change on their side.
-cosmos = ["common/cosmos", "dep:bs58"]
+cosmos = ["common/cosmos", "dep:bs58", "dep:bulletin"]
 native = ["dep:commonware-codec", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
 
 [[test]]

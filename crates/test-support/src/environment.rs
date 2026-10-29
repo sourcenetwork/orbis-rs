@@ -10,8 +10,8 @@
 //! never compiled together.
 
 use crate::admin::{
-    cosmos::create_ring_governance_with_ring, BackendAdmin, DocumentId, PolicyId, RingId, RingKeys,
-    RingSpec, RingView,
+    cosmos::create_ring_governance_with_ring, BackendAdmin, DocumentId, PolicyId, RingId, RingSpec,
+    RingView,
 };
 use crate::fixture::{
     AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeRef, NodeRole,
@@ -20,6 +20,8 @@ use crate::fixture::{
 };
 use crate::network::{CosmosNetwork, NodeInfo};
 use crate::node_readiness::wait_for_nodes_ready;
+use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
+use bulletin::vera::VeraBulletin;
 use common::blockchain::{orbis::WhitelistTarget, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -36,6 +38,20 @@ const NODE_KEYS: [&str; 4] = [
     "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
     "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
 ];
+
+/// Deterministic ACP policy ID `create_ring_governance_with_ring`'s
+/// `ORBIS_RING_POLICY_YAML` always produces as the *first* policy
+/// (counter=0) on a fresh chain — same value, same reasoning, as
+/// `bin/orbis-node/src/tests/constants.rs::RING_GOVERNANCE_POLICY_ID`
+/// (duplicated for the same reason `NODE_KEYS` is, above). Must be known
+/// *before* that call returns so genesis can embed the ring's real
+/// `policy_id` up front — Cosmos's permission checks (reshare's in
+/// particular) read the ring record's own `policy_id` field, not whatever
+/// `create_ring_governance_with_ring` happens to return. Only correct for a
+/// fixture with exactly one ring; a second ring's governance policy would be
+/// counter=1, a different id this constant doesn't cover.
+const RING_GOVERNANCE_POLICY_ID: &str =
+    "3199b84b4a6862c40fe2623879dfc36df281a2262898da36f7de65c376a93e05";
 
 fn reporting_json(reporting: &ReportingFixture) -> serde_json::Value {
     let backup_node_keys: Vec<&str> = reporting
@@ -90,12 +106,12 @@ fn ring_genesis_json(ring: &RingFixture) -> serde_json::Value {
         // `create_ring_governance_with_ring` below) — the exact mechanism
         // every existing Cosmos DKG test already uses; `ring.policy`'s
         // `FixtureId` resolves to *that* policy afterward, not to a
-        // separately-created `PolicyFixture`. This field's value is
-        // overwritten on-chain by `MsgFinalizeRing`-permission bookkeeping
-        // and isn't otherwise checked at genesis time — see
-        // `bin/orbis-node/src/tests/pending_ring_cancellation.rs`, which uses
-        // a bare placeholder string here with no backing policy at all.
-        "policy_id": ring.id.0,
+        // separately-created `PolicyFixture`. Genesis must embed that same
+        // policy's real (deterministic) id up front — permission checks
+        // that read the ring record's own `policy_id` field (reshare's in
+        // particular) run against *this* value, not whatever
+        // `create_ring_governance_with_ring` returns afterward.
+        "policy_id": RING_GOVERNANCE_POLICY_ID,
         "reporting": reporting_json(&ring.reporting),
     })
 }
@@ -180,7 +196,36 @@ impl TestEnvironment for CosmosTestEnvironment {
                 let governance_policy_id =
                     create_ring_governance_with_ring(&controller_client, &ring.id.0, &members)
                         .await;
-                for node_key in &members {
+                assert_eq!(
+                    governance_policy_id, RING_GOVERNANCE_POLICY_ID,
+                    "ACP policy ID changed; update RING_GOVERNANCE_POLICY_ID and genesis's \
+                     embedded policy_id to match"
+                );
+                for (node_ref, node_key) in ring.members.iter().zip(&members) {
+                    let NodeRef::Running(index) = node_ref else {
+                        panic!(
+                            "CosmosTestEnvironment::provision: NodeRole::Offline/Backup isn't \
+                             supported yet"
+                        );
+                    };
+                    // Each node's self-reported `p2p_address` (from
+                    // `wait_for_nodes_ready`) isn't reachable by other
+                    // containers as-is — it must be rewritten to the
+                    // Compose service name before other members can "prepare"
+                    // with it during DKG, same as the pre-fixture adapter did.
+                    let peer_address = CosmosNetwork::transform_p2p_address(
+                        &nodes[*index].p2p_address,
+                        CosmosNetwork::service_name_for_node(*index + 1),
+                    );
+                    let peer_update = controller_client
+                        .orbis_update_node_peer_id(node_key, &peer_address)
+                        .await
+                        .expect("update NodeInfo peer ID");
+                    assert_eq!(
+                        peer_update.code, 0,
+                        "update NodeInfo peer ID tx failed: {}",
+                        peer_update.log
+                    );
                     controller_client
                         .orbis_add_node_to_whitelist(
                             node_key,
@@ -250,6 +295,27 @@ impl TestEnvironment for CosmosTestEnvironment {
     fn fixture(&self) -> &ProvisionedFixture {
         &self.fixture
     }
+
+    fn chain_id(&self) -> String {
+        self.network.chain_config().chain_id
+    }
+
+    fn supports_direct_document_write(&self) -> bool {
+        true
+    }
+}
+
+impl CosmosTestEnvironment {
+    async fn signed_bulletin(&self) -> VeraBulletin {
+        VeraBulletin::with_signer(
+            self.network.chain_config_builder(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+            None,
+        )
+        .await
+        .expect("signed bulletin client")
+    }
 }
 
 #[async_trait::async_trait]
@@ -277,6 +343,26 @@ impl NetworkTestDriver for CosmosTestEnvironment {
 impl AuthorizationTestDriver for CosmosTestEnvironment {
     async fn create_policy(&self, definition: &str) -> PolicyId {
         self.network.admin().create_policy(definition).await
+    }
+
+    async fn register_object(&self, policy: &PolicyId, resource: &str, object_id: &str) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for object registration");
+        client
+            .acp_register_object(
+                &policy.0,
+                common::blockchain::acp::Object {
+                    resource: resource.to_string(),
+                    id: object_id.to_string(),
+                },
+            )
+            .await
+            .expect("register ACP object");
     }
 
     async fn grant(
@@ -323,23 +409,95 @@ impl BulletinTestDriver for CosmosTestEnvironment {
         self.network.admin().read_ring(ring).await
     }
 
-    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingKeys {
-        self.network.admin().wait_for_finalized(ring, timeout).await
+    async fn wait_for_finalized(&self, ring: &RingId, timeout: Duration) -> RingView {
+        tokio::time::timeout(timeout, async {
+            loop {
+                if let Some(view) = self.read_ring(ring).await {
+                    if !view.ring_pk.is_empty() {
+                        return view;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("Timed out waiting for ring {} to be finalized", ring.0))
     }
 
+    /// Unlike `CosmosAdmin::store_document` (still `unimplemented!()`), this
+    /// doesn't need a new cli-tool-dependency decision — `bulletin::vera`'s
+    /// `Bulletin::post`/`read` (the same generic post primitive the product
+    /// itself uses for documents/key-derivations) is already reachable from
+    /// this crate's `cosmos` feature. `_reader_dids` is unused: granting
+    /// read access is a separate `grant` call, not part of posting.
     async fn store_document(
         &self,
-        ring: &RingId,
+        _ring: &RingId,
         payload: &[u8],
-        reader_dids: &[String],
+        _reader_dids: &[String],
     ) -> DocumentId {
-        self.network
-            .admin()
-            .store_document(ring, payload, reader_dids)
+        let id = self
+            .signed_bulletin()
             .await
+            .post(BulletinWriteKind::Document, payload.to_vec())
+            .await
+            .expect("post shared scenario document directly");
+        DocumentId(id)
     }
 
     async fn read_document(&self, id: &DocumentId) -> Vec<u8> {
-        self.network.admin().read_document(id).await
+        VeraBulletin::new(self.network.chain_config_builder())
+            .await
+            .expect("bulletin read client")
+            .read(id.0.clone(), BulletinKind::Document)
+            .await
+            .expect("read shared scenario document")
+            .payload
     }
+
+    async fn register_key_derivation(
+        &self,
+        ring: &RingId,
+        derivation: &str,
+        policy: &PolicyId,
+        resource: &str,
+        permission: &str,
+    ) -> String {
+        let payload = serde_json::to_vec(&KeyDerivation {
+            ring_id: ring.0.clone(),
+            derivation: derivation.to_string(),
+            policy_id: policy.0.clone(),
+            resource: resource.to_string(),
+            permission: permission.to_string(),
+        })
+        .expect("serialize shared Sign key derivation");
+        self.signed_bulletin()
+            .await
+            .post(BulletinWriteKind::KeyDerivation, payload)
+            .await
+            .expect("post shared Sign key derivation")
+    }
+
+    async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for shared reshare");
+        let result = client
+            .orbis_start_ring_reshare_by_acp(&ring.0, new_members, Some(new_threshold))
+            .await
+            .expect("announce shared Cosmos reshare");
+        assert!(
+            result.code == 0,
+            "announce shared Cosmos reshare failed: {}",
+            result.log
+        );
+    }
+
+    // `force_refresh_due` keeps the default no-op: this test ring is always
+    // genesis-seeded with a short `pss_interval` (see `provision`), so a
+    // refresh becomes due naturally within the scenario's own wait.
 }

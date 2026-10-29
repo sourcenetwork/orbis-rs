@@ -24,14 +24,6 @@ use vera_domain::ConsensusPublicKey;
 mod dkg;
 #[path = "pet_dkg_contract.rs"]
 mod pet_dkg_contract;
-#[path = "pre_scenario.rs"]
-mod pre_scenario;
-#[path = "refresh_scenario.rs"]
-mod refresh_scenario;
-#[path = "reshare_scenario.rs"]
-mod reshare_scenario;
-#[path = "sign_scenario.rs"]
-mod sign_scenario;
 
 #[path = "native_pet/document.rs"]
 mod document;
@@ -44,8 +36,11 @@ mod report_fault;
 #[path = "native_pet/scheduled_refresh.rs"]
 mod scheduled_refresh;
 
-#[path = "native_pet/scheduled_store.rs"]
-mod stored_bundle;
+// Declared once, at the binary root (`native_startup.rs`), so
+// `NativeTestEnvironment` (a sibling module there) can reach it too —
+// loading the same file as two separate `mod` items trips
+// `clippy::duplicate_mod`.
+use super::stored_bundle;
 
 #[path = "native_pet/member_replacement.rs"]
 mod member_replacement;
@@ -133,13 +128,6 @@ pub async fn dkg_scenario(
     let (workflow, keys, baseline) = dkg::run(deployment, report_fault).await;
     eprintln!("native PET phase=paired-dkg members=3 threshold=2");
     (workflow, keys, baseline)
-}
-
-/// Run the same standard-DKG lifecycle as the Cosmos integration suite,
-/// including PRE, signing, refresh, and committee reshare. Only backend
-/// provisioning and bulletin/ACP mechanisms differ.
-pub async fn dkg_pre_and_sign_scenario(deployment: u64) -> (String, String) {
-    dkg::run_pre(deployment).await
 }
 
 pub async fn run(scenario: Scenario) {
