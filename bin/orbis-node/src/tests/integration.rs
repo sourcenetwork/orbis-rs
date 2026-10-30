@@ -6,18 +6,17 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-#[path = "support/pet_dkg_scenario.rs"]
-mod pet_dkg_scenario;
 mod pet_reshare;
 #[path = "support/refresh_scenario.rs"]
 mod refresh_scenario;
 #[path = "support/reshare_scenario.rs"]
 mod reshare_scenario;
-// `pre_scenario`/`sign_scenario` and the `TestEnvironmentImpl` alias are
-// declared once in `mod.rs` so `cancel_ring_reshare.rs` (a sibling module)
-// can reuse them too — loading the same file as two separate `mod` items
-// trips `clippy::duplicate_mod`.
-use super::{pre_scenario, sign_scenario, TestEnvironmentImpl};
+// `pre_scenario`/`sign_scenario`/`pet_dkg_scenario` and the
+// `TestEnvironmentImpl` alias are declared once in `mod.rs` so sibling
+// modules (`cancel_ring_reshare.rs`, the `report_*.rs` family) can reuse
+// them too — loading the same file as two separate `mod` items trips
+// `clippy::duplicate_mod`.
+use super::{pet_dkg_scenario, pre_scenario, sign_scenario, TestEnvironmentImpl};
 
 /// Scaffolding proving the harness-unification migration's fixture
 /// materialization (rings/policies) actually works against a real cluster,

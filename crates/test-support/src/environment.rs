@@ -72,16 +72,34 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 const OFFLINE_NODE_PEER_ID: &str =
     "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
 
+/// Deterministic peer id seeded into a `NodeRole::Backup` node's genesis
+/// `NodeInfo` — a loosely-shaped placeholder (unlike `OFFLINE_NODE_PEER_ID`,
+/// this never needs to pass route-building validation: a backup promotion
+/// test only asserts the *announced* pending committee, never the finalized
+/// reshare, so nothing ever tries to route to it). Same value as the
+/// pre-fixture `test_report_kick_promotes_backup_node`'s own literal.
+const BACKUP_NODE_PEER_ID: &str = "backup-node-4-peer-id";
+
+/// Resolves a `NodeRef` to its deterministic test key, for contexts (like
+/// `backup_node_keys`) where only `Running`/`Backup` make sense. Only one
+/// `NodeRole::Backup` node is supported today — always `NODE_KEYS[3]`
+/// regardless of which `FixtureId` a `NodeRef::Backup` names (same
+/// single-node limitation as `NODE_KEY_OFFLINE`).
+fn resolve_backup_capable_node_ref(node: &NodeRef) -> &'static str {
+    match node {
+        NodeRef::Running(index) => NODE_KEYS[*index],
+        NodeRef::Backup(_) => NODE_KEYS[3],
+        NodeRef::Offline(_) => {
+            panic!("CosmosTestEnvironment::provision: NodeRole::Offline isn't supported here yet")
+        }
+    }
+}
+
 fn reporting_json(reporting: &ReportingFixture) -> serde_json::Value {
     let backup_node_keys: Vec<&str> = reporting
         .backup_node_keys
         .iter()
-        .map(|node| match node {
-            NodeRef::Running(index) => NODE_KEYS[*index],
-            NodeRef::Offline(_) | NodeRef::Backup(_) => panic!(
-                "CosmosTestEnvironment::provision: NodeRole::Offline/Backup isn't supported yet"
-            ),
-        })
+        .map(resolve_backup_capable_node_ref)
         .collect();
     serde_json::json!({
         "demerit_config": {
@@ -139,6 +157,55 @@ fn offline_node_infos_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> 
             "whitelisted_ring_ids": whitelisted_ring_ids,
         }
     })]
+}
+
+/// Genesis `node_infos` entries for every `NodeRole::Backup` node in the
+/// fixture — registered and whitelisted so the chain considers it eligible
+/// for kick-promotion, but with no running process behind it. Same
+/// single-node limitation as [`offline_node_infos_json`].
+fn backup_node_infos_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> {
+    if !fixture
+        .nodes
+        .iter()
+        .any(|node| node.role == NodeRole::Backup)
+    {
+        return Vec::new();
+    }
+    let whitelisted_ring_ids: Vec<&str> = fixture
+        .rings
+        .iter()
+        .map(|ring| ring.id.0.as_str())
+        .collect();
+    vec![serde_json::json!({
+        "node_key": NODE_KEYS[3],
+        "node_info": {
+            "peer_id": BACKUP_NODE_PEER_ID,
+            "controller_key": TEST_ACCOUNT_PUBKEY_HEX,
+            "whitelisted_policy_ids": [],
+            "whitelisted_ring_ids": whitelisted_ring_ids,
+        }
+    })]
+}
+
+/// Genesis `node_demerits` entries. `window_started_at` anchors to `now`
+/// (captured once in `provision`, same instant `ring_genesis_json`'s
+/// `upgrade_info`/`activation_time` anchors to) plus each fixture's own
+/// offset — keeping the seeded window live for the whole test run, same
+/// reasoning the pre-fixture `test_report_kick_promotes_backup_node` gave
+/// for anchoring at test start.
+fn node_demerits_genesis_json(fixture: &ScenarioFixture, now: u64) -> Vec<serde_json::Value> {
+    fixture
+        .node_demerits
+        .iter()
+        .map(|demerit| {
+            serde_json::json!({
+                "ring_id": demerit.ring.0,
+                "node_key": resolve_backup_capable_node_ref(&demerit.node),
+                "points": demerit.points,
+                "window_started_at": now + demerit.window_started_offset.as_secs(),
+            })
+        })
+        .collect()
 }
 
 fn ring_genesis_json(ring: &RingFixture, now: u64) -> serde_json::Value {
@@ -249,21 +316,13 @@ impl TestEnvironment for CosmosTestEnvironment {
         // `documents`/`key_derivations` are genesis-seedable as placeholder,
         // never-decrypted records (see `documents_genesis_json`'s doc
         // comment) — enough for a ring that's deliberately never finalized.
-        // Fixture-driven `node_demerits` materialization isn't implemented
-        // yet — that needs either a live, built-up demerit history or
-        // its own genesis shape, neither built here. See the
-        // harness-unification plan's `reporting.rs` slice.
         assert!(
-            fixture.node_demerits.is_empty(),
-            "CosmosTestEnvironment::provision: fixture-driven node-demerit materialization \
-             isn't implemented yet"
-        );
-        assert!(
-            fixture
-                .nodes
-                .iter()
-                .all(|node| matches!(node.role, NodeRole::Running | NodeRole::Offline)),
-            "CosmosTestEnvironment::provision: only NodeRole::Running/Offline is supported today"
+            fixture.nodes.iter().all(|node| matches!(
+                node.role,
+                NodeRole::Running | NodeRole::Offline | NodeRole::Backup
+            )),
+            "CosmosTestEnvironment::provision: only NodeRole::Running/Offline/Backup is \
+             supported today"
         );
 
         let node_count = fixture
@@ -272,13 +331,15 @@ impl TestEnvironment for CosmosTestEnvironment {
             .filter(|node| node.role == NodeRole::Running)
             .count();
         let mut builder = CosmosNetwork::builder().with_node_count(node_count);
-        let node_infos = offline_node_infos_json(&fixture);
+        let mut node_infos = offline_node_infos_json(&fixture);
+        node_infos.extend(backup_node_infos_json(&fixture));
         let documents = documents_genesis_json(&fixture);
         let key_derivations = key_derivations_genesis_json(&fixture);
         if !fixture.rings.is_empty()
             || !node_infos.is_empty()
             || !documents.is_empty()
             || !key_derivations.is_empty()
+            || !fixture.node_demerits.is_empty()
         {
             // Captured once, before genesis is built (and well before the
             // cluster actually finishes starting) — an `UpgradeFixture`'s
@@ -296,6 +357,7 @@ impl TestEnvironment for CosmosTestEnvironment {
                 .iter()
                 .map(|ring| ring_genesis_json(ring, now))
                 .collect();
+            let node_demerits = node_demerits_genesis_json(&fixture, now);
             builder = builder.with_module_genesis(
                 "orbis",
                 serde_json::json!({
@@ -303,6 +365,7 @@ impl TestEnvironment for CosmosTestEnvironment {
                     "node_infos": node_infos,
                     "documents": documents,
                     "key_derivations": key_derivations,
+                    "node_demerits": node_demerits,
                 }),
             );
         }
@@ -464,6 +527,43 @@ impl CosmosTestEnvironment {
     /// trait: native has no equivalent concept.
     pub fn chain_config(&self) -> ChainConfig {
         self.network.chain_config()
+    }
+
+    /// Updates a *non-member* running node's on-chain peer id and whitelists
+    /// it for `ring`, so it can later be announced as a pure-new reshare
+    /// target (e.g. the "node4 leads the new committee" shape several
+    /// `reporting.rs`-migrated tests use) — `provision`'s own ring loop only
+    /// does this for `ring.members`, which a pure-new target deliberately
+    /// isn't. Not part of any shared trait: native's `SetPeer`/`Allow`
+    /// authorization step has no such member/non-member distinction to
+    /// begin with (every running node gets both regardless of ring
+    /// membership), so this gap is Cosmos-only.
+    pub async fn whitelist_node_for_ring(&self, ring: &RingId, node_index: usize) {
+        let client = VeraClient::with_signer(
+            self.network.chain_config(),
+            TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, self.network.chain_config())
+                .expect("test account signer"),
+        )
+        .await
+        .expect("signed chain client for node whitelisting");
+        let node_key = &self.fixture.nodes[node_index].node_key;
+        let peer_address = CosmosNetwork::transform_p2p_address(
+            &self.fixture.nodes[node_index].p2p_address,
+            CosmosNetwork::service_name_for_node(node_index + 1),
+        );
+        let peer_update = client
+            .orbis_update_node_peer_id(node_key, &peer_address)
+            .await
+            .expect("update NodeInfo peer ID");
+        assert_eq!(
+            peer_update.code, 0,
+            "update NodeInfo peer ID tx failed: {}",
+            peer_update.log
+        );
+        client
+            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring.0.clone()))
+            .await
+            .expect("whitelist node for ring");
     }
 }
 
@@ -667,5 +767,12 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             "cancel stuck Cosmos reshare failed: {}",
             result.log
         );
+    }
+
+    async fn read_node_demerits(&self, ring: &RingId, node_key: &str) -> u64 {
+        self.network
+            .admin()
+            .read_node_demerits(&ring.0, node_key)
+            .await
     }
 }

@@ -6,19 +6,20 @@ use crate::app_state::AppState;
 
 pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 
-// `ORBIS_RING_POLICY_YAML`, `create_orbis_ring_policy`, `create_ring_governance_with_ring`,
-// and `wait_for_ring_finalized` moved to `test_support::admin::cosmos` (the
+// `ORBIS_RING_POLICY_YAML`, `create_orbis_ring_policy`, and
+// `wait_for_ring_finalized` moved to `test_support::admin::cosmos` (the
 // shared E2E harness crate, reachable from both `src/tests/*` and
-// `tests/*.rs`). The three functions are re-exported here so existing call
-// sites keep compiling unchanged; the YAML constant had no external callers
-// (grep confirmed) so it isn't re-exported — reach it via
+// `tests/*.rs`). Re-exported here so existing call sites keep compiling
+// unchanged; the YAML constant had no external callers (grep confirmed) so
+// it isn't re-exported — reach it via
 // `test_support::admin::cosmos::ORBIS_RING_POLICY_YAML` if ever needed.
+// `create_ring_governance_with_ring` was also re-exported here but became
+// dead once `reporting.rs` (its last caller) was fully migrated and
+// deleted (harness-unification migration, PR 5f) — removed.
 // `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
 // here; see their doc comments below.
 #[cfg(feature = "integration-test-cosmos")]
-pub use test_support::admin::cosmos::{
-    create_orbis_ring_policy, create_ring_governance_with_ring, wait_for_ring_finalized,
-};
+pub use test_support::admin::cosmos::{create_orbis_ring_policy, wait_for_ring_finalized};
 
 use crate::helpers::create_routers::{
     create_router_with_all_handlers, create_router_with_handlers,

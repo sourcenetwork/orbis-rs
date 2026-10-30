@@ -146,13 +146,6 @@ pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(test)]
 pub const DKG_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3 * 60);
 
-/// Generous bound for integration tests polling for a successful DKG/refresh/
-/// reshare finalization. Deliberately decoupled from `DKG_ATTEMPT_TIMEOUT` so
-/// shortening the stall-detection deadline under test doesn't tighten this
-/// unrelated wait.
-#[cfg(all(test, feature = "integration-test-cosmos"))]
-pub const DKG_FINALIZE_WAIT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-
 /// Deadline for prepare/join/topology-probe coordination.
 ///
 /// Deliberately NOT shortened under `cfg(test)`, unlike `DKG_ATTEMPT_TIMEOUT` above: reshare

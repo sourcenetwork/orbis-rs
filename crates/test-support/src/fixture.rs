@@ -327,6 +327,15 @@ pub trait BulletinTestDriver {
     /// has no equivalent `RingUpdate` variant (only `StartReshare`), so
     /// implementations may `unimplemented!()`.
     async fn cancel_reshare(&self, ring: &RingId);
+
+    /// Current demerit points recorded against `node_key` on `ring`, or 0
+    /// if none. Real on both backends. Deliberately ignores reset-interval
+    /// decay (Cosmos's chain applies it server-side already; native's
+    /// `NodeDemerits::effective_points` would need the ring's own
+    /// `reset_interval` threaded through for no practical benefit — every
+    /// fixture built so far uses a `reset_interval` far longer than any
+    /// test run, so points never actually decay mid-test).
+    async fn read_node_demerits(&self, ring: &RingId, node_key: &str) -> u64;
 }
 
 #[cfg(test)]

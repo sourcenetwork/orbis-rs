@@ -225,6 +225,20 @@ impl CosmosAdmin {
         .await
         .expect("signed chain client")
     }
+
+    /// Not part of [`BackendAdmin`] — added directly for
+    /// `BulletinTestDriver::read_node_demerits`, a query with no equivalent
+    /// need on that older trait. Read-only, so an unsigned client (same
+    /// pattern as `read_ring`), not `signed_client()`.
+    pub async fn read_node_demerits(&self, ring_id: &str, node_key: &str) -> u64 {
+        let client = VeraClient::new(self.chain_config.clone())
+            .await
+            .expect("chain client for demerit read");
+        client
+            .orbis_read_node_demerits(ring_id, node_key)
+            .await
+            .expect("read node demerits")
+    }
 }
 
 #[async_trait::async_trait]

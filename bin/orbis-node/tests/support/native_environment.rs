@@ -688,4 +688,14 @@ impl BulletinTestDriver for NativeTestEnvironment {
     async fn cancel_reshare(&self, _ring: &RingId) {
         unimplemented!("NativeTestEnvironment::cancel_reshare: no RingUpdate variant exists")
     }
+
+    async fn read_node_demerits(&self, ring: &RingId, node_key: &str) -> u64 {
+        self.client
+            .read_threshold_node_demerits(&ring.0, node_key, 1, &self.trusted)
+            .await
+            .expect("read node demerits")
+            .record
+            .map(|demerits| demerits.points)
+            .unwrap_or(0)
+    }
 }

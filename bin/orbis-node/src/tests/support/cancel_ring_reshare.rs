@@ -23,11 +23,15 @@ use test_support::fixture::{
 use tokio::time::{sleep, Duration, Instant};
 
 const RESHARE_THRESHOLD: u32 = 2;
-// Same deterministic test key as `bin/orbis-node/src/tests/constants.rs`'s
-// `NODE_KEY_OFFLINE` (not reachable from native's separate test crate, so
-// duplicated here — same established pattern as that file's own
-// `NODE_KEYS`/`RING_GOVERNANCE_POLICY_ID` duplication elsewhere in this
-// migration).
+// Private key 6 → 6G compressed public key. Never has a running node:
+// reshare tests include it in the new committee so the reshare stalls
+// (dealers only complete once every new member acks, so an offline member
+// keeps the ring pending indefinitely). Private key 5 is skipped on
+// purpose: 5G is 022f8bde... which sorts below NODE_KEY_1 and would make
+// the offline node the reshare selector (new-committee node id 1); 6G's 03
+// prefix sorts after every running node's key. Duplicated independently in
+// every shared file that needs it (not reachable from native's separate
+// test crate).
 const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
 
 #[tokio::test]

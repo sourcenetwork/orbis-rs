@@ -102,6 +102,121 @@ mod cancel_ring_reshare;
 #[path = "../src/tests/support/upgrade.rs"]
 mod upgrade;
 
+// Shared helpers for the `report_*.rs` family (originally `reporting.rs`,
+// fully migrated and deleted) — declared here so every sibling can reach
+// it via `super::`.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_scenario.rs"]
+mod report_scenario;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_offline_pre_sign.rs"]
+mod report_offline_pre_sign;
+
+// Corrupts node3's own BLS share directly — FROST's threshold-sized
+// signing set would deterministically exclude node3 from Sign, so this
+// test only makes sense for the default non-interactive BLS backend.
+#[cfg(all(feature = "unsafe-testing", feature = "bls12-381"))]
+#[path = "../src/tests/support/report_invalid_crypto_response.rs"]
+mod report_invalid_crypto_response;
+
+#[cfg(all(feature = "unsafe-testing", feature = "jubjub"))]
+#[path = "../src/tests/support/report_invalid_sign_share_frost.rs"]
+mod report_invalid_sign_share_frost;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_refresh_offline.rs"]
+mod report_refresh_offline;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_refresh_invalid_commitment.rs"]
+mod report_refresh_invalid_commitment;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_refresh_leader_offline.rs"]
+mod report_refresh_leader_offline;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_refresh_stall_offline.rs"]
+mod report_refresh_stall_offline;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_reshare_stall_offline.rs"]
+mod report_reshare_stall_offline;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_reshare_offline.rs"]
+mod report_reshare_offline;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_reshare_bad_dkg_share_relay.rs"]
+mod report_reshare_bad_dkg_share_relay;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_reshare_dkg_equivocation.rs"]
+mod report_reshare_dkg_equivocation;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_kick_promotes_backup_node.rs"]
+mod report_kick_promotes_backup_node;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_pet_invalid_decrypt_share.rs"]
+mod report_pet_invalid_decrypt_share;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_unauthorized_relay.rs"]
+mod report_unauthorized_relay;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/report_unauthorized_relay_bulletin_inline.rs"]
+mod report_unauthorized_relay_bulletin_inline;
+
 /// Scaffolding proving the harness-unification migration's fixture
 /// materialization (rings/policies) actually works against a real cluster,
 /// not just compiles — delete once a real scenario test uses
