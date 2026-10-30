@@ -36,14 +36,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "982a617e7626a855bc9edce63d85385f74824129" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -90,17 +90,17 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 tempfile = "3"
 
 [patch.crates-io]
-commonware-p2p = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-utils = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-codec = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-runtime = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-consensus = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-cryptography = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-parallel = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-storage = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-broadcast = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-resolver = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-macros = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-glue = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-stream = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
-commonware-math = { git = "https://github.com/iverc/commonware-upstream", rev = "b8bdee194ee8d4933d0c2867e1c104f229d94e96" }
+commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-glue = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-stream = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
+commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
