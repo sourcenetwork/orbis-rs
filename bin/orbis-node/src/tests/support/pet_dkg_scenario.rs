@@ -1,12 +1,12 @@
 //! Shared PET (checking-key) paired-DKG trigger/finalize/verify scenario.
 //!
-//! Parallel, non-generic implementation for the bare paired-DKG slice only
-//! (`cosmos_dkg`/`native_dkg`) — `pet_dkg_contract.rs`
-//! (`bin/orbis-node/tests/support/pet_dkg_contract.rs`) is untouched and
-//! still backs every other PET scenario (`test_cli_calls_dkg_for_pet_ring`,
-//! `test_pet_ring_refresh_and_reshare`, and native's
-//! `Scenario::{Lifecycle, ScheduledRefresh, MemberReplacement,
-//! MemberChurn, ReportFault}`), migrated separately. Deliberately
+//! Cosmos's half of the bare paired-DKG slice (`cosmos_dkg`) and the
+//! foundation `test_cli_calls_dkg_for_pet_ring`/
+//! `test_pet_ring_refresh_and_reshare` build on top of. Native's equivalent
+//! (`native_dkg`, plus `native_pet`'s `Scenario` family via
+//! `native_pet::dkg::run`) is a separate, non-generic implementation —
+//! `pet_dkg_contract.rs`, the generic trait family both backends used to
+//! share, is gone now that neither side needs it. Deliberately
 //! self-contained (no `use super::pre_scenario`) rather than reusing
 //! `pre_scenario::assert_polynomial`: on native, `pre_scenario` is gated
 //! behind `unsafe-testing`, but `native_dkg` (this file's native consumer)

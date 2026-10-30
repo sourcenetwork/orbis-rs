@@ -1,15 +1,20 @@
-//! Docker-based integration test: cancel a permanently-stuck ring reshare.
+//! Shared integration test: cancel a permanently-stuck ring reshare.
 //!
-//! Spins up a full Docker Compose environment (Vera + 3 orbis-node containers),
-//! runs a real DKG, announces a reshare into a committee that can never complete
-//! (it includes a genesis-seeded but never-running node key), cancels it via the
-//! new `CancelRingReshareByAcp` chain message, and confirms the ring reverts to its
-//! original committee/threshold with the original committee still able to Sign.
+//! Runs a real DKG, announces a reshare into a committee that can never
+//! complete (it includes a registered but never-running node key), cancels
+//! it, and confirms the ring reverts to its original committee/threshold
+//! with the original committee still able to Sign.
+//!
+//! Tendermint/Cosmos has a real `CancelRingReshareByAcp` chain message —
+//! that's the correct, authoritative behavior this test asserts. Commonware/
+//! native has no such capability yet (`vera-modules::vera::rings::types::
+//! RingUpdate` has no cancel variant at all), and its fixture materializer
+//! doesn't support a never-running `NodeRole::Offline` node either — both
+//! are real gaps, not weakened here; see the `#[cfg_attr]` below.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test -- test_cancel_stuck_reshare_reverts_ring_and_preserves_signing --nocapture
 
-use super::constants::NODE_KEY_OFFLINE;
 use super::{pre_scenario, sign_scenario, TestEnvironmentImpl};
 use test_support::fixture::{
     BulletinTestDriver, FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture,
@@ -18,9 +23,23 @@ use test_support::fixture::{
 use tokio::time::{sleep, Duration, Instant};
 
 const RESHARE_THRESHOLD: u32 = 2;
+// Same deterministic test key as `bin/orbis-node/src/tests/constants.rs`'s
+// `NODE_KEY_OFFLINE` (not reachable from native's separate test crate, so
+// duplicated here — same established pattern as that file's own
+// `NODE_KEYS`/`RING_GOVERNANCE_POLICY_ID` duplication elsewhere in this
+// migration).
+const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
 
 #[tokio::test]
 #[serial_test::serial]
+#[cfg_attr(
+    feature = "integration-test-native",
+    ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
+              support NodeRole::Offline yet, and BulletinTestDriver::\
+              cancel_reshare is unimplemented!() there (vera-modules's \
+              RingUpdate has no cancel variant); fix when native grows \
+              both capabilities"
+)]
 async fn test_cancel_stuck_reshare_reverts_ring_and_preserves_signing() {
     println!("Starting cancel-stuck-reshare integration test...");
 

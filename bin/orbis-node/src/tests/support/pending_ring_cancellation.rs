@@ -1,10 +1,26 @@
-//! Docker integration test for stale pending-DKG cancellation.
+//! Shared DKG-ring lifecycle test: a pending ring that never finalizes
+//! should eventually be cleaned up without any actor action.
+//!
+//! Tendermint/Cosmos's chain enforces this with a real timeout — that's the
+//! correct, authoritative behavior and what this test asserts. Commonware/
+//! native has no such capability yet (abort-only design: only an explicit
+//! operator-initiated `RingCommand::Cancel` exists) — ignored there for now
+//! rather than weakening the assertion; see the `#[cfg_attr]` below.
 //!
 //! Run with:
 //!   cargo test -p orbis-node --features integration-test \
-//!     test_stale_pending_dkg_is_cancelled_on_vera -- --nocapture
+//!     test_stale_pending_dkg_is_cancelled -- --nocapture
 
+// `crate::` means two different things depending on which backend's entry
+// point `#[path]`-included this file: Cosmos includes it from inside
+// `orbis-node`'s own `#[cfg(test)]` tree (so `crate::` reaches it directly),
+// native includes it from the separate `tests/native_startup.rs` binary
+// (which only sees `orbis-node`'s public API, hence `ring_state` is `pub
+// mod` in `lib.rs` and reached here via the crate's own external name).
+#[cfg(feature = "integration-test-cosmos")]
 use crate::ring_state::RingIndexEntry;
+#[cfg(feature = "integration-test-native")]
+use orbis_node::ring_state::RingIndexEntry;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
     LocalStorageAccessMode, LocalStorageKey, LocalStorageKeyType, SetLocalStorageRequest,
@@ -13,12 +29,39 @@ use test_support::fixture::{
     BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole, RingFixture,
     ScenarioFixture, TestEnvironment,
 };
-use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 use tokio::time::{sleep, Duration, Instant};
+
+use super::TestEnvironmentImpl;
 
 #[tokio::test]
 #[serial_test::serial]
-async fn test_stale_pending_dkg_is_cancelled_on_vera() {
+#[cfg_attr(
+    feature = "integration-test-native",
+    ignore = "commonware/native has no automatic pending-ring timeout \
+              (abort-only design — only explicit RingCommand::Cancel \
+              exists); fix when native grows this capability"
+)]
+async fn test_stale_pending_dkg_is_cancelled() {
+    // Minimal placeholder policy — unused by Cosmos (its ring materializer
+    // always substitutes its own content-addressed governance policy
+    // regardless, and this ring never finalizes DKG so nothing ever checks
+    // document/key-derivation authorization), but native's ring creation
+    // needs a real backing `PolicyFixture` to register as the ring's
+    // `ring_policy` object either way.
+    const PLACEHOLDER_POLICY_YAML: &str = r#"
+name: pending ring cancellation placeholder policy
+resources:
+- name: document
+  permissions:
+  - name: read
+    expr: reader
+  relations:
+  - name: reader
+    types:
+    - actor
+"#;
+
+    let policy = FixtureId::new("policy");
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
         nodes: (0..3)
@@ -27,6 +70,10 @@ async fn test_stale_pending_dkg_is_cancelled_on_vera() {
                 role: NodeRole::Running,
             })
             .collect(),
+        policies: vec![test_support::fixture::PolicyFixture {
+            id: policy.clone(),
+            definition: PLACEHOLDER_POLICY_YAML.to_string(),
+        }],
         rings: vec![RingFixture {
             id: ring.clone(),
             members: vec![
@@ -37,11 +84,7 @@ async fn test_stale_pending_dkg_is_cancelled_on_vera() {
             threshold: 2,
             pss_interval: Duration::from_secs(30),
             requires_pet: false,
-            // No backing `PolicyFixture` needed: Cosmos's ring materializer
-            // always substitutes its own content-addressed governance
-            // policy here regardless, and this ring never finalizes DKG so
-            // nothing ever checks document/key-derivation authorization.
-            policy: FixtureId::new("ring-policy"),
+            policy: policy.clone(),
             reporting: Default::default(),
             upgrade: None,
         }],

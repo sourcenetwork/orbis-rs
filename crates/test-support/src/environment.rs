@@ -141,12 +141,8 @@ fn offline_node_infos_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> 
     })]
 }
 
-fn ring_genesis_json(ring: &RingFixture) -> serde_json::Value {
-    assert!(
-        ring.upgrade.is_none(),
-        "CosmosTestEnvironment::provision: RingFixture::upgrade isn't supported yet"
-    );
-    serde_json::json!({
+fn ring_genesis_json(ring: &RingFixture, now: u64) -> serde_json::Value {
+    let mut value = serde_json::json!({
         "id": ring.id.0,
         "ring_pk": "",
         "peer_node_keys": resolve_members(&ring.members),
@@ -167,7 +163,63 @@ fn ring_genesis_json(ring: &RingFixture) -> serde_json::Value {
         "policy_id": RING_GOVERNANCE_POLICY_ID,
         "reporting": reporting_json(&ring.reporting),
         "requires_pet": ring.requires_pet,
-    })
+    });
+    if let Some(upgrade) = &ring.upgrade {
+        value["upgrade_info"] = serde_json::json!({
+            "current_version": upgrade.current_version,
+            "next_version": upgrade.next_version,
+            "activation_time": now + upgrade.activation_offset.as_secs(),
+        });
+    }
+    value
+}
+
+/// Genesis `documents` entries — placeholder, never-decrypted records.
+/// Unlike [`DocumentFixture`]'s general doc comment (which assumes
+/// encrypting the payload against the named ring's real key), there's no
+/// real key to encrypt against here: genesis happens before any ring can
+/// possibly be finalized. Only useful for a ring that's deliberately never
+/// finalized (e.g. `upgrade.rs`'s version-gating test, which only needs
+/// these records to exist and route correctly, never to decrypt). Genesis
+/// also happens before any `PolicyFixture` is live-created, so — like
+/// `offline_node_infos_json`'s node keys — `policy_id` is always just the
+/// declaring `FixtureId`'s own literal string, a free-form value nothing
+/// here ever validates against a real ACP policy.
+fn documents_genesis_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> {
+    fixture
+        .documents
+        .iter()
+        .map(|document| {
+            serde_json::json!({
+                "id": document.id.0,
+                "ring_id": document.ring.0,
+                "document": String::from_utf8_lossy(&document.payload),
+                "proof": "genesis-placeholder-proof",
+                "policy_id": document.policy.0,
+                "resource": document.resource,
+                "permission": document.permission,
+            })
+        })
+        .collect()
+}
+
+/// Genesis `key_derivations` entries — same placeholder reasoning as
+/// [`documents_genesis_json`].
+fn key_derivations_genesis_json(fixture: &ScenarioFixture) -> Vec<serde_json::Value> {
+    fixture
+        .key_derivations
+        .iter()
+        .map(|derivation| {
+            serde_json::json!({
+                "id": derivation.id.0,
+                "ring_id": derivation.ring.0,
+                "derivation": derivation.derivation,
+                "policy_id": derivation.policy.0,
+                "resource": derivation.resource,
+                "permission": derivation.permission,
+            })
+        })
+        .collect()
 }
 
 async fn wait_for_node_info_on_chain(client: &VeraClient, node_key: &str) {
@@ -194,17 +246,17 @@ pub struct CosmosTestEnvironment {
 #[async_trait::async_trait]
 impl TestEnvironment for CosmosTestEnvironment {
     async fn provision(fixture: ScenarioFixture) -> Self {
-        // Fixture-driven document/key-derivation/demerit materialization and
-        // non-`Running` nodes aren't implemented yet — both need either a
-        // finalized ring (live DKG, which only happens in the scenario
-        // itself, after provisioning) or genesis-injection support that
-        // doesn't exist in Vera today. See the harness-unification plan.
+        // `documents`/`key_derivations` are genesis-seedable as placeholder,
+        // never-decrypted records (see `documents_genesis_json`'s doc
+        // comment) — enough for a ring that's deliberately never finalized.
+        // Fixture-driven `node_demerits` materialization isn't implemented
+        // yet — that needs either a live, built-up demerit history or
+        // its own genesis shape, neither built here. See the
+        // harness-unification plan's `reporting.rs` slice.
         assert!(
-            fixture.documents.is_empty()
-                && fixture.key_derivations.is_empty()
-                && fixture.node_demerits.is_empty(),
-            "CosmosTestEnvironment::provision: fixture-driven document/key-derivation/\
-             demerit materialization isn't implemented yet"
+            fixture.node_demerits.is_empty(),
+            "CosmosTestEnvironment::provision: fixture-driven node-demerit materialization \
+             isn't implemented yet"
         );
         assert!(
             fixture
@@ -221,12 +273,37 @@ impl TestEnvironment for CosmosTestEnvironment {
             .count();
         let mut builder = CosmosNetwork::builder().with_node_count(node_count);
         let node_infos = offline_node_infos_json(&fixture);
-        if !fixture.rings.is_empty() || !node_infos.is_empty() {
-            let rings: Vec<serde_json::Value> =
-                fixture.rings.iter().map(ring_genesis_json).collect();
+        let documents = documents_genesis_json(&fixture);
+        let key_derivations = key_derivations_genesis_json(&fixture);
+        if !fixture.rings.is_empty()
+            || !node_infos.is_empty()
+            || !documents.is_empty()
+            || !key_derivations.is_empty()
+        {
+            // Captured once, before genesis is built (and well before the
+            // cluster actually finishes starting) — an `UpgradeFixture`'s
+            // `activation_offset` is relative to *this* instant, same
+            // reasoning as `test_v0_services_rejected_after_ring_upgrade`'s
+            // own pre-`.build()` `activation_time` capture: whatever lead
+            // time the fixture asks for already accounts for however long
+            // the cluster takes to actually come up afterward.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_secs();
+            let rings: Vec<serde_json::Value> = fixture
+                .rings
+                .iter()
+                .map(|ring| ring_genesis_json(ring, now))
+                .collect();
             builder = builder.with_module_genesis(
                 "orbis",
-                serde_json::json!({ "rings": rings, "node_infos": node_infos }),
+                serde_json::json!({
+                    "rings": rings,
+                    "node_infos": node_infos,
+                    "documents": documents,
+                    "key_derivations": key_derivations,
+                }),
             );
         }
         let network = builder.build();

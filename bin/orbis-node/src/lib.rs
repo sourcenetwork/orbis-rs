@@ -11,7 +11,7 @@ mod pet;
 mod pre;
 mod pss;
 mod reporting;
-mod ring_state;
+pub mod ring_state;
 mod runtime;
 mod sign;
 mod store_secret;

@@ -72,6 +72,36 @@ mod reshare_scenario;
 #[path = "../src/tests/support/sign_scenario.rs"]
 mod sign_scenario;
 
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/pending_ring_cancellation.rs"]
+mod pending_ring_cancellation;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/cancel_ring_reshare.rs"]
+mod cancel_ring_reshare;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/upgrade.rs"]
+mod upgrade;
+
 /// Scaffolding proving the harness-unification migration's fixture
 /// materialization (rings/policies) actually works against a real cluster,
 /// not just compiles — delete once a real scenario test uses
@@ -638,9 +668,10 @@ async fn native_pet_threshold_workflows() {
 /// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
 /// Proves the shared provision-trigger-finalize-verify scenario on its
 /// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
-/// Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly — `dkg::Native`/
-/// `pet_dkg_contract` stay alive for `native_pet::run`'s five `Scenario`
-/// variants, migrated separately.
+/// Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly — `native_pet`'s
+/// five `Scenario` variants go through their own, separate DKG step
+/// (`native_pet::dkg::run`) since they build on `NativeWorkflow`, not a
+/// `test-support` fixture.
 #[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_dkg() {

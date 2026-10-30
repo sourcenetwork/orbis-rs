@@ -81,23 +81,10 @@ resources:
     assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
 }
 
-use crate::helpers::test_helpers::wait_for_ring_finalized;
 use bulletin::r#trait::{BulletinKind, RingPayload};
-use common::blockchain::{
-    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-};
+use common::blockchain::ChainConfig;
 use crypto::r#trait::EncryptionProof;
-use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
-
-// Fixed PET-enabled ring id for the refresh+reshare test, genesis-seeded
-// the same way `pet_dkg.rs` is (bypasses chain minimum pss_interval
-// validation).
-const PET_RESHARE_RING_ID: &str = "integration-test-pet-reshare-ring";
-
-use super::constants::{
-    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID,
-};
 
 #[derive(Clone, Debug)]
 struct RingStateSnapshot {
@@ -109,9 +96,7 @@ struct RingStateSnapshot {
 /// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
 /// Proves the shared provision-trigger-finalize-verify scenario on its own, without
 /// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
-/// layers on top. Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly —
-/// `pet_dkg::Cosmos`/`pet_dkg_contract` stay alive for that sibling test and
-/// `test_pet_ring_refresh_and_reshare`, migrated separately.
+/// and `test_pet_ring_refresh_and_reshare` layer on top of the same foundation.
 #[tokio::test]
 #[serial_test::serial]
 async fn cosmos_dkg() {
@@ -685,137 +670,52 @@ resources:
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pet_ring_refresh_and_reshare() {
+    use test_support::fixture::{
+        BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole,
+        RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
     println!("Starting Docker-based PET refresh+reshare integration test...");
 
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": PET_RESHARE_RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3),
-                    "requires_pet": true
-                }]
-            }),
-        )
-        .build();
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
-    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
-        .await
-        .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
-        .await
-        .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
-        .await
-        .expect("Failed to query node3 info");
-
-    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_SERVICE,
-    );
-    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_SERVICE,
-    );
-    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_SERVICE,
-    );
-
-    let endpoint = endpoints[0].to_string();
-    let node_endpoints = [
-        endpoints[0].to_string(),
-        endpoints[1].to_string(),
-        endpoints[2].to_string(),
-    ];
-    let node_keys = [
-        node1_info.node_key.clone(),
-        node2_info.node_key.clone(),
-        node3_info.node_key.clone(),
-    ];
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
-
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
-
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        PET_RESHARE_RING_ID,
-        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-    )
-    .await;
-    assert_eq!(
-        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
-        "ACP policy ID mismatch — acp_core may have changed. \
-         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
-    );
-
-    let ring_id = PET_RESHARE_RING_ID.to_string();
-
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
-        wait_for_node_info_on_chain(
-            &controller_client,
-            node_key,
-            Duration::from_secs(60),
-            Duration::from_millis(500),
-        )
-        .await;
-        let peer_update = controller_client
-            .orbis_update_node_peer_id(node_key, peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
-
-        let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
-            .await
-            .expect("add ring to NodeInfo whitelist");
-        assert_eq!(
-            whitelist_update.code, 0,
-            "add ring to NodeInfo whitelist tx failed: {}",
-            whitelist_update.log
-        );
-    }
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id_handle = environment.fixture().rings[&ring].id.clone();
+    let ring_id = ring_id_handle.0.clone();
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+    let node_endpoints: Vec<String> = environment
+        .nodes()
+        .iter()
+        .map(|node| node.grpc_endpoint.clone())
+        .collect();
 
     println!("Starting DKG for PET-enabled ring {}...", ring_id);
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
-    assert!(
-        dkg_result.is_ok(),
-        "DKG should succeed: {:?}",
-        dkg_result.err()
-    );
-
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
-    let finalized_ring = controller_client
-        .orbis_read_ring(&ring_id)
-        .await
-        .expect("read finalized ring")
-        .expect("finalized ring should exist");
-    let pet_pk_hex = finalized_ring
-        .pet_pk
-        .clone()
-        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id_handle).await;
+    let ring_pk_hex = keys.main;
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring finalized: ring_pk={}..., pet_pk={}...",
@@ -827,7 +727,7 @@ async fn test_pet_ring_refresh_and_reshare() {
     // shares are genuinely usable before either ceremony below touches them.
     println!("Running a baseline PET-gated PRE round before refresh...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -876,7 +776,7 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE still succeeds after PET refresh...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -893,7 +793,10 @@ async fn test_pet_ring_refresh_and_reshare() {
     // promotion on the same confirmation.
     // ========================================================================
     println!("Announcing a reshare that also carries the PET checking key...");
-    let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
+    let reshare_peer_ids = vec![
+        environment.nodes()[0].node_key.clone(),
+        environment.nodes()[1].node_key.clone(),
+    ];
     let reshare_threshold = 2u32;
 
     let (pre_reshare_main_states, pre_reshare_pet_states) = tokio::join!(
@@ -911,17 +814,12 @@ async fn test_pet_ring_refresh_and_reshare() {
         ),
     );
 
-    cli_tool::start_ring_reshare_by_acp_with_config(
-        ring_id.clone(),
-        reshare_peer_ids.clone(),
-        Some(reshare_threshold),
-        chain_config.clone(),
-    )
-    .await
-    .expect("start ring reshare announcement");
+    environment
+        .update_membership(&ring_id_handle, reshare_peer_ids.clone(), reshare_threshold)
+        .await;
 
     let reshared_payload = wait_for_reshare_bulletin_completion(
-        &chain_config,
+        &environment.chain_config(),
         &ring_id,
         &ring_pk_hex,
         &reshare_peer_ids,
@@ -949,7 +847,7 @@ async fn test_pet_ring_refresh_and_reshare() {
     );
 
     let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
-        &chain_config,
+        &environment.chain_config(),
         &node_endpoints[..2],
         &ring_id,
         &reshared_payload,
@@ -978,7 +876,7 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE succeeds under the reshared committee...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -998,30 +896,15 @@ async fn test_pet_ring_refresh_and_reshare() {
 /// each call gets its own fresh `pet_audit_policy_id`. Mirrors
 /// `test_cli_calls_dkg_for_pet_ring`'s own positive-path PET-gated PRE check.
 async fn assert_pet_gated_pre_succeeds(
-    chain_config: &ChainConfig,
+    environment: &TestEnvironmentImpl,
     endpoint: &str,
     ring_id: &str,
     ring_pk_hex: &str,
     pet_pk_hex: &str,
     secret_message: &[u8],
 ) {
-    // A fresh, throwaway client — never the caller's own long-lived
-    // `controller_client`. That client caches its account sequence locally
-    // and only advances it on its own sends; `register_object_to_chain_with_config`/
-    // `set_relationship_on_chain_with_config` below each construct their own
-    // fresh, self-querying signer for the same account, so reusing a shared
-    // cached-sequence client across more than one call to this helper goes
-    // stale the moment those free functions run in between (confirmed by a
-    // real "account sequence mismatch" failure on the second call in this
-    // test's first Docker run). Constructing fresh here every time keeps
-    // this helper self-contained and safe to call any number of times.
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
+    use test_support::admin::PolicyId;
+    use test_support::fixture::{AuthorizationTestDriver, TestEnvironment};
 
     const PET_AUDIT_POLICY_YAML: &str = r#"
 name: pet audit policy
@@ -1040,49 +923,33 @@ resources:
   - name: write
     expr: creator
 "#;
-    let policy_ids_before: std::collections::HashSet<String> = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids")
-        .ids
-        .into_iter()
-        .collect();
-    controller_client
-        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
-        .await
-        .expect("create PET audit policy");
-    let pet_audit_policy_id = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids after create")
-        .ids
-        .into_iter()
-        .find(|id| !policy_ids_before.contains(id))
-        .expect("new PET audit policy ID not found");
+    let pet_audit_policy_id = environment.create_policy(PET_AUDIT_POLICY_YAML).await.0;
 
     let document_resource = "document".to_string();
     let read_permission = "read".to_string();
+    // Grants the default ("test_jwt") requester identity — the same default
+    // `cli_tool::set_relationship_on_chain_with_config` used when its
+    // `reader_did_pk` argument was `None`.
+    let test_jwt_did = cli_tool::reader_did_from_seed("test_jwt");
 
     let owner_seed = "pet-audit-owner-seed".to_string();
     let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET audit-target object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET audit target");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     // Required noncircular construction order: generate the tag before
     // encrypting the payload, then prove tag knowledge over the
@@ -1143,24 +1010,22 @@ resources:
     )
     .expect("generate PET-gated document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET-gated document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET-gated document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
         ring_id: ring_id.to_string(),
@@ -1184,7 +1049,7 @@ resources:
     let decrypted = do_pre_inline_expect_success(
         "PRE against a genuinely PET-tagged document",
         endpoint.to_string(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.to_string(),
         pet_object_id.clone(),
         Some(audit_target_object_id.clone()),
@@ -1353,32 +1218,6 @@ async fn wait_for_ring_state_on_all_nodes(
             Instant::now() < deadline,
             "Timed out waiting for all nodes to expose DKG ring state. Last observed: {}",
             statuses.join("; ")
-        );
-        sleep(poll_interval).await;
-    }
-}
-
-async fn wait_for_node_info_on_chain(
-    controller_client: &VeraClient,
-    node_key: &str,
-    timeout: Duration,
-    poll_interval: Duration,
-) {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        let status = match controller_client.orbis_read_node_info(node_key).await {
-            Ok(Some(_)) => return,
-            Ok(None) => "not found".to_string(),
-            Err(e) => e.to_string(),
-        };
-
-        assert!(
-            Instant::now() < deadline,
-            "NodeInfo for node_key {} was not visible on-chain within {:?}: {}",
-            node_key,
-            timeout,
-            status
         );
         sleep(poll_interval).await;
     }

@@ -22,8 +22,6 @@ use vera_domain::ConsensusPublicKey;
 
 #[path = "native_pet/dkg.rs"]
 mod dkg;
-#[path = "pet_dkg_contract.rs"]
-mod pet_dkg_contract;
 
 #[path = "native_pet/document.rs"]
 mod document;

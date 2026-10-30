@@ -1,10 +1,8 @@
 //! Shared standard-DKG StoreSecret → authorized PRE conformance scenario —
 //! triggers and verifies DKG itself too, absorbing what the retired
-//! `pet_dkg_contract::{Backend, ScenarioBackend}` traits did for this
-//! scenario specifically. `pet_dkg_contract.rs`
-//! (`bin/orbis-node/tests/support/pet_dkg_contract.rs`) is untouched and
-//! still backs the PET scenarios that still use it — this is a parallel,
-//! non-generic implementation for the one DKG/PRE slice, not a replacement.
+//! `pet_dkg_contract::{Backend, ScenarioBackend}` traits (deleted once every
+//! PET scenario on both backends migrated off them) did for this scenario
+//! specifically.
 
 use super::TestEnvironmentImpl;
 use bulletin::r#trait::{BulletinPost, DocumentPayload};
