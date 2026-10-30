@@ -47,9 +47,9 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tracing",
- "vera-domain",
- "vera-modules",
- "vera-permission",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-permission 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
 ]
 
 [[package]]
@@ -1467,9 +1467,9 @@ dependencies = [
  "tokio",
  "url",
  "vera-client",
- "vera-domain",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-harness",
- "vera-identity",
+ "vera-identity 0.1.0",
 ]
 
 [[package]]
@@ -1998,12 +1998,12 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
- "vera-acp",
+ "vera-acp 0.1.0",
  "vera-client",
- "vera-crypto",
- "vera-domain",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-harness",
- "vera-modules",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "zeroize",
 ]
 
@@ -2300,8 +2300,8 @@ dependencies = [
  "tonic",
  "uuid",
  "vera-client",
- "vera-crypto",
- "vera-domain",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-harness",
  "zeroize",
 ]
@@ -2377,7 +2377,7 @@ dependencies = [
 [[package]]
 name = "commonware-actor"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -2390,7 +2390,7 @@ dependencies = [
 [[package]]
 name = "commonware-broadcast"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -2407,7 +2407,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2421,7 +2421,7 @@ dependencies = [
 [[package]]
 name = "commonware-codec-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2432,7 +2432,7 @@ dependencies = [
 [[package]]
 name = "commonware-coding"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2447,7 +2447,7 @@ dependencies = [
 [[package]]
 name = "commonware-consensus"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "cfg-if",
@@ -2477,7 +2477,7 @@ dependencies = [
 [[package]]
 name = "commonware-cryptography"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2519,7 +2519,7 @@ dependencies = [
 [[package]]
 name = "commonware-formatting"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "commonware-macros",
  "const-hex",
@@ -2528,7 +2528,7 @@ dependencies = [
 [[package]]
 name = "commonware-glue"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "commonware-actor",
@@ -2554,7 +2554,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "commonware-macros-impl",
  "tokio",
@@ -2563,7 +2563,7 @@ dependencies = [
 [[package]]
 name = "commonware-macros-impl"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2575,7 +2575,7 @@ dependencies = [
 [[package]]
 name = "commonware-math"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "commonware-codec",
@@ -2588,7 +2588,7 @@ dependencies = [
 [[package]]
 name = "commonware-p2p"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "commonware-actor",
  "commonware-codec",
@@ -2614,7 +2614,7 @@ dependencies = [
 [[package]]
 name = "commonware-parallel"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "cfg-if",
  "commonware-macros",
@@ -2626,7 +2626,7 @@ dependencies = [
 [[package]]
 name = "commonware-resolver"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "bytes",
  "commonware-actor",
@@ -2647,7 +2647,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "ahash",
  "axum",
@@ -2686,7 +2686,7 @@ dependencies = [
 [[package]]
 name = "commonware-runtime-macros"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -2697,7 +2697,7 @@ dependencies = [
 [[package]]
 name = "commonware-storage"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "ahash",
  "anyhow",
@@ -2721,7 +2721,7 @@ dependencies = [
 [[package]]
 name = "commonware-stream"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -2737,7 +2737,7 @@ dependencies = [
 [[package]]
 name = "commonware-utils"
 version = "2026.9.0"
-source = "git+https://github.com/iverc/commonware-upstream?rev=b8bdee194ee8d4933d0c2867e1c104f229d94e96#b8bdee194ee8d4933d0c2867e1c104f229d94e96"
+source = "git+https://github.com/commonwarexyz/monorepo?rev=96567b26e047a72ee3a8babbf63eac64c757a703#96567b26e047a72ee3a8babbf63eac64c757a703"
 dependencies = [
  "ahash",
  "bytes",
@@ -5911,7 +5911,7 @@ dependencies = [
 [[package]]
 name = "jsonrpsee-server"
 version = "0.26.1"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "futures-util",
  "http",
@@ -7388,18 +7388,29 @@ dependencies = [
  "tracing-loki",
  "tracing-subscriber",
  "url",
- "vera-acp",
+ "vera-acp 0.1.0",
  "vera-client",
- "vera-crypto",
- "vera-domain",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-harness",
- "vera-modules",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "zeroize",
 ]
 
 [[package]]
 name = "orbis-reporting"
 version = "0.0.1"
+dependencies = [
+ "hex",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "orbis-reporting"
+version = "0.0.1"
+source = "git+https://github.com/sourcenetwork/orbis-rs?rev=06cc2d86ade4e3eb5ddbc82baf60e5f1fdd663d6#06cc2d86ade4e3eb5ddbc82baf60e5f1fdd663d6"
 dependencies = [
  "hex",
  "serde",
@@ -11383,6 +11394,21 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vera-acp"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "vera-identity 0.1.0",
+ "vera-zanzibar 0.1.0",
+]
+
+[[package]]
+name = "vera-acp"
 version = "0.5.0"
 source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
 dependencies = [
@@ -11392,14 +11418,14 @@ dependencies = [
  "serde_yaml",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "vera-identity",
- "vera-zanzibar",
+ "vera-identity 0.5.0",
+ "vera-zanzibar 0.5.0",
 ]
 
 [[package]]
 name = "vera-app"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -11416,17 +11442,17 @@ dependencies = [
  "tracing",
  "vera-backend",
  "vera-consensus",
- "vera-domain",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-executor",
  "vera-genesis",
- "vera-modules",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-qmdb",
 ]
 
 [[package]]
 name = "vera-backend"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "bytes",
@@ -11441,8 +11467,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "vera-modules",
- "vera-permission",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-permission 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-qmdb",
  "vera-traits",
 ]
@@ -11450,7 +11476,7 @@ dependencies = [
 [[package]]
 name = "vera-cli"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "libc",
 ]
@@ -11458,7 +11484,7 @@ dependencies = [
 [[package]]
 name = "vera-client"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11484,19 +11510,19 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "vera-acp",
- "vera-crypto",
- "vera-domain",
- "vera-identity",
- "vera-modules",
- "vera-permission",
+ "vera-acp 0.1.0",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-identity 0.1.0",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-permission 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "zeroize",
 ]
 
 [[package]]
 name = "vera-config"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "commonware-codec",
  "commonware-cryptography",
@@ -11511,12 +11537,36 @@ dependencies = [
 [[package]]
 name = "vera-consensus"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "commonware-codec",
  "parking_lot",
  "tokio",
- "vera-domain",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+]
+
+[[package]]
+name = "vera-crypto"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "alloy-primitives",
+ "ark-bls12-381 0.4.0",
+ "ark-ec 0.4.2",
+ "ark-ff 0.4.2",
+ "ark-serialize 0.4.2",
+ "base64 0.22.1",
+ "blst",
+ "borsh",
+ "group 0.14.0",
+ "jubjub",
+ "k256",
+ "multibase",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "unsigned-varint",
 ]
 
 [[package]]
@@ -11546,6 +11596,29 @@ dependencies = [
 [[package]]
 name = "vera-domain"
 version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "alloy-consensus",
+ "alloy-evm",
+ "alloy-primitives",
+ "alloy-rlp",
+ "bytes",
+ "commonware-codec",
+ "commonware-consensus",
+ "commonware-cryptography",
+ "commonware-glue",
+ "commonware-parallel",
+ "commonware-utils",
+ "futures",
+ "hex",
+ "parking_lot",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "vera-domain"
+version = "0.1.0"
 source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
 dependencies = [
  "alloy-consensus",
@@ -11569,7 +11642,7 @@ dependencies = [
 [[package]]
 name = "vera-executor"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11586,11 +11659,11 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "vera-acp",
- "vera-crypto",
- "vera-domain",
- "vera-identity",
- "vera-modules",
+ "vera-acp 0.1.0",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-identity 0.1.0",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-overlay",
  "vera-qmdb",
  "vera-traits",
@@ -11599,7 +11672,7 @@ dependencies = [
 [[package]]
 name = "vera-genesis"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-evm",
  "commonware-codec",
@@ -11609,14 +11682,14 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "vera-domain",
- "vera-modules",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
 ]
 
 [[package]]
 name = "vera-harness"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11639,10 +11712,21 @@ dependencies = [
  "tokio",
  "tracing",
  "vera-cli",
- "vera-domain",
- "vera-modules",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-node",
  "vera-test-infra",
+]
+
+[[package]]
+name = "vera-identity"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -11659,7 +11743,7 @@ dependencies = [
 [[package]]
 name = "vera-indexer"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "parking_lot",
@@ -11670,7 +11754,7 @@ dependencies = [
 [[package]]
 name = "vera-jsonrpc"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "async-trait",
@@ -11685,12 +11769,38 @@ dependencies = [
  "tokio",
  "tracing",
  "vera-backend",
- "vera-domain",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-executor",
  "vera-indexer",
- "vera-modules",
- "vera-permission",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-permission 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-traits",
+]
+
+[[package]]
+name = "vera-modules"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "async-trait",
+ "borsh",
+ "bs58",
+ "bytes",
+ "futures",
+ "hex",
+ "imbl",
+ "orbis-reporting 0.0.1 (git+https://github.com/sourcenetwork/orbis-rs?rev=06cc2d86ade4e3eb5ddbc82baf60e5f1fdd663d6)",
+ "prost 0.14.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "vera-acp 0.1.0",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-identity 0.1.0",
+ "vera-zanzibar 0.1.0",
 ]
 
 [[package]]
@@ -11713,16 +11823,16 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
- "vera-acp",
- "vera-crypto",
- "vera-identity",
- "vera-zanzibar",
+ "vera-acp 0.5.0",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-identity 0.5.0",
+ "vera-zanzibar 0.5.0",
 ]
 
 [[package]]
 name = "vera-node"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -11761,13 +11871,13 @@ dependencies = [
  "vera-cli",
  "vera-config",
  "vera-consensus",
- "vera-crypto",
- "vera-domain",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-executor",
  "vera-genesis",
  "vera-indexer",
  "vera-jsonrpc",
- "vera-modules",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
  "vera-qmdb",
  "vera-traits",
 ]
@@ -11775,11 +11885,30 @@ dependencies = [
 [[package]]
 name = "vera-overlay"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "vera-qmdb",
  "vera-traits",
+]
+
+[[package]]
+name = "vera-permission"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "alloy-primitives",
+ "bytes",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-storage",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c)",
+ "vera-zanzibar 0.1.0",
 ]
 
 [[package]]
@@ -11795,16 +11924,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "vera-crypto",
- "vera-domain",
- "vera-modules",
- "vera-zanzibar",
+ "vera-crypto 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-domain 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-modules 0.1.0 (git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129)",
+ "vera-zanzibar 0.5.0",
 ]
 
 [[package]]
 name = "vera-qmdb"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "thiserror 2.0.21",
@@ -11813,7 +11942,7 @@ dependencies = [
 [[package]]
 name = "vera-test-infra"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "eyre",
  "futures",
@@ -11829,11 +11958,27 @@ dependencies = [
 [[package]]
 name = "vera-traits"
 version = "0.1.0"
-source = "git+https://github.com/sourcenetwork/vera.rs?rev=982a617e7626a855bc9edce63d85385f74824129#982a617e7626a855bc9edce63d85385f74824129"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
 dependencies = [
  "alloy-primitives",
  "thiserror 2.0.21",
  "vera-qmdb",
+]
+
+[[package]]
+name = "vera-zanzibar"
+version = "0.1.0"
+source = "git+https://github.com/sourcenetwork/vera.rs?rev=7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c#7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "futures",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "vera-identity 0.1.0",
 ]
 
 [[package]]
@@ -11849,7 +11994,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
- "vera-identity",
+ "vera-identity 0.5.0",
 ]
 
 [[package]]
