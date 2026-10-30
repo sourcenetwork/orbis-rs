@@ -60,7 +60,6 @@ defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/d
 defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-did-key.workspace = true
 defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
 defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
