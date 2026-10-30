@@ -23,7 +23,8 @@ use crate::node_readiness::wait_for_nodes_ready;
 use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, KeyDerivation};
 use bulletin::vera::VeraBulletin;
 use common::blockchain::{
-    orbis::WhitelistTarget, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY, TEST_ACCOUNT_PUBKEY_HEX,
+    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
+    TEST_ACCOUNT_PUBKEY_HEX,
 };
 use std::collections::HashMap;
 use std::time::Duration;
@@ -376,6 +377,16 @@ impl CosmosTestEnvironment {
         )
         .await
         .expect("signed bulletin client")
+    }
+
+    /// Raw chain config escape hatch for Cosmos-only test code that needs
+    /// operations no backend-neutral trait covers yet (e.g. a second, live
+    /// `MsgCreateRing` outside the fixture system — `register_ring` stays
+    /// `unimplemented!()` on `CosmosAdmin` pending a `cli-tool` dependency
+    /// decision, see that method's doc comment). Not part of any shared
+    /// trait: native has no equivalent concept.
+    pub fn chain_config(&self) -> ChainConfig {
+        self.network.chain_config()
     }
 }
 

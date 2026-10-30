@@ -6,9 +6,6 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-mod pet_dkg;
-#[path = "../../tests/support/pet_dkg_contract.rs"]
-mod pet_dkg_contract;
 #[path = "support/pet_dkg_scenario.rs"]
 mod pet_dkg_scenario;
 mod pet_reshare;
@@ -93,10 +90,9 @@ use crypto::r#trait::EncryptionProof;
 use test_support::IntegrationTestNetwork;
 use tokio::time::{sleep, Duration, Instant};
 
-// Fixed PET-enabled ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
-const PET_RING_ID: &str = "integration-test-pet-ring";
-// Fixed PET-enabled ring id for the refresh+reshare test, distinct from
-// PET_RING_ID so both tests' genesis fixtures never collide.
+// Fixed PET-enabled ring id for the refresh+reshare test, genesis-seeded
+// the same way `pet_dkg.rs` is (bypasses chain minimum pss_interval
+// validation).
 const PET_RESHARE_RING_ID: &str = "integration-test-pet-reshare-ring";
 
 use super::constants::{
@@ -107,68 +103,6 @@ use super::constants::{
 struct RingStateSnapshot {
     public_polynomial: String,
     last_pss: u64,
-}
-
-/// Docker-based integration test: PET-enabled ring, end to end.
-///
-/// Exercises two things the standard (non-PET) DKG/PRE scenario doesn't
-/// cover, both unblocked by the same change (Vera's `MsgCreateRing` no longer
-/// rejects `requires_pet: true` now that the checking-key lifecycle — the
-/// fresh-DKG auto-chain and combined finalize implemented in
-/// `coordinator::phases::phase4`/`network::start_fresh_pet` — actually exists
-/// to service such a ring):
-///
-/// 1. Genesis-seeds a `requires_pet: true` ring (same pss_interval-bypass
-///    trick as the reference test) and runs DKG through the CLI. This drives
-///    the full auto-chain: the main key's `Fresh` ceremony completes locally,
-///    triggers the PET key's own `FreshPet` ceremony internally (no second
-///    external trigger), and once both succeed the node submits one combined
-///    `MsgFinalizeRing` — `ring_pk` and `pet_pk` land on-chain together in
-///    the same commit.
-/// 2. A live `MsgCreateRing(requires_pet: true)` against the real chain (not
-///    genesis) round-trips correctly — the only place that would catch a
-///    proto tag mismatch between orbis-rs's prost types and Vera's gogoproto
-///    types for these fields, since neither side's unit tests cross a real
-///    wire boundary.
-///
-/// PET's own check-and-gate (Task 6: threshold PET verification before PRE
-/// release) doesn't exist yet, so this test stops at "both keys finalized" —
-/// it does not attempt PRE against a PET-gated document.
-struct DkgScenarioOutcome {
-    _network: IntegrationTestNetwork,
-    chain_config: ChainConfig,
-    controller_client: VeraClient,
-    endpoint: String,
-    node_keys: [String; 3],
-    threshold: u32,
-    ring_id: String,
-    keys: pet_dkg_contract::Keys,
-}
-
-/// Run the shared paired-DKG scenario through the Cosmos adapter and retain
-/// its fixture for callers that continue into PET/PRE behavior.
-///
-/// Shared by `test_cli_calls_dkg_for_pet_ring` (which continues on to
-/// PET-gated PRE assertions) and `cosmos_dkg` (which only proves this shared
-/// tail — the direct Cosmos counterpart to native's `native_dkg`). Bring-up
-/// Provisioning and trigger mechanics remain backend-specific implementations
-/// of `pet_dkg_contract::ScenarioBackend`; their ordering and all behavioral
-/// assertions live in the common runner used by both Cosmos and native.
-async fn dkg_scenario(
-    ring_id: &'static str,
-    expected_policy_id: &'static str,
-) -> DkgScenarioOutcome {
-    let (scenario, keys, _local_state) = pet_dkg::run(ring_id, expected_policy_id).await;
-    DkgScenarioOutcome {
-        _network: scenario.network,
-        chain_config: scenario.chain_config,
-        controller_client: scenario.controller_client,
-        endpoint: scenario.endpoint,
-        node_keys: scenario.node_keys,
-        threshold: scenario.threshold,
-        ring_id: scenario.ring_id,
-        keys,
-    }
 }
 
 /// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
@@ -304,23 +238,77 @@ resources:
     );
 }
 
+/// Docker-based integration test: PET-enabled ring, end to end.
+///
+/// Exercises two things the standard (non-PET) DKG/PRE scenario doesn't
+/// cover, both unblocked by the same change (Vera's `MsgCreateRing` no longer
+/// rejects `requires_pet: true` now that the checking-key lifecycle — the
+/// fresh-DKG auto-chain and combined finalize implemented in
+/// `coordinator::phases::phase4`/`network::start_fresh_pet` — actually exists
+/// to service such a ring):
+///
+/// 1. Genesis-seeds a `requires_pet: true` ring (same pss_interval-bypass
+///    trick as the reference test) and runs DKG through the CLI. This drives
+///    the full auto-chain: the main key's `Fresh` ceremony completes locally,
+///    triggers the PET key's own `FreshPet` ceremony internally (no second
+///    external trigger), and once both succeed the node submits one combined
+///    `MsgFinalizeRing` — `ring_pk` and `pet_pk` land on-chain together in
+///    the same commit.
+/// 2. A live `MsgCreateRing(requires_pet: true)` against the real chain (not
+///    genesis) round-trips correctly — the only place that would catch a
+///    proto tag mismatch between orbis-rs's prost types and Vera's gogoproto
+///    types for these fields, since neither side's unit tests cross a real
+///    wire boundary.
+///
+/// PET's own check-and-gate (Task 6: threshold PET verification before PRE
+/// release) doesn't exist yet, so this test stops at "both keys finalized" —
+/// it does not attempt PRE against a PET-gated document.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_cli_calls_dkg_for_pet_ring() {
+    use test_support::admin::PolicyId;
+    use test_support::fixture::{
+        AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
+        NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
     println!("Starting Docker-based PET integration test...");
 
-    let DkgScenarioOutcome {
-        _network,
-        chain_config,
-        controller_client,
-        endpoint,
-        node_keys,
-        threshold,
-        ring_id,
-        keys,
-    } = dkg_scenario(PET_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id_handle = environment.fixture().rings[&ring].id.clone();
+    let ring_id = ring_id_handle.0.clone();
+    let node_keys = environment.fixture().rings[&ring].members.clone();
+    let threshold = 2u32;
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id_handle).await;
     let ring_pk_hex = keys.main;
-    let pet_pk_hex = keys.pet.expect("PET DKG must return a PET key");
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
@@ -373,55 +361,39 @@ resources:
   - name: write
     expr: creator
 "#;
-    let policy_ids_before: std::collections::HashSet<String> = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids")
-        .ids
-        .into_iter()
-        .collect();
-    controller_client
-        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
-        .await
-        .expect("create PET audit policy");
-    let pet_audit_policy_id = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids after create")
-        .ids
-        .into_iter()
-        .find(|id| !policy_ids_before.contains(id))
-        .expect("new PET audit policy ID not found");
+    let pet_audit_policy_id = environment.create_policy(PET_AUDIT_POLICY_YAML).await.0;
 
     let document_resource = "document".to_string();
     let read_permission = "read".to_string();
+    // Every grant below is to the default ("test_jwt") requester identity —
+    // same default `cli_tool::set_relationship_on_chain_with_config` used
+    // when its `reader_did_pk` argument was `None`.
+    let test_jwt_did = cli_tool::reader_did_from_seed("test_jwt");
 
     // The audit target *is* the real data subject's own identity — the
     // exact value `prepare_pet_tag` below builds the tag's fingerprint
     // against. Not a separately-chosen label resolved to an owner via ACP.
     let owner_seed = "pet-audit-owner-seed".to_string();
     let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET audit-target object");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+        )
+        .await;
     // The requester below authenticates with the default ("test_jwt")
     // reader identity — the same one granted `reader` on the document —
     // so it also needs `reader` here to pass `check_pet_permission`.
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET audit target");
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
@@ -489,24 +461,22 @@ resources:
     )
     .expect("generate PET-gated document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET-gated document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET-gated document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
         ring_id: ring_id.clone(),
@@ -530,7 +500,7 @@ resources:
     let decrypted = do_pre_inline_expect_success(
         "PRE against a genuinely PET-tagged document",
         endpoint.clone(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.clone(),
         pet_object_id.clone(),
         Some(audit_target_object_id.clone()),
@@ -585,24 +555,22 @@ resources:
     )
     .expect("generate no-tag document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        no_tag_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register the no-tag document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        no_tag_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the no-tag document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &no_tag_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &no_tag_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document_no_tag = proto::v0::pre::InlineDocument {
         ring_id: ring_id.clone(),
@@ -620,7 +588,7 @@ resources:
 
     let pre_result_no_tag = cli_tool::do_pre_with_inline_document(
         endpoint.clone(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.clone(),
         no_tag_object_id,
         None,
@@ -654,14 +622,20 @@ resources:
     );
 
     // A live MsgCreateRing(requires_pet: true) against the real chain also
-    // round-trips correctly (independent throwaway policy — no dependency on
-    // the deterministic RING_GOVERNANCE_POLICY_ID nonce ordering above). This
-    // ring is never whitelisted or driven through DKG; it only exercises the
-    // create-and-read-back wire path.
+    // round-trips correctly (independent throwaway policy). This ring is
+    // never whitelisted or driven through DKG; it only exercises the
+    // create-and-read-back wire path. Both helpers need a raw `ChainConfig`
+    // and stay outside `environment`'s abstraction entirely — unlike a
+    // plain `environment.create_policy`, `create_orbis_ring_policy` also
+    // registers the policy's own id as a `ring_policy` ACP object (required
+    // for the signer to pass `create_ring`'s permission check below), and
+    // `create_ring_on_chain_with_trusted_relays` calls `cli_tool::create_ring`
+    // directly — `CosmosAdmin::register_ring` can't do this itself yet
+    // (`cli-tool` dependency boundary, see that method's doc comment).
     let live_policy_id =
-        crate::helpers::test_helpers::create_orbis_ring_policy(&chain_config).await;
+        test_support::admin::cosmos::create_orbis_ring_policy(&environment.chain_config()).await;
     let live_ring_id = crate::helpers::test_helpers::create_ring_on_chain_with_trusted_relays(
-        &chain_config,
+        &environment.chain_config(),
         &node_keys,
         threshold,
         &live_policy_id,
@@ -670,10 +644,9 @@ resources:
         true,
     )
     .await;
-    let live_ring = controller_client
-        .orbis_read_ring(&live_ring_id)
+    let live_ring = environment
+        .read_ring(&test_support::admin::RingId(live_ring_id))
         .await
-        .expect("read live-created ring")
         .expect("live-created ring should exist");
     assert!(
         live_ring.requires_pet,
