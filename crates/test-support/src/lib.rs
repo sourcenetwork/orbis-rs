@@ -15,13 +15,27 @@
 //!   outside this lifecycle wrapper until shared scenarios require it.
 //! - `container` / `native_network` — native containers with explicit stop, crash
 //!   and restart control, enabled with the `native` feature.
+//! - [`fixture`] — backend-neutral [`fixture::ScenarioFixture`]/
+//!   [`fixture::TestEnvironment`] vocabulary; additive, not yet wired to
+//!   [`IntegrationBackend`] or any concrete backend.
+//! - [`environment`] (`cosmos` feature) — [`CosmosTestEnvironment`], the
+//!   compile-time-selected `fixture::TestEnvironment` for Cosmos. Native's
+//!   counterpart lives outside this crate; see that module's doc comment.
+//! - [`node_readiness`] — shared `InfoService`-polling helper both
+//!   `TestEnvironment` implementations use.
 
 mod backend;
 mod compose;
+#[cfg(feature = "cosmos")]
+mod environment;
+pub mod fixture;
 mod network;
+pub mod node_readiness;
 
 pub use admin::BackendAdmin;
 pub use backend::IntegrationBackend;
+#[cfg(feature = "cosmos")]
+pub use environment::CosmosTestEnvironment;
 #[cfg(feature = "cosmos")]
 pub use network::CosmosNetwork;
 #[cfg(all(unix, feature = "native"))]

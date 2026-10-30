@@ -34,6 +34,7 @@ pub struct RingKeys(pub String);
 pub struct RingSpec {
     pub node_keys: Vec<String>,
     pub threshold: u32,
+    pub pss_interval: Duration,
     pub policy_id: PolicyId,
     pub nonce: Option<String>,
     pub trusted_auth_relay_dids: Vec<String>,
@@ -51,6 +52,18 @@ pub struct RingView {
     /// finalization; native's reconciliation model has no equivalent list and
     /// always reports 0.
     pub confirmations: usize,
+    /// The target committee/threshold of an announced-but-not-yet-effective
+    /// reshare — empty/`None` when none is pending. `peer_node_keys`/
+    /// `threshold` above always reflect the *current*, pre-reshare committee
+    /// until this clears.
+    pub new_peer_node_keys: Vec<String>,
+    pub new_threshold: Option<u32>,
+}
+
+impl RingView {
+    pub fn pending_reshare(&self) -> bool {
+        !self.new_peer_node_keys.is_empty() || self.new_threshold.is_some()
+    }
 }
 
 #[async_trait::async_trait]

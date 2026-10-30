@@ -6,42 +6,85 @@
 //! Run with:
 //!   cargo test --features integration-test -- --nocapture
 
-mod pet_dkg;
-#[path = "../../tests/support/pet_dkg_contract.rs"]
-mod pet_dkg_contract;
+#[path = "support/pet_dkg_scenario.rs"]
+mod pet_dkg_scenario;
 mod pet_reshare;
-#[path = "../../tests/support/pre_scenario.rs"]
-mod pre_scenario;
-#[path = "../../tests/support/refresh_scenario.rs"]
+#[path = "support/refresh_scenario.rs"]
 mod refresh_scenario;
-#[path = "../../tests/support/reshare_scenario.rs"]
+#[path = "support/reshare_scenario.rs"]
 mod reshare_scenario;
-#[path = "../../tests/support/sign_scenario.rs"]
-mod sign_scenario;
+// `pre_scenario`/`sign_scenario` and the `TestEnvironmentImpl` alias are
+// declared once in `mod.rs` so `cancel_ring_reshare.rs` (a sibling module)
+// can reuse them too — loading the same file as two separate `mod` items
+// trips `clippy::duplicate_mod`.
+use super::{pre_scenario, sign_scenario, TestEnvironmentImpl};
 
-use crate::helpers::test_helpers::wait_for_ring_finalized;
-use bulletin::r#trait::{
-    BulletinKind, BulletinPost, BulletinWriteKind, DocumentPayload, RingPayload,
-};
-use common::blockchain::{
-    orbis::WhitelistTarget, ChainConfig, TxSigner, VeraClient, TEST_ACCOUNT_HEX_KEY,
-};
-use crypto::r#trait::{EncryptionProof, ThresholdDealer, ThresholdSigner};
-use crypto::{CryptoDeserialize, GroupAffine, PreImpl, SignImpl};
-use test_support::IntegrationTestNetwork;
+/// Scaffolding proving the harness-unification migration's fixture
+/// materialization (rings/policies) actually works against a real cluster,
+/// not just compiles — delete once a real scenario test uses
+/// `TestEnvironmentImpl` directly.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_test_environment_materializes_standard_fixture() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    const SCAFFOLD_POLICY_YAML: &str = r#"
+name: harness unification scaffold policy
+resources:
+- name: document
+  permissions:
+  - name: read
+    expr: reader
+  relations:
+  - name: reader
+    types:
+    - actor
+"#;
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: SCAFFOLD_POLICY_YAML.to_string(),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: false,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    assert_eq!(environment.fixture().policies.len(), 1);
+    assert_eq!(environment.fixture().rings.len(), 1);
+    assert!(!environment.fixture().policies[&policy].id.0.is_empty());
+    assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
+}
+
+use bulletin::r#trait::{BulletinKind, RingPayload};
+use common::blockchain::ChainConfig;
+use crypto::r#trait::EncryptionProof;
 use tokio::time::{sleep, Duration, Instant};
-
-// Fixed ring id pre-seeded into genesis (bypasses chain minimum pss_interval validation).
-const RING_ID: &str = "integration-test-ring";
-// Fixed PET-enabled ring id pre-seeded into genesis, for the same reason.
-const PET_RING_ID: &str = "integration-test-pet-ring";
-// Fixed PET-enabled ring id for the refresh+reshare test, distinct from
-// PET_RING_ID so both tests' genesis fixtures never collide.
-const PET_RESHARE_RING_ID: &str = "integration-test-pet-reshare-ring";
-
-use super::constants::{
-    reporting_genesis_json, NODE_KEY_1, NODE_KEY_2, NODE_KEY_3, RING_GOVERNANCE_POLICY_ID,
-};
 
 #[derive(Clone, Debug)]
 struct RingStateSnapshot {
@@ -49,1031 +92,140 @@ struct RingStateSnapshot {
     last_pss: u64,
 }
 
-fn assert_policy_rejection(context: &str, error: &anyhow::Error) {
-    let status = error
-        .downcast_ref::<tonic::Status>()
-        .unwrap_or_else(|| panic!("{context}: expected tonic::Status source, got: {error:#}"));
-    assert_eq!(
-        status.code(),
-        tonic::Code::Unauthenticated,
-        "{context}: unexpected server status: {status}"
-    );
-    assert!(
-        status
-            .message()
-            .contains("Access denied: policy check failed"),
-        "{context}: unexpected server message: {status}"
-    );
+/// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
+/// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
+/// Proves the shared provision-trigger-finalize-verify scenario on its own, without
+/// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
+/// and `test_pet_ring_refresh_and_reshare` layer on top of the same foundation.
+#[tokio::test]
+#[serial_test::serial]
+async fn cosmos_dkg() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
+    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
+    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
 }
 
-/// Docker-based integration test: Run DKG and PRE using Docker Compose
-///
-/// This test spins up a full integration environment with:
-/// - Vera chain
-/// - 3 Orbis nodes
-///
-/// Then runs the full DKG -> PRE workflow via CLI commands.
+/// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
+/// authorized PRE, derived-key signing, refresh, and committee reshare. Its
+/// native counterpart runs the same scenario body below the backend boundary
+/// in `native_startup.rs`. Replaces the pre-harness-unification
+/// `cosmos_dkg_and_pre`/generic-`Backend`-trait version — this one drives
+/// `TestEnvironmentImpl` directly, through the compile-time-selected
+/// environment every other migrated test already uses.
 #[tokio::test]
 #[serial_test::serial]
 async fn test_cli_calls_dkg_and_pre_endpoint() {
-    // use tracing_subscriber;
-    // // Initialize tracing for debugging
-    // let _ = tracing_subscriber::fmt()
-    //     .with_max_level(tracing::Level::DEBUG)
-    //     .with_test_writer()
-    //     .try_init();
-
-    println!("Starting Docker-based integration test...");
-
-    // Pre-seed the ring into genesis so pss_interval=5 bypasses the chain minimum of 86400.
-    // The ring uses deterministic node signing keys (ORBIS_SIGNING_KEY in docker-compose).
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3)
-                }]
-            }),
-        )
-        .build();
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
-
-    // Wait for all nodes to be ready by polling their gRPC endpoints
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
-    // Query node info from all three nodes to get their peer IDs
-    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
-        .await
-        .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
-        .await
-        .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
-        .await
-        .expect("Failed to query node3 info");
-    let node1_address = node1_info.public_address.clone();
-    println!("Node 1 P2P address: {}", node1_info.p2p_address);
-    println!("Node 2 P2P address: {}", node2_info.p2p_address);
-    println!("Node 3 P2P address: {}", node3_info.p2p_address);
-
-    // Transform P2P addresses for inter-container communication
-    // The addresses from nodes will be like "peer_id@0.0.0.0:port"
-    // We need to replace 0.0.0.0 with the container name for Docker networking
-    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_SERVICE,
-    );
-    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_SERVICE,
-    );
-    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_SERVICE,
-    );
-
-    println!("Transformed peer addresses for Docker networking:");
-    println!("  Node 1: {}", peer1_addr);
-    println!("  Node 2: {}", peer2_addr);
-    println!("  Node 3: {}", peer3_addr);
-
-    let threshold = 2u32;
-    let endpoint = endpoints[0].to_string();
-    let node_endpoints = [
-        endpoints[0].to_string(),
-        endpoints[1].to_string(),
-        endpoints[2].to_string(),
-    ];
-
-    // The ring was pre-seeded into genesis with deterministic node keys (G, 2G, 3G).
-    // Verify the queried node keys match the expected constants so that genesis and
-    // runtime agree, then fail fast with a clear message if the docker-compose
-    // ORBIS_SIGNING_KEY values have drifted from the constants above.
-    let node_keys = [
-        node1_info.node_key.clone(),
-        node2_info.node_key.clone(),
-        node3_info.node_key.clone(),
-    ];
-    assert_eq!(
-        node_keys[0], NODE_KEY_1,
-        "node1 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[1], NODE_KEY_2,
-        "node2 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-    assert_eq!(
-        node_keys[2], NODE_KEY_3,
-        "node3 key mismatch — check ORBIS_SIGNING_KEY in docker-compose"
-    );
-
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
-
-    // Step 1: Whitelist nodes and update peer IDs.
-    //
-    // The ring is in genesis with pss_interval=5 (bypasses the 86400 minimum).
-    // Nodes are whitelisted by ring_id rather than a policy_id, so no ACP ring
-    // governance policy is needed for DKG authorization.
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
-
-    // Create ring governance ACP policy and register both the policy and the ring as ACP
-    // objects, all via controller_client so the nonce counter stays in sync with the
-    // subsequent node setup operations. Must be the first CreatePolicy tx (counter=0)
-    // so the returned ID matches RING_GOVERNANCE_POLICY_ID baked into genesis.
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        RING_ID,
-        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-    )
-    .await;
-    assert_eq!(
-        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
-        "ACP policy ID mismatch — acp_core may have changed. \
-         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
-    );
-
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
-        wait_for_node_info_on_chain(
-            &controller_client,
-            node_key,
-            Duration::from_secs(60),
-            Duration::from_millis(500),
-        )
-        .await;
-        let peer_update = controller_client
-            .orbis_update_node_peer_id(node_key, peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
-
-        let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(RING_ID.to_string()))
-            .await
-            .expect("add ring to NodeInfo whitelist");
-        assert_eq!(
-            whitelist_update.code, 0,
-            "add ring to NodeInfo whitelist tx failed: {}",
-            whitelist_update.log
-        );
-    }
-
-    // Ring is in genesis — no on-chain creation needed.
-    // pss_interval=5 in genesis bypasses the chain-enforced minimum of 86400.
-    let ring_id = RING_ID.to_string();
-
-    println!(
-        "Starting DKG with threshold {} and ring {}...",
-        threshold,
-        &ring_id[..16.min(ring_id.len())]
-    );
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
-    assert!(
-        dkg_result.is_ok(),
-        "DKG should succeed: {:?}",
-        dkg_result.err()
-    );
-
-    println!(
-        "DKG initiated (session_id: {}), waiting for ring finalization...",
-        dkg_result.unwrap().session_id
-    );
-
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(90)).await;
-
-    // Read the finalized ring payload for use in PSS/reshare assertions
-    let post_payload = cli_tool::read_bulletin_post_with_config(
-        ring_id.clone(),
-        BulletinKind::Ring,
-        chain_config.clone(),
-    )
-    .await
-    .expect("read ring from bulletin");
-    let dkg_ring_payload: RingPayload =
-        serde_json::from_slice(&post_payload).expect("parse RingPayload");
-
-    // The bulletin event proves the DKG was posted, but the other nodes may
-    // still be finishing their local Phase 4 writes. Wait until every node can
-    // serve the local ring state, then use each node's own state as the refresh
-    // baseline.
-    let initial_ring_states = wait_for_ring_state_on_all_nodes(
-        &node_endpoints,
-        &ring_pk_hex,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
-
-    println!(
-        "DKG completed! Ring PK: {}..., Ring ID: {}",
-        &ring_pk_hex[..40.min(ring_pk_hex.len())],
-        &ring_id[..16.min(ring_id.len())],
-    );
-
-    let resource = "document".to_string();
-    let relation = "reader".to_string();
-    let permission = "read".to_string();
-    let did_pk_string = "test_did_secret".to_string();
-    let tier = Some("tier".to_string());
-    let timestamp = Some(100u64);
-    let valid_window_start = Some(50u64);
-    let valid_window_end = Some(150u64);
-    let salt = Some("salt".to_string());
-    let policy_id = cli_tool::add_policy_to_chain_with_config(chain_config.clone())
-        .await
-        .expect("policy_id");
-
-    // ====================================================================
-    // Create objects: MANUAL vs SERVICE
-    // Both paths encrypt locally first, then post to bulletin
-    // ====================================================================
-
-    // Parse ring public key for encryption
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let ring_pk_point = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring_pk");
-
-    // MANUAL PATH: Encrypt and post directly to bulletin
-    let object_id_manual = {
-        let ciphertext_context = crypto::context::CiphertextContext {
-            ring_pk: ring_pk_bytes.clone(),
-            policy_id: policy_id.clone(),
-            resource: resource.clone(),
-            permission: permission.clone(),
-            tier: tier.clone(),
-            timestamp,
-            salt: None,
-            pet_tag: None,
-        };
-        let (_enc_cmt, encrypted_secret, enc_proof) = PreImpl::encrypt_secret(
-            &ring_pk_point,
-            b"Hello from manual path!",
-            None,
-            &ciphertext_context,
-        )
-        .expect("encrypt secret");
-        let payload = DocumentPayload {
-            ring_id: ring_id.clone(),
-            document: serde_json::to_string(&encrypted_secret).expect("serialize"),
-            proof: String::try_from(enc_proof).expect("serialize proof"),
-            policy_id: policy_id.clone(),
-            resource: resource.clone(),
-            permission: permission.clone(),
-            tier: tier.clone(),
-            timestamp,
-            pet_tag: None,
-            pet_tag_proof: None,
-        };
-        let serialized: Vec<u8> = payload.try_into().expect("serialize payload");
-        cli_tool::create_bulletin_post_with_config(
-            BulletinWriteKind::Document,
-            serialized,
-            chain_config.clone(),
-        )
-        .await
-        .expect("create_bulletin_post")
-    };
-    let secret = b"Hello from StoreSecret!";
-
-    // SERVICE PATH: Prepare secret once (encrypt locally), then store
-    // This allows testing idempotency by reusing the same prepared data
-    let prepared_secret = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare_secret should succeed");
-    let derivation = b"test_derivation".to_vec();
-    let prepared_secret_derived = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        Some(derivation.clone()),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        tier.clone(),
-        timestamp,
-        salt.clone(),
-        None,
-    )
-    .expect("prepare_secret should succeed");
-
-    // Get sequence before first store to verify transaction is broadcast
-    let sequence_before_first =
-        cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
-            .await
-            .expect("get sequence before first store");
-    println!(
-        "Node1 sequence before first store: {}",
-        sequence_before_first
-    );
-
-    let object_response = store_prepared_secret_expect_success(
-        "initial StoreSecret",
-        endpoint.clone(),
-        &prepared_secret,
-        ring_id.clone(),
-        Some(did_pk_string.clone()),
-        true,
-    )
-    .await;
-
-    let object_id_service = object_response.object_id.clone();
-    let signature_hex = object_response.signature.clone();
-
-    let object_response_derived = store_prepared_secret_expect_success(
-        "derived StoreSecret",
-        endpoint.clone(),
-        &prepared_secret_derived.clone(),
-        ring_id.clone(),
-        Some(did_pk_string.clone()),
-        false,
-    )
-    .await;
-    let object_id_derived = object_response_derived.object_id.clone();
-
-    // Poll until sequence increments (confirms tx was broadcast and included in a block)
-    let sequence_after_first = {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let seq =
-                cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
-                    .await
-                    .expect("get sequence after first store");
-            if seq > sequence_before_first {
-                break seq;
-            }
-            if Instant::now() >= deadline {
-                panic!("Timeout waiting for account sequence to increment after first store");
-            }
-            sleep(Duration::from_millis(200)).await;
-        }
-    };
-    println!("Node1 sequence after first store: {}", sequence_after_first);
-    assert!(
-        sequence_after_first > sequence_before_first,
-        "Sequence should increment after first store (tx was broadcast)"
-    );
-
-    // Read both from bulletin and compare metadata
-    let manual_bytes = cli_tool::read_bulletin_post_with_config(
-        object_id_manual.clone(),
-        BulletinKind::Document,
-        chain_config.clone(),
-    )
-    .await
-    .expect("read manual post");
-    let service_bytes = cli_tool::read_bulletin_post_with_config(
-        object_id_service.clone(),
-        BulletinKind::Document,
-        chain_config.clone(),
-    )
-    .await
-    .expect("read service post");
-
-    let manual: DocumentPayload = serde_json::from_slice(&manual_bytes).expect("parse manual");
-    let service: DocumentPayload = serde_json::from_slice(&service_bytes).expect("parse service");
-    let bulletin_post = BulletinPost {
-        id: object_id_service.clone(),
-        payload: service_bytes.clone(),
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
     };
 
-    // Serialize BulletinPost to bytes (this is what was signed)
-    let message_bytes: Vec<u8> = bulletin_post
-        .try_into()
-        .expect("serialize BulletinPost to bytes");
+    const DOCUMENT_POLICY_YAML: &str = r#"
+name: shared-dkg-pre-policy
+resources:
+- name: document
+  permissions:
+  - name: read
+    expr: reader
+  relations:
+  - name: reader
+    types:
+    - actor
+"#;
 
-    assert_eq!(manual.ring_id, service.ring_id, "ring_id mismatch");
-    assert_eq!(manual.policy_id, service.policy_id, "policy_id mismatch");
-    assert_eq!(manual.resource, service.resource, "resource mismatch");
-    assert_eq!(manual.permission, service.permission, "permission mismatch");
-
-    // Verify the threshold signature against the ring public key
-    // The signature was created over the serialized BulletinPost
-    let signature_bytes = hex::decode(&signature_hex).expect("decode signature hex");
-    let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&signature_bytes)
-        .expect("deserialize signature");
-
-    let ring_pk_bytes = hex::decode(&ring_pk_hex).expect("decode ring_pk hex");
-    let ring_pk = GroupAffine::from_bytes(&ring_pk_bytes).expect("deserialize ring public key");
-
-    let signer = SignImpl::new();
-    signer
-        .verify(&ring_pk, &message_bytes, &signature)
-        .expect("BLS signature should verify against ring public key");
-
-    // Run PRE to verify full flow works
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id_manual.clone(),
-        resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register_object_to_chain");
-
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id_manual.clone(),
-        resource.clone(),
-        relation.clone(),
-        Some(did_pk_string.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("set_relationship_on_chain");
-
-    // register service-stored encrypted object to chain
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id_service.clone(),
-        resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register_object_to_chain");
-
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id_service.clone(),
-        resource.clone(),
-        relation.clone(),
-        Some(did_pk_string.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("set_relationship_on_chain");
-
-    // register derived encrypted object to chain
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id_derived.clone(),
-        resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register_object_to_chain");
-
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id_derived.clone(),
-        resource.clone(),
-        relation,
-        Some(did_pk_string.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("set_relationship_on_chain");
-
-    // Step 3: Run PRE via CLI
-    println!("Running PRE...");
-    let decrypted = do_pre_expect_success(
-        "initial PRE",
-        endpoint.clone(),
-        chain_config.chain_id.clone(),
-        ring_pk_hex.clone(),
-        object_id_service.clone(),
-        Some(did_pk_string.clone()),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
-
-    assert_eq!(
-        decrypted, secret,
-        "Decrypted secret should match original plaintext"
-    );
-    println!("PRE decryption verified: decrypted data matches original secret!");
-
-    // testing derivition pre
-    let decrypted_derived = do_pre_expect_success(
-        "derived PRE",
-        endpoint.clone(),
-        chain_config.chain_id.clone(),
-        ring_pk_hex.clone(),
-        object_id_derived.clone(),
-        Some(did_pk_string.clone()),
-        Some(derivation.clone()),
-        salt.clone(),
-        valid_window_start,
-        valid_window_end,
-    )
-    .await;
-
-    assert_eq!(
-        decrypted_derived, secret,
-        "Decrypted secret should match original plaintext"
-    );
-
-    // testing no permission
-    let pre_result_no_permission = cli_tool::do_pre(
-        endpoint.clone(),
-        chain_config.chain_id.clone(),
-        ring_pk_hex.clone(),
-        object_id_derived.clone(),
-        Some("bad_key".to_string().clone()),
-        Some(derivation.clone()),
-        salt.clone(),
-        valid_window_start,
-        valid_window_end,
-    )
-    .await;
-
-    let err = pre_result_no_permission.unwrap_err();
-    assert_policy_rejection("PRE without permission", &err);
-
-    // testing timestamp out of bounds failure
-    let pre_result_derived_failed_timestamp = cli_tool::do_pre(
-        endpoint.clone(),
-        chain_config.chain_id.clone(),
-        ring_pk_hex.clone(),
-        object_id_derived.clone(),
-        Some(did_pk_string.clone()),
-        Some(derivation),
-        salt.clone(),
-        valid_window_start,
-        valid_window_start,
-    )
-    .await;
-
-    let err = pre_result_derived_failed_timestamp.unwrap_err();
-    assert_policy_rejection("PRE outside the valid timestamp window", &err);
-
-    // Test idempotency: store the same prepared secret again
-    // This should succeed and return the same object_id (no duplicate post)
-    println!("Testing idempotency: storing same secret again...");
-
-    // Get sequence before second store
-    let sequence_before_second =
-        cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
-            .await
-            .expect("get sequence before second store");
-    println!(
-        "Node1 sequence before second store: {}",
-        sequence_before_second
-    );
-
-    let object_response_2 = store_prepared_secret_expect_success(
-        "idempotent StoreSecret",
-        endpoint.clone(),
-        &prepared_secret, // Same prepared data as first call
-        ring_id.clone(),
-        Some(did_pk_string.clone()),
-        true,
-    )
-    .await;
-
-    // Poll briefly; fail immediately if sequence changes (no tx should be broadcast for duplicate)
-    let sequence_after_second = {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            let seq =
-                cli_tool::get_account_sequence_with_config(&node1_address, chain_config.clone())
-                    .await
-                    .expect("get sequence after second store");
-            assert_eq!(
-                seq, sequence_before_second,
-                "Idempotency check: sequence changed unexpectedly (tx was broadcast for duplicate)"
-            );
-            if Instant::now() >= deadline {
-                break seq;
-            }
-            sleep(Duration::from_millis(200)).await;
-        }
+    let policy = FixtureId::new("policy");
+    // Cosmos's ring materializer always substitutes its own
+    // content-addressed governance policy for whatever `RingFixture.policy`
+    // points at (see `CosmosTestEnvironment::provision`'s ring loop) — a
+    // distinct id so that substitution doesn't clobber `policy`'s own
+    // `DOCUMENT_POLICY_YAML` content, which the scenario actually needs for
+    // document/key-derivation authorization.
+    let ring_policy = FixtureId::new("ring-policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: DOCUMENT_POLICY_YAML.to_string(),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            // Short enough to refresh naturally within the scenario's own
+            // wait — genesis-seeded, so the chain's production minimum
+            // doesn't apply (see `CosmosTestEnvironment::provision`).
+            pss_interval: Duration::from_secs(5),
+            requires_pet: false,
+            policy: ring_policy,
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
     };
-    println!(
-        "Node1 sequence after second store: {}",
-        sequence_after_second
-    );
 
-    // Verify idempotency: same object_id should be returned
-    assert_eq!(
-        object_id_service, object_response_2.object_id,
-        "Idempotency check: second store should return same object_id"
-    );
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+    let policy_id = environment.fixture().policies[&policy].id.clone();
 
-    // Verify no transaction was broadcast (sequence unchanged)
-    assert_eq!(
-        sequence_before_second, sequence_after_second,
-        "Idempotency check: sequence should NOT change (no tx broadcast for duplicate)"
-    );
-
-    println!(
-        "Idempotency verified: both calls returned object_id {}, sequence unchanged at {}",
-        object_id_service, sequence_after_second
-    );
-
-    // Test sign
-    println!("Testing Sign (Policy pathway)...");
-
-    let sign_derivation = "sign-test-derivation-path".to_string();
-    let sign_did_pk = "sign_test_did_secret".to_string();
-
-    // Post a KeyDerivation to the bulletin (fetches ring PK automatically via ring_id)
-    let (derivation_id, derived_pk_hex) = cli_tool::post_key_derivation_with_config(
-        ring_id.clone(),
-        sign_derivation.clone(),
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("post_key_derivation");
-
-    println!(
-        "KeyDerivation posted: derivation_id={} derived_pk={}...",
-        derivation_id,
-        &derived_pk_hex[..40.min(derived_pk_hex.len())]
-    );
-
-    // Register derivation_id as an object on the policy and grant access to the DID
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        derivation_id.clone(),
-        resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register_object_to_chain for derivation_id");
-
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        derivation_id.clone(),
-        resource.clone(),
-        "reader".to_string(),
-        Some(sign_did_pk.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("set_relationship_on_chain for derivation_id");
-
-    // Sign a test message
-    let sign_message = b"hello from sign integration test";
-
-    let sign_result = do_sign_expect_success(
-        "initial policy Sign",
-        endpoint.clone(),
-        sign_message.to_vec(),
-        derivation_id.clone(),
-        Some(sign_did_pk.clone()),
-        None,
-        None,
-    )
-    .await;
-
-    println!("Sign completed: signature={}", sign_result.signature);
-
-    // Verify the signature resolves against the derived public key (not the ring PK)
-    let sig_bytes = hex::decode(&sign_result.signature).expect("decode signature hex");
-    let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes)
-        .expect("deserialize signature");
-
-    let derived_pk_bytes = hex::decode(&derived_pk_hex).expect("decode derived_pk hex");
-    let derived_pk = GroupAffine::from_bytes(&derived_pk_bytes).expect("deserialize derived_pk");
-
-    let signer = SignImpl::new();
-    signer
-        .verify(&derived_pk, sign_message, &signature)
-        .expect("signature should verify against derived public key");
-
-    println!("Signature verified against derived public key!");
-
-    // Verify it does NOT verify against the bare ring public key
-    let ring_pk_for_verify =
-        GroupAffine::from_bytes(&hex::decode(&ring_pk_hex).expect("decode ring_pk hex"))
-            .expect("deserialize ring_pk");
+    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
+    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
+    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
     assert!(
-        signer
-            .verify(&ring_pk_for_verify, sign_message, &signature)
-            .is_err(),
-        "signature should NOT verify against underivedring public key"
-    );
-
-    // Test failed policy access: a DID with no relationship should be denied
-    let sign_no_access = cli_tool::do_sign(
-        endpoint.clone(),
-        sign_message.to_vec(),
-        derivation_id.clone(),
-        Some("unauthorized_did_key".to_string()),
-        None,
-        None,
-    )
-    .await;
-
-    let err = sign_no_access.unwrap_err();
-    assert_policy_rejection("Sign for unauthorized DID", &err);
-
-    println!("Sign correctly rejected unauthorized DID!");
-
-    // ====================================================================
-    // Step 4: PSS Refresh — poll all nodes until their local polynomial has
-    // changed from the per-node baseline captured after DKG.
-    //
-    // The DKG was started with pss_interval=5s. The nodes run with
-    // --reshare-interval-secs=5 (docker-compose), so the first scheduler
-    // tick fires within 5s of DKG completion. The public polynomial is
-    // stored locally on each node (not on the bulletin), so the ring_id is
-    // unchanged. We poll GetRingState on all three nodes to confirm the
-    // refresh actually completed before testing Sign and PRE. The 300s
-    // deadline covers a failed/early refresh attempt being cleaned up by the
-    // phase timeout and retried by the next scheduler tick.
-    // ====================================================================
-    println!("Waiting for PSS refresh to complete (polling all 3 nodes)...");
-
-    let refreshed_ring_states = wait_for_pss_refresh_on_all_nodes(
-        &node_endpoints,
-        &ring_pk_hex,
-        &initial_ring_states,
-        Duration::from_secs(300),
-        Duration::from_secs(2),
-    )
-    .await;
-    for (idx, (before, after)) in initial_ring_states
-        .iter()
-        .zip(refreshed_ring_states.iter())
-        .enumerate()
-    {
-        println!(
-            "  Node {} PSS last_pss: {} -> {}",
-            idx + 1,
-            before.last_pss,
-            after.last_pss
-        );
-    }
-    println!(
-        "PSS refresh complete. ring_id={} is unchanged (polynomial is local-only).",
-        &ring_id[..16.min(ring_id.len())]
-    );
-
-    // ====================================================================
-    // Step 5: PSS Reshare — update the existing ring bulletin post with a
-    // next committee.  Vera now supports in-place post updates, so the
-    // ring_id stays stable while the payload first announces new_peer_node_keys
-    // and then, after Phase 4, converges to peer_ids = new_peer_node_keys.
-    // ====================================================================
-    println!("Announcing PSS reshare via bulletin update...");
-
-    let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
-    let reshare_threshold = 2u32;
-    assert_ne!(
-        sorted_peer_ids(&dkg_ring_payload.peer_node_keys),
-        sorted_peer_ids(&reshare_peer_ids),
-        "Reshare test must change the committee"
-    );
-
-    let pre_reshare_ring_states = wait_for_ring_state_on_all_nodes(
-        &node_endpoints[..2],
-        &ring_pk_hex,
-        Duration::from_secs(60),
-        Duration::from_millis(500),
-    )
-    .await;
-
-    cli_tool::start_ring_reshare_by_acp_with_config(
-        ring_id.clone(),
-        reshare_peer_ids.clone(),
-        Some(reshare_threshold),
-        chain_config.clone(),
-    )
-    .await
-    .expect("start ring reshare announcement");
-
-    let announced_payload = read_ring_payload(&chain_config, &ring_id).await;
-    let announced_new_peer_node_keys = announced_payload
-        .new_peer_node_keys
-        .as_ref()
-        .map(|ids| sorted_peer_ids(ids))
-        .expect("reshare announcement should set new_peer_node_keys");
-    assert_eq!(
-        announced_new_peer_node_keys,
-        sorted_peer_ids(&reshare_peer_ids),
-        "Reshare announcement should preserve the requested next committee"
-    );
-    assert_eq!(
-        announced_payload.new_threshold,
-        Some(reshare_threshold),
-        "Reshare announcement should preserve the requested new threshold"
-    );
-    println!(
-        "Reshare announced on stable ring_id={}; waiting for bulletin peer_ids to converge...",
-        &ring_id[..16.min(ring_id.len())]
-    );
-
-    let reshared_payload = wait_for_reshare_bulletin_completion(
-        &chain_config,
-        &ring_id,
-        &ring_pk_hex,
-        &reshare_peer_ids,
-        reshare_threshold,
-        Duration::from_secs(300),
-        Duration::from_secs(2),
-    )
-    .await;
-    assert_eq!(
-        reshared_payload.ring_pk, ring_pk_hex,
-        "Reshare should preserve the ring public key"
-    );
-    assert_eq!(
-        sorted_peer_ids(&reshared_payload.peer_node_keys),
-        sorted_peer_ids(&reshare_peer_ids),
-        "Reshare should make peer_ids equal the requested next committee"
-    );
-    assert_eq!(
-        reshared_payload.threshold, reshare_threshold,
-        "Reshare should update the ring threshold"
+        !outcome.object_id.is_empty(),
+        "the shared PRE scenario must store a document"
     );
     assert!(
-        reshared_payload.new_peer_node_keys.is_none() && reshared_payload.new_threshold.is_none(),
-        "Completed reshare should clear the announcement fields"
+        !sign.derivation_id.is_empty(),
+        "the shared Sign scenario must store a key derivation"
     );
-
-    let reshared_ring_states = wait_for_pss_refresh_on_all_nodes(
-        &node_endpoints[..2],
-        &ring_pk_hex,
-        &pre_reshare_ring_states,
-        Duration::from_secs(120),
-        Duration::from_secs(2),
-    )
-    .await;
-    for (idx, (before, after)) in pre_reshare_ring_states
-        .iter()
-        .zip(reshared_ring_states.iter())
-        .enumerate()
-    {
-        println!(
-            "  Reshare node {} PSS last_pss: {} -> {}",
-            idx + 1,
-            before.last_pss,
-            after.last_pss
-        );
-    }
-    println!(
-        "PSS reshare complete. ring_id={} is unchanged; committee size is now {}.",
-        &ring_id[..16.min(ring_id.len())],
-        reshared_payload.peer_node_keys.len()
-    );
-
-    println!("Testing Sign after PSS reshare...");
-    let sign_result_post_reshare = do_sign_expect_success(
-        "post-reshare policy Sign",
-        endpoint.clone(),
-        sign_message.to_vec(),
-        derivation_id.clone(),
-        Some(sign_did_pk.clone()),
-        None,
-        None,
-    )
-    .await;
-
-    let sig_bytes_post_reshare =
-        hex::decode(&sign_result_post_reshare.signature).expect("decode post-reshare sig hex");
-    let signature_post_reshare =
-        <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes_post_reshare)
-            .expect("deserialize post-reshare signature");
-    signer
-        .verify(&derived_pk, sign_message, &signature_post_reshare)
-        .expect("post-reshare signature should verify against derived public key");
-
-    println!("Post-reshare Sign verified against the unchanged derived public key!");
-
-    // ====================================================================
-    // Step 6: Post-refresh Sign — reuse existing derivation_id (ring_id
-    // and derived PK are unchanged after PSS; the on-chain post already
-    // exists and ACP relationships are already set).
-    // ====================================================================
-    println!("Testing Sign after PSS refresh...");
-
-    let sign_result_post_refresh = do_sign_expect_success(
-        "post-refresh policy Sign",
-        endpoint.clone(),
-        sign_message.to_vec(),
-        derivation_id.clone(),
-        Some(sign_did_pk.clone()),
-        None,
-        None,
-    )
-    .await;
-
-    let sig_bytes_pr = hex::decode(&sign_result_post_refresh.signature).expect("decode sig hex");
-    let signature_pr = <SignImpl as ThresholdSigner>::Signature::from_bytes(&sig_bytes_pr)
-        .expect("deserialize signature");
-    let derived_pk_bytes_pr = hex::decode(&derived_pk_hex).expect("decode derived_pk hex");
-    let derived_pk_pr =
-        GroupAffine::from_bytes(&derived_pk_bytes_pr).expect("deserialize derived_pk");
-    signer
-        .verify(&derived_pk_pr, sign_message, &signature_pr)
-        .expect("post-refresh signature should verify against derived public key");
-
-    println!("Post-refresh Sign verified!");
-
-    // ====================================================================
-    // Step 6: Post-refresh PRE — encrypt a fresh secret using the original
-    // ring_id (unchanged after PSS). Store it as a new object and run PRE
-    // to verify decryption still works against the refreshed shares.
-    // ====================================================================
-    println!("Testing PRE after PSS refresh...");
-
-    let post_refresh_secret = b"Hello after PSS refresh!";
-    let prepared_post_refresh = cli_tool::prepare_secret(
-        post_refresh_secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare_secret post-refresh");
-
-    let object_response_post_refresh = store_prepared_secret_expect_success(
-        "post-refresh StoreSecret",
-        endpoint.clone(),
-        &prepared_post_refresh,
-        ring_id.clone(),
-        Some(did_pk_string.clone()),
-        true,
-    )
-    .await;
-
-    let object_id_post_refresh = object_response_post_refresh.object_id.clone();
-
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id_post_refresh.clone(),
-        resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register post-refresh object");
-
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id_post_refresh.clone(),
-        resource.clone(),
-        "reader".to_string(),
-        Some(did_pk_string.clone()),
-        chain_config.clone(),
-    )
-    .await
-    .expect("set_relationship for post-refresh object");
-
-    let pre_result_post_refresh = do_pre_expect_success(
-        "post-refresh PRE",
-        endpoint.clone(),
-        chain_config.chain_id.clone(),
-        ring_pk_hex.clone(),
-        object_id_post_refresh.clone(),
-        Some(did_pk_string.clone()),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await;
-
-    assert_eq!(
-        pre_result_post_refresh, post_refresh_secret,
-        "Post-refresh PRE should decrypt to original plaintext"
-    );
-    println!("Post-refresh PRE verified: decrypted data matches original secret!");
-
-    // Cleanup happens automatically when _network is dropped
 }
 
 /// Docker-based integration test: PET-enabled ring, end to end.
 ///
-/// Exercises two things that `test_cli_calls_dkg_and_pre_endpoint` doesn't
+/// Exercises two things the standard (non-PET) DKG/PRE scenario doesn't
 /// cover, both unblocked by the same change (Vera's `MsgCreateRing` no longer
 /// rejects `requires_pet: true` now that the checking-key lifecycle — the
 /// fresh-DKG auto-chain and combined finalize implemented in
@@ -1096,117 +248,52 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
 /// PET's own check-and-gate (Task 6: threshold PET verification before PRE
 /// release) doesn't exist yet, so this test stops at "both keys finalized" —
 /// it does not attempt PRE against a PET-gated document.
-struct DkgScenarioOutcome {
-    _network: IntegrationTestNetwork,
-    chain_config: ChainConfig,
-    controller_client: VeraClient,
-    endpoint: String,
-    node_keys: [String; 3],
-    threshold: u32,
-    ring_id: String,
-    keys: pet_dkg_contract::Keys,
-}
-
-/// Run the shared paired-DKG scenario through the Cosmos adapter and retain
-/// its fixture for callers that continue into PET/PRE behavior.
-///
-/// Shared by `test_cli_calls_dkg_for_pet_ring` (which continues on to
-/// PET-gated PRE assertions) and `cosmos_dkg` (which only proves this shared
-/// tail — the direct Cosmos counterpart to native's `native_dkg`). Bring-up
-/// Provisioning and trigger mechanics remain backend-specific implementations
-/// of `pet_dkg_contract::ScenarioBackend`; their ordering and all behavioral
-/// assertions live in the common runner used by both Cosmos and native.
-async fn dkg_scenario(
-    ring_id: &'static str,
-    expected_policy_id: &'static str,
-) -> DkgScenarioOutcome {
-    let (scenario, keys, _local_state) = pet_dkg::run(ring_id, expected_policy_id).await;
-    DkgScenarioOutcome {
-        _network: scenario.network,
-        chain_config: scenario.chain_config,
-        controller_client: scenario.controller_client,
-        endpoint: scenario.endpoint,
-        node_keys: scenario.node_keys,
-        threshold: scenario.threshold,
-        ring_id: scenario.ring_id,
-        keys,
-    }
-}
-
-/// Fixed PET-enabled ring id for `cosmos_dkg`, genesis-seeded the same way
-/// `PET_RING_ID` is for `test_cli_calls_dkg_for_pet_ring` — distinct so the
-/// two tests' genesis fixtures never collide (each gets its own freshly
-/// started chain, but both are baked into this same file's constants).
-const DKG_SCENARIO_RING_ID: &str = "integration-test-dkg-scenario-ring";
-const PRE_SCENARIO_RING_ID: &str = "integration-test-pre-scenario-ring";
-
-/// Cosmos half of the `cosmos_*`/`native_*` scenario pair the harness-unification
-/// plan asks for (see `native_dkg` in `bin/orbis-node/tests/native_startup.rs`).
-/// Proves the shared provision-trigger-finalize-verify scenario on its own, without
-/// the additional PET-gated PRE assertions `test_cli_calls_dkg_for_pet_ring`
-/// layers on top.
-#[tokio::test]
-#[serial_test::serial]
-async fn cosmos_dkg() {
-    let outcome = dkg_scenario(DKG_SCENARIO_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
-    assert!(
-        !outcome.keys.main.is_empty(),
-        "DKG must finalize the main key"
-    );
-    assert!(
-        outcome.keys.pet.as_ref().is_some_and(|pet| !pet.is_empty()),
-        "DKG must finalize the PET key"
-    );
-}
-
-/// Cosmos adapter for the shared standard-DKG lifecycle: StoreSecret,
-/// authorized PRE, derived-key signing, refresh, and committee reshare. Its
-/// native counterpart runs the same scenario body below the backend boundary
-/// in `native_startup.rs`.
-#[tokio::test]
-#[serial_test::serial]
-async fn cosmos_dkg_and_pre() {
-    let (mut backend, keys, local_state, outcome) =
-        pre_scenario::run::<pet_dkg::Cosmos>(pet_dkg::Config {
-            ring_id: PRE_SCENARIO_RING_ID,
-            expected_policy_id: RING_GOVERNANCE_POLICY_ID,
-            mode: pet_dkg_contract::DkgMode::Standard,
-        })
-        .await;
-    let sign = sign_scenario::run(&backend, &keys, &outcome.policy_id).await;
-    refresh_scenario::run(&mut backend, &keys, &local_state, &outcome, &sign).await;
-    reshare_scenario::run(&mut backend, &keys, &outcome, &sign).await;
-    assert!(
-        keys.pet.is_none(),
-        "standard DKG must not produce a PET key"
-    );
-    assert!(
-        !outcome.object_id.is_empty(),
-        "the shared PRE scenario must store a document"
-    );
-    assert!(
-        !sign.derivation_id.is_empty(),
-        "the shared Sign scenario must store a key derivation"
-    );
-}
-
 #[tokio::test]
 #[serial_test::serial]
 async fn test_cli_calls_dkg_for_pet_ring() {
+    use test_support::admin::PolicyId;
+    use test_support::fixture::{
+        AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
+        NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
     println!("Starting Docker-based PET integration test...");
 
-    let DkgScenarioOutcome {
-        _network,
-        chain_config,
-        controller_client,
-        endpoint,
-        node_keys,
-        threshold,
-        ring_id,
-        keys,
-    } = dkg_scenario(PET_RING_ID, RING_GOVERNANCE_POLICY_ID).await;
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id_handle = environment.fixture().rings[&ring].id.clone();
+    let ring_id = ring_id_handle.0.clone();
+    let node_keys = environment.fixture().rings[&ring].members.clone();
+    let threshold = 2u32;
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id_handle).await;
     let ring_pk_hex = keys.main;
-    let pet_pk_hex = keys.pet.expect("PET DKG must return a PET key");
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring fully finalized: ring_pk={}..., pet_pk={}...",
@@ -1259,55 +346,39 @@ resources:
   - name: write
     expr: creator
 "#;
-    let policy_ids_before: std::collections::HashSet<String> = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids")
-        .ids
-        .into_iter()
-        .collect();
-    controller_client
-        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
-        .await
-        .expect("create PET audit policy");
-    let pet_audit_policy_id = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids after create")
-        .ids
-        .into_iter()
-        .find(|id| !policy_ids_before.contains(id))
-        .expect("new PET audit policy ID not found");
+    let pet_audit_policy_id = environment.create_policy(PET_AUDIT_POLICY_YAML).await.0;
 
     let document_resource = "document".to_string();
     let read_permission = "read".to_string();
+    // Every grant below is to the default ("test_jwt") requester identity —
+    // same default `cli_tool::set_relationship_on_chain_with_config` used
+    // when its `reader_did_pk` argument was `None`.
+    let test_jwt_did = cli_tool::reader_did_from_seed("test_jwt");
 
     // The audit target *is* the real data subject's own identity — the
     // exact value `prepare_pet_tag` below builds the tag's fingerprint
     // against. Not a separately-chosen label resolved to an owner via ACP.
     let owner_seed = "pet-audit-owner-seed".to_string();
     let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET audit-target object");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+        )
+        .await;
     // The requester below authenticates with the default ("test_jwt")
     // reader identity — the same one granted `reader` on the document —
     // so it also needs `reader` here to pass `check_pet_permission`.
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET audit target");
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     println!("Running PRE against the PET-gated document with a genuine tag...");
     let secret_message = b"Hello from a PET-gated PRE request!";
@@ -1375,24 +446,22 @@ resources:
     )
     .expect("generate PET-gated document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET-gated document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET-gated document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
         ring_id: ring_id.clone(),
@@ -1416,7 +485,7 @@ resources:
     let decrypted = do_pre_inline_expect_success(
         "PRE against a genuinely PET-tagged document",
         endpoint.clone(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.clone(),
         pet_object_id.clone(),
         Some(audit_target_object_id.clone()),
@@ -1471,24 +540,22 @@ resources:
     )
     .expect("generate no-tag document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        no_tag_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register the no-tag document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        no_tag_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the no-tag document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &no_tag_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &no_tag_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document_no_tag = proto::v0::pre::InlineDocument {
         ring_id: ring_id.clone(),
@@ -1506,7 +573,7 @@ resources:
 
     let pre_result_no_tag = cli_tool::do_pre_with_inline_document(
         endpoint.clone(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.clone(),
         no_tag_object_id,
         None,
@@ -1540,14 +607,20 @@ resources:
     );
 
     // A live MsgCreateRing(requires_pet: true) against the real chain also
-    // round-trips correctly (independent throwaway policy — no dependency on
-    // the deterministic RING_GOVERNANCE_POLICY_ID nonce ordering above). This
-    // ring is never whitelisted or driven through DKG; it only exercises the
-    // create-and-read-back wire path.
+    // round-trips correctly (independent throwaway policy). This ring is
+    // never whitelisted or driven through DKG; it only exercises the
+    // create-and-read-back wire path. Both helpers need a raw `ChainConfig`
+    // and stay outside `environment`'s abstraction entirely — unlike a
+    // plain `environment.create_policy`, `create_orbis_ring_policy` also
+    // registers the policy's own id as a `ring_policy` ACP object (required
+    // for the signer to pass `create_ring`'s permission check below), and
+    // `create_ring_on_chain_with_trusted_relays` calls `cli_tool::create_ring`
+    // directly — `CosmosAdmin::register_ring` can't do this itself yet
+    // (`cli-tool` dependency boundary, see that method's doc comment).
     let live_policy_id =
-        crate::helpers::test_helpers::create_orbis_ring_policy(&chain_config).await;
+        test_support::admin::cosmos::create_orbis_ring_policy(&environment.chain_config()).await;
     let live_ring_id = crate::helpers::test_helpers::create_ring_on_chain_with_trusted_relays(
-        &chain_config,
+        &environment.chain_config(),
         &node_keys,
         threshold,
         &live_policy_id,
@@ -1556,10 +629,9 @@ resources:
         true,
     )
     .await;
-    let live_ring = controller_client
-        .orbis_read_ring(&live_ring_id)
+    let live_ring = environment
+        .read_ring(&test_support::admin::RingId(live_ring_id))
         .await
-        .expect("read live-created ring")
         .expect("live-created ring should exist");
     assert!(
         live_ring.requires_pet,
@@ -1584,8 +656,7 @@ resources:
 ///
 /// 1. **Independent refresh** (`RefreshPet`): once the ring is live, the PET
 ///    bundle's own `last_pss` advances via the PSS scheduler exactly like the
-///    main key's does (`wait_for_pss_refresh_on_all_nodes`'s reference-test
-///    precedent), without any second external trigger.
+///    main key's does, without any second external trigger.
 /// 2. **Atomic reshare** (`ResharePet`, gated by `bulletin_update.rs`'s
 ///    atomicity gate): reshoring the ring's committee produces exactly one
 ///    bulletin post, and the PET bundle is confirmed to have moved to the new
@@ -1599,137 +670,52 @@ resources:
 #[tokio::test]
 #[serial_test::serial]
 async fn test_pet_ring_refresh_and_reshare() {
+    use test_support::fixture::{
+        BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole,
+        RingFixture, ScenarioFixture, TestEnvironment,
+    };
+
     println!("Starting Docker-based PET refresh+reshare integration test...");
 
-    let network = IntegrationTestNetwork::builder()
-        .with_module_genesis(
-            "orbis",
-            serde_json::json!({
-                "rings": [{
-                    "id": PET_RESHARE_RING_ID,
-                    "ring_pk": "",
-                    "peer_node_keys": [NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-                    "threshold": 2,
-                    "pss_interval": 5,
-                    "policy_id": RING_GOVERNANCE_POLICY_ID,
-                    "reporting": reporting_genesis_json(1, &[], 3),
-                    "requires_pet": true
-                }]
-            }),
-        )
-        .build();
-    let chain_config = network.chain_config();
-    let endpoints = network.all_endpoints();
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(5),
+            requires_pet: true,
+            policy: FixtureId::new("ring-policy"),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
 
-    crate::helpers::test_helpers::wait_for_nodes_ready(&endpoints, 90, Duration::from_secs(1))
-        .await;
-
-    let node1_info = cli_tool::query_node_info(endpoints[0].to_string())
-        .await
-        .expect("Failed to query node1 info");
-    let node2_info = cli_tool::query_node_info(endpoints[1].to_string())
-        .await
-        .expect("Failed to query node2 info");
-    let node3_info = cli_tool::query_node_info(endpoints[2].to_string())
-        .await
-        .expect("Failed to query node3 info");
-
-    let peer1_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node1_info.p2p_address,
-        IntegrationTestNetwork::NODE1_SERVICE,
-    );
-    let peer2_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node2_info.p2p_address,
-        IntegrationTestNetwork::NODE2_SERVICE,
-    );
-    let peer3_addr = IntegrationTestNetwork::transform_p2p_address(
-        &node3_info.p2p_address,
-        IntegrationTestNetwork::NODE3_SERVICE,
-    );
-
-    let endpoint = endpoints[0].to_string();
-    let node_endpoints = [
-        endpoints[0].to_string(),
-        endpoints[1].to_string(),
-        endpoints[2].to_string(),
-    ];
-    let node_keys = [
-        node1_info.node_key.clone(),
-        node2_info.node_key.clone(),
-        node3_info.node_key.clone(),
-    ];
-    let peer_addresses = [peer1_addr, peer2_addr, peer3_addr];
-
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
-
-    let governance_policy_id = crate::helpers::test_helpers::create_ring_governance_with_ring(
-        &controller_client,
-        PET_RESHARE_RING_ID,
-        &[NODE_KEY_1, NODE_KEY_2, NODE_KEY_3],
-    )
-    .await;
-    assert_eq!(
-        governance_policy_id, RING_GOVERNANCE_POLICY_ID,
-        "ACP policy ID mismatch — acp_core may have changed. \
-         Update RING_GOVERNANCE_POLICY_ID to: {governance_policy_id}"
-    );
-
-    let ring_id = PET_RESHARE_RING_ID.to_string();
-
-    for (node_key, peer_address) in node_keys.iter().zip(&peer_addresses) {
-        wait_for_node_info_on_chain(
-            &controller_client,
-            node_key,
-            Duration::from_secs(60),
-            Duration::from_millis(500),
-        )
-        .await;
-        let peer_update = controller_client
-            .orbis_update_node_peer_id(node_key, peer_address)
-            .await
-            .expect("update NodeInfo peer ID");
-        assert_eq!(
-            peer_update.code, 0,
-            "update NodeInfo peer ID tx failed: {}",
-            peer_update.log
-        );
-
-        let whitelist_update = controller_client
-            .orbis_add_node_to_whitelist(node_key, WhitelistTarget::RingId(ring_id.clone()))
-            .await
-            .expect("add ring to NodeInfo whitelist");
-        assert_eq!(
-            whitelist_update.code, 0,
-            "add ring to NodeInfo whitelist tx failed: {}",
-            whitelist_update.log
-        );
-    }
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id_handle = environment.fixture().rings[&ring].id.clone();
+    let ring_id = ring_id_handle.0.clone();
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+    let node_endpoints: Vec<String> = environment
+        .nodes()
+        .iter()
+        .map(|node| node.grpc_endpoint.clone())
+        .collect();
 
     println!("Starting DKG for PET-enabled ring {}...", ring_id);
-    let dkg_result = cli_tool::do_dkg(endpoint.clone(), ring_id.clone()).await;
-    assert!(
-        dkg_result.is_ok(),
-        "DKG should succeed: {:?}",
-        dkg_result.err()
-    );
-
-    let ring_pk_hex =
-        wait_for_ring_finalized(&chain_config, &ring_id, Duration::from_secs(240)).await;
-    let finalized_ring = controller_client
-        .orbis_read_ring(&ring_id)
-        .await
-        .expect("read finalized ring")
-        .expect("finalized ring should exist");
-    let pet_pk_hex = finalized_ring
-        .pet_pk
-        .clone()
-        .expect("pet_pk should be set alongside ring_pk once the combined finalize commits");
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id_handle).await;
+    let ring_pk_hex = keys.main;
+    let pet_pk_hex = keys.pet;
 
     println!(
         "PET-enabled ring finalized: ring_pk={}..., pet_pk={}...",
@@ -1741,7 +727,7 @@ async fn test_pet_ring_refresh_and_reshare() {
     // shares are genuinely usable before either ceremony below touches them.
     println!("Running a baseline PET-gated PRE round before refresh...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -1790,7 +776,7 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE still succeeds after PET refresh...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -1807,7 +793,10 @@ async fn test_pet_ring_refresh_and_reshare() {
     // promotion on the same confirmation.
     // ========================================================================
     println!("Announcing a reshare that also carries the PET checking key...");
-    let reshare_peer_ids = vec![node_keys[0].clone(), node_keys[1].clone()];
+    let reshare_peer_ids = vec![
+        environment.nodes()[0].node_key.clone(),
+        environment.nodes()[1].node_key.clone(),
+    ];
     let reshare_threshold = 2u32;
 
     let (pre_reshare_main_states, pre_reshare_pet_states) = tokio::join!(
@@ -1825,17 +814,12 @@ async fn test_pet_ring_refresh_and_reshare() {
         ),
     );
 
-    cli_tool::start_ring_reshare_by_acp_with_config(
-        ring_id.clone(),
-        reshare_peer_ids.clone(),
-        Some(reshare_threshold),
-        chain_config.clone(),
-    )
-    .await
-    .expect("start ring reshare announcement");
+    environment
+        .update_membership(&ring_id_handle, reshare_peer_ids.clone(), reshare_threshold)
+        .await;
 
     let reshared_payload = wait_for_reshare_bulletin_completion(
-        &chain_config,
+        &environment.chain_config(),
         &ring_id,
         &ring_pk_hex,
         &reshare_peer_ids,
@@ -1863,7 +847,7 @@ async fn test_pet_ring_refresh_and_reshare() {
     );
 
     let reshared_pet_states = pet_reshare::wait_for_pet_reshare(
-        &chain_config,
+        &environment.chain_config(),
         &node_endpoints[..2],
         &ring_id,
         &reshared_payload,
@@ -1892,7 +876,7 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     println!("Confirming PET-gated PRE succeeds under the reshared committee...");
     assert_pet_gated_pre_succeeds(
-        &chain_config,
+        &environment,
         &endpoint,
         &ring_id,
         &ring_pk_hex,
@@ -1912,30 +896,15 @@ async fn test_pet_ring_refresh_and_reshare() {
 /// each call gets its own fresh `pet_audit_policy_id`. Mirrors
 /// `test_cli_calls_dkg_for_pet_ring`'s own positive-path PET-gated PRE check.
 async fn assert_pet_gated_pre_succeeds(
-    chain_config: &ChainConfig,
+    environment: &TestEnvironmentImpl,
     endpoint: &str,
     ring_id: &str,
     ring_pk_hex: &str,
     pet_pk_hex: &str,
     secret_message: &[u8],
 ) {
-    // A fresh, throwaway client — never the caller's own long-lived
-    // `controller_client`. That client caches its account sequence locally
-    // and only advances it on its own sends; `register_object_to_chain_with_config`/
-    // `set_relationship_on_chain_with_config` below each construct their own
-    // fresh, self-querying signer for the same account, so reusing a shared
-    // cached-sequence client across more than one call to this helper goes
-    // stale the moment those free functions run in between (confirmed by a
-    // real "account sequence mismatch" failure on the second call in this
-    // test's first Docker run). Constructing fresh here every time keeps
-    // this helper self-contained and safe to call any number of times.
-    let controller_client = VeraClient::with_signer(
-        chain_config.clone(),
-        TxSigner::from_hex_key(TEST_ACCOUNT_HEX_KEY, chain_config.clone())
-            .expect("test account signer"),
-    )
-    .await
-    .expect("controller chain client");
+    use test_support::admin::PolicyId;
+    use test_support::fixture::{AuthorizationTestDriver, TestEnvironment};
 
     const PET_AUDIT_POLICY_YAML: &str = r#"
 name: pet audit policy
@@ -1954,49 +923,33 @@ resources:
   - name: write
     expr: creator
 "#;
-    let policy_ids_before: std::collections::HashSet<String> = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids")
-        .ids
-        .into_iter()
-        .collect();
-    controller_client
-        .acp_create_policy(PET_AUDIT_POLICY_YAML, 1)
-        .await
-        .expect("create PET audit policy");
-    let pet_audit_policy_id = controller_client
-        .acp_list_policy_ids()
-        .await
-        .expect("list policy ids after create")
-        .ids
-        .into_iter()
-        .find(|id| !policy_ids_before.contains(id))
-        .expect("new PET audit policy ID not found");
+    let pet_audit_policy_id = environment.create_policy(PET_AUDIT_POLICY_YAML).await.0;
 
     let document_resource = "document".to_string();
     let read_permission = "read".to_string();
+    // Grants the default ("test_jwt") requester identity — the same default
+    // `cli_tool::set_relationship_on_chain_with_config` used when its
+    // `reader_did_pk` argument was `None`.
+    let test_jwt_did = cli_tool::reader_did_from_seed("test_jwt");
 
     let owner_seed = "pet-audit-owner-seed".to_string();
     let audit_target_object_id = cli_tool::reader_did_from_seed(&owner_seed);
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET audit-target object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        audit_target_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET audit target");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     // Required noncircular construction order: generate the tag before
     // encrypting the payload, then prove tag knowledge over the
@@ -2057,24 +1010,22 @@ resources:
     )
     .expect("generate PET-gated document id");
 
-    cli_tool::register_object_to_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        chain_config.clone(),
-    )
-    .await
-    .expect("register PET-gated document object");
-    cli_tool::set_relationship_on_chain_with_config(
-        pet_audit_policy_id.clone(),
-        pet_object_id.clone(),
-        document_resource.clone(),
-        "reader".to_string(),
-        None,
-        chain_config.clone(),
-    )
-    .await
-    .expect("grant reader relationship for the PET-gated document");
+    environment
+        .register_object(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+        )
+        .await;
+    environment
+        .grant(
+            &PolicyId(pet_audit_policy_id.clone()),
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
 
     let inline_document = proto::v0::pre::InlineDocument {
         ring_id: ring_id.to_string(),
@@ -2098,7 +1049,7 @@ resources:
     let decrypted = do_pre_inline_expect_success(
         "PRE against a genuinely PET-tagged document",
         endpoint.to_string(),
-        chain_config.chain_id.clone(),
+        environment.chain_id(),
         ring_pk_hex.to_string(),
         pet_object_id.clone(),
         Some(audit_target_object_id.clone()),
@@ -2272,43 +1223,6 @@ async fn wait_for_ring_state_on_all_nodes(
     }
 }
 
-async fn wait_for_node_info_on_chain(
-    controller_client: &VeraClient,
-    node_key: &str,
-    timeout: Duration,
-    poll_interval: Duration,
-) {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        let status = match controller_client.orbis_read_node_info(node_key).await {
-            Ok(Some(_)) => return,
-            Ok(None) => "not found".to_string(),
-            Err(e) => e.to_string(),
-        };
-
-        assert!(
-            Instant::now() < deadline,
-            "NodeInfo for node_key {} was not visible on-chain within {:?}: {}",
-            node_key,
-            timeout,
-            status
-        );
-        sleep(poll_interval).await;
-    }
-}
-
-async fn read_ring_payload(chain_config: &ChainConfig, ring_id: &str) -> RingPayload {
-    let payload_bytes = cli_tool::read_bulletin_post_with_config(
-        ring_id.to_string(),
-        BulletinKind::Ring,
-        chain_config.clone(),
-    )
-    .await
-    .expect("read ring payload from bulletin");
-    serde_json::from_slice(&payload_bytes).expect("parse RingPayload")
-}
-
 async fn wait_for_reshare_bulletin_completion(
     chain_config: &ChainConfig,
     ring_id: &str,
@@ -2379,102 +1293,10 @@ fn sorted_peer_ids(peer_ids: &[String]) -> Vec<String> {
     sorted
 }
 
-async fn do_sign_expect_success(
-    context: &str,
-    endpoint: String,
-    message: Vec<u8>,
-    derivation_id: String,
-    reader_did_pk: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-) -> cli_tool::SignResult {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let mut attempt = 1usize;
-
-    loop {
-        match cli_tool::do_sign(
-            endpoint.clone(),
-            message.clone(),
-            derivation_id.clone(),
-            reader_did_pk.clone(),
-            valid_window_start,
-            valid_window_end,
-        )
-        .await
-        {
-            Ok(result) => return result,
-            Err(e) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "{} failed after {} attempts: {}",
-                    context,
-                    attempt,
-                    e
-                );
-                println!(
-                    "{} attempt {} failed, retrying after transient signing race: {}",
-                    context, attempt, e
-                );
-                attempt += 1;
-                sleep(Duration::from_secs(3)).await;
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn do_pre_expect_success(
-    context: &str,
-    endpoint: String,
-    chain_id: String,
-    ring_pk: String,
-    object_id: String,
-    reader_did_pk: Option<String>,
-    derivation: Option<Vec<u8>>,
-    salt: Option<String>,
-    valid_window_start: Option<u64>,
-    valid_window_end: Option<u64>,
-) -> Vec<u8> {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let mut attempt = 1usize;
-
-    loop {
-        match cli_tool::do_pre(
-            endpoint.clone(),
-            chain_id.clone(),
-            ring_pk.clone(),
-            object_id.clone(),
-            reader_did_pk.clone(),
-            derivation.clone(),
-            salt.clone(),
-            valid_window_start,
-            valid_window_end,
-        )
-        .await
-        {
-            Ok(result) => return result,
-            Err(e) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "{} failed after {} attempts: {}",
-                    context,
-                    attempt,
-                    e
-                );
-                println!(
-                    "{} attempt {} failed, retrying after transient PRE race: {}",
-                    context, attempt, e
-                );
-                attempt += 1;
-                sleep(Duration::from_secs(3)).await;
-            }
-        }
-    }
-}
-
-/// Same retry contract as [`do_pre_expect_success`] for the inline-document
-/// path: periodic PSS refreshes move the ring generation under an in-flight
-/// request, and the responder rejects it as explicitly retryable.
+/// Same retry contract as the plain `cli_tool::do_pre` path for the
+/// inline-document variant: periodic PSS refreshes move the ring generation
+/// under an in-flight request, and the responder rejects it as explicitly
+/// retryable.
 async fn do_pre_inline_expect_success(
     context: &str,
     endpoint: String,
@@ -2522,116 +1344,5 @@ async fn do_pre_inline_expect_success(
                 sleep(Duration::from_secs(3)).await;
             }
         }
-    }
-}
-
-async fn store_prepared_secret_expect_success(
-    context: &str,
-    endpoint: String,
-    prepared: &cli_tool::PreparedSecret,
-    ring_id: String,
-    reader_did_pk: Option<String>,
-    with_proof: bool,
-) -> cli_tool::StoreSecretResult {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    let mut attempt = 1usize;
-
-    loop {
-        match cli_tool::store_prepared_secret(
-            endpoint.clone(),
-            prepared,
-            ring_id.clone(),
-            reader_did_pk.clone(),
-            with_proof,
-            None,
-        )
-        .await
-        {
-            Ok(result) => return result,
-            Err(e) => {
-                assert!(
-                    Instant::now() < deadline,
-                    "{} failed after {} attempts: {}",
-                    context,
-                    attempt,
-                    e
-                );
-                println!(
-                    "{} attempt {} failed, retrying with same prepared secret: {}",
-                    context, attempt, e
-                );
-                attempt += 1;
-                sleep(Duration::from_secs(3)).await;
-            }
-        }
-    }
-}
-
-async fn wait_for_pss_refresh_on_all_nodes(
-    endpoints: &[String],
-    ring_pk_hex: &str,
-    baselines: &[RingStateSnapshot],
-    timeout: Duration,
-    poll_interval: Duration,
-) -> Vec<RingStateSnapshot> {
-    assert_eq!(
-        endpoints.len(),
-        baselines.len(),
-        "ring-state baselines must match endpoint count"
-    );
-
-    let deadline = Instant::now() + timeout;
-    let mut next_status_log = Instant::now() + Duration::from_secs(15);
-
-    loop {
-        let mut snapshots = Vec::with_capacity(endpoints.len());
-        let mut statuses = Vec::with_capacity(endpoints.len());
-        let mut all_refreshed = true;
-
-        for (idx, endpoint) in endpoints.iter().enumerate() {
-            match cli_tool::query_ring_state(endpoint.clone(), ring_pk_hex.to_string()).await {
-                Ok((public_polynomial, last_pss)) => {
-                    let baseline = &baselines[idx];
-                    let polynomial_changed = public_polynomial != baseline.public_polynomial;
-                    let timestamp_advanced = last_pss > baseline.last_pss;
-                    if !polynomial_changed && !timestamp_advanced {
-                        all_refreshed = false;
-                    }
-                    statuses.push(format!(
-                        "node{}: poly_changed={} timestamp_advanced={} last_pss={} baseline={}",
-                        idx + 1,
-                        polynomial_changed,
-                        timestamp_advanced,
-                        last_pss,
-                        baseline.last_pss,
-                    ));
-                    snapshots.push(RingStateSnapshot {
-                        public_polynomial,
-                        last_pss,
-                    });
-                }
-                Err(e) => {
-                    all_refreshed = false;
-                    statuses.push(format!("node{}: {}", idx + 1, e));
-                }
-            }
-        }
-
-        if all_refreshed && snapshots.len() == endpoints.len() {
-            return snapshots;
-        }
-
-        let now = Instant::now();
-        assert!(
-            now < deadline,
-            "PSS refresh did not complete on all nodes within {}s. Last observed: {}",
-            timeout.as_secs(),
-            statuses.join("; ")
-        );
-        if now >= next_status_log {
-            println!("Still waiting for PSS refresh: {}", statuses.join("; "));
-            next_status_log = now + Duration::from_secs(15);
-        }
-        sleep(poll_interval).await;
     }
 }

@@ -24,6 +24,142 @@ mod native_pet;
 #[path = "support/native_trust_gateway.rs"]
 mod native_trust_gateway;
 
+// A second, independent instance of the same source file `native_pet`'s own
+// `stored_bundle` submodule uses — `native_environment` is a sibling of
+// `native_pet` at this binary's root, not a descendant of it, so it cannot
+// reach `native_pet`'s copy through `super::`.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_pet/scheduled_store.rs"]
+#[allow(dead_code)]
+mod stored_bundle;
+
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "support/native_environment.rs"]
+mod native_environment;
+// Harness-unification migration: the compile-time-selected test environment
+// for this backend.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+use native_environment::NativeTestEnvironment as TestEnvironmentImpl;
+
+// Not gated on `unsafe-testing`: `native_dkg` (the only consumer) isn't
+// either, and this file needs no diagnostic-service capability.
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+#[path = "../src/tests/support/pet_dkg_scenario.rs"]
+mod pet_dkg_scenario;
+
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/pre_scenario.rs"]
+mod pre_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/refresh_scenario.rs"]
+mod refresh_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/reshare_scenario.rs"]
+mod reshare_scenario;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/sign_scenario.rs"]
+mod sign_scenario;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/pending_ring_cancellation.rs"]
+mod pending_ring_cancellation;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/cancel_ring_reshare.rs"]
+mod cancel_ring_reshare;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — see that file's own declaration
+// and the standing decision in the harness-unification plan against
+// backend-only test files.
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/upgrade.rs"]
+mod upgrade;
+
+/// Scaffolding proving the harness-unification migration's fixture
+/// materialization (rings/policies) actually works against a real cluster,
+/// not just compiles — delete once a real scenario test uses
+/// `TestEnvironmentImpl` directly.
+#[tokio::test]
+#[cfg(any(feature = "bls12-381", feature = "jubjub"))]
+async fn native_test_environment_materializes_standard_fixture() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    // Native ring creation needs the submitter to hold the `creator`
+    // relation on a `ring_policy`-resource object registered under the
+    // ring's own policy — so, unlike Cosmos (which bundles its own internal
+    // governance policy into ring materialization and ignores this
+    // fixture's `PolicyFixture` content for that purpose), this scaffolding
+    // test's policy must actually define `ring_policy`/`creator`. Reusing
+    // `policy_generations::definition` (the same canonical policy
+    // `NativeWorkflow` and every other native test already use) rather than
+    // inventing a new schema.
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: policy_generations::definition(true, true),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: false,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    assert_eq!(environment.fixture().policies.len(), 1);
+    assert_eq!(environment.fixture().rings.len(), 1);
+    assert!(!environment.fixture().policies[&policy].id.0.is_empty());
+    assert_eq!(environment.fixture().rings[&ring].members.len(), 3);
+}
+
 #[cfg(feature = "bls12-381")]
 #[path = "support/defra_signer.rs"]
 mod defra_signer;
@@ -532,36 +668,130 @@ async fn native_pet_threshold_workflows() {
 /// plan asks for (see `cosmos_dkg` in `bin/orbis-node/src/tests/integration.rs`).
 /// Proves the shared provision-trigger-finalize-verify scenario on its
 /// own, without any of `Scenario::Lifecycle`'s additional PET-document logic.
+/// Drives `TestEnvironmentImpl`/`pet_dkg_scenario` directly — `native_pet`'s
+/// five `Scenario` variants go through their own, separate DKG step
+/// (`native_pet::dkg::run`) since they build on `NativeWorkflow`, not a
+/// `test-support` fixture.
 #[tokio::test]
 #[cfg(any(feature = "bls12-381", feature = "jubjub"))]
 async fn native_dkg() {
-    let (_workflow, keys, _baseline) = native_pet::dkg_scenario(9079, false).await;
-    assert!(
-        !keys.public_key.is_empty(),
-        "DKG must finalize the main key"
-    );
-    assert!(
-        keys.pet_public_key.is_some_and(|pet| !pet.is_empty()),
-        "DKG must finalize the PET key"
-    );
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        // Native (unlike Cosmos) needs a *real* backing policy here —
+        // ring creation requires the submitter hold `creator` on a
+        // `ring_policy`-resource object registered under it.
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: policy_generations::definition(true, true),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: true,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+
+    let (keys, _local_state) = pet_dkg_scenario::run_dkg(&environment, &ring_id).await;
+    assert!(!keys.main.is_empty(), "DKG must finalize the main key");
+    assert!(!keys.pet.is_empty(), "DKG must finalize the PET key");
 }
 
 /// Native adapter for the shared standard-DKG lifecycle: StoreSecret,
 /// authorized PRE, derived-key signing, refresh, and committee reshare. The
-/// scenario body is identical to `cosmos_dkg_and_pre`.
+/// scenario body is identical to `test_cli_calls_dkg_and_pre_endpoint` in
+/// `bin/orbis-node/src/tests/integration.rs`. Replaces the pre-harness-unification
+/// `native_dkg_and_pre`/`NativeHarness` version — this one drives
+/// `TestEnvironmentImpl` directly. `unsafe-testing` is required at compile
+/// time (not just runtime) because the refresh step forces a share rotation
+/// through the `UnsafeTestingService` diagnostic hook
+/// (`NativeTestEnvironment::force_refresh_due`), which only a diagnostic
+/// node image actually serves.
 #[tokio::test]
 #[cfg(all(
     feature = "unsafe-testing",
     any(feature = "bls12-381", feature = "jubjub")
 ))]
-async fn native_dkg_and_pre() {
-    let (object_id, derivation_id) = native_pet::dkg_pre_and_sign_scenario(9080).await;
+async fn test_cli_calls_dkg_and_pre_endpoint() {
+    use test_support::fixture::{
+        FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
+        TestEnvironment,
+    };
+
+    let policy = FixtureId::new("policy");
+    let ring = FixtureId::new("ring");
+    let fixture = ScenarioFixture {
+        nodes: (0..3)
+            .map(|_| NodeFixture {
+                id: FixtureId::new("node"),
+                role: NodeRole::Running,
+            })
+            .collect(),
+        policies: vec![PolicyFixture {
+            id: policy.clone(),
+            definition: policy_generations::definition(true, true),
+        }],
+        rings: vec![RingFixture {
+            id: ring.clone(),
+            members: vec![
+                NodeRef::Running(0),
+                NodeRef::Running(1),
+                NodeRef::Running(2),
+            ],
+            threshold: 2,
+            // Native's live `RingCommand::Create` enforces the same
+            // production minimum Cosmos bypasses by genesis-seeding (see
+            // `vera-modules::vera::rings::types::RingConfig::validate`) —
+            // so, unlike the Cosmos test, this can't just be short. Refresh
+            // is instead forced via `force_refresh_due` regardless of this
+            // value.
+            pss_interval: Duration::from_secs(86_400),
+            requires_pet: false,
+            policy: policy.clone(),
+            reporting: Default::default(),
+            upgrade: None,
+        }],
+        ..Default::default()
+    };
+
+    let environment = TestEnvironmentImpl::provision(fixture).await;
+    let ring_id = environment.fixture().rings[&ring].id.clone();
+    let policy_id = environment.fixture().policies[&policy].id.clone();
+
+    let (keys, local_state, outcome) = pre_scenario::run(&environment, &ring_id, &policy_id).await;
+    let sign = sign_scenario::run(&environment, &ring_id, &keys, &policy_id).await;
+    refresh_scenario::run(&environment, &ring_id, &keys, &local_state, &outcome, &sign).await;
+    reshare_scenario::run(&environment, &ring_id, &keys, &outcome, &sign).await;
     assert!(
-        !object_id.is_empty(),
+        !outcome.object_id.is_empty(),
         "the shared PRE scenario must store a document"
     );
     assert!(
-        !derivation_id.is_empty(),
+        !sign.derivation_id.is_empty(),
         "the shared Sign scenario must store a key derivation"
     );
 }

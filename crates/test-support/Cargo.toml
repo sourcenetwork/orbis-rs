@@ -10,6 +10,14 @@ publish = false
 
 [dependencies]
 common = { path = "../common", default-features = false }
+# Plain generated gRPC types/client only (tonic/tonic-prost/prost, no crypto-
+# feature coupling) — used by `node_readiness` to poll `InfoService` for both
+# backends. Deliberately not `cli-tool` (its default features hardcode a
+# crypto implementation, which would conflict with a jubjub build's feature
+# unification — see `admin/cosmos.rs`'s doc comment for why ring creation
+# stays out of this crate for the same reason).
+proto = { path = "../proto" }
+tonic = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
@@ -19,6 +27,12 @@ hex = { workspace = true }
 tokio = { workspace = true }
 
 bs58 = { version = "0.5", optional = true }
+# Only the `vera` feature (Cosmos's generic bulletin-post read/write
+# primitive — `Bulletin::read`/`post`, what the product itself uses for
+# documents/key-derivations) — no crypto-curve coupling, unlike `cli-tool`'s
+# default features. Used by `CosmosTestEnvironment`'s `register_key_derivation`/
+# `read_document`/`store_document`.
+bulletin = { path = "../bulletin", default-features = false, features = ["vera"], optional = true }
 commonware-codec = { version = "2026.9.0", optional = true }
 vera-client = { workspace = true, optional = true }
 vera-harness = { workspace = true, optional = true }
@@ -30,7 +44,7 @@ default = ["cosmos"]
 # Cosmos chain client. Kept the default so `authz`/`bulletin`'s existing
 # `test-support = { path = "..." }` dev-dependencies (no `default-features =
 # false`) keep getting it without a Cargo.toml change on their side.
-cosmos = ["common/cosmos", "dep:bs58"]
+cosmos = ["common/cosmos", "dep:bs58", "dep:bulletin"]
 native = ["dep:commonware-codec", "dep:vera-client", "dep:vera-harness", "dep:vera-node"]
 
 [[test]]
