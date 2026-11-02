@@ -1,13 +1,17 @@
-//! Fault-injection integration tests: node dropout and network partition.
+//! Fault-injection integration tests: byte-level/directional protocol faults
+//! (lost Gossip probes, stalled private responses, corrupted control
+//! messages) that only an in-process `FaultNetwork` can express — Docker-
+//! Compose's `stop_node`/`UnsafeTestingService` have no equivalent for
+//! "stall exactly the Nth message on protocol X" or "block only my outbound
+//! view of peer Y." Harness-unification migration, PR 6 ("Bucket C"):
+//! deliberately Cosmos-only, scoped out of the dual-backend migration — see
+//! the plan's PR 6 context section. The plain node-dropout/below-threshold
+//! tests that used to live here (no `FaultNetwork` needed, just a hard node
+//! abort) are fully dual-backend now, in `support/fault_*.rs`.
 //!
-//! These tests verify that threshold operations (PRE and SIGN) gracefully handle
-//! node failures: they succeed when enough nodes are available and fail fast when
-//! too few nodes are reachable. DKG is verified to stall when a required node is
-//! unreachable (DKG requires all-node participation).
-//!
-//! Requires both `fault-injection` and `integration-test` features.
+//! Requires both `fault-injection` and `integration-test-cosmos` features.
 //! Run with:
-//!   cargo test --bin orbis-node --features "integration-test,fault-injection" \
+//!   cargo test --bin orbis-node --features "integration-test-cosmos,fault-injection" \
 //!     -- fault_injection --nocapture
 
 use crate::dkg::v0::service::DkgServiceImpl;
@@ -19,7 +23,7 @@ use crate::{
     constants::{
         GRPC_CONCURRENCY_LIMIT_PER_CONNECTION, GRPC_MAX_CONCURRENT_STREAMS, MAX_PRE_REQUEST_BYTES,
         MAX_SIGN_REQUEST_BYTES, MAX_SMALL_GRPC_REQUEST_BYTES, MAX_STORE_SECRET_REQUEST_BYTES,
-        PEER_RESPONSE_TIMEOUT, PRE_COLLECTION_TIMEOUT, SIGN_COLLECTION_TIMEOUT,
+        PEER_RESPONSE_TIMEOUT,
     },
     dkg::v0::transport::{self, DkgControlMessage, DkgPrivateMessage},
     helpers::{
@@ -65,8 +69,11 @@ struct FaultableNodeHandle {
     _public_address: String,
     db_path: String,
     task: tokio::task::JoinHandle<()>,
-    /// 64-char hex node ID — used to block this node on other nodes' controllers.
-    peer_hex: String,
+    /// 64-char hex node ID. No longer read directly — the remaining tests in
+    /// this file block peers via `fault_ctrl`/`node_keys` instead — kept
+    /// (not deleted) since it documents the handle's real identity the same
+    /// way `_peer_addr`/`_public_address` do.
+    _peer_hex: String,
     /// Fault controller for this node's outbound connections.
     fault_ctrl: FaultNetworkController,
     /// `None` when `reshare_interval_secs` is 0. Dropping this (implicitly, with the rest of
@@ -286,7 +293,7 @@ async fn setup_fault_three_node_network_with_reshare_interval(
             _public_address: public_address,
             db_path,
             task,
-            peer_hex,
+            _peer_hex: peer_hex,
             fault_ctrl,
             _pss_scheduler: pss_scheduler,
         });
@@ -529,425 +536,6 @@ async fn test_dkg_repairs_gossip_loss_and_private_disconnects() {
     assert!(
         saw_identical_retransmission,
         "a silently stalled private response must retransmit the exact cached share"
-    );
-}
-
-/// PRE succeeds when one of three nodes is down (threshold=2, one node crashed).
-///
-/// Alice and Bob are alive. Charlie's process is aborted before the PRE request.
-/// With threshold=2, alice+bob's shares are enough to recover the re-encrypted
-/// commitment, so the PRE decryption should complete successfully.
-#[tokio::test]
-#[serial_test::serial]
-async fn test_pre_one_node_down_succeeds() {
-    let net = setup_fault_three_node_network("fault_pre_1node_down", 51060).await;
-
-    let endpoint = net.alice.grpc_endpoint.clone();
-
-    // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(
-        &net.chain_config,
-        &endpoint,
-        &net.node_keys,
-        2,
-        &net.policy_id,
-    )
-    .await;
-
-    // Step 2: Add policy + prepare + store secret + authz relationship
-    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
-        .await
-        .expect("add policy");
-    let resource = "document".to_string();
-    let permission = "read".to_string();
-    let secret = b"fault-pre-one-down-plaintext";
-
-    let prepared = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare secret");
-
-    let obj_resp = cli_tool::store_prepared_secret(
-        endpoint.clone(),
-        &prepared,
-        ring_id.clone(),
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("store prepared secret");
-    let object_id = obj_resp.object_id;
-
-    let did = "fault_reader_1".to_string();
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id.clone(),
-        resource.clone(),
-        net.chain_config.clone(),
-    )
-    .await
-    .expect("register object to chain");
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id.clone(),
-        resource.clone(),
-        "reader".to_string(),
-        Some(did.clone()),
-        net.chain_config.clone(),
-    )
-    .await
-    .expect("set relationship on chain");
-
-    // Step 4: Crash charlie (abort its task)
-    net.charlie.task.abort();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Step 5: PRE request — should succeed with alice + bob shares (threshold=2)
-    let result = cli_tool::do_pre(
-        endpoint.clone(),
-        "vera-localnet".to_string(),
-        ring_pk_hex.clone(),
-        object_id.clone(),
-        Some(did.clone()),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    .expect("PRE should succeed with one node down (threshold=2)");
-
-    assert_eq!(
-        result.as_slice(),
-        secret.as_ref(),
-        "Decrypted plaintext must match original with one node down"
-    );
-
-    println!(
-        "PRE succeeded with charlie down: {} bytes decrypted",
-        result.len()
-    );
-}
-
-/// PRE fails fast when fewer than threshold nodes are reachable.
-///
-/// Alice's FaultNetworkController blocks outbound connections to both bob and
-/// charlie. Alice can contribute her own local share but cannot reach bob or
-/// charlie, leaving only 1 share out of the required 2. The operation should
-/// return an error quickly (not hang for PRE_COLLECTION_TIMEOUT).
-#[tokio::test]
-#[serial_test::serial]
-async fn test_pre_below_threshold_nodes_down_fails_fast() {
-    let net = setup_fault_three_node_network("fault_pre_below_threshold", 51063).await;
-
-    let endpoint = net.alice.grpc_endpoint.clone();
-
-    // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(
-        &net.chain_config,
-        &endpoint,
-        &net.node_keys,
-        2,
-        &net.policy_id,
-    )
-    .await;
-
-    // Step 2: Add policy + prepare + store secret + authz relationship
-    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
-        .await
-        .expect("add policy");
-    let resource = "document".to_string();
-    let permission = "read".to_string();
-    let secret = b"fault-pre-below-threshold-plaintext";
-
-    let prepared = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare secret");
-
-    let obj_resp = cli_tool::store_prepared_secret(
-        endpoint.clone(),
-        &prepared,
-        ring_id.clone(),
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("store prepared secret");
-    let object_id = obj_resp.object_id;
-
-    let did = "fault_reader_2".to_string();
-    cli_tool::register_object_to_chain_with_config(
-        policy_id.clone(),
-        object_id.clone(),
-        resource.clone(),
-        net.chain_config.clone(),
-    )
-    .await
-    .expect("register object to chain");
-    cli_tool::set_relationship_on_chain_with_config(
-        policy_id.clone(),
-        object_id.clone(),
-        resource.clone(),
-        "reader".to_string(),
-        Some(did.clone()),
-        net.chain_config.clone(),
-    )
-    .await
-    .expect("set relationship on chain");
-
-    // Step 4: Block bob AND charlie on alice's fault controller (network partition)
-    net.alice.fault_ctrl.block_peer(&net.bob.peer_hex).await;
-    net.alice.fault_ctrl.block_peer(&net.charlie.peer_hex).await;
-
-    // Step 5: PRE request — should fail (insufficient shares) and complete well
-    //         within PRE_COLLECTION_TIMEOUT + 5s (not hang indefinitely).
-    let deadline = PRE_COLLECTION_TIMEOUT + Duration::from_secs(5);
-    let timed = tokio::time::timeout(
-        deadline,
-        cli_tool::do_pre(
-            endpoint.clone(),
-            "vera-localnet".to_string(),
-            ring_pk_hex.clone(),
-            object_id.clone(),
-            Some(did.clone()),
-            None,
-            None,
-            None,
-            None,
-        ),
-    )
-    .await;
-
-    match timed {
-        Err(_) => panic!(
-            "PRE with no reachable peers hung past PRE_COLLECTION_TIMEOUT + 5s — \
-             JoinSet timeout not working"
-        ),
-        Ok(inner) => {
-            assert!(
-                inner.is_err(),
-                "PRE should return an error when bob and charlie are unreachable, \
-                 but it returned Ok"
-            );
-            println!("PRE failed fast as expected: {:?}", inner.unwrap_err());
-        }
-    }
-}
-
-/// SIGN (store_prepared_secret) succeeds when one of three nodes is down (threshold=2).
-///
-/// Alice and Bob are alive. Charlie's process is aborted before the SIGN request.
-/// With threshold=2, alice+bob's signature shares are enough to recover the full
-/// signature, so store_prepared_secret should complete successfully.
-#[tokio::test]
-#[serial_test::serial]
-async fn test_sign_one_node_down_succeeds() {
-    let net = setup_fault_three_node_network("fault_sign_1node_down", 51066).await;
-
-    let endpoint = net.alice.grpc_endpoint.clone();
-
-    // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(
-        &net.chain_config,
-        &endpoint,
-        &net.node_keys,
-        2,
-        &net.policy_id,
-    )
-    .await;
-
-    // Step 2: Prepare secret (local, no network needed)
-    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
-        .await
-        .expect("add policy");
-    let resource = "document".to_string();
-    let permission = "read".to_string();
-    let secret = b"fault-sign-one-down-secret";
-
-    let prepared = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare secret");
-
-    // Step 4: Crash charlie before the SIGN operation
-    net.charlie.task.abort();
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Step 5: store_prepared_secret triggers FROST signing — should succeed with alice+bob
-    let resp = cli_tool::store_prepared_secret(
-        endpoint.clone(),
-        &prepared,
-        ring_id.clone(),
-        None,
-        true,
-        None,
-    )
-    .await
-    .expect("SIGN should succeed with one node down (threshold=2)");
-
-    assert!(
-        !resp.object_id.is_empty(),
-        "store_prepared_secret must return an object_id"
-    );
-    assert!(
-        !resp.signature.is_empty(),
-        "store_prepared_secret must return a signature"
-    );
-
-    println!(
-        "SIGN succeeded with charlie down: object_id={}, sig_len={}",
-        resp.object_id,
-        resp.signature.len()
-    );
-}
-
-/// SIGN fails fast when fewer than threshold nodes are reachable.
-///
-/// Alice's FaultNetworkController blocks outbound connections to both bob and
-/// charlie. Alice can contribute her own local signing share but cannot reach
-/// bob or charlie, leaving only 1 share out of the required 2. The operation
-/// should return an error quickly (not hang for SIGN_COLLECTION_TIMEOUT).
-#[tokio::test]
-#[serial_test::serial]
-async fn test_sign_below_threshold_nodes_down_fails_fast() {
-    let net = setup_fault_three_node_network("fault_sign_below_threshold", 51069).await;
-
-    let endpoint = net.alice.grpc_endpoint.clone();
-
-    // Step 1: DKG → ring (threshold=2)
-    let (ring_pk_hex, ring_id) = setup_ring(
-        &net.chain_config,
-        &endpoint,
-        &net.node_keys,
-        2,
-        &net.policy_id,
-    )
-    .await;
-
-    // Step 2: Prepare secret (local)
-    let policy_id = cli_tool::add_policy_to_chain_with_config(net.chain_config.clone())
-        .await
-        .expect("add policy");
-    let resource = "document".to_string();
-    let permission = "read".to_string();
-    let secret = b"fault-sign-below-threshold-secret";
-
-    let prepared = cli_tool::prepare_secret(
-        secret,
-        &ring_pk_hex,
-        None,
-        policy_id.clone(),
-        resource.clone(),
-        permission.clone(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .expect("prepare secret");
-
-    // Step 4: Block bob AND charlie on alice's fault controller (network partition)
-    net.alice.fault_ctrl.block_peer(&net.bob.peer_hex).await;
-    net.alice.fault_ctrl.block_peer(&net.charlie.peer_hex).await;
-
-    // Step 5: store_prepared_secret — should fail (insufficient shares) and complete
-    //         well within SIGN_COLLECTION_TIMEOUT + 5s (not hang indefinitely).
-    let deadline = SIGN_COLLECTION_TIMEOUT + Duration::from_secs(5);
-    let timed = tokio::time::timeout(
-        deadline,
-        cli_tool::store_prepared_secret(
-            endpoint.clone(),
-            &prepared,
-            ring_id.clone(),
-            None,
-            true,
-            None,
-        ),
-    )
-    .await;
-
-    match timed {
-        Err(_) => panic!(
-            "SIGN with no reachable peers hung past SIGN_COLLECTION_TIMEOUT + 5s — \
-             JoinSet timeout not working"
-        ),
-        Ok(inner) => {
-            assert!(
-                inner.is_err(),
-                "SIGN should return an error when bob and charlie are unreachable, \
-                 but it returned Ok"
-            );
-            println!("SIGN failed fast as expected: {:?}", inner.unwrap_err());
-        }
-    }
-}
-
-/// DKG fails when a required node is unreachable.
-///
-/// Charlie's hex node ID is blocked on both alice's and bob's fault controllers.
-/// Neither alice nor bob can connect to charlie for the DKG protocol messages.
-/// DKG requires all-node participation, so the service returns an error
-/// immediately when it cannot establish connections to all participants.
-#[tokio::test]
-#[serial_test::serial]
-async fn test_dkg_fails_when_node_unreachable() {
-    let net = setup_fault_three_node_network("fault_dkg_unreachable", 51072).await;
-
-    let endpoint = net.alice.grpc_endpoint.clone();
-
-    // Create the ring on-chain before blocking charlie
-    let ring_id =
-        create_ring_on_chain(&net.chain_config, &net.node_keys, 2, &net.policy_id, None).await;
-
-    // Block charlie on alice AND bob so charlie is unreachable for DKG
-    let charlie_hex = net.charlie.peer_hex.clone();
-    net.alice.fault_ctrl.block_peer(&charlie_hex).await;
-    net.bob.fault_ctrl.block_peer(&charlie_hex).await;
-
-    // Initiate DKG — the DKG service checks connectivity to all peers upfront.
-    // Because charlie is blocked on alice's outbound controller, alice cannot
-    // reach charlie and the DKG call must return an error immediately.
-    let dkg_result = cli_tool::do_dkg(endpoint.to_string(), ring_id).await;
-
-    assert!(
-        dkg_result.is_err(),
-        "DKG should fail when charlie is unreachable, but it succeeded: {:?}",
-        dkg_result
-    );
-
-    println!(
-        "DKG correctly failed with charlie blocked: {:?}",
-        dkg_result.unwrap_err()
     );
 }
 

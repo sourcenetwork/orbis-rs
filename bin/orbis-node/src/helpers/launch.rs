@@ -111,7 +111,7 @@ fn parse_cors_origin(value: &str) -> Result<String, String> {
 
 /// Browser CORS policy selected locally by this node operator.
 #[derive(Debug, Clone)]
-pub(crate) enum CorsPolicy {
+pub enum CorsPolicy {
     /// Do not emit an `Access-Control-Allow-Origin` response header.
     Disabled,
     /// Allow only the listed, normalized origins.

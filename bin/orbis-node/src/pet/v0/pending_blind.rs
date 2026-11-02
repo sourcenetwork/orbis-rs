@@ -50,7 +50,7 @@ pub(crate) enum PendingBlindingStoreOutcome {
     LimitReached,
 }
 
-pub(crate) struct PetPendingBlindingStore {
+pub struct PetPendingBlindingStore {
     entries: Arc<RwLock<HashMap<String, PendingBlinding>>>,
 }
 

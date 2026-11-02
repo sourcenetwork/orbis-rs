@@ -122,6 +122,85 @@ mod report_scenario;
 #[path = "../src/tests/support/report_offline_pre_sign.rs"]
 mod report_offline_pre_sign;
 
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_delegated_dkg.rs"]
+mod concurrent_delegated_dkg;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_dkg_non_participant.rs"]
+mod concurrent_dkg_non_participant;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_invalid_dkg_share_report.rs"]
+mod concurrent_invalid_dkg_share_report;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_pre_requests.rs"]
+mod concurrent_pre_requests;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_sign_requests.rs"]
+mod concurrent_sign_requests;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/concurrent_simultaneous_dkg.rs"]
+mod concurrent_simultaneous_dkg;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/live_node.rs"]
+mod live_node;
+
+// Shared with Cosmos (`src/tests/mod.rs`) — "Bucket B" fault-injection
+// tests ported onto `live_node`'s shared bootstrap (harness-unification
+// migration, PR 6). The remaining 5 "Bucket C" tests in
+// `fault_injection.rs` stay Cosmos-only (genuinely need `FaultNetwork`'s
+// byte-level/directional control — see the plan's PR 6 context section).
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/fault_dkg_unreachable.rs"]
+mod fault_dkg_unreachable;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/fault_pre_below_threshold.rs"]
+mod fault_pre_below_threshold;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/fault_pre_one_node_down.rs"]
+mod fault_pre_one_node_down;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/fault_sign_below_threshold.rs"]
+mod fault_sign_below_threshold;
+#[cfg(all(
+    feature = "unsafe-testing",
+    any(feature = "bls12-381", feature = "jubjub")
+))]
+#[path = "../src/tests/support/fault_sign_one_node_down.rs"]
+mod fault_sign_one_node_down;
+
 // Corrupts node3's own BLS share directly — FROST's threshold-sized
 // signing set would deterministically exclude node3 from Sign, so this
 // test only makes sense for the default non-interactive BLS backend.

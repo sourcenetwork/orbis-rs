@@ -225,6 +225,7 @@ impl PeerConnectionPool {
     }
 
     #[cfg(test)]
+    #[allow(clippy::len_without_is_empty)]
     pub async fn len(&self) -> usize {
         self.connections.lock().await.len()
     }

@@ -13,12 +13,49 @@ mod cancel_ring_reshare;
 // `integration-test-native` build doesn't try to compile them (they'd fail:
 // `ChainConfig`/`VeraClient` require the `cosmos` feature). Not yet migrated
 // to a shared file — see the harness-unification plan's PR 5 roadmap.
+// Shared with native (`tests/native_startup.rs`) — see that file's own
+// declaration and the standing decision in the harness-unification plan
+// against backend-only test files.
 #[cfg(feature = "integration-test-cosmos")]
-mod concurrent;
+#[path = "support/concurrent_delegated_dkg.rs"]
+mod concurrent_delegated_dkg;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/concurrent_dkg_non_participant.rs"]
+mod concurrent_dkg_non_participant;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/concurrent_invalid_dkg_share_report.rs"]
+mod concurrent_invalid_dkg_share_report;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/concurrent_pre_requests.rs"]
+mod concurrent_pre_requests;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/concurrent_sign_requests.rs"]
+mod concurrent_sign_requests;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/concurrent_simultaneous_dkg.rs"]
+mod concurrent_simultaneous_dkg;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/fault_dkg_unreachable.rs"]
+mod fault_dkg_unreachable;
 #[cfg(all(feature = "fault-injection", feature = "integration-test-cosmos"))]
 mod fault_injection;
 #[cfg(feature = "integration-test-cosmos")]
+#[path = "support/fault_pre_below_threshold.rs"]
+mod fault_pre_below_threshold;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/fault_pre_one_node_down.rs"]
+mod fault_pre_one_node_down;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/fault_sign_below_threshold.rs"]
+mod fault_sign_below_threshold;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/fault_sign_one_node_down.rs"]
+mod fault_sign_one_node_down;
+#[cfg(feature = "integration-test-cosmos")]
 mod integration;
+#[cfg(feature = "integration-test-cosmos")]
+#[path = "support/live_node.rs"]
+mod live_node;
 mod node;
 // Declared here (not inside `integration.rs`) so sibling modules
 // (`cancel_ring_reshare.rs`, the `report_*.rs` family) can reuse them too

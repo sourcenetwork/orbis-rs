@@ -18,7 +18,12 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // deleted (harness-unification migration, PR 5f) — removed.
 // `create_ring_on_chain`/`create_ring_on_chain_with_trusted_relays` stayed
 // here; see their doc comments below.
-#[cfg(feature = "integration-test-cosmos")]
+// `test` (not just the feature) is required here specifically: `test_support`
+// is a dev-dependency, available to the lib's own unit-test build but not to
+// the plain lib artifact `tests/native_startup.rs` links against — unlike
+// most of this module (widened below), this one re-export must stay
+// invisible there.
+#[cfg(all(test, feature = "integration-test-cosmos"))]
 pub use test_support::admin::cosmos::{create_orbis_ring_policy, wait_for_ring_finalized};
 
 use crate::helpers::create_routers::{
@@ -44,7 +49,10 @@ use local_storage::{
     LocalStorageImpl,
 };
 use network::{NetworkImpl, Router};
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(any(
+    feature = "integration-test-cosmos",
+    feature = "integration-test-native"
+))]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
 use zeroize::Zeroizing;
@@ -790,11 +798,13 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
         .unwrap_or_default()
 }
 
-// No current native caller (every caller today is a Cosmos/Docker test),
-// hence gated the same as the Cosmos-only helpers above rather than left at
-// the backend-neutral `integration-test` base — move back to the weaker gate
-// if/when a native scenario needs this too.
-#[cfg(feature = "integration-test-cosmos")]
+// Backend-neutral (a raw `InfoService.GetNodeInfo` poll) — widened from
+// Cosmos-only once `live_node.rs` (harness-unification migration, PR 6)
+// became the first native caller.
+#[cfg(any(
+    feature = "integration-test-cosmos",
+    feature = "integration-test-native"
+))]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
         .await
@@ -834,9 +844,11 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 ///     // Nodes are now ready...
 /// }
 /// ```
-// Same rationale as `check_full_grpc_ready` above: no native caller exists
-// yet, so this stays Cosmos-gated rather than at the shared base.
-#[cfg(feature = "integration-test-cosmos")]
+// Backend-neutral — see `check_full_grpc_ready`'s own updated comment.
+#[cfg(any(
+    feature = "integration-test-cosmos",
+    feature = "integration-test-native"
+))]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],
     max_attempts: u32,
