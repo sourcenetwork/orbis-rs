@@ -5,7 +5,7 @@ JWT-based authentication for Orbis gRPC: **did:key issuers**, **Ed25519 (EdDSA) 
 ## Responsibilities
 
 - **`BearerToken<T>`** — Standard JWT claims (`iss`, `iat`, `exp`, optional `nbf`) plus flattened custom claims `T` (see below).
-- **`resolve_jwt_did`** — Verify a bearer JWT: enforce **EdDSA** in the header, resolve **`iss`** as a **`did:key`** URI via [`did-key`](https://crates.io/crates/did-key), verify the signature with the resolved public key, then apply time and lifetime checks (clock skew, expiry, `nbf`, max token lifetime).
+- **`resolve_jwt_did`** — Verify a bearer JWT: enforce **EdDSA** in the header, resolve **`iss`** as an Ed25519 **`did:key`** URI, verify the signature with the resolved public key, then apply time and lifetime checks (clock skew, expiry, `nbf`, max token lifetime).
 - **`JwtSigner`** — Build tokens with a fresh or existing `did:key` Ed25519 key pair; helpers wrap common Orbis claim bundles with a **1-hour** validity unless you use `sign` directly.
 - **Tonic helpers** — `extract_bearer_token`, `add_auth_header`, `create_authenticated_request` for `Authorization: Bearer <jwt>` on gRPC metadata.
 
@@ -37,7 +37,7 @@ Pass a caller-supplied **`current_time`** (Unix seconds) so tests and nodes can 
 
 ## Signing (`JwtSigner`)
 
-- **`JwtSigner::new()`** / **`from_key_pair`** — Ed25519 via `did-key`; **`did_uri`** is `did:key:<fingerprint>`.
+- **`JwtSigner::new()`** / **`from_seed`** — Ed25519 via Ring; **`did_uri`** is `did:key:<fingerprint>`.
 - **`sign(claims, duration)`** — Generic EdDSA JWT with `jsonwebtoken`; issuer is set to **`did_uri`**.
 - Convenience methods **`create_dkg_jwt`**, **`create_pre_jwt`**, **`create_sign_jwt`**, **`create_store_secret_jwt`** — Build the corresponding `*Claims` and sign (default **1 hour** in the helpers).
 
@@ -70,7 +70,7 @@ tolerate host/container clock skew.
 
 ## Dependencies (high level)
 
-- **`did-key`** — `did:key` resolution and Ed25519 key material  
+- **Ring / ed25519-dalek** — Ed25519 key material and validation
 - **`jsonwebtoken`** — Sign outgoing JWTs and decode/verify incoming JWTs
 - **`tonic`** — Request metadata for bearer extraction  
 - **`serde`**, **`thiserror`**, **`zeroize`**

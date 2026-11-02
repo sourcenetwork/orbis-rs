@@ -6,12 +6,13 @@
 
 use crate::error::{AuthNError, Result};
 use crate::{BearerToken, DkgClaims, PreClaims, SignClaims, StoreSecretClaims};
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, KeyMaterial};
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use pkcs8::{
     der::{asn1::OctetStringRef, Encode},
     AlgorithmIdentifierRef, ObjectIdentifier, PrivateKeyInfo,
 };
+use rand::RngCore;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt::Debug;
@@ -38,7 +39,7 @@ pub struct TokenMetadata {
 /// This struct wraps a DID key pair and provides methods for creating
 /// signed JWT tokens with various claim types.
 pub struct JwtSigner {
-    key_pair: did_key::PatchedKeyPair,
+    seed: zeroize::Zeroizing<[u8; 32]>,
     /// The DID URI for this key pair (e.g., did:key:z6Mk...)
     pub did_uri: String,
 }
@@ -48,15 +49,21 @@ impl JwtSigner {
     ///
     /// Creates a new Ed25519 key pair and derives the DID URI from it.
     pub fn new() -> Self {
-        let key_pair = generate::<DidEd25519KeyPair>(None);
-        let did_uri = format!("did:key:{}", key_pair.fingerprint());
-        Self { key_pair, did_uri }
+        let mut seed = zeroize::Zeroizing::new([0; 32]);
+        rand::rngs::OsRng.fill_bytes(seed.as_mut());
+        Self::from_seed(*seed)
     }
 
-    /// Create a new JwtSigner from an existing key pair.
-    pub fn from_key_pair(key_pair: did_key::PatchedKeyPair) -> Self {
-        let did_uri = format!("did:key:{}", key_pair.fingerprint());
-        Self { key_pair, did_uri }
+    /// Create a signer from an Ed25519 seed.
+    pub fn from_seed(seed: [u8; 32]) -> Self {
+        let seed = zeroize::Zeroizing::new(seed);
+        let key = Ed25519KeyPair::from_seed_unchecked(seed.as_ref())
+            .expect("a 32-byte Ed25519 seed is valid");
+        let mut encoded = Vec::with_capacity(34);
+        encoded.extend_from_slice(&[0xed, 0x01]);
+        encoded.extend_from_slice(key.public_key().as_ref());
+        let did_uri = format!("did:key:z{}", bs58::encode(encoded).into_string());
+        Self { seed, did_uri }
     }
 
     fn ed25519_seed_to_pkcs8_der(seed: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
@@ -91,15 +98,9 @@ impl JwtSigner {
             })
     }
 
-    /// Get the signing key for jsonwebtoken/ring.
-    fn signing_key_for(key_pair: &did_key::PatchedKeyPair) -> Result<EncodingKey> {
-        let seed = zeroize::Zeroizing::new(key_pair.private_key_bytes());
-        let pkcs8 = Self::ed25519_seed_to_pkcs8_der(&seed)?;
-        Ok(EncodingKey::from_ed_der(&pkcs8))
-    }
-
     fn get_signing_key(&self) -> Result<EncodingKey> {
-        Self::signing_key_for(&self.key_pair)
+        let pkcs8 = Self::ed25519_seed_to_pkcs8_der(self.seed.as_ref())?;
+        Ok(EncodingKey::from_ed_der(&pkcs8))
     }
 
     fn current_unix_time() -> Result<u64> {
@@ -120,17 +121,6 @@ impl JwtSigner {
         T: Serialize,
     {
         Self::sign_bearer_token_with_key(&self.get_signing_key()?, token)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sign_bearer_token_with_key_pair<T>(
-        key_pair: &did_key::PatchedKeyPair,
-        token: &BearerToken<T>,
-    ) -> Result<String>
-    where
-        T: Serialize,
-    {
-        Self::sign_bearer_token_with_key(&Self::signing_key_for(key_pair)?, token)
     }
 
     fn sign_bearer_token_with_key<T>(key: &EncodingKey, token: &BearerToken<T>) -> Result<String>

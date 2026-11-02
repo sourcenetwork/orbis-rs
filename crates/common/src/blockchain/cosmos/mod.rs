@@ -9,6 +9,7 @@ pub mod events;
 #[cfg(feature = "integration-test-cosmos")]
 pub mod funding;
 mod orbis;
+mod rpc;
 mod signer;
 
 use super::{BlockchainError, Result};

@@ -7,7 +7,6 @@ use crypto::context::CiphertextContext;
 use crypto::r#trait::{Secret, ThresholdDealer};
 use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{GroupAffine as G1Affine, PreImpl as ThresholdDealerNode};
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair};
 use serde::Deserialize;
 use tonic::{Code, Request, Status};
 
@@ -173,8 +172,7 @@ pub async fn store_prepared_secret(
     // Create JWT for authentication with all request fields
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
     let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let jwt_signer = JwtSigner::from_seed(seed);
     let token = jwt_signer
         .create_store_secret_jwt(
             &prepared.encrypted_document,
@@ -374,8 +372,7 @@ async fn do_pre_impl(
     // reader-authorization transcript below instead of discarding them.
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
     let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let jwt_signer = JwtSigner::from_seed(seed);
     let (token, token_metadata) = jwt_signer
         .create_pre_jwt(
             reader_pk_bytes.clone(),
@@ -562,8 +559,7 @@ pub async fn do_sign(
 
     let reader_did_pk = reader_did_pk.unwrap_or("test_jwt".to_string());
     let seed = did_seed(&reader_did_pk);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&seed));
-    let jwt_signer = JwtSigner::from_key_pair(key_pair);
+    let jwt_signer = JwtSigner::from_seed(seed);
     let token = jwt_signer
         .create_sign_jwt(&derivation_id, &message)
         .map_err(|e| anyhow!("Failed to create sign JWT: {}", e))?;

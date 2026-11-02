@@ -1,8 +1,9 @@
+mod did_key;
+
 pub mod error;
 pub mod jwt_builder;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use did_key::{resolve, DIDCore, KeyMaterial, CONFIG_LD_PUBLIC};
 use error::{AuthNError, Result};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -86,17 +87,8 @@ pub fn resolve_actor_id<'a, T>(
 
 /// Validates a relay issuer DID accepted by the JWT verifier.
 pub fn validate_relay_issuer(issuer_id: &str) -> Result<()> {
-    let key = resolve(issuer_id)
-        .map_err(|_| AuthNError::DidError("unable to resolve relay issuer DID".to_string()))?;
-    let is_ed25519 = key
-        .get_verification_methods(CONFIG_LD_PUBLIC, issuer_id)
-        .first()
-        .is_some_and(|method| method.key_type == "Ed25519VerificationKey2018");
-    if !is_ed25519 {
-        return Err(AuthNError::DidError(
-            "relay issuer must contain an Ed25519 public key".to_string(),
-        ));
-    }
+    did_key::ed25519_public_key(issuer_id)?;
+
     Ok(())
 }
 
@@ -221,44 +213,19 @@ where
 
     let claims = unverified.claims;
 
-    // Only the did:key method is accepted. `resolve` would also take other DID
-    // methods the did-key crate understands; pin it to the one whose key
-    // material we know how to verify a JWT signature against.
+    // Only did:key issuers are accepted for JWT verification.
     if !claims.issuer_id.starts_with("did:key:") {
         return Err(AuthNError::DidError(
             "issuer DID must use the did:key method".to_string(),
         ));
     }
 
-    // Resolve the DID to get the public key
-    let key = resolve(&claims.issuer_id)
-        .map_err(|_| AuthNError::DidError("Error resolving did_uri".to_string()))?;
-
-    // The 32-byte length check below also matches X25519 (and other 32-byte key
-    // types); require the resolved verification method to actually be Ed25519.
-    let is_ed25519 = key
-        .get_verification_methods(CONFIG_LD_PUBLIC, &claims.issuer_id)
-        .first()
-        .is_some_and(|method| method.key_type == "Ed25519VerificationKey2018");
-    if !is_ed25519 {
-        return Err(AuthNError::DidError(
-            "issuer DID must contain an Ed25519 public key".to_string(),
-        ));
-    }
-
-    // Extract the public key bytes from the resolved DID key
-    let public_key_bytes = key.public_key_bytes();
-
-    if public_key_bytes.len() != 32 {
-        return Err(AuthNError::DidError(format!(
-            "Expected 32-byte Ed25519 public key, got {} bytes",
-            public_key_bytes.len()
-        )));
-    }
+    let public_key_bytes = did_key::ed25519_public_key(&claims.issuer_id)?;
 
     // from_ed_components accepts the base64url-encoded raw key x-component (JWK form).
-    let decoding_key = DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(&public_key_bytes))
-        .map_err(|e| AuthNError::JwtError(format!("Failed to build decoding key: {}", e)))?;
+    let decoding_key =
+        DecodingKey::from_ed_components(&URL_SAFE_NO_PAD.encode(public_key_bytes))
+            .map_err(|e| AuthNError::JwtError(format!("Failed to build decoding key: {}", e)))?;
     let mut validation = Validation::new(Algorithm::EdDSA);
     validation.validate_exp = false; // We'll check expiration manually
     validation.required_spec_claims.clear();

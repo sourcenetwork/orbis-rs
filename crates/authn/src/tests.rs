@@ -1,43 +1,42 @@
 use super::*;
 use crate::jwt_builder::JwtSigner;
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint, X25519KeyPair};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+fn x25519_did() -> String {
+    let mut bytes = vec![0xec, 0x01];
+    bytes.extend_from_slice(&[7; 32]);
+    format!("did:key:z{}", bs58::encode(bytes).into_string())
+}
 
 const TEST_MAX_LIFETIME: u64 = 86400; // 24 hours, mirrors the node constant
 const TEST_MAX_JWT_BYTES: usize = 16 * 1024; // mirrors the node constant
 const TEST_CLOCK_SKEW_LEEWAY: u64 = 5 * 60; // mirrors the node clock-skew leeway
 
 /// Helper to create a test JWT with PreClaims
-fn create_test_jwt_with_pre_claims(
-    key_pair: &did_key::PatchedKeyPair,
-    token: &BearerToken<PreClaims>,
-) -> String {
-    JwtSigner::sign_bearer_token_with_key_pair(key_pair, token).unwrap()
+fn create_test_jwt_with_pre_claims(key_pair: &JwtSigner, token: &BearerToken<PreClaims>) -> String {
+    key_pair.sign_bearer_token(token).unwrap()
 }
 
 /// Helper to create a test JWT with PreClaims and an explicit nbf value
 fn create_test_jwt_with_nbf(
-    key_pair: &did_key::PatchedKeyPair,
+    key_pair: &JwtSigner,
     token: &BearerToken<PreClaims>,
     not_before: Option<u64>,
 ) -> String {
     let mut token = token.clone();
     token.not_before = not_before;
-    JwtSigner::sign_bearer_token_with_key_pair(key_pair, &token).unwrap()
+    key_pair.sign_bearer_token(&token).unwrap()
 }
 
 /// Helper to create a test JWT with no custom claims (for DKG)
-fn create_test_jwt_no_claims(
-    key_pair: &did_key::PatchedKeyPair,
-    token: &BearerToken<DkgClaims>,
-) -> String {
-    JwtSigner::sign_bearer_token_with_key_pair(key_pair, token).unwrap()
+fn create_test_jwt_no_claims(key_pair: &JwtSigner, token: &BearerToken<DkgClaims>) -> String {
+    key_pair.sign_bearer_token(token).unwrap()
 }
 
 #[test]
 fn test_resolve_jwt_did_with_pre_claims() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -66,8 +65,8 @@ fn test_resolve_jwt_did_with_pre_claims() {
 
 #[test]
 fn test_resolve_jwt_did_with_dkg_claims() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -93,7 +92,7 @@ fn test_resolve_jwt_did_with_dkg_claims() {
 
 #[test]
 fn test_resolve_jwt_did_rejects_non_did_key_issuer() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
+    let key_pair = JwtSigner::new();
     let token: BearerToken<()> = BearerToken {
         issuer_id: "did:web:example.com".to_string(),
         subject_id: None,
@@ -103,7 +102,7 @@ fn test_resolve_jwt_did_rejects_non_did_key_issuer() {
         not_before: None,
         claims: (),
     };
-    let jwt = JwtSigner::sign_bearer_token_with_key_pair(&key_pair, &token).unwrap();
+    let jwt = key_pair.sign_bearer_token(&token).unwrap();
 
     let result: Result<BearerToken<()>> =
         resolve_jwt_did(&jwt, 1000, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0);
@@ -117,10 +116,10 @@ fn test_resolve_jwt_did_rejects_non_did_key_issuer() {
 fn test_resolve_jwt_did_rejects_non_ed25519_did_key_issuer() {
     // A did:key X25519 identifier resolves fine and yields a 32-byte key, but it
     // is a key-agreement key, not a signing key — the issuer must be Ed25519.
-    let x25519 = generate::<X25519KeyPair>(None);
-    let signing_key_pair = generate::<DidEd25519KeyPair>(None);
+    let x25519 = x25519_did();
+    let signing_key_pair = JwtSigner::new();
     let token: BearerToken<()> = BearerToken {
-        issuer_id: format!("did:key:{}", x25519.fingerprint()),
+        issuer_id: x25519.clone(),
         subject_id: None,
         jwt_id: String::new(),
         issued_time: 900,
@@ -128,7 +127,7 @@ fn test_resolve_jwt_did_rejects_non_ed25519_did_key_issuer() {
         not_before: None,
         claims: (),
     };
-    let jwt = JwtSigner::sign_bearer_token_with_key_pair(&signing_key_pair, &token).unwrap();
+    let jwt = signing_key_pair.sign_bearer_token(&token).unwrap();
 
     let result: Result<BearerToken<()>> =
         resolve_jwt_did(&jwt, 1000, TEST_MAX_LIFETIME, TEST_MAX_JWT_BYTES, 0);
@@ -140,8 +139,8 @@ fn test_resolve_jwt_did_rejects_non_ed25519_did_key_issuer() {
 
 #[test]
 fn test_resolve_jwt_did_expired() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 3000; // After expiration
     let token = BearerToken {
@@ -169,8 +168,8 @@ fn test_resolve_jwt_did_expired() {
 
 #[test]
 fn test_resolve_jwt_did_future_issued_time() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 500; // Before issued_time
     let token = BearerToken {
@@ -198,8 +197,8 @@ fn test_resolve_jwt_did_future_issued_time() {
 
 #[test]
 fn test_resolve_jwt_did_accepts_future_issued_time_with_clock_skew() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -226,8 +225,8 @@ fn test_resolve_jwt_did_accepts_future_issued_time_with_clock_skew() {
 
 #[test]
 fn test_resolve_jwt_did_rejects_future_issued_time_beyond_clock_skew() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -260,8 +259,8 @@ fn test_resolve_jwt_did_rejects_future_issued_time_beyond_clock_skew() {
 
 #[test]
 fn test_token_lifetime_at_limit() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let issued_time = 1000;
     let current_time = 1001;
@@ -294,8 +293,8 @@ fn test_token_lifetime_at_limit() {
 
 #[test]
 fn test_token_lifetime_one_second_over_limit() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let issued_time = 1000;
     let current_time = 1001;
@@ -330,8 +329,8 @@ fn test_token_lifetime_one_second_over_limit() {
 
 #[test]
 fn test_token_lifetime_far_future() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let issued_time = 1_000_000;
     let current_time = 1_000_001;
@@ -364,9 +363,9 @@ fn test_token_lifetime_far_future() {
 
 #[test]
 fn test_resolve_jwt_did_invalid_signature() {
-    let key_pair1 = generate::<DidEd25519KeyPair>(None);
-    let key_pair2 = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair1.fingerprint());
+    let key_pair1 = JwtSigner::new();
+    let key_pair2 = JwtSigner::new();
+    let did_uri = key_pair1.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -394,8 +393,8 @@ fn test_resolve_jwt_did_invalid_signature() {
 
 #[test]
 fn test_nbf_in_future_rejected() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -423,8 +422,8 @@ fn test_nbf_in_future_rejected() {
 
 #[test]
 fn test_nbf_in_past_accepted() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -446,8 +445,8 @@ fn test_nbf_in_past_accepted() {
 
 #[test]
 fn test_nbf_within_clock_skew_accepted() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let current_time = 1000;
     let token = BearerToken {
@@ -474,8 +473,8 @@ fn test_nbf_within_clock_skew_accepted() {
 
 #[test]
 fn test_expiration_within_clock_skew_accepted() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let expiration_time = 2000;
     let current_time = expiration_time + TEST_CLOCK_SKEW_LEEWAY - 1;
@@ -503,8 +502,8 @@ fn test_expiration_within_clock_skew_accepted() {
 
 #[test]
 fn test_expiration_at_clock_skew_boundary_rejected() {
-    let key_pair = generate::<DidEd25519KeyPair>(None);
-    let did_uri = format!("did:key:{}", key_pair.fingerprint());
+    let key_pair = JwtSigner::new();
+    let did_uri = key_pair.did_uri.clone();
 
     let expiration_time = 2000;
     let current_time = expiration_time + TEST_CLOCK_SKEW_LEEWAY;
@@ -598,12 +597,12 @@ fn direct_token_uses_issuer_as_actor() {
 
 #[test]
 fn relay_issuer_must_use_ed25519_key() {
-    let ed25519 = generate::<DidEd25519KeyPair>(None);
-    let ed25519_did = format!("did:key:{}", ed25519.fingerprint());
+    let ed25519 = JwtSigner::new();
+    let ed25519_did = ed25519.did_uri.clone();
     assert!(validate_relay_issuer(&ed25519_did).is_ok());
 
-    let x25519 = generate::<X25519KeyPair>(None);
-    let x25519_did = format!("did:key:{}", x25519.fingerprint());
+    let x25519 = x25519_did();
+    let x25519_did = x25519.clone();
     assert!(validate_relay_issuer(&x25519_did).is_err());
 }
 

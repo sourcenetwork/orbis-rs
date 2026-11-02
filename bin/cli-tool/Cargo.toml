@@ -21,7 +21,6 @@ bulletin = { path = "../../crates/bulletin", default-features = false, features 
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-did-key = { workspace = true }
 sha2 = { workspace = true }
 rpassword = "7.3"
 bs58 = "0.5"

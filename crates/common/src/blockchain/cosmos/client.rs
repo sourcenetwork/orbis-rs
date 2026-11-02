@@ -1,5 +1,6 @@
 //! Vera blockchain client.
 
+use super::rpc::TendermintClient;
 use crate::blockchain::{bank, BlockchainError, ChainConfig, Result, TxSigner};
 use base64::Engine;
 use cosmrs::Any;
@@ -7,12 +8,12 @@ use prost::Message;
 use reqwest::Client as HttpClient;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::time::Duration;
-use tendermint_rpc::{Client, HttpClient as TendermintClient, HttpClientUrl};
+use tendermint_rpc::client::Client;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 
-const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const RPC_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const RPC_POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ============================================================================
 // Transaction Polling Constants
@@ -125,22 +126,7 @@ impl VeraClient {
         // authorization risk. Override with `allow_insecure_rpc`.
         config.validate_endpoints()?;
 
-        let rpc_url: HttpClientUrl = config
-            .rpc_url
-            .as_str()
-            .try_into()
-            .map_err(|e| BlockchainError::Config(format!("Invalid RPC URL: {}", e)))?;
-        let rpc_http_client = tendermint_reqwest::Client::builder()
-            .timeout(RPC_REQUEST_TIMEOUT)
-            .pool_idle_timeout(RPC_POOL_IDLE_TIMEOUT)
-            .build()
-            .map_err(|e| {
-                BlockchainError::Config(format!("Failed to create RPC HTTP client: {}", e))
-            })?;
-        let rpc_client = TendermintClient::builder(rpc_url)
-            .client(rpc_http_client)
-            .build()
-            .map_err(|e| BlockchainError::Config(format!("Failed to create RPC client: {}", e)))?;
+        let rpc_client = TendermintClient::new(&config.rpc_url)?;
 
         let http_client = HttpClient::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -981,7 +967,7 @@ mod tests {
     use std::io;
     use std::sync::Arc;
     use std::time::Duration;
-    use tendermint_rpc::Client;
+    use tendermint_rpc::client::Client;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{mpsc, Notify};

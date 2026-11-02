@@ -13,7 +13,6 @@ use crypto::{CryptoDeserialize, CryptoSerialize};
 use crypto::{
     DkgImpl, GroupAffine as G1Affine, PetImpl, PreImpl as ThresholdDealerNode, ScalarField as Fr,
 };
-use did_key::{generate, Ed25519KeyPair as DidEd25519KeyPair, Fingerprint};
 use sha2::{Digest, Sha256};
 
 use super::chain::tx_signer;
@@ -263,9 +262,7 @@ pub async fn do_encrypt_secret(
 
 /// Derive a 32-byte Ed25519 seed from an arbitrary string via SHA-256.
 ///
-/// `did_key::generate` only uses the seed deterministically when it is exactly
-/// 32 bytes; for any other length it falls back to a random key. Hashing to 32
-/// bytes ensures consistent, reproducible DIDs regardless of the input length.
+/// Hashing to 32 bytes ensures consistent, reproducible DIDs for any input length.
 pub(crate) fn did_seed(s: &str) -> [u8; 32] {
     Sha256::digest(s.as_bytes()).into()
 }
@@ -279,8 +276,7 @@ pub(crate) fn did_seed(s: &str) -> [u8; 32] {
 /// exact DID that ends up on-chain.
 pub fn reader_did_from_seed(seed: &str) -> String {
     let hashed = did_seed(seed);
-    let key_pair = generate::<DidEd25519KeyPair>(Some(&hashed));
-    format!("did:key:{}", key_pair.fingerprint())
+    authn::JwtSigner::from_seed(hashed).did_uri
 }
 
 /// Derive a did:key from a compressed secp256k1 public key, using the same
