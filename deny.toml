@@ -32,6 +32,9 @@ allow = [
 
 # Confidence threshold for license text scanning (when SPDX field is absent)
 confidence-threshold = 0.8
+exceptions = [
+    { name = "orbis-reporting", version = "=0.0.1", allow = ["BUSL-1.1"] },
+]
 
 # ---------------------------------------------------------------------------
 # Security advisories
