@@ -393,6 +393,12 @@ def launch_fixture(root, private, run_env, env, log):
             root, env, log, 600)
 
 
+def fixture_compile_command(curve):
+    return ['cargo', '+1.98.0', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
+            '--no-default-features', '--features', 'integration-test-native,redb,iroh,' + curve,
+            '--test', 'native_startup', '--no-run', '--message-format=json']
+
+
 def run(root, args, output):
     global STAGE, COMPLETED
     STAGE = 60
@@ -406,9 +412,7 @@ def run(root, args, output):
     STAGE = 70
     stdout = output / 'compile.jsonl'
     with stdout.open('wb') as out, (output / 'compile.log').open('wb') as err:
-        process = subprocess.Popen(['cargo', '+1.98.0', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
-                '--no-default-features', '--features', 'native,redb,iroh,' + args.curve,
-                '--test', 'native_startup', '--no-run', '--message-format=json'], cwd=root, env=env,
+        process = subprocess.Popen(fixture_compile_command(args.curve), cwd=root, env=env,
                 stdout=out, stderr=err, start_new_session=True)
         try:
             status = process.wait(timeout=5400)
