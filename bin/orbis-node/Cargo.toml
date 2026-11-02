@@ -50,20 +50,20 @@ http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 
 [dev-dependencies]
-defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "59d221d539fb70d814196ce9b6efc859da9816be" }
-defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd", default-features = false, features = ["p2p"] }
-defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd", default-features = false, features = ["iroh-transport"] }
-defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd", default-features = false, features = ["native"] }
-defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "4fad631d06bc1d4b4871e5fc1d839e7c2395fddd" }
+defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "671a7729e01cf26725d1f9b577d9011d0c460d6b" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "59b881e01991d5bc7c6289ec7e49779f6c0f303e" }
 alloy-primitives = "1"
 vera-client = { workspace = true }
 vera-domain = { workspace = true }
