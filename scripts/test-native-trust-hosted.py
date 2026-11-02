@@ -20,6 +20,20 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_fixture_compilation_enables_target_required_features(self):
+        manifest = (Path(__file__).resolve().parents[1] / 'bin/orbis-node/Cargo.toml').read_text()
+        blocks = re.findall(r'(?ms)^\[\[test\]\]\s*(.*?)(?=^\[|\Z)', manifest)
+        target = next(block for block in blocks if re.search(r'^name\s*=\s*"native_startup"', block, re.M))
+        required = re.search(r'required-features\s*=\s*\[([^]]+)\]', target)
+        self.assertIsNotNone(required)
+        features = set(re.findall(r'"([^"]+)"', required.group(1)))
+        self.assertTrue(features)
+        for curve in ('bls12-381', 'jubjub'):
+            command = driver.fixture_compile_command(curve)
+            enabled = set(command[command.index('--features') + 1].split(','))
+            self.assertTrue(features <= enabled)
+            self.assertIn(curve, enabled)
+
     def test_validation_exports_immutable_source_pins(self):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / 'outputs'
