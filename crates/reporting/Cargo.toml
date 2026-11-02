@@ -2,7 +2,8 @@
 name = "orbis-reporting"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "MIT"
+repository = "https://github.com/sourcenetwork/orbis-rs"
 description = "Canonical Orbis report and fault-evidence formats"
 
 [dependencies]

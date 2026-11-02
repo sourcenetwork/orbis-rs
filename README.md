@@ -494,7 +494,7 @@ report a vulnerability. In brief:
 
 ## License
 
-Orbis-rs is licensed under the [Business Source License 1.1](licenses/Bsl.txt)
+Orbis-rs is licensed under the [Business Source License 1.1](licenses/Bsl.txt), except for [`orbis-reporting`](crates/reporting), which is licensed under the [MIT License](crates/reporting/LICENSE).
 
 The separate [native Trust ring/DKG fixture](docs/native-trust-ring-fixture.md)
 connects the authenticated Go gateway contract to the shared native test network.
