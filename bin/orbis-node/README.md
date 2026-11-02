@@ -422,7 +422,7 @@ docker build -f docker/Dockerfile --target native-diagnostic \
   --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
 cargo +1.98.0 nextest run --profile ci --release --locked --build-jobs 2 \
   -p orbis-node --no-default-features \
-  --features "integration-test-native,redb,iroh,$curve" \
+  --features "integration-test,native,test-support/native,redb,iroh,$curve" \
   --test native_startup \
   -E "binary(native_startup) & not test(=native_trust_gateway_ring_dkg)"
 ```

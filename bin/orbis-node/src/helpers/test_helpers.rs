@@ -23,7 +23,7 @@ pub const TEST_FRESH_DKG_RING_ID: &str = "test-fresh-dkg-ring";
 // the plain lib artifact `tests/native_startup.rs` links against — unlike
 // most of this module (widened below), this one re-export must stay
 // invisible there.
-#[cfg(all(test, feature = "integration-test-cosmos"))]
+#[cfg(all(test, feature = "integration-test", feature = "cosmos"))]
 pub use test_support::admin::cosmos::{create_orbis_ring_policy, wait_for_ring_finalized};
 
 use crate::helpers::create_routers::{
@@ -38,9 +38,9 @@ use bulletin::{
     r#trait::{Bulletin, BulletinPost, BulletinWriteKind, NodeInfo, RingPayload},
     BulletinImpl,
 };
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use cli_tool;
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use common::blockchain::TEST_ACCOUNT_HEX_KEY;
 use common::blockchain::{ChainConfig, ChainConfigBuilder, TxSigner};
 use hex;
@@ -50,8 +50,8 @@ use local_storage::{
 };
 use network::{NetworkImpl, Router};
 #[cfg(any(
-    feature = "integration-test-cosmos",
-    feature = "integration-test-native"
+    all(feature = "integration-test", feature = "cosmos"),
+    all(feature = "integration-test", feature = "native")
 ))]
 use proto::info_service::NodeStatus;
 use std::{fs, sync::Arc};
@@ -802,8 +802,8 @@ pub fn get_test_ring_post(dummy_bulletin: &DummyBulletin) -> BulletinPost {
 // Cosmos-only once `live_node.rs` (harness-unification migration, PR 6)
 // became the first native caller.
 #[cfg(any(
-    feature = "integration-test-cosmos",
-    feature = "integration-test-native"
+    all(feature = "integration-test", feature = "cosmos"),
+    all(feature = "integration-test", feature = "native")
 ))]
 async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
     let node_info = cli_tool::query_node_info(endpoint.to_string())
@@ -846,8 +846,8 @@ async fn check_full_grpc_ready(endpoint: &str) -> Result<(), String> {
 /// ```
 // Backend-neutral — see `check_full_grpc_ready`'s own updated comment.
 #[cfg(any(
-    feature = "integration-test-cosmos",
-    feature = "integration-test-native"
+    all(feature = "integration-test", feature = "cosmos"),
+    all(feature = "integration-test", feature = "native")
 ))]
 pub async fn wait_for_nodes_ready(
     endpoints: &[&str],
@@ -898,7 +898,7 @@ pub async fn wait_for_nodes_ready(
 /// hardcodes a default crypto feature (`bls12-381`) that would conflict with a
 /// jubjub build's feature unification if pulled into `test-support` as a
 /// dependency. See `test_support::admin::cosmos`'s doc comment.
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 pub async fn create_ring_on_chain(
     chain_config: &ChainConfig,
     node_keys: &[String],
@@ -918,7 +918,7 @@ pub async fn create_ring_on_chain(
     .await
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 pub async fn create_ring_on_chain_with_trusted_relays(
     chain_config: &ChainConfig,
     node_keys: &[String],

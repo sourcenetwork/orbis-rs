@@ -14,9 +14,9 @@
 use super::live_node::setup_ring;
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::constants::SIGN_COLLECTION_TIMEOUT;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use orbis_node::constants::SIGN_COLLECTION_TIMEOUT;
 
 #[tokio::test]

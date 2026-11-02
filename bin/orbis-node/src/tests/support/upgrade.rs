@@ -94,7 +94,7 @@ fn assert_server_version_rejection(operation: &str, error: &anyhow::Error) {
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native has no genesis-injection facility yet \
               (deferred cross-repo work), and its live ScheduleUpgrade \
               equivalent requires an already-Active ring plus a \

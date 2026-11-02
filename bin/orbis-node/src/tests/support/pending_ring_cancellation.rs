@@ -17,9 +17,9 @@
 // native includes it from the separate `tests/native_startup.rs` binary
 // (which only sees `orbis-node`'s public API, hence `ring_state` is `pub
 // mod` in `lib.rs` and reached here via the crate's own external name).
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::ring_state::RingIndexEntry;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use orbis_node::ring_state::RingIndexEntry;
 use proto::unsafe_testing::{
     unsafe_testing_service_client::UnsafeTestingServiceClient, GetLocalStorageRequest,
@@ -36,7 +36,7 @@ use super::TestEnvironmentImpl;
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native has no automatic pending-ring timeout \
               (abort-only design — only explicit RingCommand::Cancel \
               exists); fix when native grows this capability"

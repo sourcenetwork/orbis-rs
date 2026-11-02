@@ -25,7 +25,7 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
               support NodeRole::Offline yet; fix when native grows that \
               capability (same gap as cancel_ring_reshare.rs)"
@@ -81,7 +81,7 @@ async fn test_reshare_offline_triggers_on_chain_report() {
     // `provision`'s own ring materialization only whitelists/updates the
     // peer id of `ring.members`, so a pure-new reshare target needs this
     // done explicitly before it can be announced.
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     environment.whitelist_node_for_ring(&ring_id, 3).await;
 
     println!("Starting DKG for ring {}...", ring_id.0);

@@ -28,7 +28,7 @@
 // there. Same two-sided cfg-gating this migration already uses for
 // `pending_ring_cancellation.rs`'s `RingIndexEntry` import, just covering a
 // much larger import list this time.
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::{
     app_state::AppState,
     constants::{
@@ -53,7 +53,7 @@ use bulletin::r#trait::{Bulletin, BulletinKind, BulletinWriteKind, NodeInfo, Rin
 use crypto::DkgImpl;
 use local_storage::{r#trait::LocalStorage, LocalStorageImpl};
 use network::{Network, NetworkImpl};
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use orbis_node::{
     app_state::AppState,
     constants::{
@@ -84,7 +84,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 use tonic::Request;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use {
     authz::AuthzImpl,
     bulletin::vera::startup::MIN_NODE_BALANCE,
@@ -93,7 +93,7 @@ use {
     test_support::VeraTestContainer,
 };
 
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use {
     alloy_primitives::B256,
     authz::native::NativeAuth,
@@ -478,13 +478,13 @@ fn unix_now() -> u64 {
 // Cosmos chain-only bootstrap
 // =========================================================================
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 pub struct Chain {
     pub chain_config: ChainConfig,
     container: VeraTestContainer,
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 impl Chain {
     async fn start() -> Self {
         let container = VeraTestContainer::new();
@@ -630,14 +630,14 @@ impl Chain {
 // Native chain-only bootstrap
 // =========================================================================
 
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 const DEPLOYMENT: u64 = 9100;
 
 /// Same policy YAML as `cli_tool::commands::admin::TEST_POLICY_YAML`
 /// (private to that crate) — duplicated verbatim for native's direct
 /// `native_create_policy` call, same "duplicate the deterministic test
 /// constant" precedent used throughout this migration.
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 const DOCUMENT_POLICY_YAML: &str = r#"
 name: test-policy
 resources:
@@ -656,7 +656,7 @@ resources:
         expr: creator
 "#;
 
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 pub struct Chain {
     cluster: NativeTestNetwork,
     client: VeraClient,
@@ -667,7 +667,7 @@ pub struct Chain {
     worker: BlsSigner,
 }
 
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 impl Chain {
     async fn start() -> Self {
         let cluster = NativeTestNetwork::start(DEPLOYMENT).await;

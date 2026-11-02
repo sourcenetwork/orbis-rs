@@ -37,7 +37,7 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
               support NodeRole::Offline yet, and BulletinTestDriver::\
               cancel_reshare is unimplemented!() there (vera-modules's \

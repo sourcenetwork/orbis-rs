@@ -85,7 +85,7 @@ esac
 run_cosmos_dkg_pre() {
   echo "==> cosmos dkg-pre (crypto=$CRYPTO)"
   cargo "$TOOLCHAIN" test --locked -p orbis-node \
-    --features "integration-test-cosmos,$CRYPTO" \
+    --features "integration-test,cosmos,test-support/cosmos,$CRYPTO" \
     --lib -- tests::integration::cosmos_dkg_and_pre --exact --nocapture
 }
 
@@ -93,7 +93,7 @@ run_native_dkg_pre() {
   echo "==> native dkg-pre (crypto=$CRYPTO)"
   cargo "$TOOLCHAIN" nextest run --locked -p orbis-node \
     --no-default-features \
-    --features "integration-test-native,redb,iroh,$CRYPTO" \
+    --features "integration-test,native,test-support/native,redb,iroh,$CRYPTO" \
     --test native_startup \
     -E 'test(=native_dkg_and_pre)'
 }

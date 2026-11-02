@@ -36,9 +36,9 @@ async fn test_refresh_leader_offline_before_preparation_triggers_on_chain_report
         "Starting PSS refresh leader-offline-before-preparation reporting integration test..."
     );
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     let pss_interval = Duration::from_secs(5);
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     let pss_interval = Duration::from_secs(86_400);
 
     let ring = FixtureId::new("ring");

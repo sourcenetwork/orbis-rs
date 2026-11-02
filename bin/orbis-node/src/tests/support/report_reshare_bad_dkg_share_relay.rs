@@ -22,28 +22,28 @@
 //! Offline` (needed for the stalled new committee) doesn't exist on native's
 //! fixture materializer either. Not yet ported for native.
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
 use super::TestEnvironmentImpl;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
 };
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE3_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000003";
 // Same deterministic test key as `report_reshare_stall_offline.rs`'s own
 // `NODE_KEY_OFFLINE`.
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
 
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "NodeRole::Offline isn't supported by NativeTestEnvironment:: \
               provision yet, and the Cosmos-deterministic-signing-key \
               evidence forgery this test depends on hasn't been verified \
@@ -88,7 +88,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         ..Default::default()
     };
 
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     {
         let _environment = TestEnvironmentImpl::provision(fixture).await;
         unimplemented!(
@@ -96,11 +96,11 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
         );
     }
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     cosmos::run(fixture).await;
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 mod cosmos {
     use super::{pre_scenario, TestEnvironmentImpl, NODE3_SIGNING_KEY_HEX, NODE_KEY_OFFLINE};
     use crate::dkg::v0::helpers::serialize_commitment_coefficients;

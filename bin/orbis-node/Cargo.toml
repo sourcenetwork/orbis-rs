@@ -93,7 +93,12 @@ test-support = { path = "../../crates/test-support", default-features = false }
 
 [[test]]
 name = "native_startup"
-required-features = ["integration-test-native"]
+# Decomposed form (harness-unification migration, PR 7) — Cargo checks the
+# final *resolved* feature set, not the literal CLI string, so the old
+# `integration-test-native` umbrella (which transitively enables both of
+# these) still satisfies this unchanged; it just isn't required by name
+# anymore.
+required-features = ["integration-test", "native"]
 
 [features]
 # Combined convenience feature for the common "fully native" build, kept for

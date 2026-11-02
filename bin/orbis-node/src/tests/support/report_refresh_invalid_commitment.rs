@@ -12,24 +12,24 @@
 //! native-unverified caveat, as `report_reshare_bad_dkg_share_relay.rs`/
 //! `report_reshare_dkg_equivocation.rs`. Not yet ported for native.
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
 use super::TestEnvironmentImpl;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture,
 };
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE3_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000003";
 
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "the Cosmos-deterministic-signing-key evidence forgery this \
               test depends on hasn't been verified against native's own \
               node-identity scheme; fix when this is re-verified"
@@ -67,17 +67,17 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
         ..Default::default()
     };
 
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     {
         let _environment = TestEnvironmentImpl::provision(fixture).await;
         unimplemented!("native: Cosmos-signing-key refresh commitment forgery not ported");
     }
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     cosmos::run(fixture).await;
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 mod cosmos {
     use super::{pre_scenario, TestEnvironmentImpl, NODE3_SIGNING_KEY_HEX};
     use crate::dkg::v0::helpers::serialize_commitment_coefficients;

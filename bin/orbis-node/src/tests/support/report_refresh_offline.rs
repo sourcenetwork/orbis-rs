@@ -38,9 +38,9 @@ use tokio::time::Duration;
 async fn test_refresh_offline_triggers_on_chain_report() {
     println!("Starting organic PSS refresh offline reporting integration test...");
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     let pss_interval = Duration::from_secs(5);
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     let pss_interval = Duration::from_secs(86_400);
 
     let ring = FixtureId::new("ring");

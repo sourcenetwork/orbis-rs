@@ -9,9 +9,9 @@
 //! tests that used to live here (no `FaultNetwork` needed, just a hard node
 //! abort) are fully dual-backend now, in `support/fault_*.rs`.
 //!
-//! Requires both `fault-injection` and `integration-test-cosmos` features.
+//! Requires `fault-injection`, `integration-test`, and `cosmos` features.
 //! Run with:
-//!   cargo test --bin orbis-node --features "integration-test-cosmos,fault-injection" \
+//!   cargo test --bin orbis-node --features "integration-test,cosmos,fault-injection" \
 //!     -- fault_injection --nocapture
 
 use crate::dkg::v0::service::DkgServiceImpl;

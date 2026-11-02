@@ -25,7 +25,7 @@ use crypto::{
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use crate::{
     app_state::AppState,
     dkg::v0::helpers::serialize_commitment_coefficients,
@@ -38,7 +38,7 @@ use crate::{
         },
     },
 };
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use orbis_node::{
     app_state::AppState,
     dkg::v0::helpers::serialize_commitment_coefficients,

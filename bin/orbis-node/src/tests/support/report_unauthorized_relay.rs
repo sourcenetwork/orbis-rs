@@ -15,27 +15,27 @@
 //! this forgery technique at all. Not yet ported for native; see the
 //! `#[cfg_attr(ignore)]` below.
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
 use super::TestEnvironmentImpl;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture,
 };
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE1_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000001";
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE2_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000002";
 
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "direct bulletin document/key-derivation writes and the \
               Cosmos-deterministic-signing-key relay-statement forgery \
               this test depends on are both unported for native; fix \
@@ -75,7 +75,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         ..Default::default()
     };
 
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     {
         let _environment = TestEnvironmentImpl::provision(fixture).await;
         unimplemented!(
@@ -83,11 +83,11 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
         );
     }
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     cosmos::run(fixture).await;
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 mod cosmos {
     use super::{pre_scenario, TestEnvironmentImpl, NODE1_SIGNING_KEY_HEX, NODE2_SIGNING_KEY_HEX};
     use common::blockchain::{

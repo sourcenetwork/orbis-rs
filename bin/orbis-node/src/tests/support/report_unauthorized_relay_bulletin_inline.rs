@@ -12,24 +12,24 @@
 //! bulletin document writes, Cosmos-deterministic-signing-key relay-statement
 //! forgery) — not yet ported for native; see the `#[cfg_attr(ignore)]` below.
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
 use super::TestEnvironmentImpl;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, RingFixture, ScenarioFixture,
 };
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE1_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000001";
 
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "direct bulletin document writes and the \
               Cosmos-deterministic-signing-key relay-statement forgery \
               this test depends on are both unported for native; fix \
@@ -69,7 +69,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         ..Default::default()
     };
 
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     {
         let _environment = TestEnvironmentImpl::provision(fixture).await;
         unimplemented!(
@@ -77,11 +77,11 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
         );
     }
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     cosmos::run(fixture).await;
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 mod cosmos {
     use super::{pre_scenario, TestEnvironmentImpl, NODE1_SIGNING_KEY_HEX};
     use bulletin::r#trait::RingPayload;

@@ -48,7 +48,7 @@ const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a1
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
               support NodeRole::Offline yet; fix when native grows that \
               capability (same gap as cancel_ring_reshare.rs)"
@@ -117,12 +117,12 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
         .update_membership(&ring_id, new_peer_node_keys.clone(), new_threshold)
         .await;
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     let node3_peer_id = test_support::CosmosNetwork::transform_p2p_address(
         &environment.nodes()[2].p2p_address,
         test_support::CosmosNetwork::service_name_for_node(3),
     );
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     let node3_peer_id = environment.nodes()[2].p2p_address.clone();
 
     // Stop node3 so the co-signer reachability probe finds it unreachable

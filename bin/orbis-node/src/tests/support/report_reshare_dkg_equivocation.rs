@@ -10,26 +10,26 @@
 //! the pending-reshare window open) — see that file's doc comment for the
 //! full reasoning, including why this isn't yet ported for native.
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 use super::pre_scenario;
 use super::TestEnvironmentImpl;
-#[cfg(feature = "integration-test-native")]
+#[cfg(all(feature = "integration-test", feature = "native"))]
 use test_support::fixture::TestEnvironment;
 use test_support::fixture::{
     FixtureId, NodeFixture, NodeRef, NodeRole, PolicyFixture, RingFixture, ScenarioFixture,
 };
 use tokio::time::Duration;
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE3_SIGNING_KEY_HEX: &str =
     "0000000000000000000000000000000000000000000000000000000000000003";
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 const NODE_KEY_OFFLINE: &str = "03fff97bd5755eeea420453a14355235d382f6472f8568a18b2f057a1460297556";
 
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "NodeRole::Offline isn't supported by NativeTestEnvironment:: \
               provision yet, and the Cosmos-deterministic-signing-key \
               evidence forgery this test depends on hasn't been verified \
@@ -74,7 +74,7 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
         ..Default::default()
     };
 
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     {
         let _environment = TestEnvironmentImpl::provision(fixture).await;
         unimplemented!(
@@ -82,11 +82,11 @@ async fn test_reshare_dkg_equivocation_triggers_on_chain_report() {
         );
     }
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     cosmos::run(fixture).await;
 }
 
-#[cfg(feature = "integration-test-cosmos")]
+#[cfg(all(feature = "integration-test", feature = "cosmos"))]
 mod cosmos {
     use super::{pre_scenario, TestEnvironmentImpl, NODE3_SIGNING_KEY_HEX, NODE_KEY_OFFLINE};
     use crate::dkg::v0::helpers::serialize_commitment_coefficients;

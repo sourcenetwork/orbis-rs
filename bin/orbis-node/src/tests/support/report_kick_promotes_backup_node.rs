@@ -36,7 +36,7 @@ const NODE_KEY_BACKUP: &str = "02e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758
 #[tokio::test]
 #[serial_test::serial]
 #[cfg_attr(
-    feature = "integration-test-native",
+    all(feature = "integration-test", feature = "native"),
     ignore = "commonware/native's NativeTestEnvironment::provision doesn't \
               support NodeRole::Backup or fixture-driven node_demerits \
               genesis seeding yet; fix when native grows both"
@@ -223,7 +223,7 @@ async fn test_report_kick_promotes_backup_node() {
     );
     println!("node3 demerit points: {demerits}");
 
-    #[cfg(feature = "integration-test-cosmos")]
+    #[cfg(all(feature = "integration-test", feature = "cosmos"))]
     {
         let client = common::blockchain::VeraClient::new(environment.chain_config())
             .await
@@ -241,7 +241,7 @@ async fn test_report_kick_promotes_backup_node() {
             "promoted backup key should be consumed from backup_node_keys"
         );
     }
-    #[cfg(feature = "integration-test-native")]
+    #[cfg(all(feature = "integration-test", feature = "native"))]
     unimplemented!(
         "native: backup_node_keys consumption check not ported (raw Ring read is Cosmos-only)"
     );
