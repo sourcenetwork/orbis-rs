@@ -682,9 +682,11 @@ async fn wait_for_departed_share_deletion(
     ring_pk: &str,
     deadline: Duration,
 ) -> Result<()> {
+    let mut observation = String::from("no response received");
     timeout(deadline, async {
         loop {
             let Ok(mut client) = InfoServiceClient::connect(endpoint.grpc_url.clone()).await else {
+                observation = String::from("node connection failed");
                 sleep(Duration::from_millis(500)).await;
                 continue;
             };
@@ -695,12 +697,16 @@ async fn wait_for_departed_share_deletion(
                 .await
             {
                 Err(status) if is_departed_share_not_found(status.code()) => return Ok(()),
-                _ => sleep(Duration::from_millis(500)).await,
+                Ok(_) => observation = String::from("node still returned ring state"),
+                Err(status) => observation = format!("ring state RPC returned {:?}", status.code()),
             }
+            sleep(Duration::from_millis(500)).await;
         }
     })
     .await
-    .context("departed node retained ring material after reshare")?
+    .with_context(|| {
+        format!("departed node did not confirm ring state deletion after reshare: {observation}")
+    })?
 }
 
 fn is_departed_share_not_found(code: Code) -> bool {

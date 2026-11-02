@@ -68,3 +68,13 @@ jobs:
             --to HEAD \
             --crypto "${{ matrix.crypto }}" \
             --output "upgrade-results/${{ matrix.crypto }}"
+      - name: Retain upgrade diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: upgrade-diagnostics-${{ matrix.crypto }}
+          path: |
+            upgrade-target/upgrade-results/${{ matrix.crypto }}/${{ matrix.crypto }}/logs/compose.log
+            upgrade-target/upgrade-results/${{ matrix.crypto }}/${{ matrix.crypto }}/logs/compose-ps.txt
+          if-no-files-found: warn
+          retention-days: 7
