@@ -100,7 +100,7 @@ pub fn initialize_identity(
         None => loop {
             let mut bytes = Zeroizing::new([0u8; 32]);
             getrandom::getrandom(bytes.as_mut())?;
-            if let Ok(key) = k256::ecdsa::SigningKey::from_slice(bytes.as_ref()) {
+            if let Ok(key) = vera_client::Secp256k1SigningKey::from_slice(bytes.as_ref()) {
                 break key;
             }
         },
