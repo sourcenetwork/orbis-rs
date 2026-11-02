@@ -35,6 +35,7 @@ serde_yaml = { package = "yaml_serde", version = "0.10" }
 sha2 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
+thiserror = { workspace = true }
 tracing = "0.1.16"
 tracing-subscriber = { version = "0.3", features = ["tracing-log", "fmt", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
