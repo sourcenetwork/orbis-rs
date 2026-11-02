@@ -44,17 +44,19 @@ class Qualification(unittest.TestCase):
         after = ('required-features = ["native-test-fixture"]\n'
                  'integration-test-native = ["integration-test", "native-test-fixture"]\n'
                  'native-test-fixture = ["native", "test-support/native"]\n')
-        self.assertTrue(driver.safe_fixture_manifest_change(before, after))
-        self.assertFalse(driver.safe_fixture_manifest_change(before, after + 'default = ["unsafe-testing"]\n'))
-        self.assertFalse(driver.safe_fixture_manifest_change(before, after.replace('"native", "test-support/native"]',
-                                                                                 '"native", "unsafe-testing"]')))
-        self.assertFalse(driver.safe_fixture_manifest_change(before + before, after))
+        guard = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+        safe = guard['safe_fixture_manifest_change']
+        self.assertTrue(safe(before, after))
+        self.assertFalse(safe(before, after + 'default = ["unsafe-testing"]\n'))
+        self.assertFalse(safe(before, after.replace('"native", "test-support/native"]',
+                                                   '"native", "unsafe-testing"]')))
+        self.assertFalse(safe(before + before, after))
         root = Path(__file__).resolve().parents[1]
         manifest = 'bin/orbis-node/Cargo.toml'
         with patch.object(driver, 'capture', side_effect=[manifest, before, after]):
             self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
         with patch.object(driver, 'capture', side_effect=[manifest, before, after + 'default = ["unsafe-testing"]\n']):
-            with self.assertRaises(driver.Failure):
+            with self.assertRaises(ValueError):
                 driver.runtime_revision(root, 'a' * 40, 'b' * 40)
 
     def test_validation_exports_immutable_source_pins(self):

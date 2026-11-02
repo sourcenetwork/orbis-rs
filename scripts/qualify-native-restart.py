@@ -57,8 +57,29 @@ FIXTURE_FILES = {
 }
 
 
-def verify_fixture_changes(changed):
-    if set(changed) - FIXTURE_FILES:
+def safe_fixture_manifest_change(before, after):
+    if not isinstance(before, str) or not isinstance(after, str):
+        return False
+    required = 'required-features = ["integration-test-native"]'
+    feature = 'integration-test-native = ["integration-test", "native", "test-support/native"]'
+    if before.count(required) != 1 or before.count(feature) != 1:
+        return False
+    expected = before.replace(required, 'required-features = ["native-test-fixture"]', 1)
+    expected = expected.replace(
+        feature,
+        'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+        'native-test-fixture = ["native", "test-support/native"]',
+        1,
+    )
+    return after == expected
+
+
+def verify_fixture_changes(changed, manifest_before=None, manifest_after=None):
+    changed = set(changed)
+    manifest = "bin/orbis-node/Cargo.toml"
+    if manifest in changed and safe_fixture_manifest_change(manifest_before, manifest_after):
+        changed.remove(manifest)
+    if changed - FIXTURE_FILES:
         raise ValueError("runtime source differs from the selected images")
 
 
@@ -125,7 +146,12 @@ def verified_fixture_source(runtime):
     # Disabling renames keeps a removed production path visible to the allowlist.
     changed = capture(["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                        "--name-only", runtime, source["head"], "--"]).splitlines()
-    verify_fixture_changes(changed)
+    manifest = "bin/orbis-node/Cargo.toml"
+    before = after = None
+    if manifest in changed:
+        before = capture(["git", "show", runtime + ":" + manifest])
+        after = capture(["git", "show", source["head"] + ":" + manifest])
+    verify_fixture_changes(changed, before, after)
     return source
 
 
