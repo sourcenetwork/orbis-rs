@@ -92,7 +92,7 @@ test-support = { path = "../../crates/test-support", default-features = false }
 
 [[test]]
 name = "native_startup"
-required-features = ["integration-test-native"]
+required-features = ["native-test-fixture"]
 
 [features]
 # Combined convenience feature for the common "fully native" build, kept for
@@ -121,7 +121,8 @@ integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "b
 # Adds native Vera wiring on top of the shared base — does NOT pull in
 # authz-vera/bulletin-vera/cosmos (see test-support's own `cosmos` default
 # feature, which this crate explicitly opts out of above).
-integration-test-native = ["integration-test", "native", "test-support/native"]
+integration-test-native = ["integration-test", "native-test-fixture"]
+native-test-fixture = ["native", "test-support/native"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead

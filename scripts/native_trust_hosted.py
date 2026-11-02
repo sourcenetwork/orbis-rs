@@ -51,12 +51,34 @@ def write_source_outputs(path):
         output.write(''.join(f'{name}={value}\n' for name, value in sources.items()))
 
 
+def safe_fixture_manifest_change(before, after):
+    required = 'required-features = ["integration-test-native"]'
+    feature = 'integration-test-native = ["integration-test", "native", "test-support/native"]'
+    if before.count(required) != 1 or before.count(feature) != 1:
+        return False
+    expected = before.replace(required, 'required-features = ["native-test-fixture"]', 1)
+    expected = expected.replace(
+        feature,
+        'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+        'native-test-fixture = ["native", "test-support/native"]',
+        1,
+    )
+    return after == expected
+
+
 def runtime_revision(root, fixture, requested):
     fixture = revision(fixture)
     runtime = revision(requested) if requested is not None else fixture
     if runtime != fixture:
         changed = capture(['git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
                            '--name-only', runtime, fixture, '--'], root).splitlines()
+        manifest = 'bin/orbis-node/Cargo.toml'
+        if manifest in changed:
+            before = capture(['git', 'show', runtime + ':' + manifest], root)
+            after = capture(['git', 'show', fixture + ':' + manifest], root)
+            if not safe_fixture_manifest_change(before, after):
+                raise Failure()
+            changed.remove(manifest)
         guard = runpy.run_path(str(root / 'scripts/qualify-native-restart.py'))
         guard['verify_fixture_changes'](changed)
     return runtime
@@ -361,7 +383,7 @@ def test_binary(path, target, curve):
         event = json.loads(line)
         if event.get('reason') == 'compiler-artifact' and event['target']['name'] == 'native_startup' and event.get('executable'):
             features = set(event['features'])
-            if not {'native', 'redb', 'iroh', curve} <= features or {'unsafe-testing', 'integration-test', {'bls12-381': 'jubjub', 'jubjub': 'bls12-381'}[curve]} & features:
+            if not {'native-test-fixture', 'native', 'redb', 'iroh', curve} <= features or {'unsafe-testing', 'integration-test', {'bls12-381': 'jubjub', 'jubjub': 'bls12-381'}[curve]} & features:
                 raise Failure()
             binary = Path(event['executable']).resolve()
             if not binary.is_relative_to(target.resolve()):
@@ -395,7 +417,7 @@ def launch_fixture(root, private, run_env, env, log):
 
 def fixture_compile_command(curve):
     return ['cargo', '+1.98.0', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
-            '--no-default-features', '--features', 'integration-test-native,redb,iroh,' + curve,
+            '--no-default-features', '--features', 'native-test-fixture,redb,iroh,' + curve,
             '--test', 'native_startup', '--no-run', '--message-format=json']
 
 

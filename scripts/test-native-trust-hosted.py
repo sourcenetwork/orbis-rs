@@ -27,12 +27,35 @@ class Qualification(unittest.TestCase):
         required = re.search(r'required-features\s*=\s*\[([^]]+)\]', target)
         self.assertIsNotNone(required)
         features = set(re.findall(r'"([^"]+)"', required.group(1)))
-        self.assertTrue(features)
+        self.assertEqual(features, {'native-test-fixture'})
+        fixture_feature = re.search(r'^native-test-fixture\s*=\s*\[([^]]+)\]', manifest, re.M)
+        self.assertIsNotNone(fixture_feature)
+        self.assertEqual(set(re.findall(r'"([^"]+)"', fixture_feature.group(1))),
+                         {'native', 'test-support/native'})
         for curve in ('bls12-381', 'jubjub'):
             command = driver.fixture_compile_command(curve)
             enabled = set(command[command.index('--features') + 1].split(','))
             self.assertTrue(features <= enabled)
             self.assertIn(curve, enabled)
+
+    def test_runtime_manifest_exception_only_accepts_the_fixture_feature_split(self):
+        before = ('required-features = ["integration-test-native"]\n'
+                  'integration-test-native = ["integration-test", "native", "test-support/native"]\n')
+        after = ('required-features = ["native-test-fixture"]\n'
+                 'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+                 'native-test-fixture = ["native", "test-support/native"]\n')
+        self.assertTrue(driver.safe_fixture_manifest_change(before, after))
+        self.assertFalse(driver.safe_fixture_manifest_change(before, after + 'default = ["unsafe-testing"]\n'))
+        self.assertFalse(driver.safe_fixture_manifest_change(before, after.replace('"native", "test-support/native"]',
+                                                                                 '"native", "unsafe-testing"]')))
+        self.assertFalse(driver.safe_fixture_manifest_change(before + before, after))
+        root = Path(__file__).resolve().parents[1]
+        manifest = 'bin/orbis-node/Cargo.toml'
+        with patch.object(driver, 'capture', side_effect=[manifest, before, after]):
+            self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
+        with patch.object(driver, 'capture', side_effect=[manifest, before, after + 'default = ["unsafe-testing"]\n']):
+            with self.assertRaises(driver.Failure):
+                driver.runtime_revision(root, 'a' * 40, 'b' * 40)
 
     def test_validation_exports_immutable_source_pins(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -363,12 +386,13 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             event = {'reason': 'compiler-artifact', 'target': {'name': 'native_startup'},
-                     'features': ['native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
+                     'features': ['native-test-fixture', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
             path = root / 'build.jsonl'
             path.write_text(json.dumps(event) + '\n')
             self.assertEqual(driver.test_binary(path, root, 'bls12-381'), root.resolve() / 'release/test')
             for change in ({'features': ['native', 'redb', 'iroh', 'jubjub']},
                            {'features': event['features'] + ['unsafe-testing']},
+                           {'features': event['features'] + ['integration-test']},
                            {'executable': '/outside/secret'}):
                 path.write_text(json.dumps({**event, **change}) + '\n')
                 with self.assertRaises(driver.Failure):
