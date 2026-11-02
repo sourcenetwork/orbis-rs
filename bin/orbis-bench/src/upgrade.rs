@@ -27,7 +27,7 @@ use proto::info_service::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::{sleep, timeout};
 use tonic::Code;
 
@@ -677,30 +677,56 @@ fn reshare_chain_complete(
         && new_threshold.is_none()
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("departed node did not confirm ring state deletion after reshare: {observation}; phase: {phase} ({phase_elapsed:?})")]
+struct DepartedShareTimeout {
+    observation: String,
+    phase: &'static str,
+    phase_elapsed: Duration,
+}
+
 async fn wait_for_departed_share_deletion(
     endpoint: &NodeEndpoint,
     ring_pk: &str,
     deadline: Duration,
-) -> Result<()> {
+) -> std::result::Result<(), DepartedShareTimeout> {
+    let mut observation = String::from("no response received");
+    let mut phase = "connecting";
+    let mut phase_started = Instant::now();
     timeout(deadline, async {
         loop {
+            phase = "connecting";
+            phase_started = Instant::now();
             let Ok(mut client) = InfoServiceClient::connect(endpoint.grpc_url.clone()).await else {
+                observation = String::from("node connection failed");
+                phase = "retry delay";
+                phase_started = Instant::now();
                 sleep(Duration::from_millis(500)).await;
                 continue;
             };
+            phase = "requesting ring state";
+            phase_started = Instant::now();
             match client
                 .get_ring_state(GetRingStateRequest {
                     ring_pk_hex: ring_pk.to_string(),
                 })
                 .await
             {
-                Err(status) if is_departed_share_not_found(status.code()) => return Ok(()),
-                _ => sleep(Duration::from_millis(500)).await,
+                Err(status) if is_departed_share_not_found(status.code()) => return,
+                Ok(_) => observation = String::from("node still returned ring state"),
+                Err(status) => observation = format!("ring state RPC returned {:?}", status.code()),
             }
+            phase = "retry delay";
+            phase_started = Instant::now();
+            sleep(Duration::from_millis(500)).await;
         }
     })
     .await
-    .context("departed node retained ring material after reshare")?
+    .map_err(|_| DepartedShareTimeout {
+        observation,
+        phase,
+        phase_elapsed: phase_started.elapsed(),
+    })
 }
 
 fn is_departed_share_not_found(code: Code) -> bool {
