@@ -2,7 +2,9 @@
 name = "orbis-reporting"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license = "BUSL-1.1"
+license-file = "../../licenses/Bsl.txt"
+repository = "https://github.com/sourcenetwork/orbis-rs"
 description = "Canonical Orbis report and fault-evidence formats"
 
 [dependencies]

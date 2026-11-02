@@ -36,7 +36,7 @@ pub struct NativeAdmin<'a> {
     pub client: &'a VeraClient,
     pub worker: &'a BlsSigner,
     pub trusted: &'a ConsensusPublicKey,
-    pub controller: &'a k256::ecdsa::SigningKey,
+    pub controller: &'a vera_client::Secp256k1SigningKey,
     pub actor: &'a str,
     pub root: B256,
     pub deployment: u64,

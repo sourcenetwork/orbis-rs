@@ -149,7 +149,7 @@ services:
         # native backend for the same reason (.github/workflows/rust.yml);
         # this applies the same pin here so local/native_workflow.rs-driven
         # runs don't hit it too.
-        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
@@ -206,7 +206,7 @@ services:
         # native backend for the same reason (.github/workflows/rust.yml);
         # this applies the same pin here so local/native_workflow.rs-driven
         # runs don't hit it too.
-        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
@@ -263,7 +263,7 @@ services:
         # native backend for the same reason (.github/workflows/rust.yml);
         # this applies the same pin here so local/native_workflow.rs-driven
         # runs don't hit it too.
-        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password
@@ -321,7 +321,7 @@ services:
         # native backend for the same reason (.github/workflows/rust.yml);
         # this applies the same pin here so local/native_workflow.rs-driven
         # runs don't hit it too.
-        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.98.0-bookworm}"
+        RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
     environment:
       - ORBIS_PASSWORD_FILE=password

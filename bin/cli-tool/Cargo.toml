@@ -49,7 +49,7 @@ required-features = ["native"]
 [dev-dependencies]
 vera-harness = { workspace = true }
 vera-crypto = { workspace = true }
-commonware-codec = "2026.9.0"
+commonware-codec = "=2026.10.0"
 k256.workspace = true
 tempfile.workspace = true
 

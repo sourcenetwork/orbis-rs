@@ -16,10 +16,10 @@ pub use worker_store::open_native_worker;
 use std::path::Path;
 
 use alloy_primitives::{Bytes, B256};
-use k256::ecdsa::SigningKey;
 use local_storage::r#trait::{LocalStorage, LocalStorageKeys};
 #[cfg(test)]
 use local_storage::redb::RedbStorage;
+use vera_client::Secp256k1SigningKey as SigningKey;
 use vera_client::{
     nodes::{encode_node_request, sign_node_request, NodeRead, NodeRequest},
     threshold_objects::{

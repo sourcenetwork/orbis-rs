@@ -36,7 +36,7 @@ revision, then pull them before running:
 ```sh
 docker pull "$ORBIS_NATIVE_IMAGE"
 docker pull "$ORBIS_NATIVE_VERA_IMAGE"
-cargo +1.98.0 test --release --locked -j2 -p orbis-node \
+cargo +1.99.1 test --release --locked -j2 -p orbis-node \
   --no-default-features --features native,redb,iroh,bls12-381 \
   --test native_startup native_pet_threshold_workflows \
   -- --exact --ignored --nocapture

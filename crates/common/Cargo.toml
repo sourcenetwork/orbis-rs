@@ -20,7 +20,7 @@ tendermint = { workspace = true, optional = true }
 tendermint-rpc = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 bip32 = { workspace = true, optional = true }
-k256 = { workspace = true }
+k256 = { version = "0.14", features = ["ecdsa"] }
 prost = { workspace = true }
 tonic = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }

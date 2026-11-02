@@ -7,7 +7,6 @@ use bulletin::{
         RingCancellationPayload, RingFinalizationPayload, RingPayload,
     },
 };
-use k256::ecdsa::SigningKey;
 use local_storage::{
     r#trait::{LocalStorage, LocalStorageKeys},
     redb::RedbStorage,
@@ -16,6 +15,7 @@ use std::{
     path::Path,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vera_client::Secp256k1SigningKey as SigningKey;
 use vera_client::{
     create_scoped_bearer_token,
     rings::{encode_ring_command, ReportingConfig, RingCommand, RingConfig},
