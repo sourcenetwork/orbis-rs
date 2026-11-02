@@ -51,21 +51,6 @@ def write_source_outputs(path):
         output.write(''.join(f'{name}={value}\n' for name, value in sources.items()))
 
 
-def safe_fixture_manifest_change(before, after):
-    required = 'required-features = ["integration-test-native"]'
-    feature = 'integration-test-native = ["integration-test", "native", "test-support/native"]'
-    if before.count(required) != 1 or before.count(feature) != 1:
-        return False
-    expected = before.replace(required, 'required-features = ["native-test-fixture"]', 1)
-    expected = expected.replace(
-        feature,
-        'integration-test-native = ["integration-test", "native-test-fixture"]\n'
-        'native-test-fixture = ["native", "test-support/native"]',
-        1,
-    )
-    return after == expected
-
-
 def runtime_revision(root, fixture, requested):
     fixture = revision(fixture)
     runtime = revision(requested) if requested is not None else fixture
@@ -73,14 +58,12 @@ def runtime_revision(root, fixture, requested):
         changed = capture(['git', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames',
                            '--name-only', runtime, fixture, '--'], root).splitlines()
         manifest = 'bin/orbis-node/Cargo.toml'
+        before = after = None
         if manifest in changed:
             before = capture(['git', 'show', runtime + ':' + manifest], root)
             after = capture(['git', 'show', fixture + ':' + manifest], root)
-            if not safe_fixture_manifest_change(before, after):
-                raise Failure()
-            changed.remove(manifest)
         guard = runpy.run_path(str(root / 'scripts/qualify-native-restart.py'))
-        guard['verify_fixture_changes'](changed)
+        guard['verify_fixture_changes'](changed, before, after)
     return runtime
 
 

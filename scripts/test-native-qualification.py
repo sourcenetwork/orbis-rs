@@ -31,6 +31,10 @@ class FixtureSource(unittest.TestCase):
         self.fixture = Path('bin/orbis-node/tests/native_startup.rs')
         self.production.parent.mkdir(parents=True)
         self.production.write_text('original production source\n' * 100)
+        self.manifest = Path('bin/orbis-node/Cargo.toml')
+        self.manifest.write_text(
+            'required-features = ["integration-test-native"]\n'
+            'integration-test-native = ["integration-test", "native", "test-support/native"]\n')
         self.commit()
         self.runtime = self.git('rev-parse', 'HEAD')
 
@@ -53,6 +57,19 @@ class FixtureSource(unittest.TestCase):
 
     def test_production_change_is_rejected(self):
         self.production.write_text('changed production source\n')
+        self.commit()
+        with self.assertRaisesRegex(ValueError, 'runtime source differs'):
+            verified_fixture_source(self.runtime)
+
+    def test_only_the_exact_safe_fixture_manifest_change_is_accepted(self):
+        self.manifest.write_text(
+            'required-features = ["native-test-fixture"]\n'
+            'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+            'native-test-fixture = ["native", "test-support/native"]\n')
+        self.commit()
+        self.assertEqual(verified_fixture_source(self.runtime)['head'],
+                         self.git('rev-parse', 'HEAD'))
+        self.manifest.write_text(self.manifest.read_text() + 'default = ["unsafe-testing"]\n')
         self.commit()
         with self.assertRaisesRegex(ValueError, 'runtime source differs'):
             verified_fixture_source(self.runtime)
