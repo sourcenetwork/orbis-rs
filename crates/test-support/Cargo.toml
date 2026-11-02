@@ -27,13 +27,8 @@ hex = { workspace = true }
 tokio = { workspace = true }
 
 bs58 = { version = "0.5", optional = true }
-# Only the `vera` feature (Cosmos's generic bulletin-post read/write
-# primitive — `Bulletin::read`/`post`, what the product itself uses for
-# documents/key-derivations) — no crypto-curve coupling, unlike `cli-tool`'s
-# default features. Used by `CosmosTestEnvironment`'s `register_key_derivation`/
-# `read_document`/`store_document`.
+commonware-codec = { version = "=2026.10.0", optional = true }
 bulletin = { path = "../bulletin", default-features = false, features = ["vera"], optional = true }
-commonware-codec = { version = "2026.9.0", optional = true }
 vera-client = { workspace = true, optional = true }
 vera-harness = { workspace = true, optional = true }
 vera-node = { workspace = true, optional = true }

@@ -50,24 +50,24 @@ http-body-util = { workspace = true }
 hyper-util = { workspace = true }
 
 [dev-dependencies]
-defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "60bc10e91827b153ec8ed87361f695814ec486e7" }
-defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["p2p"] }
-defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["iroh-transport"] }
-defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49", default-features = false, features = ["native"] }
-defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
-defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "6524b3a331ab6520ae4fbf30ab69d7be92becc49" }
+defra-edge = { package = "edge", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+acp-light-client = { git = "https://github.com/sourcenetwork/backbone.git", rev = "501bff096be8a3e1de1d203f4cad0f95e8d4883a" }
+defra-node = { git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24", default-features = false, features = ["p2p"] }
+defra-p2p = { package = "p2p", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24", default-features = false, features = ["iroh-transport"] }
+defra-blockstore = { package = "blockstore", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-db = { package = "db", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24", default-features = false, features = ["native"] }
+defra-storage = { package = "storage", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-query = { package = "query", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-schema = { package = "schema", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-document = { package = "document", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-orbis = { package = "orbis", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-identity = { package = "identity", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-crypto = { package = "crypto", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
+defra-core = { package = "defra-core", git = "https://github.com/sourcenetwork/defradb.rs", rev = "2ac736debff5d82bf58b702b9ebdc91ca6704a24" }
 alloy-primitives = "1"
 vera-client = { workspace = true }
 vera-domain = { workspace = true }
-commonware-codec = { version = "2026.9.0" }
+commonware-codec = { version = "=2026.10.0" }
 k256 = { workspace = true }
 vera-crypto = { workspace = true }
 vera-harness = { workspace = true }
@@ -97,7 +97,7 @@ name = "native_startup"
 # `integration-test-native` umbrella (which transitively enables both of
 # these) still satisfies this unchanged; it just isn't required by name
 # anymore.
-required-features = ["integration-test", "native"]
+required-features = ["integration-test", "native", "native-test-fixture"]
 
 [features]
 # Combined convenience feature for the common "fully native" build, kept for
@@ -137,7 +137,8 @@ integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "b
 # Adds native Vera wiring on top of the shared base — does NOT pull in
 # authz-vera/bulletin-vera/cosmos (see test-support's own `cosmos` default
 # feature, which this crate explicitly opts out of above).
-integration-test-native = ["integration-test", "native", "test-support/native"]
+integration-test-native = ["integration-test", "native-test-fixture"]
+native-test-fixture = ["native", "test-support/native"]
 unsafe-testing = []
 # In-process, no-Docker, no-chain test/benchmark harness: real orbis-node
 # instances as tokio tasks, backed by a caller-injected mock bulletin instead

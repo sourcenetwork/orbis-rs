@@ -207,16 +207,16 @@ pub async fn run() {
     );
 }
 
-fn operators() -> Vec<k256::ecdsa::SigningKey> {
+fn operators() -> Vec<vera_client::Secp256k1SigningKey> {
     let mut keys: Vec<_> = [1, 2]
-        .map(|byte| k256::ecdsa::SigningKey::from_slice(&[byte; 32]).unwrap())
+        .map(|byte| vera_client::Secp256k1SigningKey::from_slice(&[byte; 32]).unwrap())
         .into();
     keys.sort_by_key(|key| key.verifying_key().to_sec1_bytes().to_vec());
     keys
 }
 
-async fn grant_relay(workflow: &NativeWorkflow, keys: &[k256::ecdsa::SigningKey]) -> u64 {
-    let relay = k256::ecdsa::SigningKey::from_slice(&[42; 32]).unwrap();
+async fn grant_relay(workflow: &NativeWorkflow, keys: &[vera_client::Secp256k1SigningKey]) -> u64 {
+    let relay = vera_client::Secp256k1SigningKey::from_slice(&[42; 32]).unwrap();
     let issuer = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
         relay.verifying_key().to_sec1_bytes().as_ref(),
     )

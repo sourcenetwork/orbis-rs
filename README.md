@@ -494,7 +494,7 @@ report a vulnerability. In brief:
 
 ## License
 
-Orbis-rs is licensed under the [Business Source License 1.1](licenses/Bsl.txt)
+Orbis-rs, including [`orbis-reporting`](crates/reporting), is licensed under the [Business Source License 1.1](licenses/Bsl.txt), which changes to Apache 2.0 on March 13, 2030.
 
 The separate [native Trust ring/DKG fixture](docs/native-trust-ring-fixture.md)
 connects the authenticated Go gateway contract to the shared native test network.

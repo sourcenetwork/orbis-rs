@@ -2,7 +2,7 @@
 mod forgery;
 
 use defra_core::signing::{self, SigningConfig, SigningKeyType};
-use defra_node::{EmbeddedNode, P2PConfig};
+use defra_node::{Node, P2PConfig};
 use std::{
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
@@ -11,8 +11,8 @@ use std::{
 };
 
 pub struct Peers {
-    source: EmbeddedNode,
-    target: EmbeddedNode,
+    source: Node,
+    target: Node,
     signer_did: String,
     path: PathBuf,
 }
@@ -20,24 +20,19 @@ pub struct Peers {
 fn config(path: &Path) -> P2PConfig {
     P2PConfig {
         allowlist: Default::default(),
-        port: 0,
+        port: Some(0),
         bind_addr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         relay_mode: defra_p2p::iroh::IrohRelayModeConfig::Disabled,
         discovery: defra_p2p::iroh::IrohDiscoveryConfig::Disabled,
         max_concurrent_multipath_paths: None,
         secret_key_path: Some(path.join("p2p.key")),
         load_persisted_collections: true,
-        max_concurrent_dag_fetches: defra_p2p::sync::DEFAULT_MAX_CONCURRENT_DAG_FETCHES,
-        max_concurrent_push_tasks: defra_p2p::sync::DEFAULT_MAX_CONCURRENT_PUSH_TASKS,
-        max_doc_sync_request_doc_ids: defra_p2p::sync::DEFAULT_MAX_DOC_SYNC_REQUEST_DOC_IDS,
-        rate_limit_burst: defra_p2p::sync::DEFAULT_RATE_LIMIT_BURST,
-        rate_limit_rate: defra_p2p::sync::DEFAULT_RATE_LIMIT_RATE,
-        max_pending_dags: defra_p2p::sync::DEFAULT_MAX_PENDING_DAGS,
         rebroadcast_on_merge: false,
+        ..Default::default()
     }
 }
 
-async fn address(node: &EmbeddedNode) -> String {
+async fn address(node: &Node) -> String {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(address) = node
@@ -71,21 +66,21 @@ impl Peers {
                 signing_authorization: None,
             },
         );
-        let source = EmbeddedNode::builder()
+        let source = Node::builder()
             .data_path(path.join("source"))
             .with_node_identity_did(&signer_did)
             .with_p2p(config(&path.join("source")))
             .build()
             .await
             .unwrap();
-        let target = EmbeddedNode::builder()
+        let target = Node::builder()
             .data_path(path.join("target"))
             .with_p2p(config(&path.join("target")))
             .build()
             .await
             .unwrap();
         for node in [&source, &target] {
-            node.add_schema("type NetworkSigned { name: String }")
+            node.add_collection("type NetworkSigned { name: String }")
                 .await
                 .unwrap();
         }
@@ -160,9 +155,9 @@ impl Peers {
             signer_did,
             path,
         } = self;
-        target.shutdown().await;
+        target.shutdown().await.unwrap();
         drop(target);
-        let target = EmbeddedNode::builder()
+        let target = Node::builder()
             .data_path(path.join("target"))
             .with_p2p(config(&path.join("target")))
             .build()
@@ -265,8 +260,8 @@ impl Peers {
     }
 
     pub async fn shutdown(&self) {
-        self.source.shutdown().await;
-        self.target.shutdown().await;
+        self.source.shutdown().await.unwrap();
+        self.target.shutdown().await.unwrap();
         signing::clear_identity_store();
     }
 }

@@ -29,7 +29,7 @@ pub(super) struct MemberReplacement<'a> {
     pub trusted: &'a ConsensusPublicKey,
     pub deployment: u64,
     pub deployment_root: &'a [u8; 32],
-    pub controller: &'a k256::ecdsa::SigningKey,
+    pub controller: &'a vera_client::Secp256k1SigningKey,
     pub worker: &'a BlsSigner,
     pub policy: &'a str,
     pub policy_bytes: B256,

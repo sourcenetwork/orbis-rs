@@ -1,12 +1,12 @@
 use alloy_primitives::B256;
 use commonware_codec::Encode;
-use k256::ecdsa::SigningKey;
 use serde_json::{json, Value};
 use std::{
     path::Path,
     process::Output,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+use vera_client::Secp256k1SigningKey as SigningKey;
 use vera_client::{
     create_scoped_bearer_token,
     nodes::{sign_node_request, NodeCommand, NodeInfo, NodeRequest, NodeTarget},
