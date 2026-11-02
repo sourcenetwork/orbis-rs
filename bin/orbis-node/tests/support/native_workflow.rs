@@ -22,7 +22,7 @@ pub(super) struct NativeWorkflow {
     pub client: VeraClient,
     pub trusted: ConsensusPublicKey,
     pub root: B256,
-    pub controller: k256::ecdsa::SigningKey,
+    pub controller: vera_client::Secp256k1SigningKey,
     pub actor: String,
     pub base: tempfile::TempDir,
     pub nodes: Vec<Node>,
@@ -90,7 +90,7 @@ impl NativeWorkflow {
             .unwrap();
         assert!(headers.fresh_state().unwrap().height > first.height);
         let root: B256 = first.parent_hash.parse().unwrap();
-        let controller = k256::ecdsa::SigningKey::from_slice(&[34; 32]).unwrap();
+        let controller = vera_client::Secp256k1SigningKey::from_slice(&[34; 32]).unwrap();
         let actor = vera_crypto::secp256k1::did_from_secp256k1_pubkey(
             controller.verifying_key().to_sec1_bytes().as_ref(),
         )

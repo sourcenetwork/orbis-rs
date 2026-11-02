@@ -25,7 +25,7 @@ unsafe diagnostic image. Build production artifacts before compiling test target
 With the matching artifacts staged, run the single selector per curve:
 
 ```sh
-cargo +1.98.0 test --release --frozen -j2 -p orbis-node \
+cargo +1.99.1 test --release --frozen -j2 -p orbis-node \
   --no-default-features --features native,redb,iroh,bls12-381 \
   --test native_startup native_trust_gateway_ring_dkg -- --exact --ignored --nocapture
 ```

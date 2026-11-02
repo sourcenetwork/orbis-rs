@@ -45,7 +45,7 @@ mod tests {
 
     fn public_key_hex(hex_key: &str) -> String {
         let key = SigningKey::from_slice(&hex::decode(hex_key).unwrap()).unwrap();
-        hex::encode(key.verifying_key().to_encoded_point(true).as_bytes())
+        hex::encode(key.verifying_key().to_sec1_point(true).as_bytes())
     }
 
     #[test]
@@ -63,6 +63,21 @@ mod tests {
     }
 
     #[test]
+    fn node_message_signatures_interoperate_with_previous_version() {
+        let hex_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let public_key_hex = "034646ae5047316b4230d0086c8acec687f00b1cd9d1dc634f6cb358ac0a9a8fff";
+        let message = b"orbis-evidence-version-compatibility";
+        let legacy_signature = hex::decode(concat!(
+            "86c3dc723c87ce6f54112094092106e90fc99135b40acb46cb4aac4d5d25fed8",
+            "2240ddf02f9974381f8e831cfd34b741154a5d1fc6ef270a359ea03718816c07"
+        ))
+        .unwrap();
+        verify_node_message(public_key_hex, message, &legacy_signature).unwrap();
+        let current_signature = sign_node_message_with_hex_key(hex_key, message).unwrap();
+        assert_eq!(current_signature, legacy_signature);
+    }
+
+    #[test]
     fn node_message_signatures_are_low_s_and_the_malleated_form_is_rejected() {
         use k256::{elliptic_curve::ff::PrimeField, FieldBytes, Scalar};
 
@@ -74,28 +89,21 @@ mod tests {
         // What we emit is already canonical low-S, and it verifies.
         let parsed = EcdsaSignature::try_from(low.as_slice()).unwrap();
         assert!(
-            parsed.normalize_s().is_none(),
+            parsed.normalize_s() == parsed,
             "sign_node_message must emit low-S"
         );
         verify_node_message(&public_key_hex, message, &low).unwrap();
 
         // Build the malleated (r, n - s) form: a well-formed signature encoding
         // for the same message and key.
-        // generic-array 0.14 deprecates itself wholesale under rustc >= 1.65 ("please
-        // upgrade to generic-array 1.x"), but k256's elliptic-curve dep has no
-        // non-deprecated path off it yet; the API itself is unaffected.
-        #[allow(deprecated)]
-        let s = Option::<Scalar>::from(Scalar::from_repr(FieldBytes::clone_from_slice(
-            &low[32..64],
-        )))
-        .unwrap();
+        let bytes = FieldBytes::try_from(&low[32..64]).unwrap();
+        let s = Option::<Scalar>::from(Scalar::from_repr(bytes)).unwrap();
         let mut high = low.clone();
-        #[allow(deprecated)]
         high[32..64].copy_from_slice((-s).to_bytes().as_slice());
         let high_parsed = EcdsaSignature::try_from(high.as_slice())
             .expect("(r, n-s) is a structurally valid signature encoding");
         assert!(
-            high_parsed.normalize_s().is_some(),
+            high_parsed.normalize_s() != high_parsed,
             "the constructed variant is high-S"
         );
 

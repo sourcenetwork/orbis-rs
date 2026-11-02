@@ -43,8 +43,14 @@ impl Documents {
                     "1",
                     "_docID",
                     defra_schema::FieldKind::doc_id(),
+                    defra_schema::CType::LwwRegister,
                 ),
-                defra_schema::FieldDescription::new("2", "name", defra_schema::FieldKind::string()),
+                defra_schema::FieldDescription::new(
+                    "2",
+                    "name",
+                    defra_schema::FieldKind::string(),
+                    defra_schema::CType::LwwRegister,
+                ),
             ],
         ))
         .await
@@ -69,8 +75,16 @@ impl Documents {
             allowed: defra_core::block::go_verifiable_policy::non_go_verifiable_signing_allowed(),
         };
         defra_core::block::go_verifiable_policy::allow_non_go_verifiable_signing(true);
-        let mut document = defra_document::Document::new();
-        document.set("name", defra_document::NormalValue::String(name.into()));
+        let schema = self
+            .db
+            .get_collection("Signed")
+            .unwrap()
+            .unwrap()
+            .schema_arc();
+        let mut document = defra_document::Document::new(schema);
+        document
+            .set("name", defra_document::NormalValue::String(name.into()))
+            .unwrap();
         let context = RequestContext::default().with_signing(Some(self.signer.clone()));
         defra_db::AutoCommitMutator::new(self.db.clone())
             .create_as(&context, "Signed", document)

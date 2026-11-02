@@ -11,20 +11,20 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-RUNTIME = "29fd26b70cd7df9a5d9134dc1ddef0a6f23f8013"
-IMAGE_REVISION = "f3697ab8356ee840610fc5dd265f0b9192ee40f2"
-VERA = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+RUNTIME = "b018533696efe7484cdc3c41dc653274960f3373"
+IMAGE_REVISION = "3f196a042b6884dad30e49637aa1f63cb4edfa47"
+VERA = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745"
 RUNTIME_DIGESTS = {
-    "bls12-381": "sha256:224fe559200fcc668da8c1914cd733c9e3edb1e5a578ef98ccb5ba6494810d27",
-    "jubjub": "sha256:69f4b88d935464cef5eab8eed2cd3e4a3360a2e2b98e06aa63b39a239866a3ee"
+    "bls12-381": "sha256:de0feda3fa5772f7f836a8498de06afa435ceecf7016714b18bf802fc5ffafcd",
+    "jubjub": "sha256:d582979337bb88d7f463c8700082e3080ace35aa5a088c9f614398befa4771e5"
 }
 RUNTIME_IMAGE_IDS = {
-    "bls12-381": "sha256:4ac363161ff0e95034607b1e9cf101d21310117527c55c4ed486e2f0a2f4e417",
-    "jubjub": "sha256:91ab8f3215d29f228225e0219721771975e3ec250f29899d2f473524efe9e8be"
+    "bls12-381": "sha256:5e1ec06e8d0384fb32c4052385a8f0d94173ae3f7ec48b5ed819b648220736b5",
+    "jubjub": "sha256:de31595a28d762536e55a71d546c9aeb71c038cdc4810ff4cefedab194de7fca"
 }
 DIAGNOSTIC_DIGESTS = {
-    "bls12-381": "sha256:cfdd1d2980aee258151c091679c365a8e59875d97ee890aee98899f9a7b5a93d",
-    "jubjub": "sha256:e899c434f6e1f546da9a961696d7f5fc2c673ea338b044ae1c81d4fe7ebfdfc8"
+    "bls12-381": "sha256:bbf18c2ca211cd11652955d6bb93d0b89706ef10f3defdab2837a60032708340",
+    "jubjub": "sha256:6021cfb2e78933359063c1c618ee93398a1aa9b6e7c62fd2550e9d16fae7fdfc8"
 }
 FIXTURE_FILES = {
     ".config/nextest.toml",
@@ -57,8 +57,29 @@ FIXTURE_FILES = {
 }
 
 
-def verify_fixture_changes(changed):
-    if set(changed) - FIXTURE_FILES:
+def safe_fixture_manifest_change(before, after):
+    if not isinstance(before, str) or not isinstance(after, str):
+        return False
+    required = 'required-features = ["integration-test-native"]'
+    feature = 'integration-test-native = ["integration-test", "native", "test-support/native"]'
+    if before.count(required) != 1 or before.count(feature) != 1:
+        return False
+    expected = before.replace(required, 'required-features = ["native-test-fixture"]', 1)
+    expected = expected.replace(
+        feature,
+        'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+        'native-test-fixture = ["native", "test-support/native"]',
+        1,
+    )
+    return after == expected
+
+
+def verify_fixture_changes(changed, manifest_before=None, manifest_after=None):
+    changed = set(changed)
+    manifest = "bin/orbis-node/Cargo.toml"
+    if manifest in changed and safe_fixture_manifest_change(manifest_before, manifest_after):
+        changed.remove(manifest)
+    if changed - FIXTURE_FILES:
         raise ValueError("runtime source differs from the selected images")
 
 
@@ -125,7 +146,12 @@ def verified_fixture_source(runtime):
     # Disabling renames keeps a removed production path visible to the allowlist.
     changed = capture(["git", "diff", "--no-ext-diff", "--no-textconv", "--no-renames",
                        "--name-only", runtime, source["head"], "--"]).splitlines()
-    verify_fixture_changes(changed)
+    manifest = "bin/orbis-node/Cargo.toml"
+    before = after = None
+    if manifest in changed:
+        before = capture(["git", "show", runtime + ":" + manifest])
+        after = capture(["git", "show", source["head"] + ":" + manifest])
+    verify_fixture_changes(changed, before, after)
     return source
 
 
@@ -561,7 +587,7 @@ def qualify():
     for name in list(env):
         if name.startswith("ORBIS_LOCAL_STORAGE_KDF_"):
             del env[name]
-    env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.98.0")
+    env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.99.1")
     repository = "ghcr.io/sourcenetwork/orbis-rs"
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)

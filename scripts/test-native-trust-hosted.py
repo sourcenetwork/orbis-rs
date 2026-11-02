@@ -20,6 +20,45 @@ spec.loader.exec_module(driver)
 
 
 class Qualification(unittest.TestCase):
+    def test_fixture_compilation_enables_target_required_features(self):
+        manifest = (Path(__file__).resolve().parents[1] / 'bin/orbis-node/Cargo.toml').read_text()
+        blocks = re.findall(r'(?ms)^\[\[test\]\]\s*(.*?)(?=^\[|\Z)', manifest)
+        target = next(block for block in blocks if re.search(r'^name\s*=\s*"native_startup"', block, re.M))
+        required = re.search(r'required-features\s*=\s*\[([^]]+)\]', target)
+        self.assertIsNotNone(required)
+        features = set(re.findall(r'"([^"]+)"', required.group(1)))
+        self.assertEqual(features, {'native-test-fixture'})
+        fixture_feature = re.search(r'^native-test-fixture\s*=\s*\[([^]]+)\]', manifest, re.M)
+        self.assertIsNotNone(fixture_feature)
+        self.assertEqual(set(re.findall(r'"([^"]+)"', fixture_feature.group(1))),
+                         {'native', 'test-support/native'})
+        for curve in ('bls12-381', 'jubjub'):
+            command = driver.fixture_compile_command(curve)
+            enabled = set(command[command.index('--features') + 1].split(','))
+            self.assertTrue(features <= enabled)
+            self.assertIn(curve, enabled)
+
+    def test_runtime_manifest_exception_only_accepts_the_fixture_feature_split(self):
+        before = ('required-features = ["integration-test-native"]\n'
+                  'integration-test-native = ["integration-test", "native", "test-support/native"]\n')
+        after = ('required-features = ["native-test-fixture"]\n'
+                 'integration-test-native = ["integration-test", "native-test-fixture"]\n'
+                 'native-test-fixture = ["native", "test-support/native"]\n')
+        guard = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
+        safe = guard['safe_fixture_manifest_change']
+        self.assertTrue(safe(before, after))
+        self.assertFalse(safe(before, after + 'default = ["unsafe-testing"]\n'))
+        self.assertFalse(safe(before, after.replace('"native", "test-support/native"]',
+                                                   '"native", "unsafe-testing"]')))
+        self.assertFalse(safe(before + before, after))
+        root = Path(__file__).resolve().parents[1]
+        manifest = 'bin/orbis-node/Cargo.toml'
+        with patch.object(driver, 'capture', side_effect=[manifest, before, after]):
+            self.assertEqual(driver.runtime_revision(root, 'a' * 40, 'b' * 40), 'b' * 40)
+        with patch.object(driver, 'capture', side_effect=[manifest, before, after + 'default = ["unsafe-testing"]\n']):
+            with self.assertRaises(ValueError):
+                driver.runtime_revision(root, 'a' * 40, 'b' * 40)
+
     def test_validation_exports_immutable_source_pins(self):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / 'outputs'
@@ -314,7 +353,7 @@ class Qualification(unittest.TestCase):
                 self.assertEqual(graph['target']['gateway']['context'], str(cwd))
                 raise driver.Failure()
             with patch.object(driver, 'pins', return_value={}), \
-                 patch.object(driver, 'capture', return_value='cargo 1.98.0 test'), \
+                 patch.object(driver, 'capture', return_value='cargo 1.99.1 test'), \
                  patch.object(driver, 'command', side_effect=reject) as command:
                 with self.assertRaises(driver.Failure):
                     driver.build(root / 'orbis', args, output)
@@ -349,12 +388,13 @@ class Qualification(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             event = {'reason': 'compiler-artifact', 'target': {'name': 'native_startup'},
-                     'features': ['native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
+                     'features': ['native-test-fixture', 'native', 'redb', 'iroh', 'bls12-381'], 'executable': str(root.resolve() / 'release/test')}
             path = root / 'build.jsonl'
             path.write_text(json.dumps(event) + '\n')
             self.assertEqual(driver.test_binary(path, root, 'bls12-381'), root.resolve() / 'release/test')
             for change in ({'features': ['native', 'redb', 'iroh', 'jubjub']},
                            {'features': event['features'] + ['unsafe-testing']},
+                           {'features': event['features'] + ['integration-test']},
                            {'executable': '/outside/secret'}):
                 path.write_text(json.dumps({**event, **change}) + '\n')
                 with self.assertRaises(driver.Failure):
@@ -421,7 +461,7 @@ class Qualification(unittest.TestCase):
             artifacts = root / 'artifacts'
             artifacts.mkdir()
             (artifacts / 'defra').write_bytes(b'normal binary')
-            manifest = {'version': 1, 'role': 'defra', 'rust': '1.98.0', 'profile': 'release',
+            manifest = {'version': 1, 'role': 'defra', 'rust': '1.99.1', 'profile': 'release',
                         'target': 'x86_64-unknown-linux-gnu',
                         'source': {'revision': driver.DEFRA, 'lock_sha256': driver.sha(root / 'Cargo.lock')},
                         'sha256': {'defra': driver.sha(artifacts / 'defra')}}
@@ -464,7 +504,7 @@ class Qualification(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'fixture-artifact')
                 hashes[name] = driver.sha(path)
-            manifest = {'version': 1, 'profile': 'release', 'rust': '1.98.0', 'binary_sha256': hashes,
+            manifest = {'version': 1, 'profile': 'release', 'rust': '1.99.1', 'binary_sha256': hashes,
                         'sources': {name: {'head': ref} for name, ref in (
                             ('orbis', 'a' * 40), ('trust', 'b' * 40), ('vera', driver.VERA), ('defra', driver.DEFRA))}}
             (payload / 'manifest.json').write_text(json.dumps(manifest))
