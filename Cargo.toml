@@ -36,14 +36,14 @@ authors = ["Orbis Contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
-vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c" }
+vera-acp = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-client = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-crypto = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-domain = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-harness = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-identity = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-modules = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
+vera-node = { git = "https://github.com/sourcenetwork/vera.rs", rev = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745" }
 # Common dependencies across workspace
 tokio = { version = "1.0", features = ["full", "macros", "rt-multi-thread"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -88,19 +88,3 @@ http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
 tempfile = "3"
-
-[patch.crates-io]
-commonware-p2p = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-codec = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-consensus = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-cryptography = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-parallel = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-broadcast = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-macros = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-glue = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-stream = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }
-commonware-math = { git = "https://github.com/commonwarexyz/monorepo", rev = "96567b26e047a72ee3a8babbf63eac64c757a703" }

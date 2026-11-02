@@ -15,9 +15,9 @@ import tarfile
 import tempfile
 import time
 
-VERA = '7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c'
-VERA_SDK = '7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c'
-DEFRA = '6524b3a331ab6520ae4fbf30ab69d7be92becc49'
+VERA = 'f4308541ee0c38b8b42a3fca1a86b1b17f6aa745'
+VERA_SDK = 'f4308541ee0c38b8b42a3fca1a86b1b17f6aa745'
+DEFRA = '4fad631d06bc1d4b4871e5fc1d839e7c2395fddd'
 SELECTOR = 'native_trust_gateway_ring_dkg'
 MARKER = 'native Trust phase=ring-dkg rings=2 replicas=4 paired_keys=true production_kdf=true'
 STAGE = 0
@@ -176,8 +176,8 @@ def build(root, args, output):
     STAGE = 10
     trust, vera, defra = (Path(value).resolve() for value in (args.trust, args.vera, args.defra))
     sources = pins(root, trust, vera, defra, args.trust_ref)
-    cargo_version = capture(['cargo', '+1.98.0', '--version'])
-    if not cargo_version.startswith('cargo 1.98.0 '):
+    cargo_version = capture(['cargo', '+1.99.1', '--version'])
+    if not cargo_version.startswith('cargo 1.99.1 '):
         raise Failure()
     env = environment()
     payload = output / 'payload'
@@ -193,7 +193,7 @@ def build(root, args, output):
     STAGE = 20
     prebuilt = getattr(args, 'defra_artifacts', None)
     if prebuilt is None:
-        command(['cargo', '+1.98.0', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
+        command(['cargo', '+1.99.1', 'build', '--release', '--locked', '-j2', '-p', 'cli', '--bin', 'defra', '--features', 'vera'],
                 defra, env, output / 'defra-build.log')
         shutil.copy2(target / 'release/defra', payload / 'bin/defra')
         shutil.rmtree(target)
@@ -247,7 +247,7 @@ def build(root, args, output):
     manifest = {'version': 1, 'sources': sources, 'trust_image': image_ref,
                 'binary_sha256': {name: sha(payload / name) for name in FILES},
                 'build_sha256': {name: sha(output / name) for name in ('bake.json', 'buildkit.json', 'commands.json')},
-                'profile': 'release', 'rust': '1.98.0', 'cargo_version': cargo_version, 'go_version': go_version, 'normal_gateway_before_test_driver': True,
+                'profile': 'release', 'rust': '1.99.1', 'cargo_version': cargo_version, 'go_version': go_version, 'normal_gateway_before_test_driver': True,
                 'source_files_sha256': {'trust/Dockerfile.native': sha(trust / 'Dockerfile.native'),
                     'trust/go.mod': sha(trust / 'go.mod'), 'trust/go.sum': sha(trust / 'go.sum'),
                     'orbis/Cargo.lock': sha(root / 'Cargo.lock'), 'defra/Cargo.lock': sha(defra / 'Cargo.lock')}}
@@ -268,7 +268,7 @@ def restore_defra(directory, source_root, destination):
     expected = {'revision': revision(DEFRA), 'lock_sha256': sha(source_root / 'Cargo.lock')}
     binary = directory / 'defra'
     if (manifest.get('role') != 'defra' or manifest.get('version') != 1
-            or manifest.get('rust') != '1.98.0' or manifest.get('profile') != 'release'
+            or manifest.get('rust') != '1.99.1' or manifest.get('profile') != 'release'
             or manifest.get('target') != 'x86_64-unknown-linux-gnu'
             or manifest.get('source') != expected or set(manifest.get('sha256', {})) != {'defra'}
             or binary.is_symlink() or not binary.is_file()
@@ -309,7 +309,7 @@ def restore(directory, destination, expected_orbis, expected_trust):
                 shutil.copyfileobj(content, output, 1024 * 1024)
             target.chmod(0o555 if member.name.startswith(('bin/', 'lib/')) else 0o444)
     manifest = json.loads((destination / 'manifest.json').read_text())
-    if manifest['version'] != 1 or manifest['profile'] != 'release' or manifest['rust'] != '1.98.0':
+    if manifest['version'] != 1 or manifest['profile'] != 'release' or manifest['rust'] != '1.99.1':
         raise Failure()
     for name, expected in [('orbis', expected_orbis), ('trust', expected_trust), ('vera', VERA), ('defra', DEFRA)]:
         if manifest['sources'][name]['head'] != revision(expected):
@@ -406,7 +406,7 @@ def run(root, args, output):
     STAGE = 70
     stdout = output / 'compile.jsonl'
     with stdout.open('wb') as out, (output / 'compile.log').open('wb') as err:
-        process = subprocess.Popen(['cargo', '+1.98.0', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
+        process = subprocess.Popen(['cargo', '+1.99.1', 'test', '--release', '--locked', '-j2', '-p', 'orbis-node',
                 '--no-default-features', '--features', 'native,redb,iroh,' + args.curve,
                 '--test', 'native_startup', '--no-run', '--message-format=json'], cwd=root, env=env,
                 stdout=out, stderr=err, start_new_session=True)

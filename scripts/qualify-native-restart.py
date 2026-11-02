@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 RUNTIME = "29fd26b70cd7df9a5d9134dc1ddef0a6f23f8013"
 IMAGE_REVISION = "f3697ab8356ee840610fc5dd265f0b9192ee40f2"
-VERA = "7b37fa9fc445c014c94c2fe45f3c36f61e3aa54c"
+VERA = "f4308541ee0c38b8b42a3fca1a86b1b17f6aa745"
 RUNTIME_DIGESTS = {
     "bls12-381": "sha256:224fe559200fcc668da8c1914cd733c9e3edb1e5a578ef98ccb5ba6494810d27",
     "jubjub": "sha256:69f4b88d935464cef5eab8eed2cd3e4a3360a2e2b98e06aa63b39a239866a3ee"
@@ -561,7 +561,7 @@ def qualify():
     for name in list(env):
         if name.startswith("ORBIS_LOCAL_STORAGE_KDF_"):
             del env[name]
-    env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.98.0")
+    env.update(CARGO_BUILD_JOBS="2", RUSTUP_TOOLCHAIN="1.99.1")
     repository = "ghcr.io/sourcenetwork/orbis-rs"
     output = Path(os.environ["RUNNER_TEMP"]) / ("native-" + suite + "-" + curve)
     output.mkdir(mode=0o700, exist_ok=False)

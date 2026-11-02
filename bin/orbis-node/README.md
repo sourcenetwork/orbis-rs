@@ -415,12 +415,12 @@ vera_ref=$(cat docker/NATIVE_VERA_REF)
 docker build -f docker/Dockerfile.native-vera-integration \
   --build-arg VERA_REF="$vera_ref" -t orbis-vera-native:local .
 docker build -f docker/Dockerfile --build-arg BACKEND=native \
-  --build-arg RUST_IMAGE=rust:1.98.0-bookworm --build-arg CRYPTO_FEATURE="$curve" \
+  --build-arg RUST_IMAGE=rust:1.99.1-bookworm --build-arg CRYPTO_FEATURE="$curve" \
   -t orbis-node-native:local .
 docker build -f docker/Dockerfile --target native-diagnostic \
-  --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.98.0-bookworm \
+  --build-arg BACKEND=native --build-arg RUST_IMAGE=rust:1.99.1-bookworm \
   --build-arg CRYPTO_FEATURE="$curve" -t orbis-node-native-diagnostic:local .
-cargo +1.98.0 nextest run --profile ci --release --locked --build-jobs 2 \
+cargo +1.99.1 nextest run --profile ci --release --locked --build-jobs 2 \
   -p orbis-node --no-default-features \
   --features "integration-test-native,redb,iroh,$curve" \
   --test native_startup \

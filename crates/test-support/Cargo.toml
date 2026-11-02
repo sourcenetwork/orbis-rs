@@ -19,7 +19,7 @@ hex = { workspace = true }
 tokio = { workspace = true }
 
 bs58 = { version = "0.5", optional = true }
-commonware-codec = { version = "2026.9.0", optional = true }
+commonware-codec = { version = "=2026.10.0", optional = true }
 vera-client = { workspace = true, optional = true }
 vera-harness = { workspace = true, optional = true }
 vera-node = { workspace = true, optional = true }

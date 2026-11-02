@@ -314,7 +314,7 @@ class Qualification(unittest.TestCase):
                 self.assertEqual(graph['target']['gateway']['context'], str(cwd))
                 raise driver.Failure()
             with patch.object(driver, 'pins', return_value={}), \
-                 patch.object(driver, 'capture', return_value='cargo 1.98.0 test'), \
+                 patch.object(driver, 'capture', return_value='cargo 1.99.1 test'), \
                  patch.object(driver, 'command', side_effect=reject) as command:
                 with self.assertRaises(driver.Failure):
                     driver.build(root / 'orbis', args, output)
@@ -421,7 +421,7 @@ class Qualification(unittest.TestCase):
             artifacts = root / 'artifacts'
             artifacts.mkdir()
             (artifacts / 'defra').write_bytes(b'normal binary')
-            manifest = {'version': 1, 'role': 'defra', 'rust': '1.98.0', 'profile': 'release',
+            manifest = {'version': 1, 'role': 'defra', 'rust': '1.99.1', 'profile': 'release',
                         'target': 'x86_64-unknown-linux-gnu',
                         'source': {'revision': driver.DEFRA, 'lock_sha256': driver.sha(root / 'Cargo.lock')},
                         'sha256': {'defra': driver.sha(artifacts / 'defra')}}
@@ -464,7 +464,7 @@ class Qualification(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b'fixture-artifact')
                 hashes[name] = driver.sha(path)
-            manifest = {'version': 1, 'profile': 'release', 'rust': '1.98.0', 'binary_sha256': hashes,
+            manifest = {'version': 1, 'profile': 'release', 'rust': '1.99.1', 'binary_sha256': hashes,
                         'sources': {name: {'head': ref} for name, ref in (
                             ('orbis', 'a' * 40), ('trust', 'b' * 40), ('vera', driver.VERA), ('defra', driver.DEFRA))}}
             (payload / 'manifest.json').write_text(json.dumps(manifest))
