@@ -83,8 +83,19 @@ pub(super) async fn run_dkg(
         "finalized key must not be identity"
     );
 
-    let local_state =
-        wait_for_polynomials(environment.nodes(), &main, None, Duration::from_secs(60)).await;
+    // `environment.nodes()` is every *running* fixture node, which isn't
+    // always the same as the ring's own committee — a pure-new reshare
+    // target can be a running node that was never one of `ring.members`
+    // (e.g. `report_reshare_offline.rs`'s node4). Filter down to the
+    // finalized committee itself so a non-member running node (which never
+    // develops *this* ring's polynomial at all) doesn't wedge the wait.
+    let members: Vec<test_support::NodeInfo> = environment
+        .nodes()
+        .iter()
+        .filter(|node| view.peer_node_keys.contains(&node.node_key))
+        .cloned()
+        .collect();
+    let local_state = wait_for_polynomials(&members, &main, None, Duration::from_secs(60)).await;
     for state in &local_state {
         assert_polynomial(state, &main);
     }
