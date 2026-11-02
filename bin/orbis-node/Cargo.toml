@@ -120,7 +120,18 @@ iroh = ["network/iroh"]
 # Shared E2E scenario machinery, backend-neutral (scenario fns, `BackendAdmin`
 # trait, `IntegrationBackend` enum). Pick a backend variant below to actually
 # run anything — this alone doesn't pull in either chain client.
-integration-test = ["cli-tool", "unsafe-testing"]
+# `authz/test-helpers`+`bulletin/dummy-type`: `helpers::test_helpers`'s module
+# gate was widened from `#[cfg(test)]` to `any(test, feature =
+# "integration-test")` (harness-unification migration, PR 6) so
+# `tests/support/live_node.rs` could reach it from the separate
+# `native_startup` integration-test binary — but that file unconditionally
+# imports `authz::dummy`/`bulletin::dummy`. Before that widening, a plain
+# `cargo build --release` (no `cfg(test)`) never compiled the module at all;
+# now any `integration-test`-enabled build does, including
+# `docker/Dockerfile`'s `ENABLE_INTEGRATION_TEST=true` image build, which
+# never separately requests `scale-testing`/`harness` (the only other source
+# of these two). So `integration-test` itself must guarantee them.
+integration-test = ["cli-tool", "unsafe-testing", "authz/test-helpers", "bulletin/dummy-type"]
 # Adds Cosmos/SourceHub wiring on top of the shared base.
 integration-test-cosmos = ["integration-test", "authz-vera", "bulletin-vera", "bulletin/integration-test-cosmos", "test-support/cosmos"]
 # Adds native Vera wiring on top of the shared base — does NOT pull in

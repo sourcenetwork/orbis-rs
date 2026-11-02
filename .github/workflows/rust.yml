@@ -315,7 +315,15 @@ jobs:
       with:
         tool: cargo-nextest
     - name: Compile test binaries (${{ matrix.backend }}, ${{ matrix.crypto }})
-      run: cargo nextest run --no-run --profile ci ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+      # `-p orbis-node` on native cells only: an unscoped `cargo nextest run`
+      # unifies features across the *whole workspace*, and `cli-tool`'s
+      # unconditional default dependency on `authz`/`bulletin` pulls in
+      # `vera`/`select-vera` alongside native's `select-native` — the
+      # `AuthzFactoryImpl` double-import `compile_error!`. Cosmos cells stay
+      # workspace-wide on purpose: `DOCKER_TESTS` (the `unit`/`integration`
+      # filter) spans `authz`'s/`bulletin`'s own `vera::tests::` binaries too,
+      # not just orbis-node's.
+      run: cargo nextest run --no-run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
 
   unit:
     if: github.event_name != 'workflow_dispatch' || inputs.scope == 'full'
@@ -469,8 +477,12 @@ jobs:
           echo "ORBIS_NATIVE_VERA_IMAGE=ghcr.io/${{ github.repository }}/vera-native:${{ github.sha }}"
         } >> "$GITHUB_ENV"
     - name: Integration tests (${{ matrix.backend }}, ${{ matrix.crypto }}, shard ${{ matrix.shard }}/3)
+      # `-p orbis-node` on native cells only — see `compile`'s identical note
+      # above; same workspace-wide feature-unification conflict, same fix,
+      # same reason Cosmos stays unscoped (DOCKER_TESTS needs authz/bulletin
+      # built too).
       run: >-
-        cargo nextest run --profile ci ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
+        cargo nextest run --profile ci ${{ matrix.backend == 'native' && '-p orbis-node' || '' }} ${{ matrix.extra_flags }} ${{ matrix.cargo_flags }}
         -E "${{ matrix.backend == 'native' && 'binary(native_startup) & not test(=native_trust_gateway_ring_dkg)' || env.DOCKER_TESTS }}"
         --partition count:${{ matrix.shard }}/3
 
