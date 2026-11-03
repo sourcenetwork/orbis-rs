@@ -9,7 +9,6 @@ use proto::{
 };
 use std::{path::Path, time::Duration};
 
-#[path = "report_acceptance.rs"]
 mod report_acceptance;
 use test_support::NativeTestNetwork as TestCluster;
 use vera_client::{rings::RingPublicKeys, ClientError, ModuleId, VeraClient, RECORD_PROOF_BYTES};

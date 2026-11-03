@@ -1,7 +1,7 @@
 //! Backend-neutral node readiness: poll an Orbis node's `InfoService` until
 //! it reports [`NodeStatus::Ready`], returning its [`NodeInfo`]. Both
 //! [`crate::environment::CosmosTestEnvironment`] and the native
-//! `TestEnvironment` (`bin/orbis-node/src/tests/support/native_environment.rs`,
+//! `TestEnvironment` (`bin/orbis-node/src/tests/e2e/native_environment.rs`,
 //! which depends on this crate) use this instead of each hand-rolling an
 //! `InfoServiceClient` poll loop.
 //!

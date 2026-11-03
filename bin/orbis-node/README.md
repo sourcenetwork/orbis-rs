@@ -290,7 +290,7 @@ Linux host networking; build the images described below first.
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 --lib \
-  tests::native_lifecycle::native_startup_registers_and_preserves_identity_on_restart \
+  tests::e2e::native_lifecycle::native_startup_registers_and_preserves_identity_on_restart \
   -- --ignored --exact
 ```
 
@@ -327,7 +327,7 @@ for healthy members.
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 --lib \
-  tests::native_lifecycle::native_distributed_threshold_workflows -- --ignored --exact
+  tests::e2e::native_lifecycle::native_distributed_threshold_workflows -- --ignored --exact
 ```
 
 The ignored `native_pet_scheduled_refresh_after_restart` scenario uses normal
@@ -342,7 +342,7 @@ state coverage, not a 24-hour soak or the production one-hour polling cadence.
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 --lib \
-  tests::native_lifecycle::native_pet_scheduled_refresh_after_restart -- --ignored --exact
+  tests::e2e::native_lifecycle::native_pet_scheduled_refresh_after_restart -- --ignored --exact
 ```
 
 The ignored `native_pet_member_replacement` scenario admits a fresh fourth node,
@@ -373,7 +373,7 @@ reads the persisted KDF headers: 262,144 KiB, three passes, one lane and version
 ORBIS_NATIVE_DIAGNOSTIC_IMAGE=orbis-node-native-diagnostic:local \
   cargo test -p orbis-node --release --locked --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 \
-  --lib tests::native_lifecycle::native_pet_fault_reports -- --ignored --exact
+  --lib tests::e2e::native_lifecycle::native_pet_fault_reports -- --ignored --exact
 ```
 
 Signing and PRE apply their 10-second peer deadline to connection setup, sending
@@ -426,7 +426,7 @@ cargo +1.99.1 nextest run --profile ci --release --locked --build-jobs 2 \
   -p orbis-node --no-default-features \
   --features "integration-test,native,redb,iroh,$curve" \
   --lib \
-  -E "test(/^tests::/) & not test(=tests::native_lifecycle::native_trust_gateway_ring_dkg)"
+  -E "test(/^tests::/) & not test(=tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg)"
 ```
 
 The `native-diagnostic` target reuses the normal native builder and adds
@@ -469,5 +469,5 @@ DKG setup and stops before the PRE and resharing portions of the broader fixture
 ```sh
 cargo test -p orbis-node --release --locked --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 --lib \
-  tests::native_lifecycle::native_defra_signing -- --ignored --exact
+  tests::e2e::native_lifecycle::native_defra_signing -- --ignored --exact
 ```

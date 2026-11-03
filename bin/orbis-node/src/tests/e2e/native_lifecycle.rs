@@ -367,7 +367,7 @@ pub(super) fn bring_up_orbis_nodes(
 /// Compose service's fixed `--node-controller-key`
 /// (`docker/docker-compose-native-integration-test.yml`), the compressed
 /// secp256k1 public key for the fixed test private key `[34u8; 32]` — the
-/// same convention `bin/orbis-node/src/tests/support/native_workflow.rs`/`admin.rs`
+/// same convention `bin/orbis-node/src/tests/e2e/native_workflow.rs`/`admin.rs`
 /// already use as `controller`/`controller_key`.
 const COMPOSE_NODE_CONTROLLER_KEY: &str =
     "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27";

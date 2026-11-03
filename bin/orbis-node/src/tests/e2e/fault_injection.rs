@@ -7,7 +7,7 @@
 //! deliberately Cosmos-only, scoped out of the dual-backend migration — see
 //! the plan's PR 6 context section. The plain node-dropout/below-threshold
 //! tests that used to live here (no `FaultNetwork` needed, just a hard node
-//! abort) are fully dual-backend now, in `support/fault_*.rs`.
+//! abort) are fully dual-backend now, in `e2e/fault_*.rs`.
 //!
 //! Requires `fault-injection`, `integration-test`, and `cosmos` features.
 //! Run with:

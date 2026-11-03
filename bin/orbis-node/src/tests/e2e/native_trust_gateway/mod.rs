@@ -27,7 +27,6 @@ use vera_client::{
 use vera_harness::cluster::GenesisBuilder;
 use vera_modules::vera::relay::RelayGrant;
 
-#[path = "native_trust_gateway/runner.rs"]
 mod runner;
 
 #[derive(Serialize)]

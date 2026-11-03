@@ -58,7 +58,7 @@ mod native_network;
 pub use native_network::{NativeTestNetwork, NativeTestNode};
 // Free-function Compose primitives for callers outside this crate that hold
 // a long-lived handle to one named service (e.g.
-// `bin/orbis-node/src/tests/support/native_lifecycle.rs`'s `Node`) — see
+// `bin/orbis-node/src/tests/e2e/native_lifecycle.rs`'s `Node`) — see
 // `native_network::compose_build`'s doc comment.
 #[cfg(all(unix, feature = "native"))]
 pub use native_network::{

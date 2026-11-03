@@ -28,7 +28,7 @@ With the matching artifacts staged, run the single selector per curve:
 cargo +1.99.1 test --release --frozen -j2 -p orbis-node \
   --no-default-features \
   --features integration-test,native,redb,iroh,bls12-381 \
-  --lib tests::native_lifecycle::native_trust_gateway_ring_dkg \
+  --lib tests::e2e::native_lifecycle::native_trust_gateway_ring_dkg \
   -- --exact --ignored --nocapture
 ```
 

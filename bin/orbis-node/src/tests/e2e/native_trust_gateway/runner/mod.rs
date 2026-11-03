@@ -1,4 +1,3 @@
-#[path = "go_diagnostics.rs"]
 mod go_diagnostics;
 
 use super::private_file;

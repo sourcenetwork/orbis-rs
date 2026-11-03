@@ -68,5 +68,4 @@ impl RemoteSigner for Signer {
 }
 
 #[cfg(test)]
-#[path = "defra_signer_tests.rs"]
 mod tests;

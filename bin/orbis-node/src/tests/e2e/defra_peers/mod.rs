@@ -1,4 +1,3 @@
-#[path = "defra_peer_forgery.rs"]
 mod forgery;
 
 use defra_core::signing::{self, SigningConfig, SigningKeyType};

@@ -1,6 +1,6 @@
 //! Cosmos's concrete [`TestEnvironment`]. Compiled only under this crate's
 //! `cosmos` feature — native's counterpart lives in
-//! `bin/orbis-node/src/tests/support/native_environment.rs` instead (it needs
+//! `bin/orbis-node/src/tests/e2e/native_environment.rs` instead (it needs
 //! `vera-client`/`vera-domain`/`k256`/`acp-light-client`, which this crate
 //! deliberately excludes; see `admin/mod.rs`'s doc comment). Each backend
 //! defines its own `TestEnvironmentImpl` alias at the shared test-tree entry

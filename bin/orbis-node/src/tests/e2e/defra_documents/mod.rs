@@ -1,4 +1,3 @@
-#[path = "defra_replication.rs"]
 mod replication;
 
 use defra_core::{

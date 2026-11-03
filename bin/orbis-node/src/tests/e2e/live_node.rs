@@ -703,7 +703,7 @@ impl Chain {
     }
 
     /// Poll until a submitted native transaction is certified (or panic).
-    /// Mirrors `bin/orbis-node/src/tests/support/native_confirmation.rs`'s own
+    /// Mirrors `bin/orbis-node/src/tests/e2e/native_confirmation.rs`'s own
     /// `confirmed`/`wait` helpers — duplicated here (parameterized, not
     /// re-invented) since that file lives in the separate `native_startup`
     /// test binary and isn't reachable from this shared, lib-and-binary file.

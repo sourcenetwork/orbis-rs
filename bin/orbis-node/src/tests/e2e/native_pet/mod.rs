@@ -21,39 +21,29 @@ use vera_client::{
 };
 use vera_domain::ConsensusPublicKey;
 
-#[path = "native_pet/dkg.rs"]
 mod dkg;
 
-#[path = "native_pet/document.rs"]
 mod document;
 use document::{Delivery, Document, PreChecks, Reader};
 
 #[cfg(feature = "unsafe-testing")]
-#[path = "native_pet/report_fault.rs"]
 mod report_fault;
 
-#[path = "native_pet/scheduled_refresh.rs"]
 mod scheduled_refresh;
 
-// Declared once, at the binary root (`native_startup.rs`), so
-// `NativeTestEnvironment` (a sibling module there) can reach it too —
-// loading the same file as two separate `mod` items trips
-// `clippy::duplicate_mod`.
+// Declared once next to the native adapter (`super::stored_bundle`) so
+// `native_environment` reaches the same codec. A second `mod` item would
+// trip `clippy::duplicate_mod`.
 use super::stored_bundle;
 
-#[path = "native_pet/member_replacement.rs"]
 mod member_replacement;
 
-#[path = "native_pet/signing.rs"]
 mod signing;
 
-#[path = "native_pet/soak.rs"]
 pub mod soak;
 
-#[path = "native_pet/polynomial_state.rs"]
 mod polynomial_state;
 
-#[path = "native_pet/member_churn.rs"]
 mod member_churn;
 
 pub enum Scenario {
