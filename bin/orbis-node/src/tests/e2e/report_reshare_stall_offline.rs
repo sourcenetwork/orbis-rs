@@ -51,6 +51,7 @@ async fn test_reshare_stall_offline_triggers_on_chain_report() {
     let ring_policy = FixtureId::new("ring-policy");
     let offline_node = FixtureId::new("offline-node");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

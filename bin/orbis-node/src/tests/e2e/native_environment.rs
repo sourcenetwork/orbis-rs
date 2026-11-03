@@ -231,8 +231,14 @@ impl TestEnvironment for NativeTestEnvironment {
         // `NativeTestEnvironment` currently gets the builder's default
         // (9000). Revisit if/when a fixture needs to run more than one
         // native environment in the same process.
-        let network =
-            NativeNetworkAdapter::start_configured(DEPLOYMENT, node_count, false, true).await;
+        let requires_unsafe_testing = fixture.requires_unsafe_testing;
+        let network = NativeNetworkAdapter::start_configured(
+            DEPLOYMENT,
+            node_count,
+            !requires_unsafe_testing,
+            requires_unsafe_testing,
+        )
+        .await;
 
         let trusted = *KeySet::builder()
             .seed(DEPLOYMENT)
@@ -377,8 +383,8 @@ impl TestEnvironment for NativeTestEnvironment {
 
             // `RingCommand::Create`'s submitter (`actor`) needs the ACP
             // `creator` relation on a `ring_policy` object registered under
-            // this same policy — mirrors `NativeWorkflow::start_with_network`'s
-            // identical registration/grant pair (native_workflow.rs). Once
+            // this same policy — the same registration and grant the Trust
+            // gateway applies before it creates a ring. Once
             // per distinct policy, not once per ring.
             if ring_policy_registered.insert(policy_id.0.clone()) {
                 let policy_bytes = NativeTestEnvironment::policy_bytes(&policy_id);
@@ -520,6 +526,10 @@ impl TestEnvironment for NativeTestEnvironment {
     fn chain_id(&self) -> String {
         vera_client::rings::ring_deployment_label(self.root.0, DEPLOYMENT)
     }
+
+    fn checks_production_kdf_header() -> bool {
+        true
+    }
 }
 
 #[async_trait::async_trait]
@@ -538,6 +548,20 @@ impl NetworkTestDriver for NativeTestEnvironment {
 
     async fn restart_nodes(&self) -> Vec<String> {
         self.network.restart_nodes()
+    }
+
+    fn persisted_kdf_params(
+        &self,
+        index: usize,
+    ) -> Option<test_support::fixture::PersistedKdfParams> {
+        let stored =
+            super::stored_bundle::persisted_kdf_params(&self.network.node_directory(index));
+        Some(test_support::fixture::PersistedKdfParams {
+            m_cost_kib: stored.m_cost_kib,
+            t_cost: stored.t_cost,
+            p_cost: stored.p_cost,
+            version: stored.version,
+        })
     }
 }
 
@@ -785,6 +809,19 @@ impl BulletinTestDriver for NativeTestEnvironment {
             self.network.cluster(),
         )
         .await;
+    }
+
+    async fn arm_refresh_for_next_start(&self, _ring: &RingId, ring_pk: &str, members: &[String]) {
+        for (index, node) in self.nodes().iter().enumerate() {
+            let Some(position) = members.iter().position(|key| key == &node.node_key) else {
+                continue;
+            };
+            super::stored_bundle::backdate_main_ring(
+                &self.network.node_directory(index),
+                ring_pk,
+                position as u32 + 1,
+            );
+        }
     }
 
     /// Native has no short-`pss_interval` escape hatch for a live-created

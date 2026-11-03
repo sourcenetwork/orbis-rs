@@ -1,5 +1,5 @@
 pub mod error;
-#[cfg(all(feature = "integration-test", feature = "vera"))]
+#[cfg(all(feature = "integration-test", feature = "select-vera"))]
 mod integration_startup;
 #[cfg(feature = "native")]
 pub mod native;

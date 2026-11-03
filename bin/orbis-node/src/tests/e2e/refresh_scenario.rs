@@ -50,7 +50,7 @@ pub(super) async fn run(
     sign_scenario::verify_existing(environment, keys, sign).await;
 }
 
-fn assert_unchanged(before: &RingView, after: &RingView, context: &str) {
+pub(super) fn assert_unchanged(before: &RingView, after: &RingView, context: &str) {
     assert_eq!(
         before.ring_pk, after.ring_pk,
         "{context} must not change the ring public key"

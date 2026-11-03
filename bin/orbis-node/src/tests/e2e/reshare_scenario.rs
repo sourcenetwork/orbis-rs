@@ -72,7 +72,7 @@ pub(super) async fn run(
     sign_scenario::verify_existing(environment, keys, sign).await;
 }
 
-async fn wait_for_reshare_completion(
+pub(super) async fn wait_for_reshare_completion(
     environment: &TestEnvironmentImpl,
     ring: &RingId,
     target: &[String],

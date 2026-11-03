@@ -501,7 +501,7 @@ connects the authenticated Go gateway contract to the shared native test network
 It requires companion artifacts and is not part of the default lifecycle selection.
 
 The opt-in [hosted gateway scope](docs/native-trust-hosted.md) reuses
-`NativeWorkflow`, `NativeTestNetwork` and `ContainerNode` to launch Docker Vera
+`NativeTestNetwork` and the gateway fixture's own Orbis node startup to launch Docker Vera
 and Orbis for that exact fixture. Existing Cosmos `integration.rs` test bodies
 are not ported or invoked by this scope.
 

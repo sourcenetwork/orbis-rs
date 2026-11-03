@@ -41,6 +41,7 @@ async fn test_pre_unauthorized_relay_bulletin_and_inline_document_triggers_on_ch
 
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

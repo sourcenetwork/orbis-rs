@@ -147,7 +147,7 @@ services:
         # unable to execute in its own runtime image ("GLIBC_2.38 not
         # found"). CI's `image` job already pins this exact tag for the
         # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local/native_workflow.rs-driven
+        # this applies the same pin here so local Trust gateway and shared native
         # runs don't hit it too.
         RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
@@ -161,7 +161,7 @@ services:
       - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
     # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
     # bring-up (no scenario wiring) doesn't care about this value and leaves
-    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it at the default; the Trust gateway fixture sets
     # it to `1` to match pre-migration behavior (`Node::start_configured`'s
     # old hardcoded `--reshare-interval-secs 1`).
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
@@ -204,7 +204,7 @@ services:
         # unable to execute in its own runtime image ("GLIBC_2.38 not
         # found"). CI's `image` job already pins this exact tag for the
         # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local/native_workflow.rs-driven
+        # this applies the same pin here so local Trust gateway and shared native
         # runs don't hit it too.
         RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
@@ -218,7 +218,7 @@ services:
       - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
     # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
     # bring-up (no scenario wiring) doesn't care about this value and leaves
-    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it at the default; the Trust gateway fixture sets
     # it to `1` to match pre-migration behavior (`Node::start_configured`'s
     # old hardcoded `--reshare-interval-secs 1`).
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
@@ -261,7 +261,7 @@ services:
         # unable to execute in its own runtime image ("GLIBC_2.38 not
         # found"). CI's `image` job already pins this exact tag for the
         # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local/native_workflow.rs-driven
+        # this applies the same pin here so local Trust gateway and shared native
         # runs don't hit it too.
         RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
@@ -275,7 +275,7 @@ services:
       - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
     # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
     # bring-up (no scenario wiring) doesn't care about this value and leaves
-    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it at the default; the Trust gateway fixture sets
     # it to `1` to match pre-migration behavior (`Node::start_configured`'s
     # old hardcoded `--reshare-interval-secs 1`).
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]
@@ -319,7 +319,7 @@ services:
         # unable to execute in its own runtime image ("GLIBC_2.38 not
         # found"). CI's `image` job already pins this exact tag for the
         # native backend for the same reason (.github/workflows/rust.yml);
-        # this applies the same pin here so local/native_workflow.rs-driven
+        # this applies the same pin here so local Trust gateway and shared native
         # runs don't hit it too.
         RUST_IMAGE: "${ORBIS_NATIVE_RUST_IMAGE:-rust:1.99.1-bookworm}"
     working_dir: /data
@@ -333,7 +333,7 @@ services:
       - ORBIS_ENABLE_INTEGRATION_TEST=${ORBIS_NATIVE_ENABLE_UNSAFE_TESTING:-false}
     # `${ORBIS_NATIVE_RESHARE_INTERVAL:-5}`: `NativeNetworkAdapter`'s plain
     # bring-up (no scenario wiring) doesn't care about this value and leaves
-    # it at the default; `native_workflow.rs`'s scenario-driven bring-up sets
+    # it at the default; the Trust gateway fixture sets
     # it to `1` to match pre-migration behavior (`Node::start_configured`'s
     # old hardcoded `--reshare-interval-secs 1`).
     command: ["--services-config", "/data/services.json", "--addr", "0.0.0.0:50051", "--node-controller-key", "02466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27", "--network-private-routes-only", "--network-bind-addr", "0.0.0.0:9001", "--reshare-interval-secs", "${ORBIS_NATIVE_RESHARE_INTERVAL:-5}", "--runtime-base-path", "/data"]

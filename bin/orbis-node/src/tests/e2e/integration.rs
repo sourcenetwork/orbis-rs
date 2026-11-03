@@ -33,8 +33,8 @@ struct RingStateSnapshot {
 async fn test_cli_calls_dkg_for_pet_ring() {
     use test_support::admin::PolicyId;
     use test_support::fixture::{
-        AuthorizationTestDriver, BulletinTestDriver, FixtureId, NetworkTestDriver, NodeFixture,
-        NodeRef, NodeRole, RingFixture, ScenarioFixture, TestEnvironment,
+        AuthorizationTestDriver, FixtureId, NetworkTestDriver, NodeFixture, NodeRef, NodeRole,
+        RingFixture, ScenarioFixture, TestEnvironment,
     };
 
     println!("Starting Docker-based PET integration test...");
@@ -267,7 +267,7 @@ resources:
         ring_pk_hex.clone(),
         pet_object_id.clone(),
         Some(audit_target_object_id.clone()),
-        inline_document,
+        inline_document.clone(),
     )
     .await;
     assert_eq!(
@@ -275,6 +275,79 @@ resources:
         "decrypted secret should match the original"
     );
     println!("PET-gated PRE succeeded and decrypted correctly.");
+
+    // The same reader relationship, removed and restored. This is the
+    // product check from the legacy native PET runner: a previously
+    // authorized decrypt must fail after revocation and succeed after the
+    // relationship returns. Restart, reshare, and membership stay on that
+    // runner until the shared network driver can express them.
+    let audit_policy = PolicyId(pet_audit_policy_id.clone());
+    environment
+        .revoke(
+            &audit_policy,
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
+    environment
+        .revoke(
+            &audit_policy,
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
+    let revoked = cli_tool::do_pre_with_inline_document(
+        endpoint.clone(),
+        environment.chain_id(),
+        ring_pk_hex.clone(),
+        pet_object_id.clone(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        inline_document.clone(),
+        Some(audit_target_object_id.clone()),
+    )
+    .await
+    .expect_err("PET-gated PRE must fail after the reader relationship is revoked");
+    super::pre_scenario::assert_policy_rejection("PET PRE after reader revocation", &revoked);
+    environment
+        .grant(
+            &audit_policy,
+            &document_resource,
+            &pet_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
+    environment
+        .grant(
+            &audit_policy,
+            &document_resource,
+            &audit_target_object_id,
+            "reader",
+            &test_jwt_did,
+        )
+        .await;
+    let restored = do_pre_inline_expect_success(
+        "PRE after restoring the PET reader relationship",
+        endpoint.clone(),
+        environment.chain_id(),
+        ring_pk_hex.clone(),
+        pet_object_id.clone(),
+        Some(audit_target_object_id.clone()),
+        inline_document,
+    )
+    .await;
+    assert_eq!(
+        restored, secret_message,
+        "PET-gated PRE must succeed again after the reader relationship is restored"
+    );
 
     // Negative check: the ring requires PET, but this document carries no tag
     // at all — `check_pet_if_required` must reject it before any
@@ -417,6 +490,7 @@ async fn test_pet_ring_refresh_and_reshare() {
 
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

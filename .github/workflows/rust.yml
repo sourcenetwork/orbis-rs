@@ -9,31 +9,13 @@ on:
       scope:
         description: Qualification scope
         type: choice
-        options: [full, common, native, gateway, restart, threshold, fault, soak, peer-recovery, vera-image]
+        options: [full, common, native, gateway, peer-recovery, vera-image]
         default: full
         required: true
       trust_revision:
         description: Immutable Trust native ring fixture revision for gateway scope
         type: string
         default: 8c3dfa70eee62f1b2d3d27cae7941ce4d6ed73d5
-      restart_curve:
-        description: Curve for focused restart qualification
-        type: choice
-        options: [both, bls12-381, jubjub]
-        default: both
-
-      threshold_case:
-        description: Case for focused threshold qualification
-        type: choice
-        options:
-          - all
-          - native_distributed_threshold_workflows
-          - native_pet_threshold_workflows
-          - native_pet_member_replacement
-          - native_pet_member_churn
-          - native_pet_scheduled_refresh_after_restart
-          - native_defra_signing
-        default: all
 
 permissions:
   contents: read
@@ -96,8 +78,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - name: Check native qualification source guards
-      run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-qualification.py
     - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
     - name: Cache cargo registry / index
       uses: Swatinem/rust-cache@v2
@@ -185,8 +165,6 @@ jobs:
       run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib --no-run
     - name: Check private Go failure diagnostics
       run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib trust_go_failure_
-    - name: Check bounded polynomial observations
-      run: cargo test --locked -p orbis-node --no-default-features --features integration-test,native,test-support/native,redb,iroh,${{ matrix.crypto }} --lib native_polynomial_state_
     - name: Check bootstrap handoff, shutdown and identity storage
       run: |
         cargo test --locked -p common --no-default-features --lib node_signing
@@ -198,7 +176,7 @@ jobs:
   # `integration` shards pull it and reuse it via ORBIS_INTEGRATION_IMAGE instead
   # of `docker compose up --build`.
   image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery' && inputs.scope != 'vera-image')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'peer-recovery' && inputs.scope != 'vera-image')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -235,7 +213,7 @@ jobs:
           CRYPTO_FEATURE=${{ matrix.crypto }}
         cache-from: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }}
         cache-to: type=gha,scope=integ-${{ matrix.backend }}-${{ matrix.crypto }},mode=max
-    - name: Build + push native fault-report image (${{ matrix.crypto }})
+    - name: Build + push native diagnostic image (${{ matrix.crypto }})
       if: matrix.backend == 'native' && inputs.scope != 'gateway'
       uses: docker/build-push-action@v5
       with:
@@ -358,7 +336,7 @@ jobs:
       run: cargo nextest run --profile ci ${{ matrix.cargo_flags }} -E "not (${{ env.DOCKER_TESTS }})"
 
   native-vera-image:
-    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'restart' && inputs.scope != 'threshold' && inputs.scope != 'fault' && inputs.scope != 'soak' && inputs.scope != 'peer-recovery')
+    if: github.event_name != 'workflow_dispatch' || (inputs.scope != 'common' && inputs.scope != 'peer-recovery')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -535,53 +513,6 @@ jobs:
           path: ${{ runner.temp }}/sign-peer-recovery-${{ matrix.crypto }}/results.json
           if-no-files-found: warn
           retention-days: 14
-
-  native-restart:
-    name: Native ${{ inputs.scope }} (${{ matrix.crypto }})
-    if: github.event_name == 'workflow_dispatch' && (inputs.scope == 'restart' || inputs.scope == 'threshold' || inputs.scope == 'fault' || inputs.scope == 'soak')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      packages: read
-    strategy:
-      fail-fast: false
-      matrix:
-        crypto: ${{ fromJSON(inputs.restart_curve == 'bls12-381' && '["bls12-381"]' || inputs.restart_curve == 'jubjub' && '["jubjub"]' || '["bls12-381", "jubjub"]') }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
-      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32 # v2
-        with:
-          tool: cargo-nextest
-      - name: Install native build dependencies
-        run: sudo apt-get update && sudo apt-get install -y clang libclang-dev cmake pkg-config libssl-dev libdbus-1-dev protobuf-compiler
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: native-restart-${{ matrix.crypto }}
-          cache-targets: true
-          cache-on-failure: true
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Qualify native lifecycle
-        env:
-          NATIVE_RESTART_CURVE: ${{ matrix.crypto }}
-          NATIVE_RESTART_SUITE: ${{ inputs.scope }}
-          NATIVE_LIFECYCLE_CASE: ${{ inputs.threshold_case }}
-        run: python3 scripts/qualify-native-restart.py
-      - name: Retain bounded lifecycle results
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: native-${{ inputs.scope }}-${{ matrix.crypto }}-results
-          path: ${{ runner.temp }}/native-${{ inputs.scope }}-${{ matrix.crypto }}/results.json
-          retention-days: 3
-          if-no-files-found: warn
 
   native-trust-artifacts:
     name: Build native Trust ring artifacts once

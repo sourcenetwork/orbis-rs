@@ -53,6 +53,7 @@ async fn test_frost_invalid_sign_share_triggers_on_chain_report() {
     let policy = FixtureId::new("policy");
     let ring_policy = FixtureId::new("ring-policy");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

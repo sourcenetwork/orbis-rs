@@ -128,6 +128,32 @@ fn field(bytes: &[u8], cursor: &mut usize) -> Range<usize> {
     range
 }
 
+/// Backdate the main ring bundle in a stopped node's store so the
+/// scheduler treats a refresh as due on the next start. The polynomial and
+/// share bytes stay as they were.
+pub(super) fn backdate_main_ring(directory: &Path, public_key: &str, member: u32) {
+    let storage = open(directory);
+    let main_key =
+        crypto::GroupAffine::from_bytes(&hex::decode(public_key).expect("ring public key is hex"))
+            .expect("ring public key must decode")
+            .to_string();
+    let key = LocalStorageKeys::RingKey(main_key);
+    let stored = storage
+        .get_encrypted(key.clone())
+        .expect("read stopped ring bundle")
+        .expect("stopped node must already hold the ring bundle");
+    let due = Bundle::backdated(stored.to_vec(), public_key, member);
+    storage
+        .set_encrypted(key, Zeroizing::new(due))
+        .expect("persist backdated ring bundle");
+}
+
+pub(super) fn persisted_kdf_params(directory: &Path) -> local_storage::common::StoredKdfParams {
+    open(directory)
+        .stored_kdf_params()
+        .expect("read persisted KDF header")
+}
+
 pub(super) fn open(directory: &Path) -> LocalStorageImpl {
     let backend = LocalStorageImpl::name();
     assert_eq!(backend, "local-storage/redb");

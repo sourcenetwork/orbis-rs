@@ -52,6 +52,7 @@ async fn test_reshare_bad_dkg_share_relay_triggers_on_chain_report() {
     let ring_policy = FixtureId::new("ring-policy");
     let offline_node = FixtureId::new("offline-node");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..4)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

@@ -724,6 +724,10 @@ impl BulletinTestDriver for CosmosTestEnvironment {
             .expect("post shared Sign key derivation")
     }
 
+    async fn authorize_reshare_candidate(&self, ring: &RingId, node_index: usize) {
+        self.whitelist_node_for_ring(ring, node_index).await;
+    }
+
     async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32) {
         let client = VeraClient::with_signer(
             self.network.chain_config(),

@@ -36,9 +36,11 @@ mod fault_sign_below_threshold;
 mod fault_sign_one_node_down;
 mod integration;
 mod live_node;
+mod member_replacement;
 mod pending_ring_cancellation;
 mod pet_dkg_scenario;
 mod pre_scenario;
+mod production_kdf;
 mod refresh_scenario;
 mod report_kick_promotes_backup_node;
 mod report_offline_pre_sign;
@@ -55,6 +57,8 @@ mod report_scenario;
 mod report_unauthorized_relay;
 mod report_unauthorized_relay_bulletin_inline;
 mod reshare_scenario;
+mod restart_scenario;
+mod scheduled_refresh;
 mod sign_scenario;
 mod standard_dkg_pre;
 mod upgrade;
@@ -72,30 +76,20 @@ use test_support::CosmosTestEnvironment as TestEnvironmentImpl;
 
 // Native Vera adapter. These modules provision state and perform chain
 // operations; they are not a second copy of the shared scenarios.
-#[cfg(all(feature = "native", feature = "bls12-381"))]
-mod defra_documents;
-#[cfg(all(feature = "native", feature = "bls12-381"))]
-mod defra_peers;
-#[cfg(all(feature = "native", feature = "bls12-381"))]
-mod defra_signer;
 #[cfg(feature = "native")]
 mod native_confirmation;
 #[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
 mod native_environment;
 #[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
-mod native_pet;
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
 mod native_trust_gateway;
 #[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
-mod native_workflow;
-#[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
 mod policy_generations;
-// Declared once so `native_environment` and `native_pet` share the PET bundle
-// codec without tripping `clippy::duplicate_mod`.
+// Host-side store codec for the native adapter's refresh and KDF checks.
 #[cfg(all(feature = "native", any(feature = "bls12-381", feature = "jubjub")))]
 #[allow(dead_code)]
 mod stored_bundle;
-// Native lifecycle qualifications that have no backend-neutral contract yet.
+// Node startup for the hosted Trust gateway. The external runner launches
+// `native_trust_gateway_ring_dkg` by that exact name.
 #[cfg(feature = "native")]
 mod native_lifecycle;
 

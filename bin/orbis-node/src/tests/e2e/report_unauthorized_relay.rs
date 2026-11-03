@@ -47,6 +47,7 @@ async fn test_unauthorized_relay_pre_and_sign_triggers_on_chain_report() {
 
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

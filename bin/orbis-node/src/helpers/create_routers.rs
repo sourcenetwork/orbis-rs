@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 /// Create a router with both DKG and PRE protocol handlers
 #[cfg(any(test, feature = "integration-test"))]
+// The integration-test feature also compiles the non-test library target,
+// while this constructor is consumed only by its test target.
+#[allow(dead_code)]
 pub fn create_router_with_handlers<D, T>(
     network: &Arc<dyn network::Network>,
     app_state: Arc<AppState<D>>,

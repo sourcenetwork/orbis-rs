@@ -2,7 +2,7 @@
 
 The ignored `native_trust_gateway_ring_dkg` selector runs the real Trust gateway
 contract against four native Vera validators and three normal Orbis containers.
-It reuses `NativeWorkflow` and its registered peers, policy and normal startup
+It registers its own peers and policy, with the same normal startup
 limits. Its baseline Pending ring is not a substituted gateway result: the Go
 contract creates two distinct PET rings through authenticated HTTP, starts their
 DKG, checks creator denial and public DKG-trigger semantics, and checks duplicate

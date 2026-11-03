@@ -65,7 +65,7 @@ The reuse is the existing native fixture setup and Docker lifecycle, not a port
 of the older Cosmos `bin/orbis-node/src/tests/e2e/integration.rs` bodies. No production
 runtime or backend trait implementation is added. The exact ignored selector
 spins up four normal native Vera containers and three normal Orbis containers
-through `NativeWorkflow`, `NativeTestNetwork` and `ContainerNode`.
+through `NativeTestNetwork` and the gateway fixture's own Orbis node startup.
 
 After review and publication, the existing Rust workflow's manual dispatch uses
 `scope=gateway` and the immutable Trust revision above. For an already staged

@@ -171,6 +171,7 @@ pub(super) async fn run(
     policy: &PolicyId,
 ) -> (Keys, Vec<String>, Outcome) {
     let (keys, local_state) = run_dkg(environment, ring).await;
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
 
     let prepared = prepare(PLAINTEXT, &keys.main, &policy.0, None, None, None, None);
 
@@ -217,6 +218,7 @@ pub(super) async fn run(
 
     let decrypted = pre_with_retry(
         environment,
+        &endpoint,
         &keys.main,
         &stored.object_id,
         READER_SEED,
@@ -233,6 +235,7 @@ pub(super) async fn run(
 
     let derived_decrypted = pre_with_retry(
         environment,
+        &endpoint,
         &keys.main,
         &derived_stored.object_id,
         READER_SEED,
@@ -277,6 +280,46 @@ pub(super) async fn run(
     .expect_err("PRE outside the document timestamp window must fail");
     assert_policy_rejection("PRE outside the valid timestamp window", &outside_window);
 
+    // Revoke and restore the same reader relationship. A party that never
+    // held permission is not the same check: deletion has to take effect on
+    // an object that previously decrypted.
+    environment
+        .revoke(policy, RESOURCE, &stored.object_id, RELATION, &reader_did)
+        .await;
+    let revoked = cli_tool::do_pre(
+        environment.nodes()[0].grpc_endpoint.clone(),
+        environment.chain_id(),
+        keys.main.clone(),
+        stored.object_id.clone(),
+        Some(READER_SEED.to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect_err("PRE after revoking the reader relationship must fail");
+    assert_policy_rejection("PRE after revocation", &revoked);
+    environment
+        .grant(policy, RESOURCE, &stored.object_id, RELATION, &reader_did)
+        .await;
+    let restored = pre_with_retry(
+        environment,
+        &endpoint,
+        &keys.main,
+        &stored.object_id,
+        READER_SEED,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        restored, PLAINTEXT,
+        "PRE must succeed again after the reader relationship is restored"
+    );
+
     (
         keys,
         local_state,
@@ -295,8 +338,22 @@ pub(super) async fn verify_existing(
     keys: &Keys,
     outcome: &Outcome,
 ) {
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+    verify_existing_at(environment, &endpoint, keys, outcome).await;
+}
+
+/// Same contract as [`verify_existing`] against an endpoint chosen by the
+/// caller. A restart can publish the member on a new port, and
+/// [`NetworkTestDriver::nodes`] keeps the endpoint captured at provision.
+pub(super) async fn verify_existing_at(
+    environment: &TestEnvironmentImpl,
+    endpoint: &str,
+    keys: &Keys,
+    outcome: &Outcome,
+) {
     let decrypted = pre_with_retry(
         environment,
+        endpoint,
         &keys.main,
         &outcome.object_id,
         READER_SEED,
@@ -436,6 +493,7 @@ async fn store_with_retry(
 #[allow(clippy::too_many_arguments)]
 async fn pre_with_retry(
     environment: &TestEnvironmentImpl,
+    endpoint: &str,
     ring_pk: &str,
     object_id: &str,
     reader_seed: &str,
@@ -447,7 +505,7 @@ async fn pre_with_retry(
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match cli_tool::do_pre(
-            environment.nodes()[0].grpc_endpoint.clone(),
+            endpoint.to_string(),
             environment.chain_id(),
             ring_pk.to_string(),
             object_id.to_string(),

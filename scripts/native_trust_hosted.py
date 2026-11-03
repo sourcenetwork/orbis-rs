@@ -25,6 +25,133 @@ COMPLETED = 0
 COMMANDS = []
 IMAGE_ARCHIVE = 'gateway-image.tar'
 FILES = ('bin/defra', 'bin/trust-api', 'bin/trust-api.test', 'lib/libvera_verifier.so', 'include/vera_verifier.h')
+RUNTIME = 'b018533696efe7484cdc3c41dc653274960f3373'
+IMAGE_REVISION = '3f196a042b6884dad30e49637aa1f63cb4edfa47'
+RUNTIME_IMAGE_IDS = {
+    'bls12-381': 'sha256:5e1ec06e8d0384fb32c4052385a8f0d94173ae3f7ec48b5ed819b648220736b5',
+    'jubjub': 'sha256:de31595a28d762536e55a71d546c9aeb71c038cdc4810ff4cefedab194de7fca',
+}
+# Source paths whose diff cannot change the production node image. Deleted
+# legacy fixture paths stay listed so removing them still counts as a fixture
+# change against the pinned runtime revision.
+FIXTURE_FILES = {
+    '.config/nextest.toml',
+    '.github/workflows/rust.yml',
+    '.github/actions/docker-builder/action.yml',
+    '.github/workflows/upgrade-compatibility.yml',
+    'README.md',
+    'bin/orbis-node/README.md',
+    'docs/e2e-deferred-coverage.md',
+    'docs/native-threshold-soak.md',
+    'docs/native-trust-ring-fixture.md',
+    'docs/native-trust-hosted.md',
+    'scripts/qualify-native-restart.py',
+    'scripts/test-native-qualification.py',
+    'scripts/native_trust_hosted.py',
+    'scripts/test-native-trust-hosted.py',
+    'scripts/check-e2e-inventory.sh',
+    'crates/test-support/src/container.rs',
+    'crates/test-support/src/lib.rs',
+    'crates/test-support/src/environment.rs',
+    'crates/test-support/src/fixture.rs',
+    'crates/test-support/src/native_network.rs',
+    'crates/test-support/src/network/native.rs',
+    'docker/docker-compose-native-integration-test.yml',
+    'docker/NATIVE_VERA_REF',
+    'bin/orbis-node/src/sign/v0/coordinator/network_tests.rs',
+    'bin/orbis-node/src/tests/e2e/mod.rs',
+    'bin/orbis-node/src/tests/e2e/integration.rs',
+    'bin/orbis-node/src/tests/e2e/member_replacement.rs',
+    'bin/orbis-node/src/tests/e2e/native_confirmation.rs',
+    'bin/orbis-node/src/tests/e2e/native_environment.rs',
+    'bin/orbis-node/src/tests/e2e/native_lifecycle.rs',
+    'bin/orbis-node/src/tests/e2e/native_workflow.rs',
+    'bin/orbis-node/src/tests/e2e/pet_dkg_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/policy_generations.rs',
+    'bin/orbis-node/src/tests/e2e/pre_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/production_kdf.rs',
+    'bin/orbis-node/src/tests/e2e/refresh_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/reshare_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/restart_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/scheduled_refresh.rs',
+    'bin/orbis-node/src/tests/e2e/sign_scenario.rs',
+    'bin/orbis-node/src/tests/e2e/standard_dkg_pre.rs',
+    'bin/orbis-node/src/tests/e2e/stored_bundle.rs',
+    'bin/orbis-node/src/tests/e2e/native_trust_gateway/mod.rs',
+    'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/mod.rs',
+    'bin/orbis-node/src/tests/e2e/native_trust_gateway/runner/go_diagnostics.rs',
+    'bin/orbis-node/src/tests/e2e/defra_signer/mod.rs',
+    'bin/orbis-node/src/tests/e2e/defra_signer/tests.rs',
+    'bin/orbis-node/src/tests/e2e/defra_documents/mod.rs',
+    'bin/orbis-node/src/tests/e2e/defra_documents/replication.rs',
+    'bin/orbis-node/src/tests/e2e/defra_peers/mod.rs',
+    'bin/orbis-node/src/tests/e2e/defra_peers/forgery.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/mod.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/dkg.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/document.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/member_replacement.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/member_churn.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/signing.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/scheduled_refresh.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/soak.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/polynomial_state.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/report_fault/mod.rs',
+    'bin/orbis-node/src/tests/e2e/native_pet/report_fault/report_acceptance.rs',
+}
+
+
+def _runtime_manifest_lines(content):
+    """Return only manifest entries that can affect a production node build."""
+    if not isinstance(content, str):
+        return None
+    ignored_features = {
+        'integration-test',
+        'integration-test-cosmos',
+        'integration-test-native',
+        'native-test-fixture',
+        'unsafe-testing',
+    }
+    lines = []
+    section = ''
+    skip_test_target = False
+    for raw in content.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith('[[') and stripped[-2:] == ']]':
+            skip_test_target = stripped == '[[test]]'
+            section = stripped
+            continue
+        if stripped.startswith('[') and stripped.endswith(']'):
+            skip_test_target = False
+            section = stripped
+            if section != '[dev-dependencies]':
+                lines.append(section)
+            continue
+        if skip_test_target or section == '[dev-dependencies]':
+            continue
+        if not stripped or stripped.startswith('#'):
+            continue
+        if section == '[features]' and '=' in stripped:
+            if stripped.split('=', 1)[0].strip() in ignored_features:
+                continue
+        lines.append(stripped)
+    return lines
+
+
+def safe_fixture_manifest_change(before, after):
+    return (
+        isinstance(before, str)
+        and isinstance(after, str)
+        and _runtime_manifest_lines(before) == _runtime_manifest_lines(after)
+    )
+
+
+def verify_fixture_changes(changed, manifest_before=None, manifest_after=None):
+    changed = set(changed)
+    manifest = 'bin/orbis-node/Cargo.toml'
+    if manifest in changed and safe_fixture_manifest_change(manifest_before, manifest_after):
+        changed.remove(manifest)
+    if changed - FIXTURE_FILES:
+        raise ValueError('runtime source differs from the selected images')
 
 
 class Failure(Exception):
@@ -62,8 +189,7 @@ def runtime_revision(root, fixture, requested):
         if manifest in changed:
             before = capture(['git', 'show', runtime + ':' + manifest], root)
             after = capture(['git', 'show', fixture + ':' + manifest], root)
-        guard = runpy.run_path(str(root / 'scripts/qualify-native-restart.py'))
-        guard['verify_fixture_changes'](changed, before, after)
+        verify_fixture_changes(changed, before, after)
     return runtime
 
 
@@ -333,11 +459,10 @@ def restore(directory, destination, expected_orbis, expected_trust):
 
 
 def verify_runtime_labels(labels, runtime, curve, image_id=None):
-    qualified = runpy.run_path(str(Path(__file__).with_name('qualify-native-restart.py')))
     image_revision = runtime
-    if (image_id is not None and runtime == qualified['RUNTIME']
-            and image_id == qualified['RUNTIME_IMAGE_IDS'].get(curve)):
-        image_revision = qualified['IMAGE_REVISION']
+    if (image_id is not None and runtime == RUNTIME
+            and image_id == RUNTIME_IMAGE_IDS.get(curve)):
+        image_revision = IMAGE_REVISION
     expected = {
         'org.opencontainers.image.revision': image_revision,
         'io.sourcenetwork.orbis.backend': 'native',

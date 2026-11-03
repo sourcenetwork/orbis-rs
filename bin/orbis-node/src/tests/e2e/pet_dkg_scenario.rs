@@ -1,16 +1,10 @@
 //! Shared PET (checking-key) paired-DKG trigger/finalize/verify scenario.
 //!
-//! Cosmos's half of the bare paired-DKG slice (`cosmos_dkg`) and the
-//! foundation `test_cli_calls_dkg_for_pet_ring`/
-//! `test_pet_ring_refresh_and_reshare` build on top of. Native's equivalent
-//! (`native_dkg`, plus `native_pet`'s `Scenario` family via
-//! `native_pet::dkg::run`) is a separate, non-generic implementation —
-//! `pet_dkg_contract.rs`, the generic trait family both backends used to
-//! share, is gone now that neither side needs it. Deliberately
-//! self-contained (no `use super::pre_scenario`) rather than reusing
+//! `test_cli_calls_dkg_for_pet_ring` and `test_pet_ring_refresh_and_reshare`
+//! build on this scenario. Deliberately self-contained
+//! (no `use super::pre_scenario`) rather than reusing
 //! `pre_scenario::assert_polynomial`: on native, `pre_scenario` is gated
-//! behind `unsafe-testing`, but `native_dkg` (this file's native consumer)
-//! isn't and shouldn't become so.
+//! behind `unsafe-testing`, and this scenario stays available without that gate.
 
 use super::TestEnvironmentImpl;
 use crypto::r#trait::{CryptoDeserialize, Dkg, PubPoly};

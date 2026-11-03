@@ -39,6 +39,7 @@ async fn test_refresh_invalid_commitment_triggers_on_chain_report() {
 
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

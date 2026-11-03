@@ -23,6 +23,7 @@ pub(super) async fn run(
     keys: &pre_scenario::Keys,
     policy: &PolicyId,
 ) -> Outcome {
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
     let derivation_id = environment
         .register_key_derivation(
             ring,
@@ -73,7 +74,38 @@ pub(super) async fn run(
         )
         .await;
 
-    verify_signature(environment, keys, &derivation_id, &derived_pk).await;
+    verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
+
+    environment
+        .revoke(
+            policy,
+            pre_scenario::RESOURCE,
+            &derivation_id,
+            pre_scenario::RELATION,
+            &signer_did,
+        )
+        .await;
+    let revoked = cli_tool::do_sign(
+        environment.nodes()[0].grpc_endpoint.clone(),
+        MESSAGE.to_vec(),
+        derivation_id.clone(),
+        Some(SIGNER_SEED.to_string()),
+        None,
+        None,
+    )
+    .await
+    .expect_err("signing after revoking the authorized relationship must fail");
+    pre_scenario::assert_policy_rejection("Sign after revocation", &revoked);
+    environment
+        .grant(
+            policy,
+            pre_scenario::RESOURCE,
+            &derivation_id,
+            pre_scenario::RELATION,
+            &signer_did,
+        )
+        .await;
+    verify_signature(&endpoint, keys, &derivation_id, &derived_pk).await;
 
     Outcome {
         derivation_id,
@@ -88,22 +120,28 @@ pub(super) async fn verify_existing(
     keys: &pre_scenario::Keys,
     outcome: &Outcome,
 ) {
-    verify_signature(
-        environment,
-        keys,
-        &outcome.derivation_id,
-        &outcome.derived_pk,
-    )
-    .await;
+    let endpoint = environment.nodes()[0].grpc_endpoint.clone();
+    verify_existing_at(environment, &endpoint, keys, outcome).await;
+}
+
+/// Same contract as [`verify_existing`] against an endpoint chosen by the
+/// caller. See [`pre_scenario::verify_existing_at`].
+pub(super) async fn verify_existing_at(
+    _environment: &TestEnvironmentImpl,
+    endpoint: &str,
+    keys: &pre_scenario::Keys,
+    outcome: &Outcome,
+) {
+    verify_signature(endpoint, keys, &outcome.derivation_id, &outcome.derived_pk).await;
 }
 
 async fn verify_signature(
-    environment: &TestEnvironmentImpl,
+    endpoint: &str,
     keys: &pre_scenario::Keys,
     derivation_id: &str,
     derived_pk: &str,
 ) {
-    let signed = sign_with_retry(environment, derivation_id).await;
+    let signed = sign_with_retry(endpoint, derivation_id).await;
     let signature = <SignImpl as ThresholdSigner>::Signature::from_bytes(
         &hex::decode(&signed.signature).expect("Sign signature is hex"),
     )
@@ -125,14 +163,11 @@ async fn verify_signature(
     );
 }
 
-async fn sign_with_retry(
-    environment: &TestEnvironmentImpl,
-    derivation_id: &str,
-) -> cli_tool::SignResult {
+async fn sign_with_retry(endpoint: &str, derivation_id: &str) -> cli_tool::SignResult {
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         match cli_tool::do_sign(
-            environment.nodes()[0].grpc_endpoint.clone(),
+            endpoint.to_string(),
             MESSAGE.to_vec(),
             derivation_id.to_string(),
             Some(SIGNER_SEED.to_string()),

@@ -53,7 +53,26 @@ pub(super) fn published_port(
     service: &str,
     container_port: u16,
 ) -> Result<u16, String> {
-    let output = compose_command(compose_file, project_name)
+    published_port_with_env(compose_file, project_name, service, container_port, &[])
+}
+
+/// Query a published port while replaying the environment that defines the
+/// Compose project. Native fixtures use interpolated network, address, image,
+/// and bind-mount values, so even a read-only `compose port` command must see
+/// the same values as the original `compose up`.
+#[cfg(any(feature = "cosmos", feature = "native"))]
+pub(super) fn published_port_with_env(
+    compose_file: &str,
+    project_name: &str,
+    service: &str,
+    container_port: u16,
+    env: &[(String, String)],
+) -> Result<u16, String> {
+    let mut command = compose_command(compose_file, project_name);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
         .args(["port", service, &container_port.to_string()])
         .output()
         .map_err(|error| {

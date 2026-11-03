@@ -1,8 +1,6 @@
 use alloy_primitives::B256;
-use alloy_sol_types::SolCall;
-use vera_client::{BlsSigner, VeraClient};
+use vera_client::VeraClient;
 use vera_domain::ConsensusPublicKey;
-use vera_modules::acp::abi::IAcp;
 
 pub fn definition(signer: bool, reader: bool) -> String {
     let signer_relation = if signer {
@@ -42,25 +40,6 @@ resources:
         expr: {read_expression}
 "
     )
-}
-
-pub async fn replace(
-    client: &VeraClient,
-    worker: &BlsSigner,
-    trusted: &ConsensusPublicKey,
-    policy: B256,
-    definition: String,
-) {
-    let call = IAcp::editPolicyCall {
-        policyId: policy,
-        policy: definition.into_bytes().into(),
-        marshalType: 1,
-    };
-    let wire = worker
-        .sign_native_tx(vera_client::ACP_ADDRESS, call.abi_encode().into())
-        .unwrap();
-    let id = client.send_native_tx(&wire).await.unwrap();
-    super::native_confirmation::confirmed(client, id, trusted).await;
 }
 
 pub async fn assert_relationship(

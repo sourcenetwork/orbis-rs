@@ -11,7 +11,7 @@ use test_support::fixture::{
     TestEnvironment,
 };
 
-const POLICY_YAML: &str = r#"
+pub(super) const POLICY_YAML: &str = r#"
 name: shared-dkg-pre-policy
 resources:
   - name: ring_policy
@@ -47,6 +47,7 @@ async fn test_cli_calls_dkg_and_pre_endpoint() {
     let ring_policy = FixtureId::new("ring-policy");
     let ring = FixtureId::new("ring");
     let fixture = ScenarioFixture {
+        requires_unsafe_testing: true,
         nodes: (0..3)
             .map(|_| NodeFixture {
                 id: FixtureId::new("node"),

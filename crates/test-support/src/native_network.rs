@@ -387,7 +387,7 @@ impl NativeTestNetwork {
     /// project, even one scoped to different services. See this struct's
     /// `env_vars` field doc comment for why. `pub` (not `pub(crate)`): callers
     /// outside this crate driving their own Orbis-node bring-up against this
-    /// same Compose project (e.g. `bin/orbis-node/src/tests/e2e/native_workflow.rs`)
+    /// same Compose project (e.g. `bin/orbis-node/src/tests/e2e/native_lifecycle.rs`)
     /// need this too — see `build_service`/`bring_up_services` below.
     pub fn compose_env(&self) -> &[(String, String)] {
         &self.env_vars

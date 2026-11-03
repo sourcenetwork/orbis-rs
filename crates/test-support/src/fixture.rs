@@ -167,6 +167,11 @@ pub struct NodeDemeritFixture {
 
 #[derive(Clone, Debug, Default)]
 pub struct ScenarioFixture {
+    /// The scenario calls the deliberately non-production diagnostic gRPC
+    /// surface. Backends that provide such a surface may select a diagnostic
+    /// runtime; ordinary scenarios must leave this false so they qualify the
+    /// production node image and feature set.
+    pub requires_unsafe_testing: bool,
     pub nodes: Vec<NodeFixture>,
     pub rings: Vec<RingFixture>,
     pub policies: Vec<PolicyFixture>,
@@ -227,6 +232,27 @@ pub trait TestEnvironment: Sized {
     fn supports_direct_document_write(&self) -> bool {
         false
     }
+
+    /// Whether a stopped node's store is required to keep the production
+    /// Argon2id cost. The integration image that lowers that cost for
+    /// startup time returns `false`, and the production-header scenario
+    /// stays ignored there.
+    fn checks_production_kdf_header() -> bool {
+        false
+    }
+}
+
+/// Argon2id parameters persisted in a node's local store.
+///
+/// These are not secret. They are stored in the clear so a later open
+/// re-derives the key with the same cost that created the database.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistedKdfParams {
+    pub m_cost_kib: u32,
+    pub t_cost: u32,
+    pub p_cost: u32,
+    /// `argon2::Version` in numeric form (`0x13` == 19).
+    pub version: u32,
 }
 
 /// Node lifecycle control, backend-neutral. Replaces direct
@@ -237,6 +263,13 @@ pub trait NetworkTestDriver {
     async fn stop_node(&self, index: usize);
     async fn start_node(&self, index: usize) -> String;
     async fn restart_nodes(&self) -> Vec<String>;
+
+    /// Read the KDF header from a stopped node's store. `None` means this
+    /// backend's store is not available on the host. Call only after
+    /// [`Self::stop_node`], while the process has released the database.
+    fn persisted_kdf_params(&self, _index: usize) -> Option<PersistedKdfParams> {
+        None
+    }
 }
 
 /// ACP policy/relationship administration — the independently-selectable
@@ -314,6 +347,13 @@ pub trait BulletinTestDriver {
     /// finalization), using `read_ring`/`wait_for_finalized`.
     async fn update_membership(&self, ring: &RingId, new_members: Vec<String>, new_threshold: u32);
 
+    /// Make running node `node_index` eligible to join `ring` through
+    /// [`Self::update_membership`]. Native authorizes every running fixture
+    /// node while provisioning. Cosmos only authorizes the initial
+    /// committee, so that adapter records the candidate's reachable address
+    /// and whitelists it. The default is that preparation already happened.
+    async fn authorize_reshare_candidate(&self, _ring: &RingId, _node_index: usize) {}
+
     /// Force a PSS/share-refresh ceremony to become due right now for
     /// `ring`, bypassing however long a real wait against its configured
     /// `pss_interval` would take — a test-only diagnostic hook, not a
@@ -321,6 +361,21 @@ pub trait BulletinTestDriver {
     /// uses a short enough interval (Cosmos's genesis-seeded rings always
     /// do) never needs to override this.
     async fn force_refresh_due(&self, _ring: &RingId, _ring_pk: &str, _members: &[String]) {}
+
+    /// Make a share refresh due the next time `members` start.
+    ///
+    /// Call this only while those processes are stopped, so a live scheduler
+    /// cannot finish the refresh before the restart under test. A backend
+    /// whose configured interval is already inside the scheduler's grace
+    /// window needs nothing here. Native cannot persist an interval that
+    /// short, so that adapter backdates the stopped bundles instead.
+    async fn arm_refresh_for_next_start(
+        &self,
+        _ring: &RingId,
+        _ring_pk: &str,
+        _members: &[String],
+    ) {
+    }
 
     /// Cancel an announced-but-stuck reshare, reverting `ring` to its
     /// pre-reshare committee/threshold. Cosmos-only: native's chain module
@@ -354,6 +409,7 @@ mod tests {
         let derivation = FixtureId::new("derivation");
 
         let fixture = ScenarioFixture {
+            requires_unsafe_testing: false,
             nodes: (0..3)
                 .map(|_| NodeFixture {
                     id: FixtureId::new("node"),
