@@ -24,7 +24,9 @@ cd "$repository_root"
 # `nextest list` builds the selected test binary and asks the Rust test harness
 # for its inventory. It does not execute test bodies. Include ignored tests so
 # a backend capability gap remains visible as part of the shared contract.
-cargo nextest list -p orbis-node --lib "$@" \
+# Color stays off: the workflow sets CARGO_TERM_COLOR=always, and nextest then
+# splits `module::test_name` with ANSI codes, which hides the required names.
+CARGO_TERM_COLOR=never cargo nextest list -p orbis-node --lib "$@" \
   --run-ignored all \
   --message-format oneline \
   -E "$filter" | tee "$inventory_file"
