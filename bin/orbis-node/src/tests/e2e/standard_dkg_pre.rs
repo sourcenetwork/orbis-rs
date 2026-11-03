@@ -17,24 +17,32 @@ resources:
   - name: ring_policy
     relations:
       - name: creator
+        types:
+          - actor
     permissions:
       - name: create_ring
         expr: creator
   - name: ring
     relations:
       - name: operator
+        types:
+          - actor
     permissions:
       - name: update_ring
         expr: operator
   - name: key
     relations:
       - name: signer
+        types:
+          - actor
     permissions:
       - name: sign
         expr: signer
   - name: document
     relations:
       - name: reader
+        types:
+          - actor
     permissions:
       - name: read
         expr: reader

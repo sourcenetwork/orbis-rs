@@ -46,8 +46,12 @@ const OFFLINE_NODE_SECRET: [u8; 32] = [
 const BACKUP_NODE_SECRET: [u8; 32] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4,
 ];
+/// Same placeholder as the Cosmos genesis peer (`OFFLINE_NODE_PEER_ID` in
+/// `crates/test-support`). The node id is 64 hex characters, so committee
+/// route resolution accepts it, and it is not an iroh public key, so a dial
+/// fails before any network I/O.
 const OFFLINE_NODE_PEER: &str =
-    "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
+    "5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f@node-offline:4242";
 const BACKUP_NODE_PEER: &str = "backup-node-4-peer-id";
 const RING_POLICY_YAML: &str = r#"
 name: native-test-ring-policy
